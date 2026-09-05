@@ -29,6 +29,7 @@ struct LiveSession {
 
 pub struct SessionManager {
     sessions: DashMap<String, LiveSession>,
+    ssh_connections: DashMap<String, String>,
     store: Store,
     sink: Arc<dyn OutputSink>,
     // Track SSH connection state per host_id independently of session count
@@ -40,6 +41,7 @@ impl SessionManager {
     pub fn new(store: Store, sink: Arc<dyn OutputSink>) -> Arc<Self> {
         Arc::new(Self {
             sessions: DashMap::new(),
+            ssh_connections: DashMap::new(),
             store,
             sink,
             ssh_connections: DashMap::new(),
@@ -175,7 +177,17 @@ impl SessionManager {
         };
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        let cmd_tx = ssh::open_shell(&host, identity.as_ref(), cols, rows, tx).await?;
+        self.ssh_connections.insert(host_id.to_string(), "connecting".to_string());
+        let cmd_tx = match ssh::open_shell(&host, identity.as_ref(), cols, rows, tx).await {
+            Ok(tx) => {
+                self.ssh_connections.insert(host_id.to_string(), "connected".to_string());
+                tx
+            }
+            Err(e) => {
+                self.ssh_connections.insert(host_id.to_string(), "error".to_string());
+                return Err(e);
+            }
+        };
         let emulator = Arc::new(parking_lot::Mutex::new(
             self.open_emulator(cols, rows, scale).await?,
         ));
@@ -310,7 +322,49 @@ impl SessionManager {
                     let _ = tx.send(SshCommand::Close);
                 }
             }
+            if let Some(host_id) = &session.info.host_id {
+                let has_other_sessions = self.sessions
+                    .iter()
+                    .any(|s| s.info.host_id.as_ref() == Some(host_id));
+                if !has_other_sessions {
+                    self.ssh_connections.insert(host_id.clone(), "disconnected".to_string());
+                }
+            }
         }
+        Ok(())
+    }
+
+    pub fn hosts_runtime(&self) -> Vec<(String, String, usize)> {
+        let mut result = Vec::new();
+        let mut host_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        
+        for session in self.sessions.iter() {
+            if let Some(host_id) = &session.info.host_id {
+                *host_counts.entry(host_id.clone()).or_insert(0) += 1;
+            }
+        }
+        
+        for entry in self.ssh_connections.iter() {
+            let host_id = entry.key().clone();
+            let connection = entry.value().clone();
+            let open_count = host_counts.get(&host_id).copied().unwrap_or(0);
+            result.push((host_id, connection, open_count));
+        }
+        
+        result
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn test_set_connection(&self, host_id: &str, state: &str) -> Result<()> {
+        let valid_states = ["local", "connected", "disconnected", "connecting", "error"];
+        if !valid_states.contains(&state) {
+            return Err(Error::msg(&format!(
+                "Invalid connection state: {}. Must be one of: {}",
+                state,
+                valid_states.join(", ")
+            )));
+        }
+        self.ssh_connections.insert(host_id.to_string(), state.to_string());
         Ok(())
     }
 
@@ -364,5 +418,91 @@ pub async fn resolve_identity(store: &Store, host: &Host) -> Result<Option<Ident
     match &host.identity_id {
         Some(id) => store.get_identity(id).await,
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_set_connection_with_zero_open_count() {
+        use std::sync::Arc;
+        struct TestSink;
+
+        #[async_trait::async_trait]
+        impl OutputSink for TestSink {
+            async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
+            async fn emit_exit(&self, _session_id: &str) {}
+        }
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let temp_db = tempfile::NamedTempFile::new().unwrap();
+            let store = Store::open(temp_db.path()).await.unwrap();
+            let sink: Arc<dyn OutputSink> = Arc::new(TestSink);
+            let manager = SessionManager::new(store, sink);
+
+            let test_host_id = "test-host-123";
+            
+            manager.test_set_connection(test_host_id, "connected").unwrap();
+            
+            let runtime = manager.hosts_runtime();
+            let host_runtime = runtime.iter().find(|(id, _, _)| id == test_host_id);
+            
+            assert!(host_runtime.is_some(), "Host runtime should exist");
+            let (_, connection, open_count) = host_runtime.unwrap();
+            assert_eq!(connection, "connected");
+            assert_eq!(*open_count, 0, "Open count should be 0 when no sessions are open");
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_set_connection_validates_state() {
+        use std::sync::Arc;
+        struct TestSink;
+
+        #[async_trait::async_trait]
+        impl OutputSink for TestSink {
+            async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
+            async fn emit_exit(&self, _session_id: &str) {}
+        }
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let temp_db = tempfile::NamedTempFile::new().unwrap();
+            let store = Store::open(temp_db.path()).await.unwrap();
+            let sink: Arc<dyn OutputSink> = Arc::new(TestSink);
+            let manager = SessionManager::new(store, sink);
+
+            let result = manager.test_set_connection("test-host", "invalid_state");
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("Invalid connection state"));
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn test_valid_connection_states() {
+        use std::sync::Arc;
+        struct TestSink;
+
+        #[async_trait::async_trait]
+        impl OutputSink for TestSink {
+            async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
+            async fn emit_exit(&self, _session_id: &str) {}
+        }
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let temp_db = tempfile::NamedTempFile::new().unwrap();
+            let store = Store::open(temp_db.path()).await.unwrap();
+            let sink: Arc<dyn OutputSink> = Arc::new(TestSink);
+            let manager = SessionManager::new(store, sink);
+
+            for state in &["local", "connected", "disconnected", "connecting", "error"] {
+                let result = manager.test_set_connection("test-host", state);
+                assert!(result.is_ok(), "State '{}' should be valid", state);
+            }
+        });
     }
 }
