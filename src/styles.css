@@ -329,36 +329,47 @@ svg {
   display: flex;
   align-items: stretch;
   gap: 1px;
-  height: 28px;
-  margin: 0 12px 8px;
+  height: 26px;
+  margin: 0 8px 8px;
   padding: 2px;
   background: rgba(255, 255, 255, 0.06);
   border-radius: 7px;
 }
 .side-nav button {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   border: 0;
   background: transparent;
   color: var(--secondary);
   border-radius: 5px;
-  padding: 0 4px;
+  padding: 0 3px;
   display: inline-flex;
   flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 0;
-  font-size: 11px;
+  gap: 3px;
+  font-size: 10.5px;
   font-weight: 510;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
   min-height: 0;
 }
-.side-nav button svg { display: none; }
+.side-nav button svg {
+  display: block;
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
 .side-nav button.active {
   color: var(--text);
   background: rgba(120, 120, 128, 0.42);
   box-shadow: 0 0.5px 0 rgba(255, 255, 255, 0.06);
 }
 .side-nav button:hover:not(.active) { color: var(--text); }
+.side-nav button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--blue);
+}
 
 .side-panel { flex: 1; overflow: auto; padding: 0 8px 8px; }
 .hidden { display: none !important; }
