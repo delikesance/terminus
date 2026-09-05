@@ -98,6 +98,26 @@ async fn run() -> Result<Value> {
         "snippet stored",
     ));
 
+    let ssh_host = std::env::var("TERMINUS_SSH_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let ssh_port: u16 = std::env::var("TERMINUS_SSH_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(2222);
+    host.hostname = ssh_host;
+    host.port = ssh_port;
+    store.upsert_host(&host).await?;
+
+    match seed_known_hosts(&host.hostname, host.port) {
+        Ok(detail) => checks.push(check("ssh_known_hosts", true, detail)),
+        Err(err) => {
+            checks.push(check(
+                "ssh_known_hosts",
+                false,
+                format!("failed to seed known_hosts: {err:#}"),
+            ));
+        }
+    }
+
     checks.push(test_host_runtime(&store).await);
     checks.push(test_sync_status(&store).await);
     checks.push(test_ungrouped_formula(&store).await);
@@ -118,15 +138,6 @@ async fn run() -> Result<Value> {
         store.list_groups().await?.iter().any(|g| g.id == group.id),
         "host groups stored",
     ));
-
-    let ssh_host = std::env::var("TERMINUS_SSH_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let ssh_port: u16 = std::env::var("TERMINUS_SSH_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(2222);
-    host.hostname = ssh_host;
-    host.port = ssh_port;
-    store.upsert_host(&host).await?;
 
     match ssh::exec_command(&host, None, "echo TERMINUS_SSH_OK && pwd").await {
         Ok(out) => checks.push(check(
@@ -212,6 +223,7 @@ async fn run() -> Result<Value> {
         "host_runtime",
         "sync_status_states",
         "ungrouped_formula",
+        "ssh_known_hosts",
         "ssh_exec",
         "ssh_key",
         "sftp_list",
@@ -406,6 +418,71 @@ fn tempfile_dir() -> Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!("terminus-selftest-{}", std::process::id()));
     std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
     Ok(dir)
+}
+
+/// Scan the fixture sshd host key and append it to `~/.ssh/known_hosts` (or
+/// `TERMINUS_KNOWN_HOSTS` when set) so fail-closed verification can succeed.
+fn seed_known_hosts(host: &str, port: u16) -> Result<String> {
+    let mut last_err = None;
+    let stdout = {
+        let mut scanned = None;
+        for attempt in 0..20 {
+            let output = std::process::Command::new("ssh-keyscan")
+                .args(["-T", "3", "-p", &port.to_string(), host])
+                .output()
+                .with_context(|| format!("ssh-keyscan {host}:{port}"))?;
+            if output.status.success() && !output.stdout.is_empty() {
+                scanned = Some(output.stdout);
+                break;
+            }
+            last_err = Some(format!(
+                "ssh-keyscan attempt {}: status={} stderr={}",
+                attempt + 1,
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        scanned.ok_or_else(|| {
+            anyhow::anyhow!(
+                "ssh-keyscan failed for {host}:{port}: {}",
+                last_err.unwrap_or_else(|| "no output".into())
+            )
+        })?
+    };
+
+    let known_hosts = if let Some(path) = std::env::var_os("TERMINUS_KNOWN_HOSTS") {
+        PathBuf::from(path)
+    } else {
+        let home = dirs::home_dir().context("home directory required for known_hosts")?;
+        let ssh_dir = home.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir)
+            .with_context(|| format!("mkdir {}", ssh_dir.display()))?;
+        ssh_dir.join("known_hosts")
+    };
+
+    if let Some(parent) = known_hosts.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("mkdir {}", parent.display()))?;
+    }
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&known_hosts)
+        .with_context(|| format!("open {}", known_hosts.display()))?;
+    file.write_all(&stdout)
+        .with_context(|| format!("write {}", known_hosts.display()))?;
+
+    let lines = String::from_utf8_lossy(&stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .count();
+    Ok(format!(
+        "seeded {lines} host key(s) for {host}:{port} into {}",
+        known_hosts.display()
+    ))
 }
 
 async fn test_host_runtime(store: &Store) -> Value {
