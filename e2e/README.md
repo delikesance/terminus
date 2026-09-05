@@ -21,7 +21,8 @@ Tests align with exact QA specifications from **PR #6** and issues **#2, #3, #4*
 
 ### Test Bridge API
 
-Tests use `window.__terminusTest` bridge (auto-initialized in dev/test mode):
+Tests use `window.__terminusTest`, exposed **only** when the frontend is built with `VITE_E2E=1`.
+The Rust command `test_set_host_connection` is compiled **only** when `TERMINUS_E2E=1` (see `src-tauri/build.rs` / `crates/terminus-core/build.rs`).
 
 ```typescript
 interface TerminusTestBridge {
@@ -34,14 +35,23 @@ interface TerminusTestBridge {
   // E2E-2: Connection dots
   sessionOpenSsh(hostId: string): Promise<string>;
   sessionClose(sessionId: string): Promise<void>;
-  setConnection(hostId: string, state: string): Promise<void>;  // ⭐ NEW
+  setConnection(hostId: string, state: string): Promise<void>;
   
   // E2E-3: SyncStatus
   setSyncStatus(state: string, lastError?: string): Promise<void>;
 }
 ```
 
-**Key Method**: `setConnection(hostId, state)` allows testing all 5 connection states without docker/sshd. Backend provides `test_set_connection` command.
+**Key Method**: `setConnection(hostId, state)` calls `test_set_host_connection` (no docker/sshd).
+
+### Opt-in env vars
+
+| Var | Side | Effect when `=1` |
+|-----|------|------------------|
+| `VITE_E2E` | Vite build | Installs `window.__terminusTest` |
+| `TERMINUS_E2E` | Rust compile | Emits `cfg(terminus_e2e)` → registers `test_set_host_connection` |
+
+Normal release / `build-*` CI jobs leave both unset so production builds have no test hooks.
 
 ## Test Suites
 
@@ -97,10 +107,10 @@ GitHub Actions workflow `.github/workflows/ci.yml` includes `e2e-playwright` job
 ## Implementation Details
 
 ### Frontend Integration
-- **Bridge**: `src/testBridge.ts` (auto-initialized in dev/test mode via `import.meta.env.DEV`)
+- **Bridge**: `src/testBridge.ts` — installed only when `VITE_E2E=1`
 - **Selectors**: Implemented in `src/main.ts` with exact QA contract IDs
-- **Mode**: Bridge only loads in development or test builds (not production)
-- **Dependencies**: Tests run without docker/sshd using `setConnection` method
+- **Rust hook**: `test_set_host_connection` — compiled only when `TERMINUS_E2E=1`
+- **Dependencies**: Connection-state tests use `setConnection` (no docker/sshd)
 
 ### Test Structure
 Each spec file:
@@ -110,8 +120,9 @@ Each spec file:
 4. Asserts UI behavior matches acceptance criteria
 
 ### Known Limitations
-- Bridge relies on backend `test_*` commands: `test_set_connection`, `test_set_sync_status`
-- Tests run against web preview; full Tauri runtime integration is optional enhancement
+- Bridge relies on Tauri IPC (`test_set_host_connection`, and optionally `test_set_sync_status`)
+- vite-preview CI cannot exercise Tauri commands; full green requires a Tauri/WebDriver fixture
+- `test_set_sync_status` is not implemented yet (sync E2E specs need it)
 
 ## Next Steps
 

@@ -122,11 +122,11 @@ export function initTestBridge(): void {
     },
 
     async setConnection(hostId: string, state: string): Promise<void> {
-      // Set connection state for a host without requiring real SSH/docker
-      // Backend provides test_set_connection command
-      await invoke('test_set_connection', {
+      // Set connection state without real SSH/docker.
+      // Backend command is compiled only when TERMINUS_E2E=1 (see src-tauri/build.rs).
+      await invoke("test_set_host_connection", {
         hostId,
-        state, // local | connected | disconnected | connecting | error
+        connectionState: state, // local | connected | disconnected | connecting | error
       });
     },
 
