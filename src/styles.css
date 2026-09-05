@@ -237,7 +237,7 @@ svg {
   border-radius: 50%;
   background: var(--green);
   flex: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 22%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 20%, transparent);
 }
 #tabs button.pending .live-dot { background: var(--yellow); box-shadow: none; animation: pulse 1s ease-in-out infinite; }
 #tabs button.exited .live-dot { background: var(--red); box-shadow: none; }
@@ -323,7 +323,11 @@ svg {
   font-size: 12.5px;
 }
 .search input::placeholder { color: rgba(235, 235, 245, 0.36); }
-.search input:focus { background: rgba(255, 255, 255, 0.09); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 28%, transparent); }
+.search input:focus { 
+  background: rgba(255, 255, 255, 0.09); 
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 32%, transparent);
+  outline: none;
+}
 
 .side-nav {
   display: flex;
@@ -380,14 +384,18 @@ svg {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 8px;
+  padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
-  min-height: 40px;
-  height: 40px;
+  min-height: 32px;
+  height: 32px;
 }
 .item:hover { background: rgba(255, 255, 255, 0.05); }
 .item.pinned:hover, .item.open:hover { background: rgba(255, 255, 255, 0.06); }
+.item:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
 .item .leading {
   width: 18px;
   height: 18px;
@@ -428,8 +436,8 @@ svg {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
 }
 .connection-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
@@ -437,22 +445,23 @@ svg {
 .item.active-host { background: rgba(10, 132, 255, 0.18); }
 .item.active-host:hover { background: rgba(10, 132, 255, 0.24); }
 .item .sess-count {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 20px;
+  height: 19px;
+  padding: 0 6px;
   border-radius: 99px;
-  background: color-mix(in srgb, var(--blue) 22%, transparent);
+  background: color-mix(in srgb, var(--blue) 26%, transparent);
   color: var(--text);
   font-size: 10.5px;
   font-weight: 620;
   display: grid;
   place-items: center;
+  letter-spacing: -0.01em;
 }
 .item .quick {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
   color: var(--tertiary);
   display: grid;
@@ -462,7 +471,12 @@ svg {
 }
 .item:hover .quick { opacity: 1; }
 .item .quick:hover { color: var(--text); background: var(--fill-strong); }
-.item .quick svg { width: 12px; height: 12px; }
+.item .quick:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+.item .quick svg { width: 11px; height: 11px; }
 .group-label {
   padding: 12px 8px 4px;
   font-size: 11px;
@@ -475,14 +489,18 @@ svg {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px;
+  padding: 5px 8px;
   border-radius: 6px;
   cursor: pointer;
-  min-height: 36px;
-  height: 36px;
-  margin-top: 8px;
+  min-height: 30px;
+  height: 30px;
+  margin-top: 4px;
 }
 .group-row:hover { background: rgba(255, 255, 255, 0.05); }
+.group-row:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
 .group-row .chevron {
   width: 14px;
   height: 14px;
@@ -511,32 +529,37 @@ svg {
   white-space: nowrap;
 }
 .group-row small {
-  color: rgba(235, 235, 245, 0.5);
-  font-size: 11px;
-  margin-left: 6px;
+  color: rgba(235, 235, 245, 0.55);
+  font-size: 10.5px;
+  margin-left: 4px;
 }
 .group-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 18px;
-  height: 18px;
+  height: 17px;
   padding: 0 5px;
-  margin-left: 8px;
+  margin-left: 6px;
   border-radius: 99px;
-  background: rgba(120, 120, 128, 0.24);
+  background: rgba(120, 120, 128, 0.32);
   color: var(--text);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 620;
   vertical-align: middle;
 }
 
 .group-children {
-  margin-left: 20px;
+  margin-left: 18px;
+  padding-top: 2px;
 }
 
 .group-children .item {
-  margin-top: 2px;
+  margin-top: 1px;
+}
+
+.group-children .item:first-child {
+  margin-top: 0;
 }
 
 .side-actions {
@@ -545,8 +568,9 @@ svg {
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
-  padding: 8px 12px 10px;
+  padding: 10px 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+  min-height: 44px;
 }
 .side-actions button {
   border: 0;
@@ -561,15 +585,28 @@ svg {
   font-weight: 500;
 }
 .side-actions button:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+.side-actions button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
 .side-actions button svg { width: 12px; height: 12px; }
 .sync-pill {
-  font-size: 11px;
-  color: var(--tertiary);
+  font-size: 11.5px;
+  color: var(--secondary);
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  padding: 3px 0;
+  line-height: 1.2;
+  flex: 1;
+  min-width: 0;
 }
-.sync-pill svg { width: 12px; height: 12px; }
+.sync-pill svg { width: 13px; height: 13px; flex-shrink: 0; }
+.sync-pill span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 #workspace {
   position: relative;

@@ -350,7 +350,7 @@ function renderHosts() {
         error: "var(--red)",
       };
       const color = colors[conn] ?? colors.disconnected;
-      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 3px color-mix(in srgb, ${color} 22%, transparent);" data-testid="connection-${conn}"></span>`;
+      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 2.5px color-mix(in srgb, ${color} 18%, transparent);" data-testid="connection-${conn}"></span>`;
     };
     
     return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-item" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
@@ -401,7 +401,7 @@ function renderHosts() {
   };
   
   // Build the panel HTML
-  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);" data-testid="connection-local"></span>`;
+  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--blue) 18%, transparent);" data-testid="connection-local"></span>`;
   let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="local-item">
       <span class="leading">${icons.laptop}</span>
       <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
