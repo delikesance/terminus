@@ -211,7 +211,7 @@ pub async fn open_shell(
     identity: Option<&Identity>,
     cols: u16,
     rows: u16,
-    output: mpsc::UnboundedSender<Vec<u8>>,
+    output: mpsc::UnboundedSender<Result<Vec<u8>>>,
 ) -> Result<mpsc::UnboundedSender<SshCommand>> {
     let handle = connect_handle(host, identity).await?;
     let mut channel = handle.channel_open_session().await?;
@@ -241,12 +241,12 @@ pub async fn open_shell(
                 msg = channel.wait() => {
                     match msg {
                         Some(ChannelMsg::Data { ref data }) => {
-                            if output.send(data.to_vec()).is_err() {
+                            if output.send(Ok(data.to_vec())).is_err() {
                                 break;
                             }
                         }
                         Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-                            let _ = output.send(data.to_vec());
+                            let _ = output.send(Ok(data.to_vec()));
                         }
                         Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                         _ => {}
