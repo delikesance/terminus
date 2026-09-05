@@ -279,12 +279,27 @@ function renderHosts() {
     state.groups.filter((g) => g.name.toLowerCase().includes(q)).map((g) => g.id)
   );
   
-  // If a host matches, include its group
+  // Helper to expand all ancestors of a group
+  const expandAncestors = (groupId: string) => {
+    const group = state.groups.find((g) => g.id === groupId);
+    if (group?.parent_id) {
+      expandedBySearch.add(group.parent_id);
+      expandAncestors(group.parent_id);
+    }
+  };
+  
+  // If a host matches, expand its group and all ancestor groups
   const expandedBySearch = new Set<string>();
   for (const host of filteredHosts) {
     if (host.group_id) {
       expandedBySearch.add(host.group_id);
+      expandAncestors(host.group_id);
     }
+  }
+  
+  // If a group matches, expand its ancestors
+  for (const groupId of matchingGroupIds) {
+    expandAncestors(groupId);
   }
   
   // Build group hierarchy
@@ -1464,6 +1479,25 @@ function editGroup(existing?: Group) {
       // Soft delete by setting deleted_at
       const deletedGroup = { ...group, deleted_at: new Date().toISOString() };
       await invoke("groups_upsert", { group: deletedGroup });
+      
+      // Find all child groups recursively
+      const findChildGroups = (parentId: string): string[] => {
+        const children = state.groups.filter((g) => g.parent_id === parentId).map((g) => g.id);
+        const descendants: string[] = [...children];
+        for (const childId of children) {
+          descendants.push(...findChildGroups(childId));
+        }
+        return descendants;
+      };
+      
+      const affectedGroupIds = [group.id, ...findChildGroups(group.id)];
+      
+      // Clear group_id on all hosts that belong to this group or any child groups
+      const orphanedHosts = state.hosts.filter((h) => h.group_id && affectedGroupIds.includes(h.group_id));
+      for (const host of orphanedHosts) {
+        await invoke("hosts_upsert", { host: { ...host, group_id: null, updated_at: new Date().toISOString() } });
+      }
+      
       $("modal").classList.add("hidden");
       await refreshSide();
     };
