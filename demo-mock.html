@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terminus - UX Fixes Demo</title>
+  <style>
+    :root {
+      --bg: #1c1c1e;
+      --elevated: #2c2c2e;
+      --grouped: #242426;
+      --fill: rgba(120, 120, 128, 0.24);
+      --fill-strong: rgba(120, 120, 128, 0.36);
+      --line: rgba(255, 255, 255, 0.08);
+      --line-strong: rgba(255, 255, 255, 0.14);
+      --text: #f5f5f7;
+      --secondary: rgba(235, 235, 245, 0.6);
+      --tertiary: rgba(235, 235, 245, 0.38);
+      --blue: #0a84ff;
+      --red: #ff6961;
+      --green: #30d158;
+      --yellow: #ffd60a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.4 "Inter", -apple-system, sans-serif;
+      padding: 20px;
+    }
+    .demo-section {
+      background: var(--elevated);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+      max-width: 400px;
+    }
+    .demo-section h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--blue);
+      margin-bottom: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .demo-section p {
+      font-size: 11px;
+      color: var(--secondary);
+      margin-bottom: 12px;
+    }
+    
+    /* Sidebar styles */
+    .item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      min-height: 32px;
+    }
+    .item:hover { background: rgba(255, 255, 255, 0.05); }
+    .item .body { min-width: 0; flex: 1; }
+    .item strong { display: block; font-weight: 500; font-size: 13px; }
+    .item small { display: block; font-size: 11.5px; opacity: 0.5; }
+    .item .trail {
+      color: var(--tertiary);
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .connection-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    
+    .sess-count {
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 99px;
+      background: color-mix(in srgb, var(--blue) 22%, transparent);
+      color: var(--text);
+      font-size: 10.5px;
+      font-weight: 620;
+      display: grid;
+      place-items: center;
+    }
+    
+    .group-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      min-height: 36px;
+      margin-top: 8px;
+    }
+    .group-row strong {
+      font-weight: 500;
+      font-size: 12.5px;
+    }
+    .group-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      margin-left: 8px;
+      border-radius: 99px;
+      background: rgba(120, 120, 128, 0.24);
+      color: var(--text);
+      font-size: 10.5px;
+      font-weight: 620;
+      vertical-align: middle;
+    }
+    
+    .sync-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--elevated);
+      border-radius: 8px;
+      font-size: 11px;
+      margin: 8px 0;
+    }
+    .sync-status svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+    
+    .spacer { height: 8px; }
+  </style>
+</head>
+<body>
+
+<div class="demo-section">
+  <h2>Fix #2: Ungrouped Count Badge</h2>
+  <p>Count displays as inline pill (was: floating small text)</p>
+  
+  <div class="group-row">
+    <span>▶</span>
+    <span>📁</span>
+    <div class="body">
+      <strong>Ungrouped<span class="group-badge">3</span></strong>
+    </div>
+  </div>
+  <p style="margin-top: 12px;">Formula: !deleted_at && !group_id ✓</p>
+</div>
+
+<div class="demo-section">
+  <h2>Fix #3: Dots ≠ Open Count</h2>
+  <p>Connection dot (state) + separate pill (count)</p>
+  
+  <div class="item">
+    <span>💻</span>
+    <div class="body">
+      <strong>This computer</strong>
+      <small>Local shell</small>
+    </div>
+    <span class="trail">
+      <span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);"></span>
+      <span class="sess-count">1</span>
+    </span>
+  </div>
+  
+  <div class="spacer"></div>
+  
+  <div class="item">
+    <span>🖥️</span>
+    <div class="body">
+      <strong>api-prod</strong>
+      <small>ubuntu@10.0.1.5</small>
+    </div>
+    <span class="trail">
+      <span class="connection-dot" style="background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);"></span>
+      <span class="sess-count">2</span>
+    </span>
+  </div>
+  
+  <div class="spacer"></div>
+  
+  <div class="item">
+    <span>🖥️</span>
+    <div class="body">
+      <strong>db-replica</strong>
+      <small>admin@192.168.1.10</small>
+    </div>
+    <span class="trail">
+      <span class="connection-dot" style="background: var(--yellow); box-shadow: 0 0 0 3px color-mix(in srgb, var(--yellow) 22%, transparent);"></span>
+    </span>
+  </div>
+  
+  <div class="spacer"></div>
+  
+  <div class="item">
+    <span>🖥️</span>
+    <div class="body">
+      <strong>staging-old</strong>
+      <small>ubuntu@staging.local</small>
+    </div>
+    <span class="trail">
+      <span class="connection-dot" style="background: rgba(235, 235, 245, 0.3);"></span>
+    </span>
+  </div>
+  
+  <div class="spacer"></div>
+  
+  <div class="item">
+    <span>🖥️</span>
+    <div class="body">
+      <strong>legacy-vpn</strong>
+      <small>root@old.vpn</small>
+    </div>
+    <span class="trail">
+      <span class="connection-dot" style="background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 22%, transparent);"></span>
+      <span class="sess-count">1</span>
+    </span>
+  </div>
+  
+  <p style="margin-top: 12px;">
+    Blue=local | Green=connected | Yellow=connecting | Gray=disconnected | Red=error
+  </p>
+</div>
+
+<div class="demo-section">
+  <h2>Fix #4: SyncStatus Footer</h2>
+  <p>5 distinct states with French labels</p>
+  
+  <div class="sync-status" style="color: var(--tertiary);">
+    <span>☁️</span>
+    <span>Sync non configuré</span>
+  </div>
+  
+  <div class="sync-status" style="color: var(--green);">
+    <span>☁️</span>
+    <span>À jour</span>
+  </div>
+  
+  <div class="sync-status" style="color: var(--blue);">
+    <span>☁️</span>
+    <span>Synchronisation...</span>
+  </div>
+  
+  <div class="sync-status" style="color: var(--yellow);">
+    <span>☁️</span>
+    <span>Hors ligne</span>
+  </div>
+  
+  <div class="sync-status" style="color: var(--red);">
+    <span>☁️</span>
+    <span>Erreur de sync</span>
+  </div>
+</div>
+
+</body>
+</html>
