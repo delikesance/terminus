@@ -13,6 +13,9 @@ use uuid::Uuid;
 pub trait OutputSink: Send + Sync {
     async fn emit_output(&self, session_id: &str, data: &[u8]);
     async fn emit_exit(&self, session_id: &str);
+    /// Called when a session backend reports a failure (e.g. local PTY reader).
+    /// Default is a no-op so existing sinks keep compiling; override to surface errors.
+    async fn emit_error(&self, _session_id: &str, _message: &str) {}
 }
 
 enum Backend {
@@ -30,6 +33,8 @@ struct LiveSession {
 pub struct SessionManager {
     sessions: DashMap<String, LiveSession>,
     ssh_connections: DashMap<String, String>,
+    /// Last reader/backend failure per session id (visible to the session layer).
+    session_errors: DashMap<String, String>,
     store: Store,
     sink: Arc<dyn OutputSink>,
     // Track SSH connection state per host_id independently of session count
@@ -41,9 +46,15 @@ impl SessionManager {
         Arc::new(Self {
             sessions: DashMap::new(),
             ssh_connections: DashMap::new(),
+            session_errors: DashMap::new(),
             store,
             sink,
         })
+    }
+
+    /// Take the last recorded backend/reader error for a session, if any.
+    pub fn take_session_error(&self, session_id: &str) -> Option<String> {
+        self.session_errors.remove(session_id).map(|(_, err)| err)
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
@@ -133,7 +144,7 @@ impl SessionManager {
         scale: f32,
     ) -> Result<SessionInfo> {
         let id = Uuid::new_v4().to_string();
-        let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::unbounded_channel::<Result<Vec<u8>>>();
         let pty = LocalPty::spawn(cols, rows, tx)?;
         let emulator = Arc::new(parking_lot::Mutex::new(
             self.open_emulator(cols, rows, scale).await?,
@@ -174,7 +185,7 @@ impl SessionManager {
             None => None,
         };
         let id = Uuid::new_v4().to_string();
-        let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::unbounded_channel::<Result<Vec<u8>>>();
         self.ssh_connections.insert(host_id.to_string(), "connecting".to_string());
         let cmd_tx = match ssh::open_shell(&host, identity.as_ref(), cols, rows, tx).await {
             Ok(tx) => {
@@ -315,7 +326,10 @@ impl SessionManager {
     pub fn close(&self, session_id: &str) -> Result<()> {
         if let Some((_, session)) = self.sessions.remove(session_id) {
             match session.backend {
-                Backend::Local(pty) => pty.kill()?,
+                Backend::Local(pty) => {
+                    // Local PTY kill failures must surface (typed Error::PtyKill).
+                    pty.kill()?;
+                }
                 Backend::Ssh(tx) => {
                     let _ = tx.send(SshCommand::Close);
                 }
@@ -338,22 +352,50 @@ impl SessionManager {
         Ok(())
     }
 
-    fn spawn_reader(self: &Arc<Self>, id: String, mut rx: mpsc::UnboundedReceiver<Vec<u8>>) {
+    fn spawn_reader(
+        self: &Arc<Self>,
+        id: String,
+        mut rx: mpsc::UnboundedReceiver<Result<Vec<u8>>>,
+    ) {
         let sink = self.sink.clone();
         let sessions = self.clone();
         tokio::spawn(async move {
-            while let Some(chunk) = rx.recv().await {
-                let mut buf = chunk;
-                while let Ok(more) = rx.try_recv() {
-                    buf.extend_from_slice(&more);
-                    if buf.len() >= 256 * 1024 {
-                        break;
+            while let Some(msg) = rx.recv().await {
+                let mut buf = Vec::new();
+                let mut reader_err = None;
+                match msg {
+                    Ok(chunk) => buf = chunk,
+                    Err(err) => reader_err = Some(err),
+                }
+                if reader_err.is_none() {
+                    while let Ok(more) = rx.try_recv() {
+                        match more {
+                            Ok(chunk) => {
+                                buf.extend_from_slice(&chunk);
+                                if buf.len() >= 256 * 1024 {
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                reader_err = Some(err);
+                                break;
+                            }
+                        }
                     }
                 }
-                if let Some(session) = sessions.sessions.get(&id) {
-                    session.emulator.lock().feed(&buf);
+                if !buf.is_empty() {
+                    if let Some(session) = sessions.sessions.get(&id) {
+                        session.emulator.lock().feed(&buf);
+                    }
+                    sink.emit_output(&id, &buf).await;
                 }
-                sink.emit_output(&id, &buf).await;
+                if let Some(err) = reader_err {
+                    let message = err.to_string();
+                    tracing::warn!(session_id = %id, error = %message, "session reader failed");
+                    sessions.session_errors.insert(id.clone(), message.clone());
+                    sink.emit_error(&id, &message).await;
+                    break;
+                }
             }
             sink.emit_exit(&id).await;
             sessions.sessions.remove(&id);
@@ -394,139 +436,167 @@ pub async fn resolve_identity(store: &Store, host: &Host) -> Result<Option<Ident
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    struct TestSink {
+        errors: parking_lot::Mutex<Vec<(String, String)>>,
+    }
+
+    impl TestSink {
+        fn new() -> Self {
+            Self {
+                errors: parking_lot::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl OutputSink for TestSink {
+        async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
+        async fn emit_exit(&self, _session_id: &str) {}
+        async fn emit_error(&self, session_id: &str, message: &str) {
+            self.errors
+                .lock()
+                .push((session_id.to_string(), message.to_string()));
+        }
+    }
+
+    async fn test_manager() -> (
+        Arc<SessionManager>,
+        Arc<TestSink>,
+        Store,
+        tempfile::NamedTempFile,
+    ) {
+        let temp_db = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(temp_db.path()).await.unwrap();
+        let sink = Arc::new(TestSink::new());
+        let manager = SessionManager::new(store.clone(), sink.clone());
+        (manager, sink, store, temp_db)
+    }
 
     #[cfg(debug_assertions)]
     #[test]
     fn test_set_connection_with_zero_open_count() {
-        use std::sync::Arc;
-        struct TestSink;
-
-        #[async_trait::async_trait]
-        impl OutputSink for TestSink {
-            async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
-            async fn emit_exit(&self, _session_id: &str) {}
-        }
-
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let temp_db = tempfile::NamedTempFile::new().unwrap();
-            let store = Store::open(temp_db.path()).await.unwrap();
-            let sink: Arc<dyn OutputSink> = Arc::new(TestSink);
-            let manager = SessionManager::new(store, sink);
+            let (manager, _sink, store, _tmp) = test_manager().await;
+            let mut host = Host::new("test", "127.0.0.1", 22, "user");
+            host.id = "test-host-123".into();
+            store.upsert_host(&host).await.unwrap();
 
-            let test_host_id = "test-host-123";
-            
-            manager.test_set_connection(test_host_id, "connected").unwrap();
-            
-            let runtime = manager.hosts_runtime();
-            let host_runtime = runtime.iter().find(|(id, _, _)| id == test_host_id);
-            
+            manager
+                .test_set_connection(&host.id, "connected")
+                .unwrap();
+
+            let runtime = manager.hosts_runtime().await.unwrap();
+            let host_runtime = runtime.iter().find(|r| r.host_id == host.id);
             assert!(host_runtime.is_some(), "Host runtime should exist");
-            let (_, connection, open_count) = host_runtime.unwrap();
-            assert_eq!(connection, "connected");
-            assert_eq!(*open_count, 0, "Open count should be 0 when no sessions are open");
+            let host_runtime = host_runtime.unwrap();
+            assert_eq!(host_runtime.connection, "connected");
+            assert_eq!(
+                host_runtime.open_count, 0,
+                "Open count should be 0 when no sessions are open"
+            );
         });
     }
 
     #[cfg(debug_assertions)]
     #[test]
     fn test_last_shell_preserves_connection_state() {
-        use std::sync::Arc;
-        struct TestSink;
-
-        #[async_trait::async_trait]
-        impl OutputSink for TestSink {
-            async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
-            async fn emit_exit(&self, _session_id: &str) {}
-        }
-
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let temp_db = tempfile::NamedTempFile::new().unwrap();
-            let store = Store::open(temp_db.path()).await.unwrap();
-            let sink: Arc<dyn OutputSink> = Arc::new(TestSink);
-            let manager = SessionManager::new(store.clone(), sink);
+            let (manager, _sink, store, _tmp) = test_manager().await;
+            let mut host = Host::new("test", "127.0.0.1", 22, "user");
+            host.id = "test-host-456".into();
+            store.upsert_host(&host).await.unwrap();
 
-            // Simulate: open_ssh success → connected
-            let test_host_id = "test-host-456";
-            manager.test_set_connection(test_host_id, "connected").unwrap();
-            
-            // Create a fake session to simulate open_count=1
-            let session_info = crate::models::SessionInfo {
-                id: "session-1".to_string(),
-                title: "test".to_string(),
-                kind: "ssh".to_string(),
-                host_id: Some(test_host_id.to_string()),
-            };
-            
-            // Manually track this as if it were a real session
-            // (We can't easily create a real SSH session in a unit test)
-            // So we just verify the connection state behavior
-            
-            // Verify: connected with simulated count=1
-            let runtime_before = manager.hosts_runtime();
-            let host_before = runtime_before.iter().find(|(id, _, _)| id == test_host_id);
+            manager
+                .test_set_connection(&host.id, "connected")
+                .unwrap();
+
+            let runtime_before = manager.hosts_runtime().await.unwrap();
+            let host_before = runtime_before.iter().find(|r| r.host_id == host.id);
             assert!(host_before.is_some());
-            let (_, connection_before, _) = host_before.unwrap();
-            assert_eq!(connection_before, "connected", "Should be connected after open_ssh");
-            
-            // Simulate: close the session (connection should stay "connected")
-            // In reality, close() removes from sessions map, causing open_count to drop
-            // The critical test: connection state must NOT change to "disconnected"
-            
-            let runtime_after = manager.hosts_runtime();
-            let host_after = runtime_after.iter().find(|(id, _, _)| id == test_host_id);
+            assert_eq!(
+                host_before.unwrap().connection, "connected",
+                "Should be connected after open_ssh"
+            );
+
+            let runtime_after = manager.hosts_runtime().await.unwrap();
+            let host_after = runtime_after.iter().find(|r| r.host_id == host.id);
             assert!(host_after.is_some());
-            let (_, connection_after, open_count_after) = host_after.unwrap();
-            assert_eq!(connection_after, "connected", "Connection MUST stay 'connected' after closing last shell (last-shell contract)");
-            assert_eq!(*open_count_after, 0, "Open count should be 0 after close");
+            let host_after = host_after.unwrap();
+            assert_eq!(
+                host_after.connection, "connected",
+                "Connection MUST stay 'connected' after closing last shell (last-shell contract)"
+            );
+            assert_eq!(host_after.open_count, 0, "Open count should be 0 after close");
         });
     }
 
     #[cfg(debug_assertions)]
     #[test]
     fn test_set_connection_validates_state() {
-        use std::sync::Arc;
-        struct TestSink;
-
-        #[async_trait::async_trait]
-        impl OutputSink for TestSink {
-            async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
-            async fn emit_exit(&self, _session_id: &str) {}
-        }
-
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let temp_db = tempfile::NamedTempFile::new().unwrap();
-            let store = Store::open(temp_db.path()).await.unwrap();
-            let sink: Arc<dyn OutputSink> = Arc::new(TestSink);
-            let manager = SessionManager::new(store, sink);
-
+            let (manager, _sink, _store, _tmp) = test_manager().await;
             let result = manager.test_set_connection("test-host", "invalid_state");
             assert!(result.is_err());
-            assert!(result.unwrap_err().to_string().contains("Invalid connection state"));
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid connection state"));
         });
     }
 
     #[cfg(debug_assertions)]
     #[test]
     fn test_valid_connection_states() {
-        use std::sync::Arc;
-        struct TestSink;
-
-        #[async_trait::async_trait]
-        impl OutputSink for TestSink {
-            async fn emit_output(&self, _session_id: &str, _data: &[u8]) {}
-            async fn emit_exit(&self, _session_id: &str) {}
-        }
-
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let temp_db = tempfile::NamedTempFile::new().unwrap();
-            let store = Store::open(temp_db.path()).await.unwrap();
-            let sink: Arc<dyn OutputSink> = Arc::new(TestSink);
-            let manager = SessionManager::new(store, sink);
-
+            let (manager, _sink, _store, _tmp) = test_manager().await;
             for state in &["local", "connected", "disconnected", "connecting", "error"] {
                 let result = manager.test_set_connection("test-host", state);
-                assert!(result.is_ok(), "State '{}' should be valid", state);
+                assert!(result.is_ok(), "State '{state}' should be valid");
             }
         });
     }
+
+    #[test]
+    fn local_close_propagates_pty_kill_ok() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, _sink, _store, _tmp) = test_manager().await;
+            let info = manager.open_local(80, 24, 1.0).await.expect("open local");
+            manager.close(&info.id).expect("close should propagate kill Result");
+        });
+    }
+
+    #[test]
+    fn reader_error_surfaces_to_session_layer() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, sink, _store, _tmp) = test_manager().await;
+            let (tx, rx) = mpsc::unbounded_channel::<Result<Vec<u8>>>();
+            let id = "reader-err-session".to_string();
+            manager.spawn_reader(id.clone(), rx);
+
+            tx.send(Err(Error::PtyReader("synthetic read failure".into())))
+                .unwrap();
+            drop(tx);
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut recorded = None;
+            while std::time::Instant::now() < deadline {
+                if let Some(err) = manager.take_session_error(&id) {
+                    recorded = Some(err);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let recorded = recorded.expect("session layer should record reader error");
+            assert!(recorded.contains("synthetic read failure"));
+
+            let errors = sink.errors.lock().clone();
+            assert!(
+                errors.iter().any(|(sid, msg)| sid == &id && msg.contains("synthetic")),
+                "OutputSink.emit_error should see the failure: {errors:?}"
+            );
+        });
+    }
 }
+

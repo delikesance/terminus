@@ -33,6 +33,13 @@ impl OutputSink for TauriSink {
     async fn emit_exit(&self, session_id: &str) {
         let _ = self.app.emit("session://exit", serde_json::json!({ "id": session_id }));
     }
+
+    async fn emit_error(&self, session_id: &str, message: &str) {
+        let _ = self.app.emit(
+            "session://error",
+            serde_json::json!({ "id": session_id, "error": message }),
+        );
+    }
 }
 
 fn map_err(err: Error) -> String {

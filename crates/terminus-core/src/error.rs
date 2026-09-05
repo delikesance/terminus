@@ -18,6 +18,10 @@ pub enum Error {
         port: u16,
         line: usize,
     },
+    #[error("pty reader failed: {0}")]
+    PtyReader(String),
+    #[error("pty kill failed: {0}")]
+    PtyKill(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
