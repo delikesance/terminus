@@ -267,7 +267,7 @@ async function refreshSync() {
   const state = status.state ?? (status.configured ? (status.last_error ? "error" : "idle") : "unconfigured");
   
   const stateConfig: Record<string, { label: string; icon: string; color: string }> = {
-    unconfigured: { label: "Sync non configuré", icon: icons.cloud, color: "var(--tertiary)" },
+    unconfigured: { label: "Sync non configuré", icon: icons.cloud, color: "rgba(235, 235, 245, 0.4)" },
     idle: { label: "À jour", icon: icons.cloud, color: "var(--green)" },
     syncing: { label: "Synchronisation...", icon: icons.cloud, color: "var(--blue)" },
     offline: { label: "Hors ligne", icon: icons.cloud, color: "var(--yellow)" },
@@ -275,9 +275,9 @@ async function refreshSync() {
   };
   
   const config = stateConfig[state] ?? stateConfig.idle;
-  $("status-sync").innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span>${config.label}</span>`;
+  $("status-sync").innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span style="color: ${state === 'unconfigured' ? 'var(--tertiary)' : 'var(--secondary)'};">${config.label}</span>`;
   $("status-sync").setAttribute("data-testid", `sync-status-${state}`);
-  $("status-sync").style.color = config.color;
+  $("status-sync").style.color = "";
 }
 
 function hostPanes(hostId?: string | null) {
@@ -350,7 +350,7 @@ function renderHosts() {
         error: "var(--red)",
       };
       const color = colors[conn] ?? colors.disconnected;
-      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 2.5px color-mix(in srgb, ${color} 18%, transparent);" data-testid="connection-${conn}"></span>`;
+      return `<span class="connection-dot" style="background: ${color}; filter: saturate(1.2);" data-testid="connection-${conn}"></span>`;
     };
     
     return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-item" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
@@ -401,7 +401,7 @@ function renderHosts() {
   };
   
   // Build the panel HTML
-  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--blue) 18%, transparent);" data-testid="connection-local"></span>`;
+  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); filter: saturate(1.2);" data-testid="connection-local"></span>`;
   let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="local-item">
       <span class="leading">${icons.laptop}</span>
       <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
