@@ -14,6 +14,7 @@ pub struct SyncEngine {
     config: Mutex<Option<SyncConfig>>,
     last_sync: Mutex<Option<DateTime<Utc>>>,
     last_error: Mutex<Option<String>>,
+    state: Mutex<String>, // "unconfigured" | "idle" | "syncing" | "offline" | "error"
 }
 
 impl SyncEngine {
@@ -24,6 +25,7 @@ impl SyncEngine {
             config: Mutex::new(None),
             last_sync: Mutex::new(None),
             last_error: Mutex::new(None),
+            state: Mutex::new("unconfigured".to_string()),
         }
     }
 
@@ -31,7 +33,16 @@ impl SyncEngine {
         if let Some(value) = self.store.get_setting("sync").await? {
             if let Ok(cfg) = serde_json::from_value::<SyncConfig>(value) {
                 if !cfg.url.is_empty() {
-                    let _ = self.configure(cfg).await;
+                    match self.configure(cfg).await {
+                        Ok(()) => {
+                            // Successfully restored, set to idle
+                            *self.state.lock().await = "idle".to_string();
+                        }
+                        Err(_) => {
+                            // Configuration failed, likely offline or error
+                            *self.state.lock().await = "offline".to_string();
+                        }
+                    }
                 }
             }
         }
@@ -51,15 +62,25 @@ impl SyncEngine {
         *self.remote.lock().await = Some(pool);
         *self.config.lock().await = Some(config);
         *self.last_error.lock().await = None;
+        // Successfully configured, transition to idle
+        *self.state.lock().await = "idle".to_string();
         Ok(())
     }
 
     pub async fn status(&self) -> SyncStatus {
+        let configured = self.remote.lock().await.is_some();
+        let state = if !configured {
+            "unconfigured".to_string()
+        } else {
+            self.state.lock().await.clone()
+        };
+        
         SyncStatus {
-            configured: self.remote.lock().await.is_some(),
+            configured,
             url: self.config.lock().await.as_ref().map(|c| c.url.clone()),
             last_sync: *self.last_sync.lock().await,
             last_error: self.last_error.lock().await.clone(),
+            state,
         }
     }
 
@@ -78,6 +99,9 @@ impl SyncEngine {
             .map(|c| c.sync_secrets)
             .unwrap_or(false);
 
+        // Transition to syncing state
+        *self.state.lock().await = "syncing".to_string();
+
         let result = async {
             let pushed = self.push_all(&pool, sync_secrets).await?;
             let pulled = self.pull_all(&pool, sync_secrets).await?;
@@ -89,10 +113,27 @@ impl SyncEngine {
             Ok(stats) => {
                 *self.last_sync.lock().await = Some(Utc::now());
                 *self.last_error.lock().await = None;
+                // Success: transition to idle and clear last_error
+                *self.state.lock().await = "idle".to_string();
                 Ok(stats)
             }
             Err(err) => {
-                *self.last_error.lock().await = Some(err.to_string());
+                let err_str = err.to_string();
+                *self.last_error.lock().await = Some(err_str.clone());
+                
+                // Determine if it's offline (network/connectivity) or error (business logic)
+                // Network errors typically contain keywords like "connection", "timeout", "unreachable"
+                let is_network_error = err_str.to_lowercase().contains("connection")
+                    || err_str.to_lowercase().contains("timeout")
+                    || err_str.to_lowercase().contains("unreachable")
+                    || err_str.to_lowercase().contains("network");
+                
+                if is_network_error {
+                    *self.state.lock().await = "offline".to_string();
+                } else {
+                    *self.state.lock().await = "error".to_string();
+                }
+                
                 Err(err)
             }
         }

@@ -377,12 +377,34 @@ pub struct SyncConfig {
     pub sync_secrets: bool,
 }
 
+/// Sync status with distinct states for UI rendering.
+///
+/// # State Semantics
+///
+/// - `unconfigured`: No sync configured (!configured)
+/// - `offline`: Configured but unreachable (network/connectivity issue)
+/// - `syncing`: Sync operation in progress
+/// - `error`: Sync failed (business logic error, auth failure, etc.)
+///              MUST set last_error when state is error
+/// - `idle`: Last sync succeeded, ready for next sync
+///           MUST clear last_error when transitioning to idle
+///
+/// # State Transition Rules
+///
+/// - !configured → unconfigured
+/// - configured + unreachable/network error → offline
+/// - sync in progress → syncing
+/// - sync failure → error + set last_error
+/// - sync success → idle + clear last_error
+/// - mid-sync network break → error (treat as failure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncStatus {
     pub configured: bool,
     pub url: Option<String>,
     pub last_sync: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    /// Current sync state: "unconfigured" | "idle" | "syncing" | "offline" | "error"
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,4 +421,34 @@ pub struct SessionInfo {
     pub title: String,
     pub kind: String,
     pub host_id: Option<String>,
+}
+
+/// Runtime aggregate for host connection state and open session count.
+/// This is computed on-demand from hosts and active sessions, not persisted.
+///
+/// # Connection State Semantics
+///
+/// - `local`: For "This computer" / local sessions (no SSH connection)
+/// - `connected`: SSH host with at least one active authenticated session
+/// - `disconnected`: SSH host with no active sessions (may or may not have network connectivity)
+/// - `connecting`: SSH handshake in progress (not yet implemented - future enhancement)
+/// - `error`: SSH authentication or transport failure (not yet implemented - future enhancement)
+///
+/// **Current Implementation Note**: True SSH connection state tracking (connecting/error states)
+/// is not yet implemented. The current approximation uses session presence:
+/// - If `open_count > 0` for an SSH host → `connected`
+/// - If `open_count == 0` for an SSH host → `disconnected`
+/// This is sufficient for initial UI/E2E mocking. Full connection state tracking will be
+/// added in a future iteration when we implement background connection monitoring.
+///
+/// # Open Count
+///
+/// `open_count` is the number of active sessions where `session.host_id == host_id`.
+/// Closing the last shell (open_count → 0) MUST NOT change the `connection` state from
+/// its current value; the connection state reflects SSH transport status, not session lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostRuntime {
+    pub host_id: String,
+    pub connection: String, // "local" | "connected" | "disconnected" | "connecting" | "error"
+    pub open_count: usize,
 }
