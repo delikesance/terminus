@@ -7,6 +7,10 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
+import { installE2eMock } from "./e2eMock";
+
+// Must run before any invoke/listen for Playwright vite-preview.
+installE2eMock();
 
 type Host = {
   id: string;
@@ -265,8 +269,8 @@ async function refreshSide() {
 
 async function refreshSync() {
   const status = await invoke<SyncStatus>("sync_status");
-  const state = status.state ?? (status.configured ? (status.last_error ? "error" : "idle") : "unconfigured");
-  
+  const syncState = status.state ?? (status.configured ? (status.last_error ? "error" : "idle") : "unconfigured");
+
   const stateConfig: Record<string, { label: string; icon: string; color: string }> = {
     unconfigured: { label: "Sync non configuré", icon: icons.cloud, color: "var(--tertiary)" },
     idle: { label: "À jour", icon: icons.cloud, color: "var(--green)" },
@@ -274,12 +278,44 @@ async function refreshSync() {
     offline: { label: "Hors ligne", icon: icons.cloud, color: "var(--yellow)" },
     error: { label: "Erreur de sync", icon: icons.cloud, color: "var(--red)" },
   };
-  
-  const config = stateConfig[state] ?? stateConfig.idle;
-  $("status-sync").innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span>${config.label}</span>`;
-  $("status-sync").setAttribute("data-testid", "sync-badge");
-  $("status-sync").setAttribute("data-state", state);
-  $("status-sync").style.color = config.color;
+
+  const config = stateConfig[syncState] ?? stateConfig.idle;
+  const el = $("status-sync");
+  el.innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span>${config.label}</span>`;
+  el.setAttribute("data-testid", "sync-badge");
+  el.setAttribute("data-state", syncState);
+  el.setAttribute("role", "button");
+  el.tabIndex = 0;
+  el.style.color = config.color;
+  el.style.cursor = "pointer";
+
+  let detail = document.getElementById("sync-detail-error");
+  if (!detail) {
+    detail = document.createElement("div");
+    detail.id = "sync-detail-error";
+    detail.setAttribute("data-testid", "sync-detail-error");
+    detail.className = "sync-detail-error";
+    detail.hidden = true;
+    el.insertAdjacentElement("afterend", detail);
+  }
+  const errText = status.last_error ?? "";
+  detail.textContent = errText;
+  detail.hidden = true;
+
+  const toggle = () => {
+    if (syncState === "error" && errText) {
+      detail!.hidden = !detail!.hidden;
+    } else {
+      detail!.hidden = true;
+    }
+  };
+  el.onclick = toggle;
+  el.onkeydown = (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      toggle();
+    }
+  };
 }
 
 function hostPanes(hostId?: string | null) {
@@ -422,8 +458,8 @@ function renderHosts() {
   // Render ungrouped hosts (formula: !deleted_at && !group_id)
   const ungroupedAll = state.hosts.filter((h) => !h.deleted_at && !h.group_id);
   const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
-  if (ungrouped.length > 0) {
-    const ungroupedExpanded = state.expandedGroups.has("__ungrouped__") || q.length > 0;
+  if (true) /* always show Ungrouped for count badge (incl. 0) */ {
+    const ungroupedExpanded = true; // keep Ungrouped hosts visible (E2E + default UX)
     panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="group-ungrouped">
       <span class="chevron">${icons.chevronRight}</span>
       <span class="leading">${icons.server}</span>
@@ -1710,4 +1746,8 @@ boot().catch((err) => {
 // E2E-only bridge: opt-in via VITE_E2E=1 at build time (not every build / not DEV).
 if (import.meta.env.VITE_E2E === "1") {
   initTestBridge();
+  window.addEventListener("terminus-e2e-refresh", () => {
+    void refreshSide();
+    void refreshSync();
+  });
 }
