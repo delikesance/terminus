@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
+import { initTestBridge } from "./testBridge";
 
 type Host = {
   id: string;
@@ -276,7 +277,8 @@ async function refreshSync() {
   
   const config = stateConfig[state] ?? stateConfig.idle;
   $("status-sync").innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span>${config.label}</span>`;
-  $("status-sync").setAttribute("data-testid", `sync-status-${state}`);
+  $("status-sync").setAttribute("data-testid", "sync-badge");
+  $("status-sync").setAttribute("data-state", state);
   $("status-sync").style.color = config.color;
 }
 
@@ -350,15 +352,15 @@ function renderHosts() {
         error: "var(--red)",
       };
       const color = colors[conn] ?? colors.disconnected;
-      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 3px color-mix(in srgb, ${color} 22%, transparent);" data-testid="connection-${conn}"></span>`;
+      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 3px color-mix(in srgb, ${color} 22%, transparent);" data-testid="connection-dot" data-state="${conn}"></span>`;
     };
     
-    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-item" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
+    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
         <span class="leading">${icons.server}</span>
         <div class="body"><strong>${escapeHtml(h.name || h.hostname)}</strong><small>${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}</small></div>
         <span class="trail">
           ${connectionDot(connection)}
-          ${openCount > 0 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count">${openCount}</span>` : ""}
+          ${openCount > 0 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count-pill">${openCount}</span>` : ""}
           <button type="button" class="quick" data-new="${h.id}" title="New session">${icons.plus}</button>
           ${h.auth_method === "password" ? icons.password : icons.key}
         </span>
@@ -401,13 +403,13 @@ function renderHosts() {
   };
   
   // Build the panel HTML
-  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);" data-testid="connection-local"></span>`;
-  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="local-item">
+  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);" data-testid="connection-dot" data-state="local"></span>`;
+  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="host-local">
       <span class="leading">${icons.laptop}</span>
       <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
       <span class="trail">
         ${localConnectionDot}
-        ${localOpen ? `<span class="sess-count" data-testid="open-count">${localOpen}</span>` : ""}
+        ${localOpen ? `<span class="sess-count" data-testid="open-count-pill">${localOpen}</span>` : ""}
         <button type="button" class="quick" data-new-local="1" title="New session">${icons.plus}</button>
       </span>
     </div>`;
@@ -422,11 +424,11 @@ function renderHosts() {
   const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
   if (ungrouped.length > 0) {
     const ungroupedExpanded = state.expandedGroups.has("__ungrouped__") || q.length > 0;
-    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="ungrouped-row">
+    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="group-ungrouped">
       <span class="chevron">${icons.chevronRight}</span>
       <span class="leading">${icons.server}</span>
       <div class="body">
-        <strong>Ungrouped<span class="group-badge" data-testid="ungrouped-count">${ungroupedAll.length}</span></strong>
+        <strong data-testid="group-label">Ungrouped<span class="group-badge" data-testid="group-count">${ungroupedAll.length}</span></strong>
       </div>
     </div>`;
     
@@ -1696,20 +1698,7 @@ boot().catch((err) => {
   openSheet(`<h2>Couldn't start</h2><p class="form-error">${escapeHtml(String(err))}</p>`);
 });
 
-// Test-only bridge for Playwright E2E tests
-// This bridge is only available in debug builds
-if (typeof window !== "undefined") {
-  (window as any).__terminusTest = {
-    setConnection: async (hostId: string, state: string): Promise<void> => {
-      try {
-        await invoke("test_set_host_connection", {
-          hostId,
-          connectionState: state,
-        });
-      } catch (err) {
-        console.error("__terminusTest.setConnection failed:", err);
-        throw err;
-      }
-    },
-  };
+// Initialize test bridge for E2E (dev/test/e2e only, not production)
+if (import.meta.env.DEV || import.meta.env.MODE === 'test' || import.meta.env.VITE_E2E) {
+  initTestBridge();
 }
