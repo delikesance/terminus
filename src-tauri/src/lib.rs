@@ -367,6 +367,19 @@ async fn forward_start(state: State<'_, AppState>, id: String) -> Result<(), Str
     Ok(())
 }
 
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn test_set_host_connection(
+    state: State<'_, AppState>,
+    host_id: String,
+    connection_state: String,
+) -> Result<(), String> {
+    state
+        .sessions
+        .test_set_connection(&host_id, &connection_state)
+        .map_err(map_err)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -426,7 +439,9 @@ pub fn run() {
             sftp_list,
             forwards_list,
             forwards_upsert,
-            forward_start
+            forward_start,
+            #[cfg(debug_assertions)]
+            test_set_host_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running Terminus");
