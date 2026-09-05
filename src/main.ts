@@ -21,6 +21,7 @@ type Host = {
   notes: string;
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
 };
 
 type HostRuntime = {
@@ -416,9 +417,9 @@ function renderHosts() {
     panelHtml += renderGroup(group);
   }
   
-  // Render ungrouped hosts
-  const ungroupedAll = state.hosts.filter((h) => !h.group_id);
-  const ungrouped = filteredHosts.filter((h) => !h.group_id);
+  // Render ungrouped hosts (formula: !deleted_at && !group_id)
+  const ungroupedAll = state.hosts.filter((h) => !h.deleted_at && !h.group_id);
+  const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
   if (ungrouped.length > 0) {
     const ungroupedExpanded = state.expandedGroups.has("__ungrouped__") || q.length > 0;
     panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="ungrouped-row">
