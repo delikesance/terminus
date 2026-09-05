@@ -1476,10 +1476,6 @@ function editGroup(existing?: Group) {
   const del = document.getElementById("g-del");
   if (del) {
     del.onclick = async () => {
-      // Soft delete by setting deleted_at
-      const deletedGroup = { ...group, deleted_at: new Date().toISOString() };
-      await invoke("groups_upsert", { group: deletedGroup });
-      
       // Find all child groups recursively
       const findChildGroups = (parentId: string): string[] => {
         const children = state.groups.filter((g) => g.parent_id === parentId).map((g) => g.id);
@@ -1490,12 +1486,25 @@ function editGroup(existing?: Group) {
         return descendants;
       };
       
-      const affectedGroupIds = [group.id, ...findChildGroups(group.id)];
+      const childGroupIds = findChildGroups(group.id);
+      const affectedGroupIds = [group.id, ...childGroupIds];
+      const now = new Date().toISOString();
       
-      // Clear group_id on all hosts that belong to this group or any child groups
+      // Soft-delete the group itself
+      await invoke("groups_upsert", { group: { ...group, deleted_at: now, updated_at: now } });
+      
+      // Soft-delete all descendant child groups
+      for (const childId of childGroupIds) {
+        const childGroup = state.groups.find((g) => g.id === childId);
+        if (childGroup) {
+          await invoke("groups_upsert", { group: { ...childGroup, deleted_at: now, updated_at: now } });
+        }
+      }
+      
+      // Clear group_id on all hosts that belong to this group or any descendant groups
       const orphanedHosts = state.hosts.filter((h) => h.group_id && affectedGroupIds.includes(h.group_id));
       for (const host of orphanedHosts) {
-        await invoke("hosts_upsert", { host: { ...host, group_id: null, updated_at: new Date().toISOString() } });
+        await invoke("hosts_upsert", { host: { ...host, group_id: null, updated_at: now } });
       }
       
       $("modal").classList.add("hidden");
