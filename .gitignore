@@ -14,3 +14,4 @@
 npm-debug.log*
 .vscode/
 .idea/
+src/groupSoftDelete.js
