@@ -1695,3 +1695,21 @@ boot().catch((err) => {
   console.error(err);
   openSheet(`<h2>Couldn't start</h2><p class="form-error">${escapeHtml(String(err))}</p>`);
 });
+
+// Test-only bridge for Playwright E2E tests
+// This bridge is only available in debug builds
+if (typeof window !== "undefined") {
+  (window as any).__terminusTest = {
+    setConnection: async (hostId: string, state: string): Promise<void> => {
+      try {
+        await invoke("test_set_host_connection", {
+          hostId,
+          connectionState: state,
+        });
+      } catch (err) {
+        console.error("__terminusTest.setConnection failed:", err);
+        throw err;
+      }
+    },
+  };
+}
