@@ -335,6 +335,10 @@ svg {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 7px;
 }
+/* Beat #sidebar > * { min-width: var(--sidebar) } so margin insets instead of clipping */
+#sidebar > .side-nav {
+  min-width: 0;
+}
 .side-nav button {
   flex: 1 1 0;
   min-width: 0;
