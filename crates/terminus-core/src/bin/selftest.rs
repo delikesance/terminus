@@ -409,8 +409,16 @@ fn tempfile_dir() -> Result<PathBuf> {
 }
 
 async fn test_host_runtime(store: &Store) -> Value {
-    // Create a test host
-    let test_host = Host::new("runtime-test", "192.168.1.100", 22, "user");
+    // Create a test SSH host that we can actually connect to
+    let ssh_host = std::env::var("TERMINUS_SSH_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let ssh_port: u16 = std::env::var("TERMINUS_SSH_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(2222);
+    
+    let mut test_host = Host::new("runtime-test", &ssh_host, ssh_port, "terminus");
+    test_host.password = Some("terminus".into());
+    test_host.auth_method = "password".into();
     store.upsert_host(&test_host).await.ok();
     
     // Create a session manager with a collecting sink
@@ -419,31 +427,70 @@ async fn test_host_runtime(store: &Store) -> Value {
     });
     let manager = terminus_core::SessionManager::new(store.clone(), sink);
     
-    // Get runtime before any sessions
+    // 1. Get runtime before any sessions - should be disconnected
     let runtimes = manager.hosts_runtime().await.unwrap_or_default();
     let host_rt = runtimes.iter().find(|r| r.host_id == test_host.id);
     let initial_disconnected = host_rt.map(|r| r.connection == "disconnected").unwrap_or(false);
     let initial_count = host_rt.map(|r| r.open_count).unwrap_or(999);
     
-    // Open a local session
-    let local_session = manager.open_local(80, 24, 1.0).await.ok();
+    // 2. Try to open an SSH session
+    let ssh_session_result = manager.open_ssh(&test_host.id, 80, 24, 1.0).await;
     
-    // Get runtime with local session
-    let runtimes2 = manager.hosts_runtime().await.unwrap_or_default();
-    let local_rt = runtimes2.iter().find(|r| r.host_id == "local");
-    let has_local = local_rt.map(|r| r.connection == "local" && r.open_count == 1).unwrap_or(false);
+    let (after_open_connected, after_open_count, after_close_connected, after_close_count) = 
+        if let Ok(ssh_session) = ssh_session_result {
+            // 3. Get runtime after opening - should be connected with count=1
+            let runtimes2 = manager.hosts_runtime().await.unwrap_or_default();
+            let host_rt2 = runtimes2.iter().find(|r| r.host_id == test_host.id);
+            let after_open_conn = host_rt2.map(|r| r.connection == "connected").unwrap_or(false);
+            let after_open_cnt = host_rt2.map(|r| r.open_count).unwrap_or(999);
+            
+            // 4. Close the session
+            let _ = manager.close(&ssh_session.id);
+            
+            // 5. Get runtime after closing - CRITICAL: should be connected with count=0
+            //    Connection MUST NOT flip to disconnected just because open_count=0
+            let runtimes3 = manager.hosts_runtime().await.unwrap_or_default();
+            let host_rt3 = runtimes3.iter().find(|r| r.host_id == test_host.id);
+            let after_close_conn = host_rt3.map(|r| r.connection == "connected").unwrap_or(false);
+            let after_close_cnt = host_rt3.map(|r| r.open_count).unwrap_or(999);
+            
+            (after_open_conn, after_open_cnt, after_close_conn, after_close_cnt)
+        } else {
+            // SSH not available in test environment - skip SSH-specific checks
+            // Just verify local sessions work
+            let local_session = manager.open_local(80, 24, 1.0).await.ok();
+            let runtimes_local = manager.hosts_runtime().await.unwrap_or_default();
+            let local_rt = runtimes_local.iter().find(|r| r.host_id == "local");
+            let has_local = local_rt.map(|r| r.connection == "local" && r.open_count == 1).unwrap_or(false);
+            if let Some(sess) = local_session {
+                let _ = manager.close(&sess.id);
+            }
+            
+            return check(
+                "host_runtime",
+                initial_disconnected && initial_count == 0 && has_local,
+                "SSH unavailable, tested local only: initial disconnected, local works",
+            );
+        };
     
-    // Clean up
-    if let Some(sess) = local_session {
-        let _ = manager.close(&sess.id);
-    }
+    // Verify all conditions:
+    // - Initial: disconnected, count=0
+    // - After open: connected, count=1
+    // - After close: STILL connected, count=0 (CRITICAL FIX)
+    let all_pass = initial_disconnected 
+        && initial_count == 0
+        && after_open_connected 
+        && after_open_count == 1
+        && after_close_connected  // This is the critical check
+        && after_close_count == 0;
     
-    // Verify: initial state is disconnected with count 0, and local session shows correctly
     check(
         "host_runtime",
-        initial_disconnected && initial_count == 0 && has_local,
-        format!("host runtime: disconnected={}, count={}, local={}", 
-            initial_disconnected, initial_count, has_local),
+        all_pass,
+        format!("init:disc={}/cnt={}, open:conn={}/cnt={}, close:conn={}/cnt={}", 
+            initial_disconnected, initial_count,
+            after_open_connected, after_open_count,
+            after_close_connected, after_close_count),
     )
 }
 
