@@ -571,9 +571,18 @@ function bindUi() {
     history: ["History", "Search history..."],
     sftp: ["Files", "Search files..."],
   };
+  const navIcons: Record<string, string> = {
+    hosts: icons.server,
+    snippets: icons.snippet,
+    history: icons.clock,
+    sftp: icons.folder,
+  };
   document.querySelectorAll<HTMLButtonElement>(".side-nav button").forEach((btn) => {
-    const [label] = navLabels[btn.dataset.panel ?? ""] ?? [btn.dataset.panel ?? "", "Search..."];
-    btn.textContent = label;
+    const panel = btn.dataset.panel ?? "";
+    const [label] = navLabels[panel] ?? [panel, "Search..."];
+    const icon = navIcons[panel] ?? "";
+    btn.innerHTML = `${icon}<span>${label}</span>`;
+    btn.setAttribute("aria-label", label);
     btn.onclick = () => {
       document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
