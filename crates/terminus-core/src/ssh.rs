@@ -1,36 +1,94 @@
 use crate::error::{Error, Result};
 use crate::models::{Host, Identity, SftpEntry};
 use russh::client::{self, Handle};
+use russh::keys::ssh_key::PublicKey;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{Channel, ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-pub struct AcceptAll;
+/// russh client handler that verifies the server host key against known_hosts
+/// (fail closed: unknown and mismatched keys are rejected).
+pub struct HostKeyVerifier {
+    hostname: String,
+    port: u16,
+    /// When set, check this known_hosts file instead of `~/.ssh/known_hosts`.
+    known_hosts_path: Option<PathBuf>,
+}
 
-impl client::Handler for AcceptAll {
-    type Error = russh::Error;
+impl HostKeyVerifier {
+    pub fn new(hostname: impl Into<String>, port: u16) -> Self {
+        Self {
+            hostname: hostname.into(),
+            port,
+            known_hosts_path: std::env::var_os("TERMINUS_KNOWN_HOSTS").map(PathBuf::from),
+        }
+    }
+}
+
+impl client::Handler for HostKeyVerifier {
+    type Error = Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        Ok(true)
+        verify_host_key(
+            &self.hostname,
+            self.port,
+            server_public_key,
+            self.known_hosts_path.as_deref(),
+        )
+    }
+}
+
+/// Verify `server_public_key` against OpenSSH known_hosts.
+///
+/// Returns `Ok(true)` only when the key matches. Unknown hosts and algorithm
+/// mismatches that do not match any recorded key yield [`Error::HostKeyUnknown`].
+/// Same-algorithm key changes yield [`Error::HostKeyMismatch`].
+pub fn verify_host_key(
+    host: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: Option<&Path>,
+) -> Result<bool> {
+    let checked = match known_hosts_path {
+        Some(path) => {
+            russh::keys::known_hosts::check_known_hosts_path(host, port, server_public_key, path)
+        }
+        None => russh::keys::known_hosts::check_known_hosts(host, port, server_public_key),
+    };
+    match checked {
+        Ok(true) => Ok(true),
+        Ok(false) => Err(Error::HostKeyUnknown {
+            host: host.to_string(),
+            port,
+        }),
+        Err(russh::keys::Error::KeyChanged { line }) => Err(Error::HostKeyMismatch {
+            host: host.to_string(),
+            port,
+            line,
+        }),
+        Err(err) => Err(Error::Ssh(err.into())),
     }
 }
 
 pub(crate) async fn connect_handle(
     host: &Host,
     identity: Option<&Identity>,
-) -> Result<Handle<AcceptAll>> {
+) -> Result<Handle<HostKeyVerifier>> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(300)),
         keepalive_interval: Some(Duration::from_secs(30)),
         ..Default::default()
     });
-    let mut session = client::connect(config, (host.hostname.as_str(), host.port), AcceptAll).await?;
+    let handler = HostKeyVerifier::new(host.hostname.clone(), host.port);
+    let mut session =
+        client::connect(config, (host.hostname.as_str(), host.port), handler).await?;
     let ok = match host.auth_method.as_str() {
         "key" => authenticate_key(&mut session, host, identity).await?,
         "agent" | "auto" => {
@@ -60,7 +118,7 @@ pub(crate) async fn connect_handle(
 }
 
 async fn authenticate_key(
-    session: &mut Handle<AcceptAll>,
+    session: &mut Handle<HostKeyVerifier>,
     host: &Host,
     identity: Option<&Identity>,
 ) -> Result<bool> {
@@ -320,7 +378,7 @@ pub async fn sftp_roundtrip(
 async fn sftp_session(
     host: &Host,
     identity: Option<&Identity>,
-) -> Result<(Handle<AcceptAll>, SftpSession)> {
+) -> Result<(Handle<HostKeyVerifier>, SftpSession)> {
     let handle = connect_handle(host, identity).await?;
     let channel = handle.channel_open_session().await?;
     channel.request_subsystem(true, "sftp").await?;
