@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Terminus</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="titlebar">
+        <div class="lights">
+          <button type="button" id="win-close" class="light close" title="Close"></button>
+          <button type="button" id="win-min" class="light min" title="Minimize"></button>
+          <button type="button" id="win-max" class="light max" title="Maximize"></button>
+        </div>
+        <button type="button" id="btn-sidebar" class="tb-btn" title="Connections" aria-label="Connections"></button>
+        <div id="tabstrip">
+          <button type="button" id="tabs-prev" class="tab-nav hidden" title="Previous tabs" aria-label="Previous tabs"></button>
+          <div id="tabs" role="tablist"></div>
+          <button type="button" id="tabs-next" class="tab-nav hidden" title="Next tabs" aria-label="Next tabs"></button>
+        </div>
+        <div id="drag" data-tauri-drag-region></div>
+        <div class="title-actions">
+          <button type="button" id="btn-new-local" class="tb-btn" title="New tab" aria-label="New tab"></button>
+          <button type="button" id="btn-palette" class="tb-btn" title="Search" aria-label="Search"></button>
+          <button type="button" id="btn-settings" class="tb-btn" title="Settings" aria-label="Settings"></button>
+        </div>
+      </header>
+      <div id="stage">
+        <aside id="sidebar">
+          <label class="search">
+            <span id="search-ico"></span>
+            <input id="host-filter" placeholder="Search" spellcheck="false" />
+          </label>
+          <nav class="side-nav">
+            <button data-panel="hosts" class="active" title="Hosts"></button>
+            <button data-panel="snippets" title="Snippets"></button>
+            <button data-panel="history" title="History"></button>
+            <button data-panel="sftp" title="Files"></button>
+          </nav>
+          <section id="panel-hosts" class="side-panel"></section>
+          <section id="panel-snippets" class="side-panel hidden"></section>
+          <section id="panel-history" class="side-panel hidden"></section>
+          <section id="panel-sftp" class="side-panel hidden"></section>
+          <div class="side-actions">
+            <button id="btn-new-host" type="button"></button>
+            <span id="status-sync" class="sync-pill"></span>
+            <span id="status-theme" class="hidden">graphite</span>
+            <span id="status-session" class="hidden">~</span>
+          </div>
+        </aside>
+        <section id="workspace">
+          <div id="workspace-empty" class="ws-empty hidden">
+            <strong>No sessions</strong>
+            <span>Open this computer or a host from the sidebar.</span>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div id="modal" class="hidden">
+      <div class="sheet" id="modal-sheet"></div>
+    </div>
+    <div id="ctx-menu" class="hidden" role="menu"></div>
+    <div id="palette" class="hidden">
+      <div class="palette-search">
+        <span id="palette-ico"></span>
+        <input id="palette-input" placeholder="Search hosts, snippets, commands" spellcheck="false" />
+      </div>
+      <ul id="palette-results"></ul>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

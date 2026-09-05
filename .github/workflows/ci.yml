@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  selftest-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - uses: docker/setup-buildx-action@v3
+      - name: Start fixture services
+        run: docker compose up -d --wait --build
+      - name: Prove engine
+        run: nix develop --command cargo run -p terminus-core --bin terminus-selftest
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - name: Install frontend deps
+        run: nix develop --command npm install
+      - name: Generate icons
+        run: nix develop --command python3 scripts/gen-icons.py
+      - name: Build Tauri
+        run: nix develop --command npm run tauri -- build --bundles deb
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: python3 scripts/gen-icons.py
+      - run: npm run tauri -- build --bundles app
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: python scripts/gen-icons.py
+      - run: npm run tauri -- build --bundles nsis
