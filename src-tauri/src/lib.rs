@@ -374,7 +374,9 @@ async fn forward_start(state: State<'_, AppState>, id: String) -> Result<(), Str
     Ok(())
 }
 
-#[cfg(debug_assertions)]
+/// Playwright / E2E-only: set a host's connection state without a real SSH dial.
+/// Compiled in **only** when `TERMINUS_E2E=1` at build time (see `build.rs`).
+#[cfg(terminus_e2e)]
 #[tauri::command]
 fn test_set_host_connection(
     state: State<'_, AppState>,
@@ -447,7 +449,7 @@ pub fn run() {
             forwards_list,
             forwards_upsert,
             forward_start,
-            #[cfg(debug_assertions)]
+            #[cfg(terminus_e2e)]
             test_set_host_connection
         ])
         .run(tauri::generate_context!())
