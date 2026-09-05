@@ -244,7 +244,7 @@ async fn interactive_session(store: &Store) -> Value {
         buf: tokio::sync::Mutex::new(Vec::new()),
     });
     let manager = terminus_core::SessionManager::new(store.clone(), sink.clone());
-    match manager.open_local(80, 24).await {
+    match manager.open_local(80, 24, 1.0).await {
         Ok(info) => {
             let _ = manager.write(&info.id, b"echo TERMINUS_SESSION_OK\r").await;
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -314,7 +314,7 @@ async fn session_throughput(store: &Store) -> Value {
         buf: tokio::sync::Mutex::new(Vec::new()),
     });
     let manager = terminus_core::SessionManager::new(store.clone(), sink.clone());
-    match manager.open_local(80, 24).await {
+    match manager.open_local(80, 24, 1.0).await {
         Ok(info) => {
             let started = std::time::Instant::now();
             let _ = manager

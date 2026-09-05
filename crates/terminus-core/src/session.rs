@@ -49,11 +49,18 @@ impl SessionManager {
             .collect()
     }
 
-    pub async fn open_local(self: &Arc<Self>, cols: u16, rows: u16) -> Result<SessionInfo> {
+    pub async fn open_local(
+        self: &Arc<Self>,
+        cols: u16,
+        rows: u16,
+        scale: f32,
+    ) -> Result<SessionInfo> {
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let pty = LocalPty::spawn(cols, rows, tx)?;
-        let emulator = Arc::new(parking_lot::Mutex::new(self.open_emulator(cols, rows).await?));
+        let emulator = Arc::new(parking_lot::Mutex::new(
+            self.open_emulator(cols, rows, scale).await?,
+        ));
         let info = SessionInfo {
             id: id.clone(),
             title: "local".into(),
@@ -78,6 +85,7 @@ impl SessionManager {
         host_id: &str,
         cols: u16,
         rows: u16,
+        scale: f32,
     ) -> Result<SessionInfo> {
         let host = self
             .store
@@ -91,7 +99,9 @@ impl SessionManager {
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let cmd_tx = ssh::open_shell(&host, identity.as_ref(), cols, rows, tx).await?;
-        let emulator = Arc::new(parking_lot::Mutex::new(self.open_emulator(cols, rows).await?));
+        let emulator = Arc::new(parking_lot::Mutex::new(
+            self.open_emulator(cols, rows, scale).await?,
+        ));
         let info = SessionInfo {
             id: id.clone(),
             title: host.name.clone(),
@@ -134,11 +144,17 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
+    pub fn resize(&self, session_id: &str, cols: u16, rows: u16, scale: Option<f32>) -> Result<()> {
         let Some(session) = self.sessions.get(session_id) else {
             return Err(Error::SessionNotFound(session_id.into()));
         };
-        session.emulator.lock().resize(cols, rows);
+        {
+            let mut emu = session.emulator.lock();
+            if let Some(scale) = scale {
+                emu.set_scale(scale);
+            }
+            emu.resize(cols, rows);
+        }
         match &session.backend {
             Backend::Local(pty) => pty.resize(cols, rows)?,
             Backend::Ssh(tx) => {
@@ -169,9 +185,15 @@ impl SessionManager {
         }
     }
 
-    async fn open_emulator(&self, cols: u16, rows: u16) -> Result<TerminalEmulator> {
+    async fn open_emulator(&self, cols: u16, rows: u16, scale: f32) -> Result<TerminalEmulator> {
         let appearance = self.store.appearance().await.ok().unwrap_or_default();
-        TerminalEmulator::new_with_style(cols, rows, appearance.font_size, appearance.line_height)
+        TerminalEmulator::new_with_scale(
+            cols,
+            rows,
+            appearance.font_size,
+            appearance.line_height,
+            scale,
+        )
     }
 
     pub fn take_frame(&self, session_id: &str) -> Result<Option<Vec<u8>>> {

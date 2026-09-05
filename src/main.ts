@@ -62,6 +62,7 @@ type Pane = {
   banner: HTMLDivElement;
   cellW: number;
   cellH: number;
+  rasterScale: number;
   cols: number;
   rows: number;
   paintGen: number;
@@ -120,8 +121,9 @@ async function boot() {
     }
     state.appearance.font_family = resolveMonoFont();
     state.appearance.letter_spacing = 0;
-    state.appearance.line_height = 1.25;
+    state.appearance.line_height = 1.0;
     state.appearance.renderer = "canvas";
+    void invoke("appearance_set", { appearance: state.appearance });
   }
   applyAppearance();
   void Promise.all([refreshSide(), refreshSync()]);
@@ -182,16 +184,16 @@ async function paintFrame(sessionId: string, force = false) {
   const cellChanged = nextW !== pane.cellW || nextH !== pane.cellH;
   pane.cellW = nextW;
   pane.cellH = nextH;
+  pane.rasterScale = displayScale();
   if (!width || !height) return;
   const pixels = raw.subarray(16);
   if (pixels.byteLength < width * height * 4) return;
   const copy = new Uint8ClampedArray(pixels.byteLength);
   copy.set(pixels);
   const image = new ImageData(copy, width, height);
-  // Keep 1 CSS pixel == 1 raster pixel. Scaling with image-rendering:pixelated
-  // drops rows and shears glyphs in half on 125%/150% display scales.
-  pane.canvas.style.width = `${width}px`;
-  pane.canvas.style.height = `${height}px`;
+  const dpr = pane.rasterScale;
+  pane.canvas.style.width = `${width / dpr}px`;
+  pane.canvas.style.height = `${height / dpr}px`;
   if (pane.canvas.width !== width || pane.canvas.height !== height) {
     pane.canvas.width = width;
     pane.canvas.height = height;
@@ -414,20 +416,22 @@ function bindUi() {
   $("btn-new-host").innerHTML = `${icons.plus}<span>New host</span>`;
   $("tabs-prev").innerHTML = icons.chevronLeft;
   $("tabs-next").innerHTML = icons.chevronRight;
-  const navIcons: Record<string, [string, string]> = {
-    hosts: [icons.server, "Hosts"],
-    snippets: [icons.snippet, "Snips"],
-    history: [icons.clock, "History"],
-    sftp: [icons.folder, "Files"],
+  const navLabels: Record<string, [string, string]> = {
+    hosts: ["Hosts", "Search hosts..."],
+    snippets: ["Snips", "Search snippets..."],
+    history: ["History", "Search history..."],
+    sftp: ["Files", "Search files..."],
   };
   document.querySelectorAll<HTMLButtonElement>(".side-nav button").forEach((btn) => {
-    const [ico, label] = navIcons[btn.dataset.panel ?? ""] ?? [icons.terminal, btn.dataset.panel ?? ""];
-    btn.innerHTML = `${ico}<span>${label}</span>`;
+    const [label] = navLabels[btn.dataset.panel ?? ""] ?? [btn.dataset.panel ?? "", "Search..."];
+    btn.textContent = label;
     btn.onclick = () => {
       document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       document.querySelectorAll(".side-panel").forEach((p) => p.classList.add("hidden"));
       $(`panel-${btn.dataset.panel}`).classList.remove("hidden");
+      const hint = navLabels[btn.dataset.panel ?? ""]?.[1];
+      if (hint) ($("host-filter") as HTMLInputElement).placeholder = hint;
     };
   });
   $("host-filter").oninput = () => renderHosts();
@@ -435,8 +439,11 @@ function bindUi() {
   $("btn-new-local").onclick = () => openLocal();
   $("btn-settings").onclick = () => openSettings();
   $("btn-palette").onclick = () => togglePalette();
-  $("btn-sidebar").onclick = () => $("app").classList.toggle("sidebar-open");
-  $("workspace").addEventListener("mousedown", () => $("app").classList.remove("sidebar-open"));
+  $("btn-sidebar").onclick = () => toggleSidebar();
+  $("btn-sidebar").setAttribute("aria-expanded", "false");
+  $("sidebar").addEventListener("transitionend", (ev) => {
+    if (ev.propertyName === "width" || ev.propertyName === "flex-basis") fitWorkspace();
+  });
   $("tabs-prev").onclick = () => $("tabs").scrollBy({ left: -180, behavior: "smooth" });
   $("tabs-next").onclick = () => $("tabs").scrollBy({ left: 180, behavior: "smooth" });
   $("tabs").addEventListener("scroll", () => updateTabOverflow(), { passive: true });
@@ -461,9 +468,13 @@ function bindUi() {
       if ((ev.target as HTMLElement).closest("button")) return;
       void win.toggleMaximize();
     };
-    $("drag").addEventListener("mousedown", (ev) => {
-      if (ev.button === 0) void win.startDragging();
-    });
+    const dragChrome = (ev: MouseEvent) => {
+      if (ev.button !== 0) return;
+      const t = ev.target as HTMLElement;
+      if (t.closest("button, input, textarea, select, a, [role='tab'], [data-close], [data-tab]")) return;
+      void win.startDragging();
+    };
+    $("titlebar").addEventListener("mousedown", dragChrome);
   } catch {
     /* vite preview has no window API */
   }
@@ -471,14 +482,32 @@ function bindUi() {
     if (ev.target === $("modal")) $("modal").classList.add("hidden");
   };
   window.addEventListener("resize", () => scheduleLayout());
-  window.addEventListener("keydown", onGlobalKey);
+  window.visualViewport?.addEventListener("resize", () => scheduleLayout());
+  window.addEventListener("keydown", onGlobalKey, true);
 }
 
 function closeOverlays() {
   $("modal").classList.add("hidden");
   $("palette").classList.add("hidden");
-  $("app").classList.remove("sidebar-open");
   hideMenu();
+}
+
+function toggleSidebar(force?: boolean) {
+  if (force === true) $("app").classList.add("sidebar-open");
+  else if (force === false) $("app").classList.remove("sidebar-open");
+  else $("app").classList.toggle("sidebar-open");
+  $("btn-sidebar").setAttribute("aria-expanded", $("app").classList.contains("sidebar-open") ? "true" : "false");
+  fitWorkspace();
+}
+
+function fitWorkspace() {
+  scheduleLayout();
+  const started = performance.now();
+  const tick = () => {
+    scheduleLayout();
+    if (performance.now() - started < 220) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 function onGlobalKey(ev: KeyboardEvent) {
@@ -487,15 +516,21 @@ function onGlobalKey(ev: KeyboardEvent) {
     hideMenu();
     return;
   }
+  if ((ev.metaKey || ev.ctrlKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "b") {
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleSidebar();
+    return;
+  }
   const combo = [
-    ev.ctrlKey ? "ctrl" : "",
+    ev.metaKey ? "cmd" : ev.ctrlKey ? "ctrl" : "",
     ev.shiftKey ? "shift" : "",
     ev.altKey ? "alt" : "",
     ev.key.length === 1 ? ev.key.toLowerCase() : ev.key.toLowerCase(),
   ]
     .filter(Boolean)
     .join("+");
-  const tabPick = combo.match(/^ctrl\+([1-9])$/);
+  const tabPick = combo.match(/^(?:ctrl|cmd)\+([1-9])$/);
   if (tabPick) {
     const pane = state.panes[Number(tabPick[1]) - 1];
     if (pane) {
@@ -504,7 +539,9 @@ function onGlobalKey(ev: KeyboardEvent) {
     }
     return;
   }
-  const action = state.keybindings[combo] ?? (combo === "ctrl+b" ? "sidebar.toggle" : "");
+  const action =
+    state.keybindings[combo] ??
+    (combo === "ctrl+b" || combo === "cmd+b" ? "sidebar.toggle" : "");
   if (!action) return;
   ev.preventDefault();
   runAction(action);
@@ -529,7 +566,7 @@ function runAction(action: string) {
       togglePalette();
       break;
     case "sidebar.toggle":
-      $("app").classList.toggle("sidebar-open");
+      toggleSidebar();
       break;
     case "settings.toggle":
       openSettings();
@@ -591,7 +628,11 @@ async function openLocal(reuse?: Pane) {
   const pane = reuse ?? createPendingPane("This computer", "local");
   try {
     const size = paneSize(pane);
-    const info = await invoke<SessionInfo>("session_open_local", { cols: size.cols, rows: size.rows });
+    const info = await invoke<SessionInfo>("session_open_local", {
+      cols: size.cols,
+      rows: size.rows,
+      scale: displayScale(),
+    });
     attachSession(info, pane);
   } catch (err) {
     failPane(pane, "Couldn't open a local shell", String(err));
@@ -603,7 +644,12 @@ async function openSsh(hostId: string, reuse?: Pane) {
   const pane = reuse ?? createPendingPane(host?.name || host?.hostname || "SSH", "ssh", hostId);
   try {
     const size = paneSize(pane);
-    const info = await invoke<SessionInfo>("session_open_ssh", { hostId, cols: size.cols, rows: size.rows });
+    const info = await invoke<SessionInfo>("session_open_ssh", {
+      hostId,
+      cols: size.cols,
+      rows: size.rows,
+      scale: displayScale(),
+    });
     attachSession(info, pane);
   } catch (err) {
     failPane(pane, `Couldn't reach ${host?.name || host?.hostname || "host"}`, String(err));
@@ -693,6 +739,7 @@ function createPane(): Pane {
     banner,
     cellW: 9,
     cellH: 23,
+    rasterScale: 1,
     cols: 0,
     rows: 0,
     paintGen: 0,
@@ -737,6 +784,19 @@ function cycleTab(delta: number) {
   if (next) selectPane(next.id);
 }
 
+function displayScale() {
+  const dpr = window.devicePixelRatio || 1;
+  return Math.min(4, Math.max(1, dpr));
+}
+
+function logicalCell(pane: Pane) {
+  const scale = pane.rasterScale || 1;
+  return {
+    w: Math.max(1, pane.cellW / scale),
+    h: Math.max(1, pane.cellH / scale),
+  };
+}
+
 function paneSize(pane: Pane) {
   const pad = state.appearance?.padding ?? 8;
   const workspace = $("workspace");
@@ -744,9 +804,10 @@ function paneSize(pane: Pane) {
   const height = pane.el.clientHeight || workspace.clientHeight;
   const innerW = Math.max(0, width - pad * 2);
   const innerH = Math.max(0, height - pad * 2);
+  const cell = logicalCell(pane);
   return {
-    cols: Math.max(20, Math.floor(innerW / Math.max(pane.cellW, 1))),
-    rows: Math.max(8, Math.floor(innerH / Math.max(pane.cellH, 1))),
+    cols: Math.max(20, Math.floor(innerW / cell.w)),
+    rows: Math.max(8, Math.floor(innerH / cell.h)),
     tooSmall: innerW < 16 || innerH < 16,
   };
 }
@@ -770,11 +831,20 @@ function layoutPane(pane: Pane) {
   if (!pane.session || pane.exited) return;
   const size = paneSize(pane);
   if (size.tooSmall) return;
-  if (pane.cols === size.cols && pane.rows === size.rows) return;
+  const scale = displayScale();
+  if (pane.cols === size.cols && pane.rows === size.rows && Math.abs(pane.rasterScale - scale) < 0.001) {
+    return;
+  }
   pane.cols = size.cols;
   pane.rows = size.rows;
-  void invoke("session_resize", { id: pane.session.id, cols: size.cols, rows: size.rows }).then(() => {
-    scheduleFrame(pane.session!.id);
+  pane.rasterScale = scale;
+  void invoke("session_resize", {
+    id: pane.session.id,
+    cols: size.cols,
+    rows: size.rows,
+    scale,
+  }).then(() => {
+    scheduleFrame(pane.session!.id, true);
   });
 }
 
@@ -1349,7 +1419,7 @@ function openSftpFor(hostId: string) {
   document.querySelector<HTMLButtonElement>('[data-panel="sftp"]')?.classList.add("active");
   document.querySelectorAll(".side-panel").forEach((p) => p.classList.add("hidden"));
   $("panel-sftp").classList.remove("hidden");
-  $("app").classList.add("sidebar-open");
+  toggleSidebar(true);
   void loadSftp(hostId, ".");
 }
 

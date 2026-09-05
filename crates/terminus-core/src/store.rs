@@ -498,6 +498,8 @@ fn default_keybindings() -> serde_json::Map<String, Value> {
         ("ctrl+plus", "font.increase"),
         ("ctrl+minus", "font.decrease"),
         ("ctrl+0", "font.reset"),
+        ("ctrl+b", "sidebar.toggle"),
+        ("cmd+b", "sidebar.toggle"),
     ];
     pairs
         .into_iter()

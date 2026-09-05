@@ -28,6 +28,9 @@ pub struct TerminalEmulator {
     fonts: Vec<Font>,
     glyphs: HashMap<char, (Glyph, Vec<u8>)>,
     font_px: f32,
+    style_px: f32,
+    line_height: f32,
+    scale: f32,
     cell_w: u32,
     cell_h: u32,
     baseline: i32,
@@ -46,17 +49,31 @@ pub struct TermFrame {
 
 impl TerminalEmulator {
     pub fn new(cols: u16, rows: u16, font_px: f32) -> Result<Self> {
-        Self::new_with_style(cols, rows, font_px, 1.25)
+        Self::new_with_style(cols, rows, font_px, 1.0)
     }
 
     pub fn new_with_style(cols: u16, rows: u16, font_px: f32, line_height: f32) -> Result<Self> {
+        Self::new_with_scale(cols, rows, font_px, line_height, 1.0)
+    }
+
+    pub fn new_with_scale(
+        cols: u16,
+        rows: u16,
+        font_px: f32,
+        line_height: f32,
+        scale: f32,
+    ) -> Result<Self> {
         let fonts = load_fonts()?;
-        let (px, cell_w, cell_h, baseline) = metrics_for(&fonts[0], font_px, line_height);
+        let scale = sanitize_scale(scale);
+        let (px, cell_w, cell_h, baseline) = metrics_for(&fonts[0], font_px * scale, line_height);
         let mut emulator = Self {
             parser: vt100::Parser::new(rows, cols, 2000),
             fonts,
             glyphs: HashMap::new(),
             font_px: px,
+            style_px: font_px,
+            line_height,
+            scale,
             cell_w,
             cell_h,
             baseline,
@@ -71,7 +88,23 @@ impl TerminalEmulator {
     }
 
     pub fn set_style(&mut self, font_px: f32, line_height: f32) {
-        let (px, cell_w, cell_h, baseline) = metrics_for(&self.fonts[0], font_px, line_height);
+        self.style_px = font_px;
+        self.line_height = line_height;
+        self.recompute_metrics();
+    }
+
+    pub fn set_scale(&mut self, scale: f32) {
+        let scale = sanitize_scale(scale);
+        if (self.scale - scale).abs() < 0.001 {
+            return;
+        }
+        self.scale = scale;
+        self.recompute_metrics();
+    }
+
+    fn recompute_metrics(&mut self) {
+        let (px, cell_w, cell_h, baseline) =
+            metrics_for(&self.fonts[0], self.style_px * self.scale, self.line_height);
         self.font_px = px;
         self.cell_w = cell_w;
         self.cell_h = cell_h;
@@ -197,46 +230,64 @@ impl TerminalEmulator {
         let (glyph, cover) = self.glyph(ch);
         let frame_w = width as i32;
         let frame_h = (rgba.len() / 4 / width as usize) as i32;
-        let (dest_x, dest_y, dest_w, dest_h) = match glyph.fit {
-            // Overlap 1px into the previous cell so the cap sits flush on the square.
-            GlyphFit::Cell => (x0 as i32 - 1, y0 as i32, self.cell_w + 2, self.cell_h),
-            GlyphFit::Icon => {
-                let pad_x = ((self.cell_w as i32 - glyph.w as i32) / 2).max(0);
-                let pad_y = ((self.cell_h as i32 - glyph.h as i32) / 2).max(0);
-                (x0 as i32 + pad_x, y0 as i32 + pad_y, glyph.w, glyph.h)
-            }
-            GlyphFit::Text => {
-                let dest_x = x0 as i32 + glyph.xmin;
-                let dest_y = y0 as i32 + self.baseline - glyph.ymin - glyph.h as i32;
-                (dest_x, dest_y, glyph.w, glyph.h)
-            }
-        };
+        let cell_x0 = x0 as i32;
+        let cell_y0 = y0 as i32;
+        let cell_x1 = cell_x0 + self.cell_w as i32;
+        let cell_y1 = cell_y0 + self.cell_h as i32;
         if glyph.fit == GlyphFit::Cell {
-            for dy in 0..dest_h {
-                for dx in 0..dest_w {
-                    let cover_v = sample_cover(&cover, glyph.w, glyph.h, dx, dy, dest_w, dest_h);
+            let scaled = scale_cover(&cover, glyph.w, glyph.h, self.cell_w, self.cell_h);
+            let snapped = snap_cell_edges(&scaled, self.cell_w, self.cell_h, cell_attach(ch));
+            for dy in 0..self.cell_h {
+                for dx in 0..self.cell_w {
+                    let cover_v = snapped[(dy * self.cell_w + dx) as usize];
                     if cover_v == 0 {
                         continue;
                     }
-                    let px = dest_x + dx as i32;
-                    let py = dest_y + dy as i32;
-                    if px < 0 || py < 0 || px >= frame_w || py >= frame_h {
-                        continue;
-                    }
                     let mixed = blend(bg, [fg[0], fg[1], fg[2], cover_v]);
-                    put(rgba, width, px as u32, py as u32, mixed);
+                    put(rgba, width, x0 + dx, y0 + dy, mixed);
                 }
             }
             return;
         }
-        for gy in 0..glyph.h {
-            for gx in 0..glyph.w {
-                let cover_v = cover[(gy * glyph.w + gx) as usize];
+        let (mut dest_x, dest_y, dest_w, dest_h, bits) = {
+            let mut dw = glyph.w;
+            let mut dh = glyph.h;
+            let mut xmin = glyph.xmin;
+            let mut ymin = glyph.ymin;
+            let bits = if dw > self.cell_w && dw > 0 {
+                let s = self.cell_w as f32 / dw as f32;
+                dw = self.cell_w;
+                dh = (dh as f32 * s).round().max(1.0) as u32;
+                xmin = (xmin as f32 * s).round() as i32;
+                ymin = (ymin as f32 * s).round() as i32;
+                scale_cover(&cover, glyph.w, glyph.h, dw, dh)
+            } else {
+                cover
+            };
+            let dest_x = x0 as i32 + xmin;
+            let dest_y_base = y0 as i32 + self.baseline - ymin - dh as i32;
+            let dest_y = if glyph.fit == GlyphFit::Icon {
+                let dest_y_mid = y0 as i32 + (self.cell_h as i32 - dh as i32) / 2;
+                (dest_y_base + dest_y_mid) / 2
+            } else {
+                dest_y_base
+            };
+            (dest_x, dest_y, dw, dh, bits)
+        };
+        if dest_x < cell_x0 {
+            dest_x = cell_x0;
+        }
+        for gy in 0..dest_h {
+            for gx in 0..dest_w {
+                let cover_v = sharpen_text_cover(bits[(gy * dest_w + gx) as usize]);
                 if cover_v == 0 {
                     continue;
                 }
                 let px = dest_x + gx as i32;
                 let py = dest_y + gy as i32;
+                if px < cell_x0 || py < cell_y0 || px >= cell_x1 || py >= cell_y1 {
+                    continue;
+                }
                 if px < 0 || py < 0 || px >= frame_w || py >= frame_h {
                     continue;
                 }
@@ -253,19 +304,14 @@ impl TerminalEmulator {
         let font_idx = pick_font_idx(&self.fonts, ch);
         let fit = glyph_fit(ch, font_idx);
         let px = match fit {
-            GlyphFit::Cell => (self.cell_h as f32).max(self.font_px),
-            GlyphFit::Icon => (self.cell_h as f32 * 0.88).max(self.font_px),
+            GlyphFit::Cell => self.cell_h as f32,
+            GlyphFit::Icon => self.font_px.max(self.cell_h as f32 * 0.92),
             GlyphFit::Text => self.font_px,
         };
         let (metrics, bitmap) = self.fonts[font_idx].rasterize(ch, px);
-        let (bitmap, tw, th) = if fit == GlyphFit::Cell {
-            trim_cover(&bitmap, metrics.width as u32, metrics.height as u32)
-        } else {
-            (bitmap, metrics.width as u32, metrics.height as u32)
-        };
         let glyph = Glyph {
-            w: tw,
-            h: th,
+            w: metrics.width as u32,
+            h: metrics.height as u32,
             xmin: metrics.xmin,
             ymin: metrics.ymin,
             fit,
@@ -310,44 +356,134 @@ impl TerminalEmulator {
     }
 }
 
-fn trim_cover(cover: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
-    if width == 0 || height == 0 {
-        return (cover.to_vec(), width, height);
-    }
-    let opaque = |x: u32, y: u32| cover[(y * width + x) as usize] > 8;
-    let mut min_x = width;
-    let mut max_x = 0;
-    let mut min_y = height;
-    let mut max_y = 0;
-    for y in 0..height {
-        for x in 0..width {
-            if opaque(x, y) {
-                min_x = min_x.min(x);
-                max_x = max_x.max(x);
-                min_y = min_y.min(y);
-                max_y = max_y.max(y);
-            }
-        }
-    }
-    if min_x > max_x {
-        return (cover.to_vec(), width, height);
-    }
-    let tw = max_x - min_x + 1;
-    let th = max_y - min_y + 1;
-    let mut trimmed = Vec::with_capacity((tw * th) as usize);
-    for y in min_y..=max_y {
-        let start = (y * width + min_x) as usize;
-        trimmed.extend_from_slice(&cover[start..start + tw as usize]);
-    }
-    (trimmed, tw, th)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CellAttach {
+    Left,
+    Right,
+    Both,
 }
 
-fn glyph_fit(ch: char, font_idx: usize) -> GlyphFit {
+fn cell_attach(ch: char) -> CellAttach {
     match ch {
-        '\u{e0a0}'..='\u{e0ff}' | '\u{2580}'..='\u{259f}' | '\u{25e2}'..='\u{25e5}' => GlyphFit::Cell,
-        _ if font_idx > 0 => GlyphFit::Icon,
+        '\u{e0b0}' | '\u{e0b1}' | '\u{e0b4}' | '\u{e0b5}' | '\u{e0b8}' | '\u{e0b9}'
+        | '\u{e0bc}' | '\u{e0bd}' | '\u{e0c0}' | '\u{e0c1}' | '\u{e0c4}' | '\u{e0c5}'
+        | '\u{e0c8}' | '\u{e0cc}' | '\u{e0d0}' | '\u{e0d2}' | '\u{2590}' => CellAttach::Left,
+        '\u{e0b2}' | '\u{e0b3}' | '\u{e0b6}' | '\u{e0b7}' | '\u{e0ba}' | '\u{e0bb}'
+        | '\u{e0be}' | '\u{e0bf}' | '\u{e0c2}' | '\u{e0c3}' | '\u{e0c6}' | '\u{e0c7}'
+        | '\u{e0ca}' | '\u{e0ce}' | '\u{e0d1}' | '\u{e0d4}' | '\u{258c}' => CellAttach::Right,
+        _ => CellAttach::Both,
+    }
+}
+
+fn glyph_fit(ch: char, _font_idx: usize) -> GlyphFit {
+    match ch {
+        '\u{e0a0}'..='\u{e0d4}' | '\u{2580}'..='\u{259f}' | '\u{25e2}'..='\u{25e5}' => GlyphFit::Cell,
+        '\u{e000}'..='\u{e09f}' | '\u{e0d5}'..='\u{f8ff}' | '\u{f0000}'..='\u{ffffd}' => GlyphFit::Icon,
         _ => GlyphFit::Text,
     }
+}
+
+fn sanitize_scale(scale: f32) -> f32 {
+    if !scale.is_finite() {
+        return 1.0;
+    }
+    scale.clamp(1.0, 4.0)
+}
+
+fn sharpen_text_cover(v: u8) -> u8 {
+    if v < 22 {
+        0
+    } else if v > 160 {
+        255
+    } else {
+        let t = v as f32 / 255.0;
+        (t.powf(0.62) * 255.0).round().clamp(0.0, 255.0) as u8
+    }
+}
+
+fn scale_cover(cover: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return vec![0; (dst_w * dst_h) as usize];
+    }
+    if src_w == dst_w && src_h == dst_h {
+        return cover.to_vec();
+    }
+    let mut out = vec![0u8; (dst_w * dst_h) as usize];
+    for y in 0..dst_h {
+        for x in 0..dst_w {
+            out[(y * dst_w + x) as usize] = sample_cover(cover, src_w, src_h, x, y, dst_w, dst_h);
+        }
+    }
+    out
+}
+
+fn snap_cell_edges(cover: &[u8], w: u32, h: u32, attach: CellAttach) -> Vec<u8> {
+    let mut out = cover.to_vec();
+    for v in &mut out {
+        *v = if *v > 96 {
+            255
+        } else if *v < 10 {
+            0
+        } else {
+            *v
+        };
+    }
+    let snap_col = |buf: &mut [u8], x: u32| {
+        let mut ink = 0u32;
+        for y in 0..h {
+            if buf[(y * w + x) as usize] > 40 {
+                ink += 1;
+            }
+        }
+        if ink * 2 >= h {
+            for y in 0..h {
+                if buf[(y * w + x) as usize] > 8 {
+                    buf[(y * w + x) as usize] = 255;
+                }
+            }
+        }
+        if ink * 5 >= h * 4 {
+            for y in 0..h {
+                buf[(y * w + x) as usize] = 255;
+            }
+        }
+    };
+    let snap_row = |buf: &mut [u8], y: u32| {
+        let mut ink = 0u32;
+        for x in 0..w {
+            if buf[(y * w + x) as usize] > 40 {
+                ink += 1;
+            }
+        }
+        if ink * 2 >= w {
+            for x in 0..w {
+                if buf[(y * w + x) as usize] > 8 {
+                    buf[(y * w + x) as usize] = 255;
+                }
+            }
+        }
+    };
+    match attach {
+        CellAttach::Left | CellAttach::Both => {
+            snap_col(&mut out, 0);
+            if w > 1 {
+                snap_col(&mut out, 1);
+            }
+        }
+        CellAttach::Right => {}
+    }
+    match attach {
+        CellAttach::Right | CellAttach::Both => {
+            snap_col(&mut out, w - 1);
+            if w > 1 {
+                snap_col(&mut out, w - 2);
+            }
+        }
+        CellAttach::Left => {}
+    }
+    snap_row(&mut out, 0);
+    snap_row(&mut out, h - 1);
+    out
 }
 
 fn sample_cover(cover: &[u8], src_w: u32, src_h: u32, x: u32, y: u32, dst_w: u32, dst_h: u32) -> u8 {
@@ -408,7 +544,7 @@ fn metrics_for(font: &Font, font_px: f32, line_height: f32) -> (f32, u32, u32, i
     let em = font.metrics('M', px);
     let cell_w = em.advance_width.ceil().max(1.0) as u32;
     let typo = (line.ascent - line.descent).max(1.0);
-    let cell_h = (typo * line_height.max(1.0)).ceil().max(typo.ceil()) as u32 + 1;
+    let cell_h = (typo * line_height.max(1.0)).round().max(typo.ceil()) as u32;
     let slack = cell_h as f32 - typo;
     let baseline = (slack / 2.0).floor() as i32 + line.ascent.round() as i32;
     (px, cell_w, cell_h, baseline)
@@ -580,6 +716,154 @@ mod tests {
             ink > cell_h as usize / 2,
             "1px gap on the left of the round cap ({ink}/{cell_h})"
         );
+    }
+
+    fn cell_is_bg(frame: &TermFrame, cell_w: u32, cell_h: u32, col: u32, row: u32, bg: [u8; 4]) -> bool {
+        let x0 = col * cell_w;
+        let y0 = row * cell_h;
+        for y in 0..cell_h {
+            for x in 0..cell_w {
+                let i = (((y0 + y) * frame.width + x0 + x) * 4) as usize;
+                if frame.rgba[i..i + 4] != bg {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn nerd_folder_icon_stays_inside_its_cell() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        term.feed("\u{f07b} ".as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let bg = [28u8, 28, 30, 255];
+        let (top, mid, bot) = cell_ink(&frame, cell_w, cell_h, 0, 0);
+        assert!(top + mid + bot > 10, "folder icon should paint");
+        assert!(
+            cell_is_bg(&frame, cell_w, cell_h, 1, 0, bg),
+            "folder icon overflowed into the next cell"
+        );
+    }
+
+    #[test]
+    fn powerline_round_does_not_bleed_into_next_cell() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        term.feed("\u{e0b4} ".as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let bg = [28u8, 28, 30, 255];
+        assert!(
+            cell_is_bg(&frame, cell_w, cell_h, 1, 0, bg),
+            "powerline cap bled into the next cell"
+        );
+    }
+
+    #[test]
+    fn powerline_joins_previous_colored_cell() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        term.feed(b"\x1b[44;37m \x1b[34;49m\xee\x82\xb4\x1b[0m");
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let bg = [28u8, 28, 30, 255];
+        let mut gaps = 0usize;
+        for y in 0..cell_h {
+            let left = (((y * frame.width) + (cell_w - 1)) * 4) as usize;
+            let right = (((y * frame.width) + cell_w) * 4) as usize;
+            let a = &frame.rgba[left..left + 4];
+            let b = &frame.rgba[right..right + 4];
+            if a == bg || b == bg {
+                gaps += 1;
+            }
+        }
+        assert!(
+            gaps * 4 < cell_h as usize,
+            "vertical seam between prompt bg and rounded cap ({gaps}/{cell_h})"
+        );
+    }
+
+    fn ink_height(frame: &TermFrame, cell_w: u32, cell_h: u32, col: u32) -> usize {
+        let bg = [28u8, 28, 30, 255];
+        let x0 = col * cell_w;
+        let mut min_y = cell_h;
+        let mut max_y = 0;
+        for y in 0..cell_h {
+            for x in 0..cell_w {
+                let i = ((y * frame.width + x0 + x) * 4) as usize;
+                if frame.rgba[i..i + 4] != bg {
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        if min_y > max_y {
+            0
+        } else {
+            (max_y - min_y + 1) as usize
+        }
+    }
+
+    #[test]
+    fn chevron_is_text_and_crisp() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        term.feed("❯ ".as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let bg = [28u8, 28, 30, 255];
+        let mut solid = 0usize;
+        let mut fringe = 0usize;
+        for y in 0..cell_h {
+            for x in 0..cell_w {
+                let i = ((y * frame.width + x) * 4) as usize;
+                let px = &frame.rgba[i..i + 4];
+                if px == bg {
+                    continue;
+                }
+                let maxc = px[0].max(px[1]).max(px[2]);
+                if maxc > 200 {
+                    solid += 1;
+                } else if maxc > 40 {
+                    fringe += 1;
+                }
+            }
+        }
+        assert!(solid + fringe > 16, "chevron produced almost no ink");
+        assert!(
+            solid * 3 >= fringe,
+            "chevron looks washed out (solid={solid} fringe={fringe})"
+        );
+        assert!(
+            cell_is_bg(&frame, cell_w, cell_h, 1, 0, bg),
+            "chevron overflowed the next cell"
+        );
+    }
+
+    #[test]
+    fn folder_icon_matches_text_size() {
+        let mut icon = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        icon.feed("\u{f07b} ".as_bytes());
+        let mut text = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        text.feed("~M".as_bytes());
+        let (cell_w, cell_h) = icon.cell_size();
+        let icon_h = ink_height(&icon.raster(), cell_w, cell_h, 0);
+        let text_h = ink_height(&text.raster(), cell_w, cell_h, 1);
+        assert!(icon_h >= 8, "folder icon too small ({icon_h}px)");
+        assert!(
+            icon_h * 10 >= text_h * 6,
+            "folder icon much smaller than text (icon={icon_h} text={text_h})"
+        );
+    }
+
+    #[test]
+    fn hidpi_scale_grows_the_raster() {
+        let mut term = TerminalEmulator::new_with_scale(8, 2, 14.0, 1.0, 2.0).unwrap();
+        term.feed(b"A");
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        assert!(cell_w >= 16, "2x scale should double cell width, got {cell_w}");
+        assert_eq!(frame.width, cell_w * 8);
+        assert_eq!(frame.height, cell_h * 2);
     }
 
     #[test]

@@ -193,7 +193,7 @@ impl Default for TerminalAppearance {
             font_family: "IBM Plex Mono".into(),
             font_size: 14.0,
             font_weight: "400".into(),
-            line_height: 1.25,
+            line_height: 1.0,
             letter_spacing: 0.0,
             cursor_style: "block".into(),
             cursor_blink: true,

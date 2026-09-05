@@ -44,8 +44,13 @@ async fn session_open_local(
     state: State<'_, AppState>,
     cols: u16,
     rows: u16,
+    scale: Option<f32>,
 ) -> Result<SessionInfo, String> {
-    let info = state.sessions.open_local(cols, rows).await.map_err(map_err)?;
+    let info = state
+        .sessions
+        .open_local(cols, rows, scale.unwrap_or(1.0))
+        .await
+        .map_err(map_err)?;
     apply_session_theme(&state, &info.id).await;
     Ok(info)
 }
@@ -56,10 +61,11 @@ async fn session_open_ssh(
     host_id: String,
     cols: u16,
     rows: u16,
+    scale: Option<f32>,
 ) -> Result<SessionInfo, String> {
     let info = state
         .sessions
-        .open_ssh(&host_id, cols, rows)
+        .open_ssh(&host_id, cols, rows, scale.unwrap_or(1.0))
         .await
         .map_err(map_err)?;
     apply_session_theme(&state, &info.id).await;
@@ -86,8 +92,14 @@ async fn session_write(state: State<'_, AppState>, id: String, data: String) -> 
 }
 
 #[tauri::command]
-fn session_resize(state: State<'_, AppState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
-    state.sessions.resize(&id, cols, rows).map_err(map_err)
+fn session_resize(
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+    scale: Option<f32>,
+) -> Result<(), String> {
+    state.sessions.resize(&id, cols, rows, scale).map_err(map_err)
 }
 
 #[tauri::command]
