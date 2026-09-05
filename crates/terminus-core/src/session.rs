@@ -31,6 +31,9 @@ pub struct SessionManager {
     sessions: DashMap<String, LiveSession>,
     store: Store,
     sink: Arc<dyn OutputSink>,
+    // Track SSH connection state per host_id independently of session count
+    // Once a host has a successful SSH session, it stays "connected" until explicit disconnect/error
+    ssh_connections: DashMap<String, String>, // host_id -> "connected" | "disconnected" | "connecting" | "error"
 }
 
 impl SessionManager {
@@ -39,6 +42,7 @@ impl SessionManager {
             sessions: DashMap::new(),
             store,
             sink,
+            ssh_connections: DashMap::new(),
         })
     }
 
@@ -56,13 +60,14 @@ impl SessionManager {
     ///
     /// - Local sessions (host_id == None) → connection = "local", grouped under a synthetic
     ///   host_id = "local" entry
-    /// - SSH hosts with open_count > 0 → connection = "connected" (approximation: presence of
-    ///   active session indicates authenticated connection)
-    /// - SSH hosts with open_count == 0 → connection = "disconnected" (no active session,
-    ///   actual network state unknown)
+    /// - SSH hosts: connection state is tracked independently in ssh_connections map
+    ///   - Once a host has had a successful SSH session (open_ssh succeeds), it's marked "connected"
+    ///   - This state persists even when open_count becomes 0 (closing last shell)
+    ///   - State only changes on explicit disconnect/error events (future enhancement)
+    /// - Hosts that have never had a session → connection = "disconnected"
     ///
-    /// Note: This is an approximation until true SSH connection state tracking is implemented.
-    /// The enum allows UI/E2E to mock the full range of states (connecting, error).
+    /// **Critical**: open_count and connection are INDEPENDENT. Closing the last shell sets
+    /// open_count=0 but MUST NOT change connection from "connected" to "disconnected".
     pub async fn hosts_runtime(&self) -> Result<Vec<HostRuntime>> {
         // Get all hosts from the store
         let hosts = self.store.list_hosts().await?;
@@ -102,13 +107,14 @@ impl SessionManager {
             
             let open_count = open_counts.get(&host.id).copied().unwrap_or(0);
             
-            // Approximation: if there are open sessions, the connection is "connected"
-            // In the future, this should track actual SSH connection state independently
-            let connection = if open_count > 0 {
-                "connected".to_string()
-            } else {
-                "disconnected".to_string()
-            };
+            // Use tracked connection state, NOT derived from open_count
+            // If this host has had a successful SSH session, it stays "connected"
+            // even when open_count goes to 0
+            let connection = self
+                .ssh_connections
+                .get(&host.id)
+                .map(|entry| entry.value().clone())
+                .unwrap_or_else(|| "disconnected".to_string());
             
             runtimes.push(HostRuntime {
                 host_id: host.id.clone(),
@@ -188,6 +194,10 @@ impl SessionManager {
                 emulator,
             },
         );
+        
+        // Mark this SSH host as connected - this state persists even when open_count becomes 0
+        self.ssh_connections.insert(host.id.clone(), "connected".to_string());
+        
         self.spawn_reader(id, rx);
         Ok(info)
     }
