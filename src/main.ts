@@ -5,6 +5,7 @@ import { resolveMonoFont } from "./fonts";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete.js";
 
 type Host = {
   id: string;
@@ -1476,35 +1477,24 @@ function editGroup(existing?: Group) {
   const del = document.getElementById("g-del");
   if (del) {
     del.onclick = async () => {
-      // Find all child groups recursively
-      const findChildGroups = (parentId: string): string[] => {
-        const children = state.groups.filter((g) => g.parent_id === parentId).map((g) => g.id);
-        const descendants: string[] = [...children];
-        for (const childId of children) {
-          descendants.push(...findChildGroups(childId));
-        }
-        return descendants;
-      };
-      
-      const childGroupIds = findChildGroups(group.id);
-      const affectedGroupIds = [group.id, ...childGroupIds];
+      // Use extracted soft-delete logic
+      const affectedGroupIds = computeAffectedGroups(group.id, state.groups);
       const now = new Date().toISOString();
       
-      // Soft-delete the group itself
-      await invoke("groups_upsert", { group: { ...group, deleted_at: now, updated_at: now } });
-      
-      // Soft-delete all descendant child groups
-      for (const childId of childGroupIds) {
-        const childGroup = state.groups.find((g) => g.id === childId);
-        if (childGroup) {
-          await invoke("groups_upsert", { group: { ...childGroup, deleted_at: now, updated_at: now } });
+      // Soft-delete the group itself and all descendant groups
+      for (const groupId of affectedGroupIds) {
+        const targetGroup = state.groups.find((g) => g.id === groupId);
+        if (targetGroup) {
+          const deletedGroup = applySoftDelete(targetGroup, now);
+          await invoke("groups_upsert", { group: deletedGroup });
         }
       }
       
-      // Clear group_id on all hosts that belong to this group or any descendant groups
-      const orphanedHosts = state.hosts.filter((h) => h.group_id && affectedGroupIds.includes(h.group_id));
+      // Clear group_id on all hosts that belong to affected groups
+      const orphanedHosts = findOrphanedHosts(affectedGroupIds, state.hosts);
       for (const host of orphanedHosts) {
-        await invoke("hosts_upsert", { host: { ...host, group_id: null, updated_at: now } });
+        const detachedHostData = detachHost(host, now);
+        await invoke("hosts_upsert", { host: detachedHostData });
       }
       
       $("modal").classList.add("hidden");
