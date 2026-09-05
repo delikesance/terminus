@@ -380,14 +380,18 @@ svg {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 8px;
+  padding: 4px 8px;
   border-radius: 6px;
   cursor: pointer;
-  min-height: 40px;
-  height: 40px;
+  min-height: 28px;
+  height: 28px;
 }
 .item:hover { background: rgba(255, 255, 255, 0.05); }
-.item.pinned:hover, .item.open:hover { background: rgba(255, 255, 255, 0.06); }
+.item.pinned:hover, .item.open:hover { background: rgba(255, 255, 255, 0.05); }
+.item:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
 .item .leading {
   width: 18px;
   height: 18px;
@@ -428,10 +432,12 @@ svg {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
 }
 .connection-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+  filter: saturate(1.2);
+  box-shadow: none;
 }
 .item.open { background: transparent; }
 .item.active-host { background: rgba(10, 132, 255, 0.18); }
@@ -441,16 +447,16 @@ svg {
   height: 18px;
   padding: 0 5px;
   border-radius: 99px;
-  background: color-mix(in srgb, var(--blue) 22%, transparent);
-  color: var(--text);
+  background: var(--blue);
+  color: #fff;
   font-size: 10.5px;
-  font-weight: 620;
+  font-weight: 650;
   display: grid;
   place-items: center;
 }
 .item .quick {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -460,9 +466,16 @@ svg {
   padding: 0;
   opacity: 0;
 }
-.item:hover .quick { opacity: 1; }
+.item:hover .quick,
+.item:focus-visible .quick,
+.item:focus-within .quick { opacity: 1; }
 .item .quick:hover { color: var(--text); background: var(--fill-strong); }
-.item .quick svg { width: 12px; height: 12px; }
+.item .quick:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+.item .quick svg { width: 11px; height: 11px; }
 .group-label {
   padding: 12px 8px 4px;
   font-size: 11px;
@@ -478,11 +491,15 @@ svg {
   padding: 0 8px;
   border-radius: 6px;
   cursor: pointer;
-  min-height: 36px;
-  height: 36px;
-  margin-top: 8px;
+  min-height: 30px;
+  height: 30px;
+  margin-top: 4px;
 }
 .group-row:hover { background: rgba(255, 255, 255, 0.05); }
+.group-row:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
 .group-row .chevron {
   width: 14px;
   height: 14px;
@@ -506,6 +523,7 @@ svg {
   font-weight: 500;
   font-size: 12.5px;
   letter-spacing: -0.01em;
+  color: var(--secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -520,23 +538,28 @@ svg {
   align-items: center;
   justify-content: center;
   min-width: 18px;
-  height: 18px;
+  height: 16px;
   padding: 0 5px;
-  margin-left: 8px;
+  margin-left: 5px;
   border-radius: 99px;
-  background: rgba(120, 120, 128, 0.24);
+  background: rgba(120, 120, 128, 0.36);
   color: var(--text);
   font-size: 10.5px;
   font-weight: 620;
-  vertical-align: middle;
+  vertical-align: baseline;
+  translate: 0 -1px;
 }
 
 .group-children {
-  margin-left: 20px;
+  margin-left: 18px;
 }
 
 .group-children .item {
-  margin-top: 2px;
+  margin-top: 1px;
+}
+
+.group-children .item:first-child {
+  margin-top: 0;
 }
 
 .side-actions {
@@ -568,8 +591,30 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  padding: 6px;
+  min-height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
 }
-.sync-pill svg { width: 12px; height: 12px; }
+.sync-pill:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.sync-pill svg { width: 12px; height: 12px; flex-shrink: 0; }
+.sync-pill[data-state="unconfigured"] {
+  color: var(--tertiary);
+}
+.sync-pill[data-state="unconfigured"] .sync-icon {
+  opacity: 0.4;
+}
+.sync-pill[data-state="offline"] {
+  color: var(--secondary);
+}
+.sync-pill[data-state="offline"] .sync-icon {
+  color: var(--yellow);
+}
+.sync-pill[data-state="idle"] { color: var(--green); }
+.sync-pill[data-state="syncing"] { color: var(--blue); }
+.sync-pill[data-state="error"] { color: var(--red); }
 
 #workspace {
   position: relative;
