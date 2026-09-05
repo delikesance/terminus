@@ -9,8 +9,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux && npm run test:group-softdelete",
-    "test:search-ux": "node src/groupExpand.test.js",
+    "test:search-ux": "npm run compile:test-groupexpand && node src/groupExpand.test.js",
     "test:group-softdelete": "npm run compile:test-groupsoftdelete && node src/groupSoftDelete.test.js",
+    "compile:test-groupexpand": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/groupExpand.ts",
     "compile:test-groupsoftdelete": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/groupSoftDelete.ts"
   },
   "dependencies": {
