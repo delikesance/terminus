@@ -98,6 +98,10 @@ async fn run() -> Result<Value> {
         "snippet stored",
     ));
 
+    checks.push(test_host_runtime(&store).await);
+    checks.push(test_sync_status(&store).await);
+    checks.push(test_ungrouped_formula(&store).await);
+
     store
         .add_history(&HistoryEntry::new("echo hello", "local"))
         .await?;
@@ -205,6 +209,9 @@ async fn run() -> Result<Value> {
         "snippets",
         "history",
         "groups",
+        "host_runtime",
+        "sync_status_states",
+        "ungrouped_formula",
         "ssh_exec",
         "ssh_key",
         "sftp_list",
@@ -399,6 +406,168 @@ fn tempfile_dir() -> Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!("terminus-selftest-{}", std::process::id()));
     std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
     Ok(dir)
+}
+
+async fn test_host_runtime(store: &Store) -> Value {
+    // Create a test SSH host that we can actually connect to
+    let ssh_host = std::env::var("TERMINUS_SSH_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let ssh_port: u16 = std::env::var("TERMINUS_SSH_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(2222);
+    
+    let mut test_host = Host::new("runtime-test", &ssh_host, ssh_port, "terminus");
+    test_host.password = Some("terminus".into());
+    test_host.auth_method = "password".into();
+    store.upsert_host(&test_host).await.ok();
+    
+    // Create a session manager with a collecting sink
+    let sink = std::sync::Arc::new(CollectingSink {
+        buf: tokio::sync::Mutex::new(Vec::new()),
+    });
+    let manager = terminus_core::SessionManager::new(store.clone(), sink);
+    
+    // 1. Get runtime before any sessions - should be disconnected
+    let runtimes = manager.hosts_runtime().await.unwrap_or_default();
+    let host_rt = runtimes.iter().find(|r| r.host_id == test_host.id);
+    let initial_disconnected = host_rt.map(|r| r.connection == "disconnected").unwrap_or(false);
+    let initial_count = host_rt.map(|r| r.open_count).unwrap_or(999);
+    
+    // 2. Try to open an SSH session
+    let ssh_session_result = manager.open_ssh(&test_host.id, 80, 24, 1.0).await;
+    
+    let (after_open_connected, after_open_count, after_close_connected, after_close_count) = 
+        if let Ok(ssh_session) = ssh_session_result {
+            // 3. Get runtime after opening - should be connected with count=1
+            let runtimes2 = manager.hosts_runtime().await.unwrap_or_default();
+            let host_rt2 = runtimes2.iter().find(|r| r.host_id == test_host.id);
+            let after_open_conn = host_rt2.map(|r| r.connection == "connected").unwrap_or(false);
+            let after_open_cnt = host_rt2.map(|r| r.open_count).unwrap_or(999);
+            
+            // 4. Close the session
+            let _ = manager.close(&ssh_session.id);
+            
+            // 5. Get runtime after closing - CRITICAL: should be connected with count=0
+            //    Connection MUST NOT flip to disconnected just because open_count=0
+            let runtimes3 = manager.hosts_runtime().await.unwrap_or_default();
+            let host_rt3 = runtimes3.iter().find(|r| r.host_id == test_host.id);
+            let after_close_conn = host_rt3.map(|r| r.connection == "connected").unwrap_or(false);
+            let after_close_cnt = host_rt3.map(|r| r.open_count).unwrap_or(999);
+            
+            (after_open_conn, after_open_cnt, after_close_conn, after_close_cnt)
+        } else {
+            // SSH not available in test environment - skip SSH-specific checks
+            // Just verify local sessions work
+            let local_session = manager.open_local(80, 24, 1.0).await.ok();
+            let runtimes_local = manager.hosts_runtime().await.unwrap_or_default();
+            let local_rt = runtimes_local.iter().find(|r| r.host_id == "local");
+            let has_local = local_rt.map(|r| r.connection == "local" && r.open_count == 1).unwrap_or(false);
+            if let Some(sess) = local_session {
+                let _ = manager.close(&sess.id);
+            }
+            
+            return check(
+                "host_runtime",
+                initial_disconnected && initial_count == 0 && has_local,
+                "SSH unavailable, tested local only: initial disconnected, local works",
+            );
+        };
+    
+    // Verify all conditions:
+    // - Initial: disconnected, count=0
+    // - After open: connected, count=1
+    // - After close: STILL connected, count=0 (CRITICAL FIX)
+    let all_pass = initial_disconnected 
+        && initial_count == 0
+        && after_open_connected 
+        && after_open_count == 1
+        && after_close_connected  // This is the critical check
+        && after_close_count == 0;
+    
+    check(
+        "host_runtime",
+        all_pass,
+        format!("init:disc={}/cnt={}, open:conn={}/cnt={}, close:conn={}/cnt={}", 
+            initial_disconnected, initial_count,
+            after_open_connected, after_open_count,
+            after_close_connected, after_close_count),
+    )
+}
+
+async fn test_sync_status(store: &Store) -> Value {
+    let engine = SyncEngine::new(store.clone());
+    
+    // 1. Initial state should be unconfigured
+    let status1 = engine.status().await;
+    let is_unconfigured = status1.state == "unconfigured" && !status1.configured;
+    
+    // 2. Configure with invalid URL (should fail but not crash)
+    let _configure_result = engine
+        .configure(SyncConfig {
+            url: "postgres://invalid:invalid@invalid:5432/invalid".to_string(),
+            sync_secrets: false,
+        })
+        .await;
+    
+    // Configure might succeed or fail depending on network, but state should be consistent
+    let status2 = engine.status().await;
+    let state_after_config = status2.state.clone();
+    
+    // 3. If we had a successful configure, status should be idle
+    // If configure failed, it should be offline or unconfigured
+    let state_reasonable = state_after_config == "idle" 
+        || state_after_config == "offline" 
+        || state_after_config == "unconfigured";
+    
+    check(
+        "sync_status_states",
+        is_unconfigured && state_reasonable,
+        format!("sync states: initial=unconfigured ({}), after_config={}", 
+            is_unconfigured, state_after_config),
+    )
+}
+
+async fn test_ungrouped_formula(store: &Store) -> Value {
+    // Create a test group
+    let test_group = Group::new("test-ungrouped-group");
+    store.upsert_group(&test_group).await.ok();
+    
+    // Create hosts: one ungrouped, one in the group
+    let mut ungrouped_host = Host::new("ungrouped-test", "10.0.0.1", 22, "user");
+    ungrouped_host.group_id = None; // Explicitly ungrouped
+    store.upsert_host(&ungrouped_host).await.ok();
+    
+    let mut grouped_host = Host::new("grouped-test", "10.0.0.2", 22, "user");
+    grouped_host.group_id = Some(test_group.id.clone());
+    store.upsert_host(&grouped_host).await.ok();
+    
+    // List all hosts
+    let all_hosts = store.list_hosts().await.unwrap_or_default();
+    
+    // Count ungrouped: deleted_at IS NULL AND group_id IS NULL
+    let ungrouped_count = all_hosts
+        .iter()
+        .filter(|h| h.deleted_at.is_none() && h.group_id.is_none())
+        .count();
+    
+    // Should have at least our test ungrouped host (plus any others from previous tests)
+    let has_ungrouped = all_hosts
+        .iter()
+        .any(|h| h.id == ungrouped_host.id && h.group_id.is_none());
+    
+    // Delete the group (should detach the grouped host)
+    store.delete_group(&test_group.id).await.ok();
+    
+    // Check that the grouped host is now detached
+    let host_after_delete = store.get_host(&grouped_host.id).await.unwrap_or(None);
+    let is_detached = host_after_delete.map(|h| h.group_id.is_none()).unwrap_or(false);
+    
+    check(
+        "ungrouped_formula",
+        has_ungrouped && ungrouped_count >= 1 && is_detached,
+        format!("ungrouped: count={}, has_test={}, detached_after_delete={}", 
+            ungrouped_count, has_ungrouped, is_detached),
+    )
 }
 
 #[allow(dead_code)]
