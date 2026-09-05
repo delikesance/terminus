@@ -24,6 +24,35 @@ jobs:
       - name: Prove behavioral asserts (group-softdelete)
         run: nix develop --command npm run test:group-softdelete
 
+  e2e-playwright:
+    runs-on: ubuntu-latest
+    env:
+      # Frontend bridge (window.__terminusTest) + Rust test command opt-in.
+      # Normal release/build-* jobs do NOT set these, so hooks stay absent.
+      VITE_E2E: "1"
+      TERMINUS_E2E: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      - name: Install Node dependencies
+        run: nix develop --command npm install
+      - name: Verify E2E Rust hooks compile (TERMINUS_E2E=1)
+        run: nix develop --command cargo check -p terminus -p terminus-core
+      - name: Install Playwright browsers
+        run: nix develop --command npx playwright install --with-deps chromium
+      - name: Build frontend for preview
+        run: nix develop --command npm run build
+      - name: Run Playwright E2E tests
+        run: nix develop --command npm run test:e2e
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
   build-linux:
     runs-on: ubuntu-latest
     steps:

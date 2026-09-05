@@ -6,6 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
+import { initTestBridge } from "./testBridge";
+import { installE2eMock } from "./e2eMock";
+
+// Must run before any invoke/listen for Playwright vite-preview.
+installE2eMock();
 
 type Host = {
   id: string;
@@ -264,8 +269,8 @@ async function refreshSide() {
 
 async function refreshSync() {
   const status = await invoke<SyncStatus>("sync_status");
-  const state = status.state ?? (status.configured ? (status.last_error ? "error" : "idle") : "unconfigured");
-  
+  const syncState = status.state ?? (status.configured ? (status.last_error ? "error" : "idle") : "unconfigured");
+
   const stateConfig: Record<string, { label: string; icon: string; color: string }> = {
     unconfigured: { label: "Sync non configuré", icon: icons.cloud, color: "var(--tertiary)" },
     idle: { label: "À jour", icon: icons.cloud, color: "var(--green)" },
@@ -273,13 +278,44 @@ async function refreshSync() {
     offline: { label: "Hors ligne", icon: icons.cloud, color: "var(--yellow)" },
     error: { label: "Erreur de sync", icon: icons.cloud, color: "var(--red)" },
   };
-  
-  const config = stateConfig[state] ?? stateConfig.idle;
-  const syncEl = $("status-sync");
-  syncEl.innerHTML = `<span class="sync-icon">${config.icon}</span><span class="sync-label">${config.label}</span>`;
-  syncEl.setAttribute("data-testid", `sync-status-${state}`);
-  syncEl.setAttribute("data-state", state);
-  syncEl.style.color = "";
+
+  const config = stateConfig[syncState] ?? stateConfig.idle;
+  const el = $("status-sync");
+  el.innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span>${config.label}</span>`;
+  el.setAttribute("data-testid", "sync-badge");
+  el.setAttribute("data-state", syncState);
+  el.setAttribute("role", "button");
+  el.tabIndex = 0;
+  el.style.color = config.color;
+  el.style.cursor = "pointer";
+
+  let detail = document.getElementById("sync-detail-error");
+  if (!detail) {
+    detail = document.createElement("div");
+    detail.id = "sync-detail-error";
+    detail.setAttribute("data-testid", "sync-detail-error");
+    detail.className = "sync-detail-error";
+    detail.hidden = true;
+    el.insertAdjacentElement("afterend", detail);
+  }
+  const errText = status.last_error ?? "";
+  detail.textContent = errText;
+  detail.hidden = true;
+
+  const toggle = () => {
+    if (syncState === "error" && errText) {
+      detail!.hidden = !detail!.hidden;
+    } else {
+      detail!.hidden = true;
+    }
+  };
+  el.onclick = toggle;
+  el.onkeydown = (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      toggle();
+    }
+  };
 }
 
 function hostPanes(hostId?: string | null) {
@@ -352,15 +388,15 @@ function renderHosts() {
         error: "var(--red)",
       };
       const color = colors[conn] ?? colors.disconnected;
-      return `<span class="connection-dot" style="background: ${color};" data-testid="connection-${conn}"></span>`;
+      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 3px color-mix(in srgb, ${color} 22%, transparent);" data-testid="connection-dot" data-state="${conn}"></span>`;
     };
     
-    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-item" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
+    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
         <span class="leading">${icons.server}</span>
         <div class="body"><strong>${escapeHtml(h.name || h.hostname)}</strong><small>${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}</small></div>
         <span class="trail">
           ${connectionDot(connection)}
-          ${openCount > 0 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count">${openCount}</span>` : ""}
+          ${openCount > 0 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count-pill">${openCount}</span>` : ""}
           <button type="button" class="quick" data-new="${h.id}" title="New session">${icons.plus}</button>
           ${h.auth_method === "password" ? icons.password : icons.key}
         </span>
@@ -403,13 +439,13 @@ function renderHosts() {
   };
   
   // Build the panel HTML
-  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue);" data-testid="connection-local"></span>`;
-  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="local-item">
+  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);" data-testid="connection-dot" data-state="local"></span>`;
+  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="host-local">
       <span class="leading">${icons.laptop}</span>
       <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
       <span class="trail">
         ${localConnectionDot}
-        ${localOpen ? `<span class="sess-count" data-testid="open-count">${localOpen}</span>` : ""}
+        ${localOpen ? `<span class="sess-count" data-testid="open-count-pill">${localOpen}</span>` : ""}
         <button type="button" class="quick" data-new-local="1" title="New session">${icons.plus}</button>
       </span>
     </div>`;
@@ -422,13 +458,13 @@ function renderHosts() {
   // Render ungrouped hosts (formula: !deleted_at && !group_id)
   const ungroupedAll = state.hosts.filter((h) => !h.deleted_at && !h.group_id);
   const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
-  if (ungrouped.length > 0) {
-    const ungroupedExpanded = state.expandedGroups.has("__ungrouped__") || q.length > 0;
-    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="ungrouped-row">
+  if (true) /* always show Ungrouped for count badge (incl. 0) */ {
+    const ungroupedExpanded = true; // keep Ungrouped hosts visible (E2E + default UX)
+    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="group-ungrouped">
       <span class="chevron">${icons.chevronRight}</span>
       <span class="leading">${icons.server}</span>
       <div class="body">
-        <strong>Ungrouped<span class="group-badge" data-testid="ungrouped-count">${ungroupedAll.length}</span></strong>
+        <strong data-testid="group-label">Ungrouped<span class="group-badge" data-testid="group-count">${ungroupedAll.length}</span></strong>
       </div>
     </div>`;
     
@@ -1707,20 +1743,11 @@ boot().catch((err) => {
   openSheet(`<h2>Couldn't start</h2><p class="form-error">${escapeHtml(String(err))}</p>`);
 });
 
-// Test-only bridge for Playwright E2E tests
-// This bridge is only available in debug builds
-if (typeof window !== "undefined") {
-  (window as any).__terminusTest = {
-    setConnection: async (hostId: string, state: string): Promise<void> => {
-      try {
-        await invoke("test_set_host_connection", {
-          hostId,
-          connectionState: state,
-        });
-      } catch (err) {
-        console.error("__terminusTest.setConnection failed:", err);
-        throw err;
-      }
-    },
-  };
+// E2E-only bridge: opt-in via VITE_E2E=1 at build time (not every build / not DEV).
+if (import.meta.env.VITE_E2E === "1") {
+  initTestBridge();
+  window.addEventListener("terminus-e2e-refresh", () => {
+    void refreshSide();
+    void refreshSync();
+  });
 }
