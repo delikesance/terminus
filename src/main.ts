@@ -21,6 +21,13 @@ type Host = {
   notes: string;
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
+};
+
+type HostRuntime = {
+  host_id: string;
+  connection: string;
+  open_count: number;
 };
 
 type Identity = {
@@ -49,7 +56,7 @@ type Appearance = {
   theme_id: string;
   ligatures: boolean;
 };
-type SyncStatus = { configured: boolean; url?: string | null; last_sync?: string | null; last_error?: string | null };
+type SyncStatus = { configured: boolean; url?: string | null; last_sync?: string | null; last_error?: string | null; state?: string };
 type SftpEntry = { name: string; path: string; is_dir: boolean; size: number };
 
 type Pane = {
@@ -71,6 +78,7 @@ type Pane = {
 
 const state = {
   hosts: [] as Host[],
+  hostsRuntime: [] as HostRuntime[],
   groups: [] as Group[],
   identities: [] as Identity[],
   snippets: [] as Snippet[],
@@ -235,14 +243,16 @@ function applyAppearance() {
 }
 
 async function refreshSide() {
-  const [hosts, groups, identities, snippets, history] = await Promise.all([
+  const [hosts, hostsRuntime, groups, identities, snippets, history] = await Promise.all([
     invoke<Host[]>("hosts_list"),
+    invoke<HostRuntime[]>("hosts_runtime").catch(() => [] as HostRuntime[]),
     invoke<Group[]>("groups_list").catch(() => [] as Group[]),
     invoke<Identity[]>("identities_list"),
     invoke<Snippet[]>("snippets_list"),
     invoke<HistoryEntry[]>("history_search", { query: "", limit: 80 }),
   ]);
   state.hosts = hosts;
+  state.hostsRuntime = hostsRuntime;
   state.groups = groups;
   state.identities = identities;
   state.snippets = snippets;
@@ -254,13 +264,20 @@ async function refreshSide() {
 
 async function refreshSync() {
   const status = await invoke<SyncStatus>("sync_status");
-  $("status-sync").innerHTML = `${icons.cloud}<span>${
-    status.configured
-      ? status.last_error
-        ? "Sync error"
-        : "Synced"
-      : "Offline"
-  }</span>`;
+  const state = status.state ?? (status.configured ? (status.last_error ? "error" : "idle") : "unconfigured");
+  
+  const stateConfig: Record<string, { label: string; icon: string; color: string }> = {
+    unconfigured: { label: "Sync non configuré", icon: icons.cloud, color: "var(--tertiary)" },
+    idle: { label: "À jour", icon: icons.cloud, color: "var(--green)" },
+    syncing: { label: "Synchronisation...", icon: icons.cloud, color: "var(--blue)" },
+    offline: { label: "Hors ligne", icon: icons.cloud, color: "var(--yellow)" },
+    error: { label: "Erreur de sync", icon: icons.cloud, color: "var(--red)" },
+  };
+  
+  const config = stateConfig[state] ?? stateConfig.idle;
+  $("status-sync").innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span>${config.label}</span>`;
+  $("status-sync").setAttribute("data-testid", `sync-status-${state}`);
+  $("status-sync").style.color = config.color;
 }
 
 function hostPanes(hostId?: string | null) {
@@ -319,13 +336,29 @@ function renderHosts() {
   
   // Helper to render a single host
   const hostRow = (h: Host) => {
-    const open = hostPanes(h.id);
-    const isActive = open.some((p) => p.id === state.activePane);
-    return `<div class="item ${open.length ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
+    const runtime = state.hostsRuntime.find((r) => r.host_id === h.id);
+    const connection = runtime?.connection ?? "disconnected";
+    const openCount = runtime?.open_count ?? 0;
+    const isActive = hostPanes(h.id).some((p) => p.id === state.activePane);
+    
+    const connectionDot = (conn: string): string => {
+      const colors: Record<string, string> = {
+        local: "var(--blue)",
+        connected: "var(--green)",
+        disconnected: "rgba(235, 235, 245, 0.3)",
+        connecting: "var(--yellow)",
+        error: "var(--red)",
+      };
+      const color = colors[conn] ?? colors.disconnected;
+      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 3px color-mix(in srgb, ${color} 22%, transparent);" data-testid="connection-${conn}"></span>`;
+    };
+    
+    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-item" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
         <span class="leading">${icons.server}</span>
         <div class="body"><strong>${escapeHtml(h.name || h.hostname)}</strong><small>${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}</small></div>
         <span class="trail">
-          ${open.length ? `<span class="sess-count" data-focus="${h.id}">${open.length}</span>` : ""}
+          ${connectionDot(connection)}
+          ${openCount > 0 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count">${openCount}</span>` : ""}
           <button type="button" class="quick" data-new="${h.id}" title="New session">${icons.plus}</button>
           ${h.auth_method === "password" ? icons.password : icons.key}
         </span>
@@ -368,11 +401,13 @@ function renderHosts() {
   };
   
   // Build the panel HTML
-  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1">
+  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);" data-testid="connection-local"></span>`;
+  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="local-item">
       <span class="leading">${icons.laptop}</span>
       <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
       <span class="trail">
-        ${localOpen ? `<span class="live"></span>` : ""}
+        ${localConnectionDot}
+        ${localOpen ? `<span class="sess-count" data-testid="open-count">${localOpen}</span>` : ""}
         <button type="button" class="quick" data-new-local="1" title="New session">${icons.plus}</button>
       </span>
     </div>`;
@@ -382,16 +417,16 @@ function renderHosts() {
     panelHtml += renderGroup(group);
   }
   
-  // Render ungrouped hosts
-  const ungrouped = filteredHosts.filter((h) => !h.group_id);
+  // Render ungrouped hosts (formula: !deleted_at && !group_id)
+  const ungroupedAll = state.hosts.filter((h) => !h.deleted_at && !h.group_id);
+  const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
   if (ungrouped.length > 0) {
     const ungroupedExpanded = state.expandedGroups.has("__ungrouped__") || q.length > 0;
-    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__">
+    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="ungrouped-row">
       <span class="chevron">${icons.chevronRight}</span>
       <span class="leading">${icons.server}</span>
       <div class="body">
-        <strong>Ungrouped</strong>
-        <small>${ungrouped.length}</small>
+        <strong>Ungrouped<span class="group-badge" data-testid="ungrouped-count">${ungroupedAll.length}</span></strong>
       </div>
     </div>`;
     
