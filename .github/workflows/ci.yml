@@ -15,8 +15,14 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Start fixture services
         run: docker compose up -d --wait --build
-      - name: Prove engine
+      - name: Prove engine (Rust cargo)
         run: nix develop --command cargo run -p terminus-core --bin terminus-selftest
+      - name: Install Node dependencies
+        run: nix develop --command npm install
+      - name: Prove behavioral asserts (search-ux)
+        run: nix develop --command npm run test:search-ux
+      - name: Prove behavioral asserts (group-softdelete)
+        run: nix develop --command npm run test:group-softdelete
 
   build-linux:
     runs-on: ubuntu-latest
