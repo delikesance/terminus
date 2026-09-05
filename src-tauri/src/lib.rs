@@ -132,19 +132,8 @@ async fn hosts_list(state: State<'_, AppState>) -> Result<Vec<Host>, String> {
 }
 
 #[tauri::command]
-fn hosts_runtime(state: State<'_, AppState>) -> Vec<serde_json::Value> {
-    state
-        .sessions
-        .hosts_runtime()
-        .into_iter()
-        .map(|(host_id, connection, open_count)| {
-            serde_json::json!({
-                "host_id": host_id,
-                "connection": connection,
-                "open_count": open_count,
-            })
-        })
-        .collect()
+async fn hosts_runtime(state: State<'_, AppState>) -> Result<Vec<HostRuntime>, String> {
+    state.sessions.hosts_runtime().await.map_err(map_err)
 }
 
 #[tauri::command]
