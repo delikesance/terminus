@@ -81,6 +81,7 @@ const state = {
   activePane: null as string | null,
   sftpHostId: null as string | null,
   customCss: document.createElement("style"),
+  expandedGroups: new Set<string>(JSON.parse(localStorage.getItem("terminus-expanded-groups") || "[]")),
 };
 
 document.head.appendChild(state.customCss);
@@ -99,6 +100,7 @@ function b64encode(data: string | Uint8Array): string {
 
 async function boot() {
   bindUi();
+  toggleSidebar(true);
   const [themes, appearance, keybindings] = await Promise.all([
     invoke<Theme[]>("themes_list"),
     invoke<Appearance>("appearance_get"),
@@ -268,22 +270,38 @@ function renderHosts() {
   const q = $input("host-filter").value.toLowerCase();
   const active = activePane();
   const localOpen = hostPanes().length;
-  const filtered = state.hosts.filter((h) =>
+  
+  // Filter hosts and groups by search
+  const filteredHosts = state.hosts.filter((h) =>
     `${h.name} ${h.hostname} ${h.username} ${h.notes} ${h.tags.join(" ")}`.toLowerCase().includes(q),
   );
-  const groups = new Map<string, Host[]>();
-  for (const host of filtered) {
-    const key = host.group_id && state.groups.find((g) => g.id === host.group_id)?.name
-      ? host.group_id
-      : "";
-    groups.set(key, [...(groups.get(key) ?? []), host]);
+  const matchingGroupIds = new Set(
+    state.groups.filter((g) => g.name.toLowerCase().includes(q)).map((g) => g.id)
+  );
+  
+  // If a host matches, include its group
+  const expandedBySearch = new Set<string>();
+  for (const host of filteredHosts) {
+    if (host.group_id) {
+      expandedBySearch.add(host.group_id);
+    }
   }
-  const orderedKeys = [
-    "",
-    ...state.groups.filter((g) => groups.has(g.id)).map((g) => g.id),
-    ...[...groups.keys()].filter((k) => k && !state.groups.some((g) => g.id === k)),
-  ].filter((k, i, arr) => groups.has(k) && arr.indexOf(k) === i);
-
+  
+  // Build group hierarchy
+  const rootGroups: Group[] = [];
+  const childGroups = new Map<string, Group[]>();
+  
+  for (const group of state.groups) {
+    if (!group.parent_id) {
+      rootGroups.push(group);
+    } else {
+      const siblings = childGroups.get(group.parent_id) ?? [];
+      siblings.push(group);
+      childGroups.set(group.parent_id, siblings);
+    }
+  }
+  
+  // Helper to render a single host
   const hostRow = (h: Host) => {
     const open = hostPanes(h.id);
     const isActive = open.some((p) => p.id === state.activePane);
@@ -297,34 +315,95 @@ function renderHosts() {
         </span>
       </div>`;
   };
-
-  $("panel-hosts").innerHTML =
-    `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1">
+  
+  // Helper to render a group and its contents
+  const renderGroup = (group: Group, depth = 0): string => {
+    const groupHosts = filteredHosts.filter((h) => h.group_id === group.id);
+    const children = childGroups.get(group.id) ?? [];
+    const isExpanded = state.expandedGroups.has(group.id) || expandedBySearch.has(group.id) || matchingGroupIds.has(group.id);
+    const totalHosts = groupHosts.length;
+    
+    // Skip empty groups unless they match search
+    if (!q && totalHosts === 0 && children.length === 0) return "";
+    
+    let html = `<div class="group-row ${isExpanded ? "expanded" : ""}" data-group="${group.id}">
+      <span class="chevron">${icons.chevronRight}</span>
+      <span class="leading">${icons.folder}</span>
+      <div class="body">
+        <strong>${escapeHtml(group.name)}</strong>
+        ${totalHosts > 0 ? `<small>${totalHosts}</small>` : ""}
+      </div>
+    </div>`;
+    
+    if (isExpanded) {
+      html += `<div class="group-children">`;
+      // Render hosts in this group
+      for (const host of groupHosts) {
+        html += hostRow(host);
+      }
+      // Render child groups
+      for (const child of children) {
+        html += renderGroup(child, depth + 1);
+      }
+      html += `</div>`;
+    }
+    
+    return html;
+  };
+  
+  // Build the panel HTML
+  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1">
       <span class="leading">${icons.laptop}</span>
       <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
       <span class="trail">
         ${localOpen ? `<span class="live"></span>` : ""}
         <button type="button" class="quick" data-new-local="1" title="New session">${icons.plus}</button>
       </span>
-    </div>` +
-    orderedKeys
-      .map((key) => {
-        const hosts = groups.get(key) ?? [];
-        const label = key ? state.groups.find((g) => g.id === key)?.name ?? "Group" : filtered.length && state.groups.length ? "Ungrouped" : "";
-        return `${label ? `<div class="group-label">${escapeHtml(label)}</div>` : ""}${hosts.map(hostRow).join("")}`;
-      })
-      .join("");
+    </div>`;
+  
+  // Render root groups
+  for (const group of rootGroups) {
+    panelHtml += renderGroup(group);
+  }
+  
+  // Render ungrouped hosts
+  const ungrouped = filteredHosts.filter((h) => !h.group_id);
+  if (ungrouped.length > 0) {
+    const ungroupedExpanded = state.expandedGroups.has("__ungrouped__") || q.length > 0;
+    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__">
+      <span class="chevron">${icons.chevronRight}</span>
+      <span class="leading">${icons.server}</span>
+      <div class="body">
+        <strong>Ungrouped</strong>
+        <small>${ungrouped.length}</small>
+      </div>
+    </div>`;
+    
+    if (ungroupedExpanded) {
+      panelHtml += `<div class="group-children">`;
+      for (const host of ungrouped) {
+        panelHtml += hostRow(host);
+      }
+      panelHtml += `</div>`;
+    }
+  }
+  
+  $("panel-hosts").innerHTML = panelHtml;
+  
+  // Show empty state if no hosts
   if (!state.hosts.length) {
     $("panel-hosts").insertAdjacentHTML(
       "beforeend",
       `<div class="empty">${icons.server}<span>Add a host to connect over SSH.</span></div>`,
     );
-  } else if (!filtered.length) {
+  } else if (!filteredHosts.length) {
     $("panel-hosts").insertAdjacentHTML(
       "beforeend",
       `<div class="empty">${icons.search}<span>No hosts match that search.</span></div>`,
     );
   }
+  
+  // Bind event handlers
   $("panel-hosts").querySelector<HTMLElement>("[data-local]")!.onclick = () => focusOrOpenLocal();
   $("panel-hosts").querySelectorAll<HTMLButtonElement>("[data-new-local]").forEach((btn) => {
     btn.onclick = (ev) => {
@@ -332,6 +411,22 @@ function renderHosts() {
       void openLocal();
     };
   });
+  
+  // Group toggle handlers
+  $("panel-hosts").querySelectorAll<HTMLElement>(".group-row").forEach((el) => {
+    el.onclick = () => {
+      const groupId = el.dataset.group!;
+      if (state.expandedGroups.has(groupId)) {
+        state.expandedGroups.delete(groupId);
+      } else {
+        state.expandedGroups.add(groupId);
+      }
+      localStorage.setItem("terminus-expanded-groups", JSON.stringify([...state.expandedGroups]));
+      renderHosts();
+    };
+  });
+  
+  // Host handlers
   $("panel-hosts").querySelectorAll<HTMLElement>("[data-host]").forEach((el) => {
     el.onclick = () => focusOrOpenSsh(el.dataset.host!);
     el.oncontextmenu = (ev) => {
@@ -347,12 +442,14 @@ function renderHosts() {
       ]);
     };
   });
+  
   $("panel-hosts").querySelectorAll<HTMLElement>("[data-focus]").forEach((el) => {
     el.onclick = (ev) => {
       ev.stopPropagation();
       focusHost(el.dataset.focus!);
     };
   });
+  
   $("panel-hosts").querySelectorAll<HTMLButtonElement>("[data-new]").forEach((btn) => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
@@ -414,6 +511,7 @@ function bindUi() {
   $("search-ico").innerHTML = icons.search;
   $("palette-ico").innerHTML = icons.search;
   $("btn-new-host").innerHTML = `${icons.plus}<span>New host</span>`;
+  $("btn-new-group").innerHTML = `${icons.folder}<span>New group</span>`;
   $("tabs-prev").innerHTML = icons.chevronLeft;
   $("tabs-next").innerHTML = icons.chevronRight;
   const navLabels: Record<string, [string, string]> = {
@@ -436,6 +534,7 @@ function bindUi() {
   });
   $("host-filter").oninput = () => renderHosts();
   $("btn-new-host").onclick = () => editHost();
+  $("btn-new-group").onclick = () => editGroup();
   $("btn-new-local").onclick = () => openLocal();
   $("btn-settings").onclick = () => openSettings();
   $("btn-palette").onclick = () => togglePalette();
@@ -497,17 +596,11 @@ function toggleSidebar(force?: boolean) {
   else if (force === false) $("app").classList.remove("sidebar-open");
   else $("app").classList.toggle("sidebar-open");
   $("btn-sidebar").setAttribute("aria-expanded", $("app").classList.contains("sidebar-open") ? "true" : "false");
-  fitWorkspace();
+  scheduleLayout();
 }
 
 function fitWorkspace() {
   scheduleLayout();
-  const started = performance.now();
-  const tick = () => {
-    scheduleLayout();
-    if (performance.now() - started < 220) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
 }
 
 function onGlobalKey(ev: KeyboardEvent) {
@@ -1167,6 +1260,7 @@ async function editHost(existing?: Host) {
     auth_method: "key",
     password: "",
     identity_id: null,
+    group_id: null,
     tags: [],
     notes: "",
     created_at: new Date().toISOString(),
@@ -1181,6 +1275,14 @@ async function editHost(existing?: Host) {
       ),
     )
     .join("");
+  const groupOpts = [`<option value="">None</option>`]
+    .concat(
+      state.groups.map(
+        (g) =>
+          `<option value="${escapeHtml(g.id)}" ${host.group_id === g.id ? "selected" : ""}>${escapeHtml(g.name)}</option>`,
+      ),
+    )
+    .join("");
   openSheet(`
     <h2>${existing ? "Edit host" : "New host"}</h2>
     <p class="lead">Saved connections open in one click from the sidebar.</p>
@@ -1190,6 +1292,7 @@ async function editHost(existing?: Host) {
       <label class="cell"><span>Host</span><input id="f-host" value="${escapeHtml(host.hostname)}" placeholder="192.168.1.10" /></label>
       <label class="cell"><span>Port</span><input id="f-port" type="number" value="${host.port}" /></label>
       <label class="cell"><span>Username</span><input id="f-user" value="${escapeHtml(host.username)}" placeholder="ubuntu" /></label>
+      <label class="cell"><span>Group</span><select id="f-group">${groupOpts}</select></label>
     </div>
     <div class="group-title">Authentication</div>
     <div class="group-card">
@@ -1245,6 +1348,7 @@ async function editHost(existing?: Host) {
     host.auth_method = authValue();
     host.password = ($("f-pass") as HTMLInputElement).value;
     host.notes = ($("f-notes") as HTMLTextAreaElement).value;
+    host.group_id = ($("f-group") as HTMLSelectElement).value || null;
     host.updated_at = new Date().toISOString();
     if (host.auth_method === "key") {
       const selected = ($("f-ident") as HTMLSelectElement).value;
@@ -1313,6 +1417,57 @@ function editSnippet() {
     $("modal").classList.add("hidden");
     await refreshSide();
   };
+}
+
+function editGroup(existing?: Group) {
+  const group = existing ?? {
+    id: crypto.randomUUID(),
+    name: "",
+    parent_id: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  
+  const parentOpts = [`<option value="">None (top-level)</option>`].concat(
+    state.groups
+      .filter((g) => g.id !== group.id && !g.parent_id)
+      .map((g) => `<option value="${escapeHtml(g.id)}" ${group.parent_id === g.id ? "selected" : ""}>${escapeHtml(g.name)}</option>`)
+  ).join("");
+  
+  openSheet(`
+    <h2>${existing ? "Edit group" : "New group"}</h2>
+    <p class="lead">Organize your hosts into collapsible groups in the sidebar.</p>
+    <div class="group-card">
+      <label class="cell stack"><span>Name</span><input id="g-name" value="${escapeHtml(group.name)}" placeholder="Production servers" /></label>
+      <label class="cell stack"><span>Parent group</span><select id="g-parent">${parentOpts}</select></label>
+    </div>
+    <div class="row">
+      ${existing ? `<button id="g-del" class="danger">Delete</button>` : ""}
+      <button class="primary" id="g-save">Save</button>
+    </div>`);
+  
+  $("g-save").onclick = async () => {
+    group.name = ($("g-name") as HTMLInputElement).value.trim();
+    group.parent_id = ($("g-parent") as HTMLSelectElement).value || null;
+    group.updated_at = new Date().toISOString();
+    
+    if (!group.name) return;
+    
+    await invoke("groups_upsert", { group });
+    $("modal").classList.add("hidden");
+    await refreshSide();
+  };
+  
+  const del = document.getElementById("g-del");
+  if (del) {
+    del.onclick = async () => {
+      // Soft delete by setting deleted_at
+      const deletedGroup = { ...group, deleted_at: new Date().toISOString() };
+      await invoke("groups_upsert", { group: deletedGroup });
+      $("modal").classList.add("hidden");
+      await refreshSide();
+    };
+  }
 }
 
 async function openSettings() {
