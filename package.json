@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "selftest": "cargo run -p terminus-core --bin terminus-selftest"
+    "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux",
+    "test:search-ux": "node src/groupExpand.test.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
