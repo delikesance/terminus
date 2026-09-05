@@ -132,6 +132,11 @@ async fn hosts_list(state: State<'_, AppState>) -> Result<Vec<Host>, String> {
 }
 
 #[tauri::command]
+async fn hosts_runtime(state: State<'_, AppState>) -> Result<Vec<HostRuntime>, String> {
+    state.sessions.hosts_runtime().await.map_err(map_err)
+}
+
+#[tauri::command]
 async fn hosts_upsert(state: State<'_, AppState>, mut host: Host) -> Result<Host, String> {
     host.updated_at = chrono::Utc::now();
     state.store.upsert_host(&host).await.map_err(map_err)?;
@@ -152,6 +157,11 @@ async fn groups_list(state: State<'_, AppState>) -> Result<Vec<Group>, String> {
 async fn groups_upsert(state: State<'_, AppState>, group: Group) -> Result<Group, String> {
     state.store.upsert_group(&group).await.map_err(map_err)?;
     Ok(group)
+}
+
+#[tauri::command]
+async fn groups_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.store.delete_group(&id).await.map_err(map_err)
 }
 
 #[tauri::command]
@@ -389,10 +399,12 @@ pub fn run() {
             session_frame,
             session_list,
             hosts_list,
+            hosts_runtime,
             hosts_upsert,
             hosts_delete,
             groups_list,
             groups_upsert,
+            groups_delete,
             identities_list,
             identities_upsert,
             ssh_default_keys,
