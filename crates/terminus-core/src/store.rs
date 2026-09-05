@@ -220,6 +220,49 @@ impl Store {
             .collect())
     }
 
+    /// Soft-delete a group and detach all associated hosts in a single transaction.
+    ///
+    /// This ensures atomicity: either both the group is soft-deleted AND all its hosts
+    /// are detached (moved to ungrouped), or neither operation succeeds.
+    ///
+    /// # Ungrouped Formula
+    ///
+    /// A host is considered "ungrouped" if:
+    /// - `deleted_at IS NULL` (not soft-deleted), AND
+    /// - `group_id IS NULL` (not assigned to any group)
+    ///
+    /// When a group is soft-deleted, all hosts belonging to that group are detached
+    /// (their `group_id` is set to NULL), making them ungrouped.
+    ///
+    /// **Important**: Restoring a soft-deleted group (setting `deleted_at = NULL`) MUST NOT
+    /// automatically reattach hosts. Hosts remain detached unless explicitly reassigned.
+    /// This is the UI contract for consistency.
+    pub async fn delete_group(&self, id: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        
+        // Begin transaction
+        let mut tx = self.pool.begin().await?;
+        
+        // 1. Soft-delete the group
+        sqlx::query("UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        
+        // 2. Detach all hosts from this group (set group_id to NULL)
+        sqlx::query("UPDATE hosts SET group_id = NULL, updated_at = ? WHERE group_id = ?")
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        
+        // Commit transaction
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn upsert_identity(&self, identity: &Identity) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO identities (id,name,public_key,private_key,passphrase,created_at,updated_at,deleted_at)
