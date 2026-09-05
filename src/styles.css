@@ -427,6 +427,12 @@ svg {
   background: var(--green);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 22%, transparent);
 }
+.connection-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 .item.open { background: transparent; }
 .item.active-host { background: rgba(10, 132, 255, 0.18); }
 .item.active-host:hover { background: rgba(10, 132, 255, 0.24); }
@@ -508,6 +514,21 @@ svg {
   color: rgba(235, 235, 245, 0.5);
   font-size: 11px;
   margin-left: 6px;
+}
+.group-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 8px;
+  border-radius: 99px;
+  background: rgba(120, 120, 128, 0.24);
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 620;
+  vertical-align: middle;
 }
 
 .group-children {
