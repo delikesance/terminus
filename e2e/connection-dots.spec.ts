@@ -1,26 +1,19 @@
-import { test, expect, Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
+import { waitForTestBridge, getTestBridge } from './testBridge';
 
 /**
  * E2E-2: Connection dots — distinct from open_count
  * QA Contract from PR #6 / Issue #3
  * 
  * Selectors: host-{id}, host-local, connection-dot[data-state], open-count-pill
- * Bridge: window.__terminusTest.{sessionOpenSsh, sessionClose}
+ * Bridge: window.__terminusTest.{sessionOpenSsh, sessionClose, setConnection}
  */
-
-const testBridge = (page: Page) => ({
-  sessionOpenSsh: (hostId: string) => 
-    page.evaluate((id) => (window as any).__terminusTest.sessionOpenSsh(id), hostId),
-  sessionClose: (sessionId: string) => 
-    page.evaluate((id) => (window as any).__terminusTest.sessionClose(id), sessionId),
-  setConnection: (hostId: string, state: string) => 
-    page.evaluate(({ id, s }) => (window as any).__terminusTest.setConnection(id, s), { id: hostId, s: state }),
-});
 
 test.describe('E2E-2: Connection dots distinct from open_count (QA Contract)', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
+    await waitForTestBridge(page);
   });
 
   test('This computer shows local connection dot', async ({ page }) => {

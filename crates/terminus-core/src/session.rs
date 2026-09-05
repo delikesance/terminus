@@ -324,7 +324,9 @@ impl SessionManager {
         Ok(())
     }
 
-    #[cfg(debug_assertions)]
+    /// Test/E2E helper: force connection state. Available in debug unit tests
+    /// and when built with `TERMINUS_E2E=1` (release CI Playwright).
+    #[cfg(any(debug_assertions, terminus_e2e))]
     pub fn test_set_connection(&self, host_id: &str, state: &str) -> Result<()> {
         let valid_states = ["local", "connected", "disconnected", "connecting", "error"];
         if !valid_states.contains(&state) {

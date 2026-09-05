@@ -1707,7 +1707,7 @@ boot().catch((err) => {
   openSheet(`<h2>Couldn't start</h2><p class="form-error">${escapeHtml(String(err))}</p>`);
 });
 
-// Initialize test bridge for E2E (dev/test/e2e only, not production)
-if (import.meta.env.DEV || import.meta.env.MODE === 'test' || import.meta.env.VITE_E2E) {
+// E2E-only bridge: opt-in via VITE_E2E=1 at build time (not every build / not DEV).
+if (import.meta.env.VITE_E2E === "1") {
   initTestBridge();
 }
