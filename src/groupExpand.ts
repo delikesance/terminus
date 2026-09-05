@@ -3,18 +3,34 @@
  * Extracted for testing expand/clear search behavior
  */
 
+type Group = {
+  id: string;
+  name: string;
+  parent_id?: string | null;
+};
+
+type Host = {
+  id: string;
+  name: string;
+  group_id?: string | null;
+};
+
 /**
  * Compute which groups should be expanded based on search query and matches
- * @param {Array<{id: string, name: string, parent_id?: string | null}>} groups All groups
- * @param {Set<string>} matchingGroupIds IDs of groups that match the search query
- * @param {Array<{id: string, name: string, group_id?: string | null}>} matchingHosts Hosts that match the search query
- * @returns {Set<string>} Set of group IDs that should be expanded to reveal matches
+ * @param groups All groups
+ * @param matchingGroupIds IDs of groups that match the search query
+ * @param matchingHosts Hosts that match the search query
+ * @returns Set of group IDs that should be expanded to reveal matches
  */
-export function computeExpandedGroups(groups, matchingGroupIds, matchingHosts) {
-  const expandedBySearch = new Set();
+export function computeExpandedGroups(
+  groups: Group[],
+  matchingGroupIds: Set<string>,
+  matchingHosts: Host[],
+): Set<string> {
+  const expandedBySearch = new Set<string>();
 
   // Helper to expand all ancestors of a group
-  const expandAncestors = (groupId) => {
+  const expandAncestors = (groupId: string) => {
     const group = groups.find((g) => g.id === groupId);
     if (group?.parent_id) {
       expandedBySearch.add(group.parent_id);
@@ -40,20 +56,20 @@ export function computeExpandedGroups(groups, matchingGroupIds, matchingHosts) {
 
 /**
  * Check if a group should be expanded based on persistent state and search-driven expansion
- * @param {string} groupId Group ID to check
- * @param {Set<string>} persistentExpanded User's persistent expansion choices (from localStorage)
- * @param {Set<string>} searchExpanded Groups expanded due to search matches
- * @param {Set<string>} matchingGroupIds Groups that match the search query
- * @param {boolean} hasSearchQuery Whether a search query is active
- * @returns {boolean} true if the group should be expanded
+ * @param groupId Group ID to check
+ * @param persistentExpanded User's persistent expansion choices (from localStorage)
+ * @param searchExpanded Groups expanded due to search matches
+ * @param matchingGroupIds Groups that match the search query
+ * @param hasSearchQuery Whether a search query is active
+ * @returns true if the group should be expanded
  */
 export function shouldExpandGroup(
-  groupId,
-  persistentExpanded,
-  searchExpanded,
-  matchingGroupIds,
-  hasSearchQuery,
-) {
+  groupId: string,
+  persistentExpanded: Set<string>,
+  searchExpanded: Set<string>,
+  matchingGroupIds: Set<string>,
+  hasSearchQuery: boolean,
+): boolean {
   if (hasSearchQuery) {
     // During search: expand if user previously expanded OR if search requires it OR if the group itself matches
     return persistentExpanded.has(groupId) || searchExpanded.has(groupId) || matchingGroupIds.has(groupId);
