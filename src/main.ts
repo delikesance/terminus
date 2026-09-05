@@ -32,7 +32,7 @@ type Identity = {
 type Snippet = { id: string; title: string; content: string; tags: string[]; shortcut?: string | null };
 type HistoryEntry = { id: string; command: string; cwd?: string | null; session_kind: string; created_at: string };
 type SessionInfo = { id: string; title: string; kind: string; host_id?: string | null };
-type Group = { id: string; name: string; parent_id?: string | null };
+type Group = { id: string; name: string; parent_id?: string | null; created_at: string; updated_at: string; deleted_at?: string | null };
 type Appearance = {
   font_family: string;
   font_size: number;

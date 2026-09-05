@@ -303,6 +303,7 @@ svg {
   padding: 10px 12px 8px; 
   position: relative; 
 }
+.search svg {
   position: absolute;
   left: 20px;
   top: 17px;
