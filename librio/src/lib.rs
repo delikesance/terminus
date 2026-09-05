@@ -1560,7 +1560,7 @@ mod tests {
     fn capi_reports_underline_color() {
         use crate::capi::{
             rio_render_state_cell, rio_render_state_cell_underline_color,
-            RIO_CELL_HAS_UNDERLINE_COLOR,
+            RIO_CELL_HAS_UNDERLINE_COLOR, RIO_COLOR_NONE,
         };
 
         let surface = quiet_surface(10, 3);
@@ -1575,6 +1575,8 @@ mod tests {
 
         let plain = unsafe { rio_render_state_cell(&state, 0, 1) };
         assert_eq!(plain.style_flags & RIO_CELL_HAS_UNDERLINE_COLOR, 0);
+        let absent = unsafe { rio_render_state_cell_underline_color(&state, 0, 1) };
+        assert_eq!(absent.kind, RIO_COLOR_NONE);
     }
 
     // Scrollback rows come first, and wrapped rows are emitted without a
