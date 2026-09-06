@@ -95,6 +95,6 @@ jobs:
         with:
           name: terminus-windows-nsis
           path: |
-            src-tauri/target/release/bundle/nsis/*
+            target/release/bundle/nsis/*
           if-no-files-found: error
           retention-days: 14
