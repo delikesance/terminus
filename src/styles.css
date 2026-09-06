@@ -1160,3 +1160,32 @@ svg {
 #palette-results .grow { flex: 1; min-width: 0; }
 #palette-results small { color: var(--tertiary); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .form-error { color: var(--red); font-size: 13px; }
+.form-error.hidden { display: none; }
+
+.vault-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(48vh, 420px);
+  overflow: auto;
+}
+.vault-list .item { align-items: flex-start; }
+.vault-list .trail button {
+  font-size: 12px;
+  padding: 4px 8px;
+  min-height: 28px;
+}
+.vault-reveal {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  font: 11.5px/1.35 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+  max-height: 140px;
+  overflow: auto;
+}

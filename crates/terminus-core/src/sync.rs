@@ -74,14 +74,58 @@ impl SyncEngine {
         } else {
             self.state.lock().await.clone()
         };
-        
+        let sync_secrets = self.sync_secrets_pref().await;
+
         SyncStatus {
             configured,
             url: self.config.lock().await.as_ref().map(|c| c.url.clone()),
             last_sync: *self.last_sync.lock().await,
             last_error: self.last_error.lock().await.clone(),
             state,
+            sync_secrets,
         }
+    }
+
+    /// Persist whether secrets may sync. Default remains off (secrets stay local).
+    pub async fn set_sync_secrets(&self, sync_secrets: bool) -> Result<()> {
+        let mut guard = self.config.lock().await;
+        if let Some(cfg) = guard.as_mut() {
+            cfg.sync_secrets = sync_secrets;
+            self.store
+                .set_setting("sync", &serde_json::to_value(&*cfg)?)
+                .await?;
+            return Ok(());
+        }
+        drop(guard);
+        let mut cfg = if let Some(value) = self.store.get_setting("sync").await? {
+            serde_json::from_value::<SyncConfig>(value).unwrap_or(SyncConfig {
+                url: String::new(),
+                sync_secrets: false,
+            })
+        } else {
+            SyncConfig {
+                url: String::new(),
+                sync_secrets: false,
+            }
+        };
+        cfg.sync_secrets = sync_secrets;
+        self.store
+            .set_setting("sync", &serde_json::to_value(&cfg)?)
+            .await?;
+        Ok(())
+    }
+
+    /// Effective sync-secrets preference (false when unset).
+    pub async fn sync_secrets_pref(&self) -> bool {
+        if let Some(cfg) = self.config.lock().await.as_ref() {
+            return cfg.sync_secrets;
+        }
+        if let Ok(Some(value)) = self.store.get_setting("sync").await {
+            if let Ok(cfg) = serde_json::from_value::<SyncConfig>(value) {
+                return cfg.sync_secrets;
+            }
+        }
+        false
     }
 
     pub async fn sync_now(&self) -> Result<Value> {
@@ -238,6 +282,9 @@ impl SyncEngine {
             let mut identity = crate::models::Identity {
                 id: row.get("id"),
                 name: row.get("name"),
+                kind: row
+                    .try_get::<String, _>("kind")
+                    .unwrap_or_else(|_| "key".into()),
                 public_key: row.get("public_key"),
                 private_key: row.get("private_key"),
                 passphrase: row.get("passphrase"),
@@ -247,9 +294,11 @@ impl SyncEngine {
                     .get::<Option<String>, _>("deleted_at")
                     .map(parse_pg),
             };
+            // Same pattern as pull_hosts: when secrets are not synced, keep local
+            // private_key/passphrase instead of wiping them with remote nulls.
             if !sync_secrets {
-                identity.private_key = None;
-                identity.passphrase = None;
+                let existing = self.store.get_identity(&identity.id).await?;
+                preserve_identity_secrets(&mut identity, existing.as_ref());
             }
             self.store.upsert_identity(&identity).await?;
             n += 1;
@@ -394,6 +443,7 @@ async fn ensure_remote_schema(pool: &PgPool) -> Result<()> {
         r#"CREATE TABLE IF NOT EXISTS identities (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'key',
           public_key TEXT,
           private_key TEXT,
           passphrase TEXT,
@@ -491,14 +541,15 @@ async fn push_rows(pool: &PgPool, table: &str, rows: &[Value]) -> Result<usize> 
             }
             "identities" => {
                 sqlx::query(
-                    r#"INSERT INTO identities (id,name,public_key,private_key,passphrase,created_at,updated_at,deleted_at)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                    r#"INSERT INTO identities (id,name,kind,public_key,private_key,passphrase,created_at,updated_at,deleted_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                        ON CONFLICT (id) DO UPDATE SET
-                         name=EXCLUDED.name, public_key=EXCLUDED.public_key, private_key=EXCLUDED.private_key,
+                         name=EXCLUDED.name, kind=EXCLUDED.kind, public_key=EXCLUDED.public_key, private_key=EXCLUDED.private_key,
                          passphrase=EXCLUDED.passphrase, updated_at=EXCLUDED.updated_at, deleted_at=EXCLUDED.deleted_at"#,
                 )
                 .bind(str_field(obj, "id"))
                 .bind(str_field(obj, "name"))
+                .bind(str_field_or(obj, "kind", "key"))
                 .bind(opt_str(obj, "public_key"))
                 .bind(opt_str(obj, "private_key"))
                 .bind(opt_str(obj, "passphrase"))
@@ -583,6 +634,15 @@ fn str_field(obj: &serde_json::Map<String, Value>, key: &str) -> String {
         .unwrap_or_default()
 }
 
+fn str_field_or(obj: &serde_json::Map<String, Value>, key: &str, default: &str) -> String {
+    let v = str_field(obj, key);
+    if v.is_empty() {
+        default.to_string()
+    } else {
+        v
+    }
+}
+
 fn opt_str(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
     match obj.get(key) {
         Some(Value::Null) | None => None,
@@ -605,5 +665,59 @@ fn opt_int(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
         Some(Value::Number(n)) => n.as_i64().map(|v| v as i32),
         Some(Value::String(s)) => s.parse().ok(),
         _ => None,
+    }
+}
+
+/// When sync_secrets is off, remote rows omit secrets. Keep local material on upsert
+/// (mirrors host password preservation in `pull_hosts`).
+fn preserve_identity_secrets(
+    remote: &mut crate::models::Identity,
+    existing: Option<&crate::models::Identity>,
+) {
+    if let Some(existing) = existing {
+        remote.private_key = existing.private_key.clone();
+        remote.passphrase = existing.passphrase.clone();
+    } else {
+        remote.private_key = None;
+        remote.passphrase = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Identity;
+
+    #[test]
+    fn pull_without_secrets_keeps_local_key_material() {
+        let mut remote = Identity::new("deploy");
+        remote.private_key = None;
+        remote.passphrase = None;
+
+        let mut local = Identity::new("deploy");
+        local.id = remote.id.clone();
+        local.private_key = Some("-----BEGIN OPENSSH PRIVATE KEY-----\nlocal\n".into());
+        local.passphrase = Some("local-pass".into());
+
+        preserve_identity_secrets(&mut remote, Some(&local));
+        assert_eq!(
+            remote.private_key.as_deref(),
+            Some("-----BEGIN OPENSSH PRIVATE KEY-----\nlocal\n")
+        );
+        assert_eq!(remote.passphrase.as_deref(), Some("local-pass"));
+    }
+
+    #[test]
+    fn pull_without_secrets_new_identity_stays_secretless() {
+        let mut remote = Identity::new("fresh");
+        remote.private_key = Some("should-not-keep-from-remote-when-stripped".into());
+        remote.passphrase = Some("x".into());
+        // After strip, remote fields are None before preserve — simulate that:
+        remote.private_key = None;
+        remote.passphrase = None;
+
+        preserve_identity_secrets(&mut remote, None);
+        assert!(remote.private_key.is_none());
+        assert!(remote.passphrase.is_none());
     }
 }

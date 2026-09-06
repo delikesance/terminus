@@ -9,6 +9,12 @@ import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost }
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
 import { parseKnownHosts } from "./knownHostsParse";
+import {
+  inferIdentityKind,
+  parseIdentityKind,
+  parseIdentityKeyError,
+  type IdentityKind,
+} from "./identityKind";
 
 const ONBOARD_KEY = "terminus.onboarded";
 
@@ -41,9 +47,13 @@ type HostRuntime = {
 type Identity = {
   id: string;
   name: string;
+  kind?: string | null;
   public_key?: string | null;
   private_key?: string | null;
   passphrase?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
 };
 type Snippet = { id: string; title: string; content: string; tags: string[]; shortcut?: string | null };
 type HistoryEntry = { id: string; command: string; cwd?: string | null; session_kind: string; created_at: string };
@@ -64,7 +74,14 @@ type Appearance = {
   theme_id: string;
   ligatures: boolean;
 };
-type SyncStatus = { configured: boolean; url?: string | null; last_sync?: string | null; last_error?: string | null; state?: string };
+type SyncStatus = {
+  configured: boolean;
+  url?: string | null;
+  last_sync?: string | null;
+  last_error?: string | null;
+  state?: string;
+  sync_secrets?: boolean;
+};
 type SftpEntry = { name: string; path: string; is_dir: boolean; size: number };
 
 type Pane = {
@@ -906,7 +923,11 @@ let tofuSession: {
 } | null = null;
 
 function modalSheetEl(): HTMLElement {
-  return (document.getElementById("sheet-tofu") ?? document.getElementById("modal-sheet")) as HTMLElement;
+  return (
+    document.getElementById("sheet-vault") ??
+    document.getElementById("sheet-tofu") ??
+    document.getElementById("modal-sheet")
+  ) as HTMLElement;
 }
 
 function dismissTofuSheet() {
@@ -1564,6 +1585,7 @@ function renderPalette(query: string) {
   const q = query.toLowerCase();
   const items: { label: string; hint: string; run: () => void }[] = [
     { label: "New local shell", hint: "session", run: () => openLocal() },
+    { label: "Identities", hint: "vault", run: () => void openVault() },
     { label: "Settings", hint: "app", run: () => openSettings() },
     { label: "Sync now", hint: "cloud", run: () => invoke("sync_now").then(refreshSync) },
     ...state.hosts.map((h) => ({
@@ -1580,7 +1602,18 @@ function renderPalette(query: string) {
   $("palette-results").innerHTML = items
     .slice(0, 20)
     .map((i, idx) => {
-      const ico = i.hint === "session" ? icons.laptop : i.hint === "app" ? icons.settings : i.hint === "cloud" ? icons.cloud : i.label.startsWith("Snippet") ? icons.snippet : icons.server;
+      const ico =
+        i.hint === "session"
+          ? icons.laptop
+          : i.hint === "vault"
+            ? icons.key
+            : i.hint === "app"
+              ? icons.settings
+              : i.hint === "cloud"
+                ? icons.cloud
+                : i.label.startsWith("Snippet")
+                  ? icons.snippet
+                  : icons.server;
       return `<li class="${idx === 0 ? "active" : ""}" data-i="${idx}"><span class="leading">${ico}</span><span class="grow">${escapeHtml(i.label)}<small>${escapeHtml(i.hint)}</small></span></li>`;
     })
     .join("");
@@ -1712,6 +1745,7 @@ async function editHost(existing?: Host) {
           identity: {
             id: crypto.randomUUID(),
             name: host.name || host.hostname || "imported-key",
+            kind: "key",
             private_key: pem,
             passphrase: pass || null,
             created_at: new Date().toISOString(),
@@ -1839,6 +1873,310 @@ function editGroup(existing?: Group) {
   }
 }
 
+async function openVault() {
+  clearVaultReveal();
+  await refreshSide();
+  renderVaultSheet();
+}
+
+let vaultRevealTimer: ReturnType<typeof setTimeout> | null = null;
+let vaultRevealId: string | null = null;
+
+function clearVaultReveal() {
+  if (vaultRevealTimer) {
+    clearTimeout(vaultRevealTimer);
+    vaultRevealTimer = null;
+  }
+  vaultRevealId = null;
+}
+
+function identityTypeLabel(kind: IdentityKind): string {
+  if (kind === "password") return "password";
+  if (kind === "agent") return "agent";
+  return "key";
+}
+
+function identitySecret(identity: Identity): string | null {
+  const kind = inferIdentityKind(identity);
+  if (kind === "agent") return null;
+  if (kind === "password") return identity.passphrase ?? null;
+  return identity.private_key ?? identity.passphrase ?? null;
+}
+
+function attachedHostCount(identityId: string): number {
+  return state.hosts.filter((h) => h.identity_id === identityId).length;
+}
+
+function renderVaultSheet() {
+  const statusPromise = invoke<SyncStatus>("sync_status").catch(
+    () => ({ configured: false, sync_secrets: false }) as SyncStatus,
+  );
+  void statusPromise.then((status) => {
+    const syncSecrets = Boolean(status.sync_secrets);
+    const items = state.identities
+      .map((ident) => {
+        const kind = inferIdentityKind(ident);
+        const hosts = attachedHostCount(ident.id);
+        const revealing = vaultRevealId === ident.id;
+        const secret = revealing ? identitySecret(ident) : null;
+        const canReveal = kind !== "agent" && Boolean(identitySecret(ident));
+        const ico = kind === "password" ? icons.password : kind === "agent" ? icons.cloud : icons.key;
+        return `<div class="item" data-identity="${escapeHtml(ident.id)}" data-testid="vault-identity-${escapeHtml(ident.id)}">
+          <span class="leading">${ico}</span>
+          <div class="body">
+            <strong>${escapeHtml(ident.name || "Unnamed")}</strong>
+            <small>${escapeHtml(identityTypeLabel(kind))} · ${hosts} host${hosts === 1 ? "" : "s"}</small>
+            ${revealing && secret != null ? `<pre class="vault-reveal" data-testid="vault-reveal">${escapeHtml(secret)}</pre>` : ""}
+          </div>
+          <span class="trail">
+            ${canReveal ? `<button type="button" class="ghost vault-reveal-btn" data-reveal="${escapeHtml(ident.id)}" data-testid="vault-reveal-btn">${revealing ? "Hide" : "Reveal"}</button>` : ""}
+            <button type="button" class="ghost" data-edit="${escapeHtml(ident.id)}" data-testid="vault-edit-btn">Edit</button>
+          </span>
+        </div>`;
+      })
+      .join("");
+
+    openSheet(
+      `
+    <h2>Identities</h2>
+    <p class="lead">Keys, passwords, and agents stay on this device unless you opt in.</p>
+    <div class="group-card">
+      <label class="cell"><span>Sync secrets<small class="hint">Secrets stay local</small></span>
+        <span class="toggle"><input id="vault-sync-secrets" type="checkbox" ${syncSecrets ? "checked" : ""} data-testid="vault-sync-secrets" /><span class="track"></span></span>
+      </label>
+    </div>
+    <div class="vault-list" id="vault-list" data-testid="vault-list">
+      ${items || `<div class="empty" data-testid="vault-empty">${icons.key}<span class="empty-title">No identities yet</span></div>`}
+    </div>
+    <div class="row">
+      <button type="button" id="vault-add" data-testid="vault-add">Add identity</button>
+    </div>`,
+      "sheet-vault",
+    );
+
+    $("vault-add").onclick = () => editIdentity();
+    ($("vault-sync-secrets") as HTMLInputElement).onchange = async (ev) => {
+      const on = (ev.target as HTMLInputElement).checked;
+      try {
+        await invoke("sync_set_secrets", { syncSecrets: on });
+      } catch (err) {
+        (ev.target as HTMLInputElement).checked = !on;
+        const msg = document.getElementById("vault-sync-msg");
+        if (msg) msg.textContent = String(err);
+      }
+    };
+    $("vault-list").querySelectorAll<HTMLButtonElement>("[data-reveal]").forEach((btn) => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const id = btn.dataset.reveal!;
+        if (vaultRevealId === id) {
+          clearVaultReveal();
+          renderVaultSheet();
+          return;
+        }
+        clearVaultReveal();
+        vaultRevealId = id;
+        vaultRevealTimer = setTimeout(() => {
+          clearVaultReveal();
+          if (modalSheetEl().id === "sheet-vault") renderVaultSheet();
+        }, 15_000);
+        renderVaultSheet();
+      };
+    });
+    $("vault-list").querySelectorAll<HTMLButtonElement>("[data-edit]").forEach((btn) => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const ident = state.identities.find((i) => i.id === btn.dataset.edit);
+        if (ident) editIdentity(ident);
+      };
+    });
+  });
+}
+
+function editIdentity(existing?: Identity) {
+  clearVaultReveal();
+  const identity: Identity = existing
+    ? { ...existing }
+    : {
+        id: crypto.randomUUID(),
+        name: "",
+        kind: "key",
+        private_key: "",
+        passphrase: "",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+  const kind = inferIdentityKind(identity);
+  openSheet(
+    `
+    <h2>${existing ? "Edit identity" : "Add identity"}</h2>
+    <p class="lead">Secrets are never written to the console or sync events.</p>
+    <div class="group-card">
+      <label class="cell stack"><span>Name</span><input id="v-name" value="${escapeHtml(identity.name)}" placeholder="deploy-key" data-testid="vault-name" /></label>
+      <div class="cell">
+        <span>Type</span>
+        <div class="seg" id="v-kind" data-testid="vault-kind">
+          <button type="button" data-kind="key" class="${kind === "key" ? "on" : ""}">Key</button>
+          <button type="button" data-kind="password" class="${kind === "password" ? "on" : ""}">Password</button>
+          <button type="button" data-kind="agent" class="${kind === "agent" ? "on" : ""}">Agent</button>
+        </div>
+      </div>
+      <label class="cell stack" id="v-key-row"><span>Private key<small class="hint">PEM or path like ~/.ssh/id_ed25519</small></span>
+        <textarea id="v-key" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" data-testid="vault-key">${escapeHtml(identity.private_key ?? "")}</textarea>
+      </label>
+      <label class="cell" id="v-pass-row"><span id="v-pass-label">Passphrase</span>
+        <input id="v-pass" type="password" value="${escapeHtml(identity.passphrase ?? "")}" autocomplete="off" data-testid="vault-pass" />
+      </label>
+    </div>
+    <p class="form-error hidden" id="v-err" data-testid="vault-error"></p>
+    <div class="row">
+      ${existing ? `<button type="button" id="v-attach">Attach to host</button>` : ""}
+      ${existing ? `<button type="button" class="danger" id="v-del" data-testid="vault-delete">Delete</button>` : ""}
+      <button type="button" class="primary" id="v-save" data-testid="vault-save">Save</button>
+    </div>`,
+    "sheet-vault",
+  );
+
+  const kindValue = () =>
+    ($("v-kind").querySelector<HTMLButtonElement>(".on")?.dataset.kind ?? "key") as IdentityKind;
+  const syncKindUi = () => {
+    const k = kindValue();
+    const keyRow = $("v-key-row");
+    const passRow = $("v-pass-row");
+    keyRow.classList.toggle("hidden", k !== "key");
+    passRow.classList.toggle("hidden", k === "agent");
+    $("v-pass-label").textContent = k === "password" ? "Password" : "Passphrase";
+  };
+  $("v-kind").querySelectorAll<HTMLButtonElement>("button").forEach((btn) => {
+    btn.onclick = () => {
+      $("v-kind").querySelectorAll("button").forEach((b) => b.classList.remove("on"));
+      btn.classList.add("on");
+      syncKindUi();
+    };
+  });
+  syncKindUi();
+
+  $("v-save").onclick = async () => {
+    const errEl = $("v-err");
+    errEl.classList.add("hidden");
+    errEl.textContent = "";
+    const parsed = parseIdentityKind(kindValue());
+    if (!parsed.ok) {
+      errEl.textContent = `Unknown identity type`;
+      errEl.classList.remove("hidden");
+      return;
+    }
+    identity.name = ($("v-name") as HTMLInputElement).value.trim();
+    if (!identity.name) {
+      errEl.textContent = "Name is required";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    identity.kind = parsed.kind;
+    identity.updated_at = new Date().toISOString();
+    if (!identity.created_at) identity.created_at = identity.updated_at;
+    if (parsed.kind === "key") {
+      identity.private_key = ($("v-key") as HTMLTextAreaElement).value;
+      identity.passphrase = ($("v-pass") as HTMLInputElement).value || null;
+    } else if (parsed.kind === "password") {
+      identity.private_key = null;
+      identity.passphrase = ($("v-pass") as HTMLInputElement).value || null;
+    } else {
+      identity.private_key = null;
+      identity.passphrase = null;
+    }
+    try {
+      await invoke("identities_upsert", { identity });
+      await refreshSide();
+      renderVaultSheet();
+    } catch (err) {
+      const typed = parseIdentityKeyError(String(err));
+      errEl.textContent = typed ? typed.reason : String(err);
+      errEl.classList.remove("hidden");
+    }
+  };
+
+  const del = document.getElementById("v-del");
+  if (del) {
+    del.onclick = () => {
+      openSheet(
+        `
+      <h2>Delete identity?</h2>
+      <p class="lead">Remove <strong>${escapeHtml(identity.name)}</strong> from the vault. Attached hosts keep their link until you change them.</p>
+      <div class="row">
+        <button type="button" id="v-del-cancel">Cancel</button>
+        <button type="button" class="danger" id="v-del-confirm" data-testid="vault-delete-confirm">Delete</button>
+      </div>`,
+        "sheet-vault",
+      );
+      $("v-del-cancel").onclick = () => editIdentity(identity);
+      $("v-del-confirm").onclick = async () => {
+        await invoke("identities_delete", { id: identity.id });
+        for (const host of state.hosts.filter((h) => h.identity_id === identity.id)) {
+          host.identity_id = null;
+          host.updated_at = new Date().toISOString();
+          await invoke("hosts_upsert", { host });
+        }
+        await refreshSide();
+        renderVaultSheet();
+      };
+    };
+  }
+
+  const attach = document.getElementById("v-attach");
+  if (attach) {
+    attach.onclick = () => attachIdentityToHost(identity);
+  }
+}
+
+function attachIdentityToHost(identity: Identity) {
+  const kind = inferIdentityKind(identity);
+  const opts = state.hosts
+    .map(
+      (h) =>
+        `<label class="cell"><span>${escapeHtml(h.name || h.hostname)}</span>
+          <input type="checkbox" data-host="${escapeHtml(h.id)}" ${h.identity_id === identity.id ? "checked" : ""} /></label>`,
+    )
+    .join("");
+  openSheet(
+    `
+    <h2>Attach to hosts</h2>
+    <p class="lead">Link <strong>${escapeHtml(identity.name)}</strong> (${escapeHtml(identityTypeLabel(kind))}) to one or more hosts.</p>
+    <div class="group-card" id="v-attach-list" data-testid="vault-attach-list">
+      ${opts || `<div class="meta">No hosts yet — add a host first.</div>`}
+    </div>
+    <div class="row">
+      <button type="button" id="v-attach-cancel">Back</button>
+      <button type="button" class="primary" id="v-attach-save" data-testid="vault-attach-save">Save</button>
+    </div>`,
+    "sheet-vault",
+  );
+  $("v-attach-cancel").onclick = () => editIdentity(identity);
+  $("v-attach-save").onclick = async () => {
+    const boxes = [...document.querySelectorAll<HTMLInputElement>("#v-attach-list input[data-host]")];
+    for (const box of boxes) {
+      const host = state.hosts.find((h) => h.id === box.dataset.host);
+      if (!host) continue;
+      const want = box.checked;
+      const has = host.identity_id === identity.id;
+      if (want === has) continue;
+      if (want) {
+        host.identity_id = identity.id;
+        host.auth_method = kind === "password" ? "password" : kind === "agent" ? "agent" : "key";
+        if (kind === "password") {
+          host.password = identity.passphrase ?? host.password;
+        }
+      } else {
+        host.identity_id = null;
+      }
+      host.updated_at = new Date().toISOString();
+      await invoke("hosts_upsert", { host });
+    }
+    await refreshSide();
+    renderVaultSheet();
+  };
+}
+
 async function openSettings() {
   const appearance = state.appearance!;
   const status = await invoke<SyncStatus>("sync_status");
@@ -1873,15 +2211,17 @@ async function openSettings() {
       <label class="cell stack"><span>Database URL<small class="hint">PostgreSQL or any sqlx-compatible URL</small></span>
         <input id="sync-url" placeholder="postgres://user:pass@host:5432/terminus" value="${escapeHtml(status.url ?? "")}" />
       </label>
-      <label class="cell"><span>Sync secrets<small class="hint">Passwords and keys</small></span>
-        <span class="toggle"><input id="sync-secrets" type="checkbox" /><span class="track"></span></span>
+      <label class="cell"><span>Sync secrets<small class="hint">Secrets stay local</small></span>
+        <span class="toggle"><input id="sync-secrets" type="checkbox" ${status.sync_secrets ? "checked" : ""} /><span class="track"></span></span>
       </label>
     </div>
     <div class="row">
       <button id="sync-now">Sync now</button>
+      <button type="button" id="open-vault">Identities</button>
       <button class="primary" id="a-save">Save</button>
     </div>
     <div class="meta" id="sync-msg">${status.last_error ?? ""}</div>`);
+  $("open-vault").onclick = () => void openVault();
   $("a-theme").querySelectorAll<HTMLButtonElement>(".swatch").forEach((btn) => {
     btn.onclick = () => {
       $("a-theme").querySelectorAll(".swatch").forEach((b) => b.classList.remove("on"));
@@ -1905,11 +2245,19 @@ async function openSettings() {
     appearance.custom_css = ($("a-css") as HTMLTextAreaElement).value;
     await invoke("appearance_set", { appearance });
     const url = ($("sync-url") as HTMLInputElement).value.trim();
+    const syncSecrets = ($("sync-secrets") as HTMLInputElement).checked;
     if (url) {
       try {
         await invoke("sync_configure", {
-          config: { url, sync_secrets: ($("sync-secrets") as HTMLInputElement).checked },
+          config: { url, sync_secrets: syncSecrets },
         });
+      } catch (err) {
+        $("sync-msg").textContent = String(err);
+        return;
+      }
+    } else {
+      try {
+        await invoke("sync_set_secrets", { syncSecrets });
       } catch (err) {
         $("sync-msg").textContent = String(err);
         return;
@@ -1931,12 +2279,16 @@ async function openSettings() {
   };
 }
 
-function openSheet(html: string) {
+function openSheet(html: string, sheetId = "modal-sheet") {
   const sheet = modalSheetEl();
-  sheet.id = "modal-sheet";
+  sheet.id = sheetId;
   sheet.innerHTML = `<button type="button" class="sheet-close" id="sheet-close" title="Close">${icons.close}</button>${html}`;
   $("modal").classList.remove("hidden");
-  $("sheet-close").onclick = () => $("modal").classList.add("hidden");
+  $("sheet-close").onclick = () => {
+    clearVaultReveal();
+    sheet.id = "modal-sheet";
+    $("modal").classList.add("hidden");
+  };
 }
 
 function markOnboarded() {
@@ -2121,5 +2473,8 @@ if (import.meta.env.VITE_E2E === "1") {
   window.addEventListener("terminus-e2e-refresh", () => {
     void refreshSide();
     void refreshSync();
+  });
+  window.addEventListener("terminus-e2e-open-vault", () => {
+    void openVault();
   });
 }

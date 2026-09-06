@@ -389,9 +389,35 @@ fn load_auth_keys(identity: Option<&Identity>) -> Result<Vec<russh::keys::Privat
 fn parse_key(material: &str, passphrase: Option<&str>) -> Result<russh::keys::PrivateKey> {
     let trimmed = material.trim();
     if trimmed.contains("BEGIN") {
-        russh::keys::decode_secret_key(trimmed, passphrase).map_err(|e| Error::msg(e.to_string()))
+        russh::keys::decode_secret_key(trimmed, passphrase).map_err(|e| {
+            Error::IdentityKeyInvalid {
+                reason: e.to_string(),
+            }
+        })
     } else {
-        load_secret_key(expand_path(trimmed), passphrase).map_err(|e| Error::msg(e.to_string()))
+        load_secret_key(expand_path(trimmed), passphrase).map_err(|e| Error::IdentityKeyInvalid {
+            reason: e.to_string(),
+        })
+    }
+}
+
+/// Validate private key material without returning the key. PEM is decoded; path refs are
+/// accepted as non-empty strings (file load deferred to connect). Errors never include raw secret.
+pub fn validate_identity_key(material: &str, passphrase: Option<&str>) -> Result<()> {
+    let trimmed = material.trim();
+    if trimmed.is_empty() {
+        return Err(Error::IdentityKeyInvalid {
+            reason: "empty private key".into(),
+        });
+    }
+    if trimmed.contains("BEGIN") {
+        russh::keys::decode_secret_key(trimmed, passphrase)
+            .map(|_| ())
+            .map_err(|e| Error::IdentityKeyInvalid {
+                reason: e.to_string(),
+            })
+    } else {
+        Ok(())
     }
 }
 

@@ -71,12 +71,25 @@ impl Group {
     }
 }
 
+/// Vault identity kinds: SSH key material, reusable password, or agent reference.
+pub const IDENTITY_KIND_KEY: &str = "key";
+pub const IDENTITY_KIND_PASSWORD: &str = "password";
+pub const IDENTITY_KIND_AGENT: &str = "agent";
+
+fn default_identity_kind() -> String {
+    IDENTITY_KIND_KEY.to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub id: String,
     pub name: String,
+    /// One of `key` | `password` | `agent`. Defaults to `key` for legacy rows.
+    #[serde(default = "default_identity_kind")]
+    pub kind: String,
     pub public_key: Option<String>,
     pub private_key: Option<String>,
+    /// Key passphrase, or the secret for `password` kind identities.
     pub passphrase: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -89,6 +102,7 @@ impl Identity {
         Self {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
+            kind: IDENTITY_KIND_KEY.to_string(),
             public_key: None,
             private_key: None,
             passphrase: None,
@@ -96,6 +110,15 @@ impl Identity {
             updated_at: now,
             deleted_at: None,
         }
+    }
+
+    pub fn normalize_kind(&mut self) {
+        let k = self.kind.trim().to_ascii_lowercase();
+        self.kind = match k.as_str() {
+            IDENTITY_KIND_PASSWORD => IDENTITY_KIND_PASSWORD.to_string(),
+            IDENTITY_KIND_AGENT => IDENTITY_KIND_AGENT.to_string(),
+            _ => IDENTITY_KIND_KEY.to_string(),
+        };
     }
 }
 
@@ -374,6 +397,8 @@ fn theme(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
     pub url: String,
+    /// When false (default), passwords and private keys stay local and are not pushed/pulled.
+    #[serde(default)]
     pub sync_secrets: bool,
 }
 
@@ -405,6 +430,9 @@ pub struct SyncStatus {
     pub last_error: Option<String>,
     /// Current sync state: "unconfigured" | "idle" | "syncing" | "offline" | "error"
     pub state: String,
+    /// Whether secret material may leave this device. Default false — secrets stay local.
+    #[serde(default)]
+    pub sync_secrets: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

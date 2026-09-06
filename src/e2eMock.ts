@@ -46,12 +46,26 @@ type SyncStatus = {
   last_sync?: string | null;
   last_error?: string | null;
   state: string;
+  sync_secrets?: boolean;
+};
+
+type Identity = {
+  id: string;
+  name: string;
+  kind?: string | null;
+  public_key?: string | null;
+  private_key?: string | null;
+  passphrase?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
 };
 
 type Db = {
   hosts: Host[];
   groups: Group[];
   sessions: SessionInfo[];
+  identities: Identity[];
   connections: Map<string, string>;
   appearance: Record<string, unknown>;
   sync: SyncStatus;
@@ -138,6 +152,7 @@ function createDb(): Db {
     hosts: [],
     groups: [],
     sessions: [],
+    identities: [],
     connections: new Map(),
     appearance: { ...DEFAULT_APPEARANCE },
     sync: {
@@ -146,6 +161,7 @@ function createDb(): Db {
       last_sync: null,
       last_error: null,
       state: "unconfigured",
+      sync_secrets: false,
     },
   };
   seedFixtureGroup(db);
@@ -265,6 +281,24 @@ export function installE2eMock(): void {
           return null;
         }
         case "identities_list":
+          return db.identities.filter((i) => !i.deleted_at);
+        case "identities_upsert": {
+          const identity = { ...(args.identity as Identity) };
+          identity.kind = identity.kind || "key";
+          const idx = db.identities.findIndex((i) => i.id === identity.id);
+          if (idx >= 0) db.identities[idx] = identity;
+          else db.identities.push(identity);
+          return identity;
+        }
+        case "identities_delete": {
+          const id = String(args.id);
+          const row = db.identities.find((i) => i.id === id);
+          if (row) {
+            row.deleted_at = stamp();
+            row.updated_at = stamp();
+          }
+          return null;
+        }
         case "snippets_list":
         case "history_search":
         case "ssh_default_keys":
@@ -272,16 +306,29 @@ export function installE2eMock(): void {
         case "forwards_list":
           return [];
         case "sync_status":
-          return db.sync;
-        case "sync_configure":
+          return {
+            ...db.sync,
+            sync_secrets: db.sync.sync_secrets ?? false,
+          };
+        case "sync_configure": {
+          const config = (args.config ?? args) as { url?: string; sync_secrets?: boolean };
           db.sync = {
             configured: true,
-            url: (args.url as string) ?? "postgres://test",
+            url: config.url ?? "postgres://test",
             last_sync: null,
             last_error: null,
             state: "idle",
+            sync_secrets: Boolean(config.sync_secrets),
           };
           return null;
+        }
+        case "sync_set_secrets": {
+          const on = Boolean(
+            args.syncSecrets ?? args.sync_secrets ?? false,
+          );
+          db.sync.sync_secrets = on;
+          return null;
+        }
         case "sync_now":
           db.sync.state = "idle";
           db.sync.last_sync = stamp();
@@ -311,6 +358,7 @@ export function installE2eMock(): void {
               (stateName === "idle" ? stamp() : null),
             last_error: (status.last_error as string | null | undefined) ?? null,
             state: stateName,
+            sync_secrets: Boolean(status.sync_secrets ?? db.sync.sync_secrets ?? false),
           };
           return null;
         }
