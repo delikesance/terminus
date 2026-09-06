@@ -21,6 +21,8 @@ export function getTestBridge(page: Page) {
       page.evaluate((n) => (window as any).__terminusTest.seedUngroupedHosts(n), count),
     clearUngroupedHosts: () => 
       page.evaluate(() => (window as any).__terminusTest.clearUngroupedHosts()),
+    clearAllHosts: () =>
+      page.evaluate(() => (window as any).__terminusTest.clearAllHosts()),
     groupsDelete: (groupId: string) => 
       page.evaluate((id) => (window as any).__terminusTest.groupsDelete(id), groupId),
     restoreGroup: (groupId: string) => 

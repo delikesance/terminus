@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 interface TerminusTestBridge {
   seedUngroupedHosts(count: number): Promise<void>;
   clearUngroupedHosts(): Promise<void>;
+  clearAllHosts(): Promise<void>;
   groupsDelete(groupId: string): Promise<void>;
   restoreGroup(groupId: string): Promise<void>;
   sessionOpenSsh(hostId: string): Promise<string>;
@@ -60,6 +61,14 @@ export function initTestBridge(): void {
         if (!host.group_id && String(host.name).startsWith("Test Host")) {
           await invoke("hosts_delete", { id: host.id });
         }
+      }
+      await refreshUi();
+    },
+
+    async clearAllHosts(): Promise<void> {
+      const hosts = await invoke<any[]>("hosts_list");
+      for (const host of hosts) {
+        await invoke("hosts_delete", { id: host.id });
       }
       await refreshUi();
     },

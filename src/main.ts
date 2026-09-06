@@ -8,6 +8,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
+import { parseKnownHosts } from "./knownHostsParse";
+
+const ONBOARD_KEY = "terminus.onboarded";
 
 // Must run before any invoke/listen for Playwright vite-preview.
 installE2eMock();
@@ -142,7 +145,9 @@ async function boot() {
     void invoke("appearance_set", { appearance: state.appearance });
   }
   applyAppearance();
-  void Promise.all([refreshSide(), refreshSync()]);
+  void Promise.all([refreshSide(), refreshSync()]).then(() => {
+    maybeShowOnboarding();
+  });
   await listen<{ id: string }>("session://output", (ev) => {
     scheduleFrame(ev.payload.id);
   });
@@ -478,20 +483,30 @@ function renderHosts() {
   }
   
   $("panel-hosts").innerHTML = panelHtml;
-  
-  // Show empty state if no hosts
-  if (!state.hosts.length) {
+
+  // Empty only for 0 real hosts (list already excludes soft-deleted). Search ≠ zero-host empty.
+  const noFilter = !q.trim();
+  if (!state.hosts.length && noFilter) {
     $("panel-hosts").insertAdjacentHTML(
       "beforeend",
-      `<div class="empty">${icons.server}<span>Add a host to connect over SSH.</span></div>`,
+      `<div class="empty" data-testid="empty-hosts">
+        ${icons.server}
+        <span class="empty-title">No hosts yet</span>
+        <div class="empty-actions">
+          <button type="button" class="primary" id="empty-add-host" data-testid="empty-add-host">Add host</button>
+          <button type="button" class="ghost" id="empty-import-hosts" data-testid="empty-import-hosts">Import known_hosts…</button>
+        </div>
+      </div>`,
     );
+    $("empty-add-host").onclick = () => editHost();
+    $("empty-import-hosts").onclick = () => void importKnownHosts();
   } else if (!filteredHosts.length) {
     $("panel-hosts").insertAdjacentHTML(
       "beforeend",
-      `<div class="empty">${icons.search}<span>No hosts match that search.</span></div>`,
+      `<div class="empty" data-testid="empty-hosts-match">${icons.search}<span class="empty-title">No hosts match</span></div>`,
     );
   }
-  
+
   // Bind event handlers
   $("panel-hosts").querySelector<HTMLElement>("[data-local]")!.onclick = () => focusOrOpenLocal();
   $("panel-hosts").querySelectorAll<HTMLButtonElement>("[data-new-local]").forEach((btn) => {
@@ -500,7 +515,7 @@ function renderHosts() {
       void openLocal();
     };
   });
-  
+
   // Group toggle handlers
   $("panel-hosts").querySelectorAll<HTMLElement>(".group-row").forEach((el) => {
     el.onclick = () => {
@@ -514,7 +529,7 @@ function renderHosts() {
       renderHosts();
     };
   });
-  
+
   // Host handlers
   $("panel-hosts").querySelectorAll<HTMLElement>("[data-host]").forEach((el) => {
     el.onclick = () => focusOrOpenSsh(el.dataset.host!);
@@ -531,14 +546,14 @@ function renderHosts() {
       ]);
     };
   });
-  
+
   $("panel-hosts").querySelectorAll<HTMLElement>("[data-focus]").forEach((el) => {
     el.onclick = (ev) => {
       ev.stopPropagation();
       focusHost(el.dataset.focus!);
     };
   });
-  
+
   $("panel-hosts").querySelectorAll<HTMLButtonElement>("[data-new]").forEach((btn) => {
     btn.onclick = (ev) => {
       ev.stopPropagation();
@@ -566,13 +581,25 @@ function syncHostHighlights() {
 }
 
 function renderSnippets() {
+  if (!state.snippets.length) {
+    $("panel-snippets").innerHTML = `<div class="empty" data-testid="empty-snippets">
+      ${icons.snippet}
+      <span class="empty-title">No snippets yet</span>
+      <span class="empty-hint">Save reusable commands to paste into a session.</span>
+      <div class="empty-actions">
+        <button type="button" class="primary" id="new-snippet" data-testid="empty-add-snippet">New snippet</button>
+      </div>
+    </div>`;
+    $("new-snippet").onclick = () => editSnippet();
+    return;
+  }
   $("panel-snippets").innerHTML =
     `<div class="item" id="new-snippet"><span class="leading">${icons.plus}</span><div class="body"><strong>New snippet</strong><small>Insert text into the terminal</small></div></div>` +
-    (state.snippets
+    state.snippets
       .map(
         (s) => `<div class="item" data-snip="${s.id}"><span class="leading">${icons.snippet}</span><div class="body"><strong>${escapeHtml(s.title)}</strong><small>${escapeHtml(s.content)}</small></div></div>`,
       )
-      .join("") || `<div class="empty">${icons.snippet}<span>No snippets yet.</span></div>`);
+      .join("");
   $("new-snippet").onclick = () => editSnippet();
   $("panel-snippets").querySelectorAll<HTMLElement>("[data-snip]").forEach((el) => {
     el.onclick = () => sendText(state.snippets.find((s) => s.id === el.dataset.snip)?.content ?? "");
@@ -580,9 +607,17 @@ function renderSnippets() {
 }
 
 function renderHistory() {
+  if (!state.history.length) {
+    $("panel-history").innerHTML = `<div class="empty" data-testid="empty-history">
+      ${icons.clock}
+      <span class="empty-title">No history yet</span>
+      <span class="empty-hint">Commands you run will appear here.</span>
+    </div>`;
+    return;
+  }
   $("panel-history").innerHTML = state.history
     .map((h) => `<div class="item" data-hist="${h.id}"><span class="leading">${icons.clock}</span><div class="body"><strong>${escapeHtml(h.command)}</strong><small>${h.session_kind} · ${h.created_at.slice(11, 19)}</small></div></div>`)
-    .join("") || `<div class="empty">${icons.clock}<span>Commands you run will appear here.</span></div>`;
+    .join("");
   $("panel-history").querySelectorAll<HTMLElement>("[data-hist]").forEach((el) => {
     el.onclick = () => sendText((state.history.find((h) => h.id === el.dataset.hist)?.command ?? "") + "\r");
   });
@@ -1904,6 +1939,110 @@ function openSheet(html: string) {
   $("sheet-close").onclick = () => $("modal").classList.add("hidden");
 }
 
+function markOnboarded() {
+  localStorage.setItem(ONBOARD_KEY, "1");
+}
+
+function maybeShowOnboarding() {
+  // Default E2E suites must not be blocked by the modal; opt in via localStorage for C7 onboard smoke.
+  if (import.meta.env.VITE_E2E === "1" && localStorage.getItem("terminus.e2e.showOnboard") !== "1") return;
+  if (localStorage.getItem(ONBOARD_KEY) === "1") return;
+  openSheet(`
+    <h2>Get started</h2>
+    <p class="lead">A short checklist for your first SSH session.</p>
+    <ol class="onboard-steps" data-testid="onboard-steps">
+      <li><span class="step-num">1</span><span>Add a host</span></li>
+      <li><span class="step-num">2</span><span>Connect<small>TOFU if needed</small></span></li>
+      <li><span class="step-num">3</span><span>Optional: configure sync</span></li>
+    </ol>
+    <div class="row">
+      <button type="button" class="ghost" id="onboard-skip" data-testid="onboard-skip">Skip</button>
+      <button type="button" class="primary" id="onboard-go" data-testid="onboard-go">Get started</button>
+    </div>`);
+  const finish = (start: boolean) => {
+    markOnboarded();
+    localStorage.removeItem("terminus.e2e.showOnboard");
+    $("modal").classList.add("hidden");
+    if (start) void editHost();
+  };
+  $("onboard-skip").onclick = () => finish(false);
+  $("onboard-go").onclick = () => finish(true);
+  $("sheet-close").onclick = () => {
+    markOnboarded();
+    localStorage.removeItem("terminus.e2e.showOnboard");
+    $("modal").classList.add("hidden");
+  };
+}
+
+/** Native file picker → fail-closed known_hosts parse → hosts without secrets. */
+async function importKnownHosts() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".known_hosts,known_hosts,text/plain,.txt";
+  input.style.display = "none";
+  document.body.appendChild(input);
+
+  const file = await new Promise<File | null>((resolve) => {
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+  input.remove();
+  if (!file) return;
+
+  let text = "";
+  try {
+    text = await file.text();
+  } catch (err) {
+    openSheet(`<h2>Import failed</h2><p class="lead">${escapeHtml(String(err))}</p>
+      <div class="row"><button type="button" class="primary" id="import-ok">OK</button></div>`);
+    $("import-ok").onclick = () => $("modal").classList.add("hidden");
+    return;
+  }
+
+  const { hosts, errors } = parseKnownHosts(text);
+  const now = new Date().toISOString();
+  let created = 0;
+  for (const stub of hosts) {
+    const host: Host = {
+      id: crypto.randomUUID(),
+      name: stub.hostname,
+      hostname: stub.hostname,
+      port: stub.port,
+      username: "",
+      auth_method: "key",
+      password: null,
+      identity_id: null,
+      group_id: null,
+      tags: ["imported"],
+      notes: "Imported from known_hosts",
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    };
+    try {
+      await invoke("hosts_upsert", { host });
+      created += 1;
+    } catch {
+      // fail-closed per host: skip + count as error, never crash the import
+      // (secrets are never written — stubs have no password/identity)
+    }
+  }
+  const upsertErrors = hosts.length - created;
+  const totalErrors = errors + upsertErrors;
+  await refreshSide();
+
+  openSheet(`
+    <h2>Import complete</h2>
+    <p class="lead">Hosts were created without secrets — add a key or password before connecting.</p>
+    <div class="group-card">
+      <div class="cell"><span>Imported</span><strong>${created}</strong></div>
+      <div class="cell"><span>Skipped / errors</span><strong>${totalErrors}</strong></div>
+    </div>
+    <div class="row"><button type="button" class="primary" id="import-ok" data-testid="import-ok">OK</button></div>`);
+  $("import-ok").onclick = () => $("modal").classList.add("hidden");
+}
+
 function openSftpFor(hostId: string) {
   state.sftpHostId = hostId;
   document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
@@ -1912,6 +2051,18 @@ function openSftpFor(hostId: string) {
   $("panel-sftp").classList.remove("hidden");
   toggleSidebar(true);
   void loadSftp(hostId, ".");
+}
+
+function renderSftpEmpty() {
+  $("panel-sftp").innerHTML = `<div class="empty" data-testid="empty-sftp">
+    ${icons.folder}
+    <span class="empty-title">No host to browse</span>
+    <span class="empty-hint">Add a host to browse files over SFTP.</span>
+    <div class="empty-actions">
+      <button type="button" class="primary" id="sftp-add-host" data-testid="empty-sftp-add-host">Add host</button>
+    </div>
+  </div>`;
+  $("sftp-add-host").onclick = () => editHost();
 }
 
 async function loadSftp(hostId: string, path: string) {
@@ -1923,7 +2074,7 @@ async function loadSftp(hostId: string, path: string) {
     )
     .join("")}</select></div>`;
   if (!state.hosts.length) {
-    $("panel-sftp").innerHTML = `<div class="empty">${icons.folder}<span>Add a host to browse files.</span></div>`;
+    renderSftpEmpty();
     return;
   }
   $("panel-sftp").innerHTML = `${picker}<div class="empty">${icons.folder}<span>Loading ${escapeHtml(path)}…</span></div>`;
@@ -1956,7 +2107,7 @@ document.querySelector('[data-panel="sftp"]')?.addEventListener("click", () => {
   const activeHost = activePane()?.session?.host_id ?? activePane()?.pending?.hostId;
   const hostId = state.sftpHostId ?? activeHost ?? state.hosts[0]?.id;
   if (hostId) void loadSftp(hostId, ".");
-  else $("panel-sftp").innerHTML = `<div class="empty">${icons.folder}<span>Add a host to browse files.</span></div>`;
+  else renderSftpEmpty();
 });
 
 boot().catch((err) => {
