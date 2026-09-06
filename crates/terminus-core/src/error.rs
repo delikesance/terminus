@@ -41,6 +41,18 @@ pub enum Error {
     /// Private key material could not be parsed (PEM decode / format). Never includes raw secret.
     #[error("invalid SSH identity key: {reason}")]
     IdentityKeyInvalid { reason: String },
+    /// SFTP path escaped the session root via `..` or absolute jump.
+    #[error("SFTP path traversal blocked: {path}")]
+    SftpPathTraversal { path: String },
+    /// SFTP operation exceeded the client timeout; session was disconnected.
+    #[error("SFTP operation timed out")]
+    SftpTimeout,
+    /// Typed SFTP I/O / protocol failure for UI surfacing (not silent).
+    #[error("SFTP {kind}: {message}")]
+    Sftp {
+        kind: &'static str,
+        message: String,
+    },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -99,6 +111,24 @@ impl Error {
                 reason: reason.clone(),
             })
             .unwrap_or_else(|_| self.to_string()),
+            Self::SftpPathTraversal { path } => serde_json::to_string(&SftpIpc {
+                kind: "SftpPathTraversal",
+                message: format!("path traversal blocked: {path}"),
+                path: Some(path.clone()),
+            })
+            .unwrap_or_else(|_| self.to_string()),
+            Self::SftpTimeout => serde_json::to_string(&SftpIpc {
+                kind: "SftpTimeout",
+                message: "SFTP operation timed out".into(),
+                path: None,
+            })
+            .unwrap_or_else(|_| self.to_string()),
+            Self::Sftp { kind, message } => serde_json::to_string(&SftpIpc {
+                kind,
+                message: message.clone(),
+                path: None,
+            })
+            .unwrap_or_else(|_| self.to_string()),
             other => other.to_string(),
         }
     }
@@ -120,6 +150,14 @@ struct HostKeyIpc {
 struct IdentityKeyIpc {
     kind: &'static str,
     reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SftpIpc {
+    kind: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

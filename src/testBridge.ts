@@ -20,6 +20,11 @@ interface TerminusTestBridge {
   setConnection(hostId: string, state: string): Promise<void>;
   setSyncStatus(state: string, lastError?: string): Promise<void>;
   openVault(): Promise<void>;
+  /** C9: seed a host + reset virtual SFTP tree */
+  seedSftpHost(hostId?: string): Promise<string>;
+  /** C9: force next sftp_* IPC to fail with typed JSON error string */
+  sftpForceError(kind: string, message: string): Promise<void>;
+  sftpReset(hostId?: string): Promise<void>;
 }
 
 async function refreshUi(): Promise<void> {
@@ -155,6 +160,40 @@ export function initTestBridge(): void {
     async openVault(): Promise<void> {
       window.dispatchEvent(new Event("terminus-e2e-open-vault"));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+    },
+
+    async seedSftpHost(hostId = `sftp-host-${Date.now()}`): Promise<string> {
+      await invoke("hosts_upsert", {
+        host: {
+          id: hostId,
+          name: "SFTP Lab",
+          hostname: "sftp.example.com",
+          port: 22,
+          username: "lab",
+          auth_method: "key",
+          password: null,
+          identity_id: null,
+          group_id: null,
+          tags: [],
+          notes: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          deleted_at: null,
+        },
+      });
+      await invoke("test_sftp_reset", { hostId }).catch(() => undefined);
+      await refreshUi();
+      return hostId;
+    },
+
+    async sftpForceError(kind: string, message: string): Promise<void> {
+      await invoke("test_sftp_force_error", {
+        error: JSON.stringify({ kind, message }),
+      });
+    },
+
+    async sftpReset(hostId?: string): Promise<void> {
+      await invoke("test_sftp_reset", { hostId: hostId ?? "" });
     },
   };
 
