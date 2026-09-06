@@ -1,5 +1,6 @@
 :root {
   --bg: #1c1c1e;
+  --term-bg: var(--bg);
   --elevated: #2c2c2e;
   --grouped: #242426;
   --fill: rgba(120, 120, 128, 0.24);
@@ -708,6 +709,7 @@ svg {
   pointer-events: none;
   z-index: 0;
   outline: none;
+  background: var(--term-bg, var(--bg));
 }
 .pane.active {
   visibility: visible;
@@ -717,6 +719,7 @@ svg {
 .term-canvas {
   display: block;
   image-rendering: auto;
+  background: var(--term-bg, var(--bg));
 }
 .pane-banner {
   position: absolute;
