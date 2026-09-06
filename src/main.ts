@@ -2614,11 +2614,18 @@ async function saveLocalFile(name: string, data: Uint8Array) {
     }>;
   };
   if (typeof w.showSaveFilePicker === "function") {
-    const handle = await w.showSaveFilePicker({ suggestedName: name });
-    const writable = await handle.createWritable();
-    await writable.write(data);
-    await writable.close();
-    return;
+    try {
+      const handle = await w.showSaveFilePicker({ suggestedName: name });
+      const writable = await handle.createWritable();
+      await writable.write(data);
+      await writable.close();
+      return;
+    } catch (err) {
+      // User cancel / headless abort → fall through to <a download>
+      const msg = err instanceof Error ? err.message : String(err);
+      const name_ = err instanceof Error ? err.name : "";
+      if (name_ !== "AbortError" && !/abort/i.test(msg)) throw err;
+    }
   }
   const copy = new Uint8Array(data.byteLength);
   copy.set(data);
