@@ -19,6 +19,7 @@ interface TerminusTestBridge {
   sessionClose(sessionId: string): Promise<void>;
   setConnection(hostId: string, state: string): Promise<void>;
   setSyncStatus(state: string, lastError?: string): Promise<void>;
+  openVault(): Promise<void>;
 }
 
 async function refreshUi(): Promise<void> {
@@ -149,6 +150,11 @@ export function initTestBridge(): void {
         },
       });
       await refreshUi();
+    },
+
+    async openVault(): Promise<void> {
+      window.dispatchEvent(new Event("terminus-e2e-open-vault"));
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
     },
   };
 

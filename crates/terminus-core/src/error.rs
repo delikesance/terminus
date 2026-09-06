@@ -38,6 +38,9 @@ pub enum Error {
     PtyReader(String),
     #[error("pty kill failed: {0}")]
     PtyKill(String),
+    /// Private key material could not be parsed (PEM decode / format). Never includes raw secret.
+    #[error("invalid SSH identity key: {reason}")]
+    IdentityKeyInvalid { reason: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -91,6 +94,11 @@ impl Error {
                 fingerprint: fingerprint.clone(),
             })
             .unwrap_or_else(|_| self.to_string()),
+            Self::IdentityKeyInvalid { reason } => serde_json::to_string(&IdentityKeyIpc {
+                kind: "IdentityKeyInvalid",
+                reason: reason.clone(),
+            })
+            .unwrap_or_else(|_| self.to_string()),
             other => other.to_string(),
         }
     }
@@ -106,6 +114,12 @@ struct HostKeyIpc {
     public_key: String,
     algo: String,
     fingerprint: String,
+}
+
+#[derive(Debug, Serialize)]
+struct IdentityKeyIpc {
+    kind: &'static str,
+    reason: String,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
