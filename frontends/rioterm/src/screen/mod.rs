@@ -73,7 +73,17 @@ pub struct Screen<'screen> {
     pub renderer: Renderer,
     pub sugarloaf: Sugarloaf<'screen>,
     pub context_manager: context::ContextManager<EventProxy>,
-    last_ime_cursor_pos: Option<(f32, f32)>,
+    /// IME state is per window, not per context: the platform IME
+    /// composes into whichever context is current, and exactly one
+    /// composition can exist per view. Keeping it here (instead of on
+    /// `Context`) makes a stale preedit on a background tab or split
+    /// structurally impossible.
+    pub ime: crate::ime::Ime,
+    /// Screen row the preedit rendered on last frame, so the row can
+    /// be rebuilt when the composition moves or ends even when
+    /// terminal damage reports nothing.
+    last_preedit_row: Option<usize>,
+    last_ime_cursor_pos: Option<(f32, f32, f32)>,
     hints_config: Vec<std::rc::Rc<rio_backend::config::hints::Hint>>,
     /// Hint regexes compiled on first use, keyed by pattern. Hover
     /// hit-testing runs on every mouse move; recompiling the URL
@@ -288,9 +298,7 @@ impl Screen<'_> {
 
         let cursor = Cursor {
             content: config.cursor.shape.into(),
-            content_ref: config.cursor.shape.into(),
             state: CursorState::new(config.cursor.shape.into()),
-            is_ime_enabled: false,
         };
 
         let context_manager = context::ContextManager::start(
@@ -334,6 +342,8 @@ impl Screen<'_> {
             mouse_bindings: crate::bindings::default_mouse_bindings(),
             modifiers: Modifiers::default(),
             context_manager,
+            ime: crate::ime::Ime::new(),
+            last_preedit_row: None,
             sugarloaf,
             mouse: Mouse::new(config.scroll.multiplier, config.scroll.divider),
             touchpurpose: TouchPurpose::default(),
@@ -382,6 +392,68 @@ impl Screen<'_> {
             .renderable_content
             .pending_update
             .set_dirty();
+    }
+
+    /// Window-level IME preedit update, with the side effects composing
+    /// implies. Returns whether a repaint is needed.
+    ///
+    /// Composing always snaps out of scrollback: the overlay renders
+    /// only at `display_offset == 0` while the preedit key gate
+    /// swallows input, so a scrolled viewport would mean a live but
+    /// invisible composition and a terminal that looks frozen. This
+    /// holds during search too; the snap composes with the relative
+    /// `Scroll::Delta` restore in `search_reset_state` exactly like a
+    /// manual mid-search scroll does, and committing the query re-runs
+    /// `goto_match`, which scrolls back to the focused match. The snap
+    /// runs on every composition event, not only on changes: candidate
+    /// paging re-reports identical text, and that event must still
+    /// restore visibility after a mid-composition scroll.
+    ///
+    /// Selection follows what the equivalent plain typing does: plain
+    /// input drops it (`send_bytes`), search typing drops it only
+    /// outside vi mode (`search_input` keeps a vi visual selection).
+    pub fn set_ime_preedit(&mut self, preedit: Option<crate::ime::Preedit>) -> bool {
+        let composing = preedit.is_some();
+        let changed = self.ime.preedit() != preedit.as_ref();
+        if changed {
+            self.ime.set_preedit(preedit);
+        }
+
+        let mut needs_render = changed;
+        if composing {
+            let mut terminal = self.ctx_mut().current_mut().terminal.lock();
+            let snapped_offset = terminal.display_offset();
+            if snapped_offset != 0 {
+                terminal.scroll_display(Scroll::Bottom);
+                needs_render = true;
+            }
+            drop(terminal);
+            if snapped_offset != 0 && self.search_active() {
+                // Keep the vi-origin restore honest: `search_reset_state`
+                // applies a relative `Scroll::Delta`, so the snap's
+                // displacement must be recorded the way `goto_match`
+                // records its own scrolls, or Esc after composing lands
+                // the viewport clamped at the bottom instead of at the
+                // vi origin.
+                self.search_state.display_offset_delta += snapped_offset as i32;
+            }
+
+            if changed {
+                if self.search_active() {
+                    if !self.get_mode().contains(Mode::VI) {
+                        // Clear selection so we do not obstruct any matches.
+                        self.context_manager.current_mut().set_selection(None);
+                    }
+                } else {
+                    self.clear_selection();
+                }
+            }
+        }
+
+        if changed {
+            self.mark_dirty();
+        }
+        needs_render
     }
 
     #[inline]
@@ -731,7 +803,7 @@ impl Screen<'_> {
         key: &rio_window::event::KeyEvent,
         clipboard: &mut Clipboard,
     ) {
-        if self.context_manager.current().ime.preedit().is_some() {
+        if self.ime.preedit().is_some() {
             return;
         }
 
@@ -4000,6 +4072,12 @@ impl Screen<'_> {
                     rio_backend::crosswords::pos::Pos,
                 )>,
                 hint_labels: Option<Vec<crate::context::renderable::HintLabel>>,
+                /// Active IME composition, laid out on the cursor row.
+                /// Only ever `Some` for the active panel with an
+                /// unscrolled viewport: the composition belongs to the
+                /// focused context, and a scrolled viewport has no
+                /// on-screen cursor row to anchor it to.
+                preedit_line: Option<rio_grid::preedit::PreeditLine>,
             }
 
             let (active_key, scaled_margin) = {
@@ -4095,7 +4173,25 @@ impl Screen<'_> {
                 let cursor_blinking = ctx.renderable_content.has_blinking_enabled;
                 let cursor_blink_visible =
                     !cursor_blinking || ctx.renderable_content.is_blinking_cursor_visible;
-                let cursor_preedit = ctx.ime.preedit().is_some();
+                // IME state is window-level (`self.ime`); it renders
+                // on the active panel only, and never over scrollback
+                // (the cursor row is off-viewport there — an anchor
+                // computed from it would paint on history).
+                let preedit_line = if is_active && display_offset == 0 {
+                    self.ime.preedit().and_then(|preedit| {
+                        rio_grid::preedit::PreeditLine::new(
+                            &preedit.text,
+                            preedit.cursor,
+                            (cursor.state.pos.row.0.max(0) as usize)
+                                .min(ctx.renderable_content.screen_lines.max(1) - 1),
+                            cursor.state.pos.col.0,
+                            ctx.renderable_content.columns.max(1),
+                        )
+                    })
+                } else {
+                    None
+                };
+                let cursor_preedit = preedit_line.is_some();
                 // OSC 12 wins; otherwise fall back to the named-color
                 // theme value. `Renderer::color`'s fallback (the
                 // indexed-color List) is not populated for the Cursor
@@ -4132,6 +4228,7 @@ impl Screen<'_> {
                     focused_match,
                     hovered_hyperlink,
                     hint_labels,
+                    preedit_line,
                 });
             }
 
@@ -4282,6 +4379,15 @@ impl Screen<'_> {
                             }
                             None => (row, row_styles),
                         };
+                        // Thread the composition only into its own
+                        // row: everything else renders untouched.
+                        let preedit_row =
+                            p.preedit_line.as_ref().filter(|line| line.row == y).map(
+                                |line| rio_grid::PreeditRow {
+                                    line,
+                                    block_bg: rio_grid::normalized_to_u8(p.cursor_color),
+                                },
+                            );
                         rio_grid::build_row_bg(
                             row,
                             cols,
@@ -4290,6 +4396,7 @@ impl Screen<'_> {
                             &p.term_colors,
                             row_sel,
                             &hint_scratch,
+                            preedit_row.as_ref(),
                             &mut bg_scratch,
                         );
                         let cursor_col_for_row = if p.cursor_visible
@@ -4315,6 +4422,7 @@ impl Screen<'_> {
                             p.cell_h,
                             row_sel,
                             &hint_scratch,
+                            preedit_row.as_ref(),
                             &font_library,
                             p.route_id,
                             cursor_col_for_row,
@@ -4354,6 +4462,29 @@ impl Screen<'_> {
                             p.visible_rows[y].dirty = false;
                         }
                     }
+                }
+
+                // The composition is painted into the row's CPU
+                // cells, so its row must rebuild whenever the overlay
+                // exists, moved, or just disappeared — even when
+                // terminal damage says nothing changed (the text under
+                // it didn't; the overlay did). Cheap: at most two rows.
+                if p.is_active {
+                    let current = p.preedit_line.as_ref().map(|line| line.row);
+                    for row in [
+                        self.last_preedit_row
+                            .filter(|_| self.last_preedit_row != current),
+                        current,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if row < p.visible_rows.len() {
+                            rebuild_row(p, row, grid, rasterizer);
+                            p.visible_rows[row].dirty = false;
+                        }
+                    }
+                    self.last_preedit_row = current;
                 }
 
                 // Atlas-full recovery: the backend cleared the atlas
@@ -4592,6 +4723,39 @@ impl Screen<'_> {
         let layout = current_item.val.dimension;
         let cursor_pos = current_item.val.renderable_content.cursor.state.pos;
 
+        // While composing, the candidate popup follows the IME caret,
+        // not the terminal cursor: the composition renders inline and
+        // can slide away from the cursor cell, and a popup opening
+        // tens of cells from the caret overlaps the freshly drawn
+        // text. The reported area's width spans from the caret to the
+        // composition's end, so the OS also knows how much freshly
+        // drawn text to avoid covering.
+        // Mirrors the layout the renderer uses (same inputs).
+        let content = &current_item.val.renderable_content;
+        let (anchor_row, anchor_col, anchor_cells) =
+            match self.ime.preedit().filter(|_| {
+                content.display_offset == 0
+                    && content.columns > 0
+                    && content.screen_lines > 0
+            }) {
+                Some(preedit) => match rio_grid::preedit::PreeditLine::new(
+                    &preedit.text,
+                    preedit.cursor,
+                    (cursor_pos.row.0.max(0) as usize).min(content.screen_lines - 1),
+                    cursor_pos.col.0,
+                    content.columns,
+                ) {
+                    Some(line) => {
+                        let col = line.popup_anchor_col().min(content.columns - 1);
+                        let cells =
+                            line.end_col().min(content.columns).max(col + 1) - col;
+                        (line.row, col, cells)
+                    }
+                    None => (cursor_pos.row.0.max(0) as usize, cursor_pos.col.0, 1),
+                },
+                None => (cursor_pos.row.0.max(0) as usize, cursor_pos.col.0, 1),
+            };
+
         // Calculate pixel position of cursor — canonical integer
         // stride (line_height already baked into cell_height).
         let cell_width = layout.cell.cell_width as f32;
@@ -4614,9 +4778,8 @@ impl Screen<'_> {
         let origin_y = panel_rect[1] + scaled_margin.top;
 
         // Convert grid position to pixel position
-        let pixel_x =
-            origin_x + (cursor_pos.col.0 as f32 * cell_width) + (cell_width * 0.5);
-        let pixel_y = origin_y + (cursor_pos.row.0 as f32 * cell_height);
+        let pixel_x = origin_x + (anchor_col as f32 * cell_width) + (cell_width * 0.5);
+        let pixel_y = origin_y + (anchor_row as f32 * cell_height);
 
         // Validate final coordinates
         if pixel_x.is_nan() || pixel_y.is_nan() || pixel_x < 0.0 || pixel_y < 0.0 {
@@ -4624,20 +4787,27 @@ impl Screen<'_> {
             return;
         }
 
-        // Check if position has changed significantly to avoid unnecessary updates
-        if let Some((last_x, last_y)) = self.last_ime_cursor_pos {
-            if (pixel_x - last_x).abs() < 1.0 && (pixel_y - last_y).abs() < 1.0 {
-                return; // Position hasn't changed significantly
+        // A PastEnd caret sits one cell past the composition, where
+        // `end_col - col` is 0; the area is always at least one cell.
+        let area_width = anchor_cells as f32 * cell_width;
+
+        // Check if the area changed significantly to avoid unnecessary updates
+        if let Some((last_x, last_y, last_w)) = self.last_ime_cursor_pos {
+            if (pixel_x - last_x).abs() < 1.0
+                && (pixel_y - last_y).abs() < 1.0
+                && (area_width - last_w).abs() < 1.0
+            {
+                return; // Area hasn't changed significantly
             }
         }
 
-        // Update last position
-        self.last_ime_cursor_pos = Some((pixel_x, pixel_y));
+        // Update last area
+        self.last_ime_cursor_pos = Some((pixel_x, pixel_y, area_width));
 
         // Set IME cursor area
         window.set_ime_cursor_area(
             rio_window::dpi::PhysicalPosition::new(pixel_x as f64, pixel_y as f64),
-            rio_window::dpi::PhysicalSize::new(cell_width as f64, cell_height as f64),
+            rio_window::dpi::PhysicalSize::new(area_width as f64, cell_height as f64),
         );
     }
 

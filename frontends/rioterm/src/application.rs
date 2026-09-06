@@ -1,5 +1,5 @@
 use crate::event::{ClickState, EventPayload, EventProxy, RioEvent, RioEventType};
-use crate::ime::Preedit;
+use crate::ime::{Preedit, PreeditCursor};
 use crate::renderer::utils::update_colors_based_on_theme;
 use crate::router::{routes::RoutePath, Router};
 use crate::scheduler::{Scheduler, TimerId, Topic};
@@ -2016,52 +2016,67 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             }
 
             WindowEvent::Ime(ime) => {
-                if route.window.screen.renderer.assistant.is_active() {
-                    return;
-                }
-
+                // Modal overlays own keyboard input (`modal_owns_input`
+                // walks the `has_key_wait` roster): while one is up,
+                // composition input must not reach the terminal, but
+                // any stored preedit must still CLEAR: a live
+                // composition would keep painting into the grid behind
+                // the overlay and its key gate would swallow every
+                // plain keystroke after the overlay closes. Search
+                // stays open to IME (commits route into the search
+                // input via `paste`).
                 match ime {
                     Ime::Commit(text) => {
+                        // Text-input overlays (island rename, palette)
+                        // consume commits first, in `has_key_wait`'s
+                        // order; other modals swallow them; only a bare
+                        // terminal receives the text.
+                        if route.overlay_commit_text(&text) {
+                            return;
+                        }
+                        if route.modal_owns_input() {
+                            return;
+                        }
                         // Don't use bracketed paste for single char input.
                         route.window.screen.paste(&text, text.chars().count() > 1);
                     }
                     Ime::Preedit(text, cursor_offset) => {
-                        let preedit = if text.is_empty() {
+                        let preedit = if text.is_empty() || route.modal_owns_input() {
                             None
                         } else {
-                            Some(Preedit::new(text, cursor_offset.map(|offset| offset.0)))
+                            // The platform's `None` means the IME asked
+                            // for a hidden caret (candidate paging),
+                            // NOT end-of-text, which arrives as an
+                            // explicit offset.
+                            let cursor = match cursor_offset {
+                                Some((start, _)) => PreeditCursor::Byte(start),
+                                None => PreeditCursor::Hidden,
+                            };
+                            Some(Preedit::new(text, cursor))
                         };
 
-                        if route.window.screen.context_manager.current().ime.preedit()
-                            != preedit.as_ref()
-                        {
-                            route
-                                .window
-                                .screen
-                                .context_manager
-                                .current_mut()
-                                .ime
-                                .set_preedit(preedit);
+                        // `set_ime_preedit` owns the composing side
+                        // effects (scroll snap, selection, dirty mark)
+                        // and their search-mode exceptions.
+                        if route.window.screen.set_ime_preedit(preedit) {
                             route.request_redraw();
                         }
                     }
                     Ime::Enabled => {
-                        route
-                            .window
-                            .screen
-                            .context_manager
-                            .current_mut()
-                            .ime
-                            .set_enabled(true);
+                        route.window.screen.ime.set_enabled(true);
                     }
                     Ime::Disabled => {
-                        route
-                            .window
-                            .screen
-                            .context_manager
-                            .current_mut()
-                            .ime
-                            .set_enabled(false);
+                        // Disabling wipes any live preedit (input
+                        // source switched mid-composition): mark dirty
+                        // and repaint like the Preedit arm, or the
+                        // block ghosts on screen until unrelated
+                        // damage.
+                        let had_preedit = route.window.screen.ime.preedit().is_some();
+                        route.window.screen.ime.set_enabled(false);
+                        if had_preedit {
+                            route.window.screen.mark_dirty();
+                            route.request_redraw();
+                        }
                     }
                 }
             }

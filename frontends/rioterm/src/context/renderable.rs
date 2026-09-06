@@ -22,12 +22,15 @@ pub enum WindowUpdate {
     Background(BackgroundState),
 }
 
+/// `content` is the configured cursor shape as a char, read once to
+/// seed the terminal's cursor shape. The glyph actually drawn each
+/// frame comes from `state`; the old `content`/`content_ref` pair
+/// (drawn vs configured) collapsed when the IME preview stopped
+/// swapping the drawn char.
 #[derive(Default, Clone, Debug)]
 pub struct Cursor {
     pub state: CursorState,
     pub content: char,
-    pub content_ref: char,
-    pub is_ime_enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,9 +147,7 @@ impl RenderableContent {
     pub fn from_cursor_config(config_cursor: &CursorConfig) -> Self {
         let cursor = Cursor {
             content: config_cursor.shape.into(),
-            content_ref: config_cursor.shape.into(),
             state: CursorState::new(config_cursor.shape.into()),
-            is_ime_enabled: false,
         };
         Self::new(cursor)
     }
