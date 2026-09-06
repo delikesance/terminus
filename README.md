@@ -30,6 +30,12 @@ Parse unit check for known_hosts import:
 npm run test:known-hosts
 ```
 
+Identity kind helpers:
+
+```bash
+npm run test:identity-kind
+```
+
 `terminus-selftest` is the proof harness: it opens a local PTY, talks to the compose SSH server, writes SQLite state, and round-trips it through PostgreSQL.
 
 ## Cross-platform builds
