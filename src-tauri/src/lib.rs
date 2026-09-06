@@ -181,8 +181,24 @@ async fn identities_upsert(
     state: State<'_, AppState>,
     identity: Identity,
 ) -> Result<Identity, String> {
+    let mut identity = identity;
+    identity.normalize_kind();
+    if identity.kind == "key" {
+        if let Some(material) = identity.private_key.as_deref() {
+            let trimmed = material.trim();
+            if !trimmed.is_empty() {
+                ssh::validate_identity_key(trimmed, identity.passphrase.as_deref())
+                    .map_err(map_err)?;
+            }
+        }
+    }
     state.store.upsert_identity(&identity).await.map_err(map_err)?;
     Ok(identity)
+}
+
+#[tauri::command]
+async fn identities_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.store.delete_identity(&id).await.map_err(map_err)
 }
 
 #[tauri::command]
@@ -229,6 +245,7 @@ async fn identity_import_path(
     });
     identity.private_key = Some(path);
     identity.passphrase = passphrase.filter(|s| !s.is_empty());
+    identity.kind = "key".into();
     state.store.upsert_identity(&identity).await.map_err(map_err)?;
     Ok(identity)
 }
@@ -313,6 +330,15 @@ fn themes_list() -> Vec<ColorTheme> {
 #[tauri::command]
 async fn sync_configure(state: State<'_, AppState>, config: SyncConfig) -> Result<(), String> {
     state.sync.configure(config).await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn sync_set_secrets(state: State<'_, AppState>, sync_secrets: bool) -> Result<(), String> {
+    state
+        .sync
+        .set_sync_secrets(sync_secrets)
+        .await
+        .map_err(map_err)
 }
 
 #[tauri::command]
@@ -450,6 +476,7 @@ pub fn run() {
             groups_delete,
             identities_list,
             identities_upsert,
+            identities_delete,
             ssh_default_keys,
             ssh_host_key_fingerprint,
             ssh_host_key_trust,
@@ -466,6 +493,7 @@ pub fn run() {
             keybindings_get,
             themes_list,
             sync_configure,
+            sync_set_secrets,
             sync_now,
             sync_status,
             sftp_list,

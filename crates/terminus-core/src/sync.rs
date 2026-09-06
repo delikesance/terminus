@@ -74,14 +74,58 @@ impl SyncEngine {
         } else {
             self.state.lock().await.clone()
         };
-        
+        let sync_secrets = self.sync_secrets_pref().await;
+
         SyncStatus {
             configured,
             url: self.config.lock().await.as_ref().map(|c| c.url.clone()),
             last_sync: *self.last_sync.lock().await,
             last_error: self.last_error.lock().await.clone(),
             state,
+            sync_secrets,
         }
+    }
+
+    /// Persist whether secrets may sync. Default remains off (secrets stay local).
+    pub async fn set_sync_secrets(&self, sync_secrets: bool) -> Result<()> {
+        let mut guard = self.config.lock().await;
+        if let Some(cfg) = guard.as_mut() {
+            cfg.sync_secrets = sync_secrets;
+            self.store
+                .set_setting("sync", &serde_json::to_value(&*cfg)?)
+                .await?;
+            return Ok(());
+        }
+        drop(guard);
+        let mut cfg = if let Some(value) = self.store.get_setting("sync").await? {
+            serde_json::from_value::<SyncConfig>(value).unwrap_or(SyncConfig {
+                url: String::new(),
+                sync_secrets: false,
+            })
+        } else {
+            SyncConfig {
+                url: String::new(),
+                sync_secrets: false,
+            }
+        };
+        cfg.sync_secrets = sync_secrets;
+        self.store
+            .set_setting("sync", &serde_json::to_value(&cfg)?)
+            .await?;
+        Ok(())
+    }
+
+    /// Effective sync-secrets preference (false when unset).
+    pub async fn sync_secrets_pref(&self) -> bool {
+        if let Some(cfg) = self.config.lock().await.as_ref() {
+            return cfg.sync_secrets;
+        }
+        if let Ok(Some(value)) = self.store.get_setting("sync").await {
+            if let Ok(cfg) = serde_json::from_value::<SyncConfig>(value) {
+                return cfg.sync_secrets;
+            }
+        }
+        false
     }
 
     pub async fn sync_now(&self) -> Result<Value> {
@@ -238,6 +282,9 @@ impl SyncEngine {
             let mut identity = crate::models::Identity {
                 id: row.get("id"),
                 name: row.get("name"),
+                kind: row
+                    .try_get::<String, _>("kind")
+                    .unwrap_or_else(|_| "key".into()),
                 public_key: row.get("public_key"),
                 private_key: row.get("private_key"),
                 passphrase: row.get("passphrase"),
@@ -394,6 +441,7 @@ async fn ensure_remote_schema(pool: &PgPool) -> Result<()> {
         r#"CREATE TABLE IF NOT EXISTS identities (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'key',
           public_key TEXT,
           private_key TEXT,
           passphrase TEXT,
@@ -491,14 +539,15 @@ async fn push_rows(pool: &PgPool, table: &str, rows: &[Value]) -> Result<usize> 
             }
             "identities" => {
                 sqlx::query(
-                    r#"INSERT INTO identities (id,name,public_key,private_key,passphrase,created_at,updated_at,deleted_at)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                    r#"INSERT INTO identities (id,name,kind,public_key,private_key,passphrase,created_at,updated_at,deleted_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                        ON CONFLICT (id) DO UPDATE SET
-                         name=EXCLUDED.name, public_key=EXCLUDED.public_key, private_key=EXCLUDED.private_key,
+                         name=EXCLUDED.name, kind=EXCLUDED.kind, public_key=EXCLUDED.public_key, private_key=EXCLUDED.private_key,
                          passphrase=EXCLUDED.passphrase, updated_at=EXCLUDED.updated_at, deleted_at=EXCLUDED.deleted_at"#,
                 )
                 .bind(str_field(obj, "id"))
                 .bind(str_field(obj, "name"))
+                .bind(str_field_or(obj, "kind", "key"))
                 .bind(opt_str(obj, "public_key"))
                 .bind(opt_str(obj, "private_key"))
                 .bind(opt_str(obj, "passphrase"))
@@ -581,6 +630,15 @@ fn str_field(obj: &serde_json::Map<String, Value>, key: &str) -> String {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+fn str_field_or(obj: &serde_json::Map<String, Value>, key: &str, default: &str) -> String {
+    let v = str_field(obj, key);
+    if v.is_empty() {
+        default.to_string()
+    } else {
+        v
+    }
 }
 
 fn opt_str(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
