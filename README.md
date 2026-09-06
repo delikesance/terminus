@@ -24,6 +24,12 @@ cargo run -p terminus-core --bin terminus-selftest
 npm run tauri -- dev
 ```
 
+Parse unit check for known_hosts import:
+
+```bash
+npm run test:known-hosts
+```
+
 `terminus-selftest` is the proof harness: it opens a local PTY, talks to the compose SSH server, writes SQLite state, and round-trips it through PostgreSQL.
 
 ## Cross-platform builds
