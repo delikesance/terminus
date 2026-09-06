@@ -36,6 +36,12 @@ Identity kind helpers:
 npm run test:identity-kind
 ```
 
+SFTP path helpers:
+
+```bash
+npm run test:sftp-path
+```
+
 `terminus-selftest` is the proof harness: it opens a local PTY, talks to the compose SSH server, writes SQLite state, and round-trips it through PostgreSQL.
 
 ## Cross-platform builds
