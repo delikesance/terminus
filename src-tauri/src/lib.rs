@@ -43,7 +43,7 @@ impl OutputSink for TauriSink {
 }
 
 fn map_err(err: Error) -> String {
-    err.to_string()
+    err.to_ipc_string()
 }
 
 #[tauri::command]
@@ -188,6 +188,27 @@ async fn identities_upsert(
 #[tauri::command]
 fn ssh_default_keys() -> Vec<String> {
     terminus_core::ssh::default_key_path_strings()
+}
+
+#[tauri::command]
+fn ssh_host_key_fingerprint(public_key: String) -> Result<Value, String> {
+    let fp = ssh::host_key_fingerprint(&public_key).map_err(map_err)?;
+    Ok(serde_json::json!({
+        "algo": fp.algo,
+        "sha256": fp.sha256,
+    }))
+}
+
+/// Atomically append `public_key` to known_hosts (`TERMINUS_KNOWN_HOSTS` or `~/.ssh/known_hosts`).
+/// When `replace_line` is set (mismatch), remove that 1-indexed line first, then append.
+#[tauri::command]
+fn ssh_host_key_trust(
+    host: String,
+    port: u16,
+    public_key: String,
+    replace_line: Option<usize>,
+) -> Result<(), String> {
+    ssh::trust_host_key(&host, port, &public_key, replace_line, None).map_err(map_err)
 }
 
 #[tauri::command]
@@ -430,6 +451,8 @@ pub fn run() {
             identities_list,
             identities_upsert,
             ssh_default_keys,
+            ssh_host_key_fingerprint,
+            ssh_host_key_trust,
             identity_import_path,
             snippets_list,
             snippets_upsert,
