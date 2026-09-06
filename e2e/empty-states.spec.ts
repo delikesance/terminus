@@ -52,4 +52,20 @@ test.describe("C7: empty states smoke", () => {
     await expect(page.locator("#modal")).not.toHaveClass(/hidden/);
     await expect(page.locator("#modal-sheet h2")).toContainText("New host");
   });
+
+  test("onboarding checklist once via e2e opt-in", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.removeItem("terminus.onboarded");
+      localStorage.setItem("terminus.e2e.showOnboard", "1");
+    });
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    await waitForTestBridge(page);
+    await expect(page.locator('[data-testid="onboard-steps"]')).toBeVisible();
+    await expect(page.locator('[data-testid="onboard-go"]')).toBeVisible();
+    await page.locator('[data-testid="onboard-skip"]').click();
+    await expect(page.locator("#modal")).toHaveClass(/hidden/);
+    const flagged = await page.evaluate(() => localStorage.getItem("terminus.onboarded"));
+    expect(flagged).toBe("1");
+  });
 });

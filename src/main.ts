@@ -1723,8 +1723,8 @@ function markOnboarded() {
 }
 
 function maybeShowOnboarding() {
-  // E2E preview must not block existing Playwright suites with a modal overlay.
-  if (import.meta.env.VITE_E2E === "1") return;
+  // Default E2E suites must not be blocked by the modal; opt in via localStorage for C7 onboard smoke.
+  if (import.meta.env.VITE_E2E === "1" && localStorage.getItem("terminus.e2e.showOnboard") !== "1") return;
   if (localStorage.getItem(ONBOARD_KEY) === "1") return;
   openSheet(`
     <h2>Get started</h2>
@@ -1740,6 +1740,7 @@ function maybeShowOnboarding() {
     </div>`);
   const finish = (start: boolean) => {
     markOnboarded();
+    localStorage.removeItem("terminus.e2e.showOnboard");
     $("modal").classList.add("hidden");
     if (start) void editHost();
   };
@@ -1747,6 +1748,7 @@ function maybeShowOnboarding() {
   $("onboard-go").onclick = () => finish(true);
   $("sheet-close").onclick = () => {
     markOnboarded();
+    localStorage.removeItem("terminus.e2e.showOnboard");
     $("modal").classList.add("hidden");
   };
 }
