@@ -16,4 +16,5 @@ npm-debug.log*
 .idea/
 src/groupSoftDelete.js
 src/groupExpand.js
+src/knownHostsParse.js
 test-results/
