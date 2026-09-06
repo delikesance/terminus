@@ -222,11 +222,46 @@ function toBytes(data: unknown): Uint8Array {
   return new Uint8Array();
 }
 
+function termBgColor(): string {
+  const a = state.appearance;
+  const theme = (a && state.themes.find((t) => t.id === a.theme_id)) || state.themes[0];
+  if (theme?.background) return theme.background;
+  const fromCss =
+    getComputedStyle(document.documentElement).getPropertyValue("--term-bg").trim() ||
+    getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+  return fromCss || "#1c1c1e";
+}
+
+/** Size canvas to pane client × dpr and fill theme bg — never leave HTML 300×150 black. */
+function clearPaneSurface(pane: Pane) {
+  const workspace = $("workspace");
+  const cssW = Math.max(1, pane.el.clientWidth || workspace.clientWidth || 1);
+  const cssH = Math.max(1, pane.el.clientHeight || workspace.clientHeight || 1);
+  const dpr = displayScale();
+  const width = Math.max(1, Math.round(cssW * dpr));
+  const height = Math.max(1, Math.round(cssH * dpr));
+  pane.rasterScale = dpr;
+  pane.paintGen += 1;
+  pane.canvas.style.width = `${cssW}px`;
+  pane.canvas.style.height = `${cssH}px`;
+  if (pane.canvas.width !== width || pane.canvas.height !== height) {
+    pane.canvas.width = width;
+    pane.canvas.height = height;
+  }
+  pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
+  pane.ctx.imageSmoothingEnabled = false;
+  pane.ctx.fillStyle = termBgColor();
+  pane.ctx.fillRect(0, 0, width, height);
+}
+
 async function paintFrame(sessionId: string, force = false) {
   const pane = state.panes.find((p) => p.session?.id === sessionId);
   if (!pane || pane.exited) return;
   const raw = toBytes(await invoke("session_frame", { id: sessionId, force }).catch(() => new Uint8Array()));
-  if (raw.byteLength < 16) return;
+  if (raw.byteLength < 16) {
+    clearPaneSurface(pane);
+    return;
+  }
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const width = view.getUint32(0, true);
   const height = view.getUint32(4, true);
@@ -236,9 +271,15 @@ async function paintFrame(sessionId: string, force = false) {
   pane.cellW = nextW;
   pane.cellH = nextH;
   pane.rasterScale = displayScale();
-  if (!width || !height) return;
+  if (!width || !height) {
+    clearPaneSurface(pane);
+    return;
+  }
   const pixels = raw.subarray(16);
-  if (pixels.byteLength < width * height * 4) return;
+  if (pixels.byteLength < width * height * 4) {
+    clearPaneSurface(pane);
+    return;
+  }
   const copy = new Uint8ClampedArray(pixels.byteLength);
   copy.set(pixels);
   const image = new ImageData(copy, width, height);
@@ -272,13 +313,17 @@ function applyAppearance() {
   const a = state.appearance;
   if (!a) return;
   const theme = state.themes.find((t) => t.id === a.theme_id) ?? state.themes[0];
-  if (theme) applyChrome(theme);
+  if (theme) {
+    applyChrome(theme);
+    document.documentElement.style.setProperty("--term-bg", theme.background);
+  }
   document.documentElement.style.setProperty("--font-mono", a.font_family);
   $("status-theme").textContent = theme?.name ?? a.theme_id;
   state.customCss.textContent = a.custom_css;
   scheduleLayout();
   for (const pane of state.panes) {
     if (pane.session) scheduleFrame(pane.session.id, true);
+    else clearPaneSurface(pane);
   }
 }
 
@@ -1224,6 +1269,7 @@ function createPane(): Pane {
     paintGen: 0,
   };
   state.panes.push(pane);
+  clearPaneSurface(pane);
   el.onclick = () => {
     selectPane(pane.id);
     el.focus();
@@ -1307,9 +1353,15 @@ function layoutPane(pane: Pane) {
   const pad = state.appearance?.padding ?? 8;
   pane.el.style.padding = `${pad}px`;
   pane.el.style.opacity = String(state.appearance?.opacity ?? 1);
-  if (!pane.session || pane.exited) return;
+  if (!pane.session || pane.exited) {
+    clearPaneSurface(pane);
+    return;
+  }
   const size = paneSize(pane);
-  if (size.tooSmall) return;
+  if (size.tooSmall) {
+    clearPaneSurface(pane);
+    return;
+  }
   const scale = displayScale();
   if (pane.cols === size.cols && pane.rows === size.rows && Math.abs(pane.rasterScale - scale) < 0.001) {
     return;
@@ -1317,6 +1369,7 @@ function layoutPane(pane: Pane) {
   pane.cols = size.cols;
   pane.rows = size.rows;
   pane.rasterScale = scale;
+  clearPaneSurface(pane);
   void invoke("session_resize", {
     id: pane.session.id,
     cols: size.cols,
