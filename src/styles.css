@@ -762,6 +762,102 @@ svg {
   padding: 7px 10px;
   outline: none;
 }
+.sftp-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: color-mix(in srgb, var(--sidebar, var(--bg)) 92%, transparent);
+}
+.sftp-bar .sftp-host {
+  max-width: 88px;
+  flex: 0 1 88px;
+  border: 0;
+  background: var(--fill);
+  border-radius: 8px;
+  padding: 6px 8px;
+  outline: none;
+  font-size: 12px;
+  color: var(--text);
+}
+.sftp-bar .sftp-path {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: var(--fill);
+  border-radius: 8px;
+  padding: 6px 8px;
+  outline: none;
+  font-size: 12px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  color: var(--text);
+}
+.sftp-bar .sftp-path:focus {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 55%, transparent);
+}
+.sftp-icon-btn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.sftp-icon-btn:hover { color: var(--text); background: var(--fill); }
+.sftp-icon-btn svg { width: 14px; height: 14px; }
+.sftp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sftp-row {
+  cursor: default;
+}
+.sftp-row .sftp-meta {
+  display: flex;
+  gap: 8px;
+}
+.sftp-row .sftp-meta-inline { display: none; }
+.sftp-empty,
+.sftp-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 10px;
+  color: var(--secondary);
+  font-size: 13px;
+}
+.sftp-empty svg,
+.sftp-error svg {
+  width: 22px;
+  height: 22px;
+  opacity: 0.7;
+}
+.sftp-error {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--red) 22%, transparent);
+  margin: 4px 2px;
+}
+.sftp-error strong {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.sftp-error span {
+  color: color-mix(in srgb, var(--red) 80%, var(--text));
+  font-size: 12.5px;
+  word-break: break-word;
+}
 #ctx-menu {
   position: fixed;
   z-index: 40;

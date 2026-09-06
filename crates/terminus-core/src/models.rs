@@ -441,6 +441,9 @@ pub struct SftpEntry {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Unix mtime seconds when the server provided it.
+    #[serde(default)]
+    pub mtime: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

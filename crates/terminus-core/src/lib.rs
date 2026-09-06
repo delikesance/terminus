@@ -2,6 +2,7 @@ pub mod error;
 pub mod models;
 pub mod pty;
 pub mod session;
+pub mod sftp_path;
 pub mod ssh;
 pub mod store;
 pub mod sync;
