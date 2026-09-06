@@ -163,7 +163,7 @@ impl<U: EventListener> Crosswords<U> {
     /// `None` for a row with neither. Fg-only attributes must NOT count
     /// as content: `ED`/`EL` reset cells with the full cursor template
     /// style, so after `\x1b[31m` + `clear` every blank carries a red
-    /// fg — trimming on any non-default style would then emit the whole
+    /// fg: trimming on any non-default style would then emit the whole
     /// screen as styled spaces.
     fn row_last_content_col(&self, line: i32, cols: usize, trim: bool) -> Option<usize> {
         if !trim {
