@@ -15,12 +15,12 @@ test.describe("C7: empty states smoke", () => {
     await bridge.clearAllHosts();
   });
 
-  test("shows No hosts yet empty with Add host + Import when 0 hosts", async ({ page }) => {
+  test("shows No remote hosts yet empty with Add host + Import when 0 hosts", async ({ page }) => {
     await expect(page.locator('[data-testid="host-local"]')).toBeVisible();
     await expect(page.locator('[data-testid="group-ungrouped"]')).toBeVisible();
     const empty = page.locator('[data-testid="empty-hosts"]');
     await expect(empty).toBeVisible();
-    await expect(empty).toContainText("No hosts yet");
+    await expect(empty.locator(".empty-title")).toHaveText("No remote hosts yet");
     await expect(page.locator('[data-testid="empty-add-host"]')).toBeVisible();
     await expect(page.locator('[data-testid="empty-import-hosts"]')).toBeVisible();
   });

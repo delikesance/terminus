@@ -16,53 +16,53 @@ test.describe('E2E-3: SyncStatus badge with 5 states (QA Contract)', () => {
     await waitForTestBridge(page);
   });
 
-  test('displays unconfigured state with "Sync non configuré" copy', async ({ page }) => {
+  test('displays unconfigured state with "Sync not configured" copy', async ({ page }) => {
     const bridge = getTestBridge(page);
     await bridge.setSyncStatus('unconfigured');
     
     const badge = page.locator('[data-testid="sync-badge"]');
     await expect(badge).toBeVisible();
     await expect(badge).toHaveAttribute('data-state', 'unconfigured');
-    await expect(badge).toContainText('Sync non configuré');
+    await expect(badge).toContainText('Sync not configured');
   });
 
-  test('displays offline state with "Hors ligne" copy (distinct from unconfigured)', async ({ page }) => {
+  test('displays offline state with "Offline" copy (distinct from unconfigured)', async ({ page }) => {
     const bridge = getTestBridge(page);
     await bridge.setSyncStatus('offline');
     
     const badge = page.locator('[data-testid="sync-badge"]');
     await expect(badge).toHaveAttribute('data-state', 'offline');
-    await expect(badge).toContainText('Hors ligne');
+    await expect(badge).toContainText('Offline');
     
     // Verify it's different from unconfigured
-    await expect(badge).not.toContainText('Sync non configuré');
+    await expect(badge).not.toContainText('Sync not configured');
   });
 
-  test('displays idle state with "À jour" copy', async ({ page }) => {
+  test('displays idle state with "Up to date" copy', async ({ page }) => {
     const bridge = getTestBridge(page);
     await bridge.setSyncStatus('idle');
     
     const badge = page.locator('[data-testid="sync-badge"]');
     await expect(badge).toHaveAttribute('data-state', 'idle');
-    await expect(badge).toContainText('À jour');
+    await expect(badge).toContainText('Up to date');
   });
 
-  test('displays syncing state with "Synchronisation..." copy', async ({ page }) => {
+  test('displays syncing state with "Syncing..." copy', async ({ page }) => {
     const bridge = getTestBridge(page);
     await bridge.setSyncStatus('syncing');
     
     const badge = page.locator('[data-testid="sync-badge"]');
     await expect(badge).toHaveAttribute('data-state', 'syncing');
-    await expect(badge).toContainText('Synchronisation');
+    await expect(badge).toContainText('Syncing');
   });
 
-  test('displays error state with "Erreur de sync" copy', async ({ page }) => {
+  test('displays error state with "Sync error" copy', async ({ page }) => {
     const bridge = getTestBridge(page);
     await bridge.setSyncStatus('error', 'Auth failed: invalid credentials');
     
     const badge = page.locator('[data-testid="sync-badge"]');
     await expect(badge).toHaveAttribute('data-state', 'error');
-    await expect(badge).toContainText('Erreur de sync');
+    await expect(badge).toContainText('Sync error');
   });
 
   test('all 5 states have distinct data-state attributes', async ({ page }) => {
@@ -124,13 +124,13 @@ test.describe('E2E-3: SyncStatus badge with 5 states (QA Contract)', () => {
     await bridge.setSyncStatus('unconfigured');
     let badge = page.locator('[data-testid="sync-badge"]');
     const unconfiguredText = await badge.textContent();
-    expect(unconfiguredText).toContain('Sync non configuré');
+    expect(unconfiguredText).toContain('Sync not configured');
     
     // Test offline
     await bridge.setSyncStatus('offline');
     badge = page.locator('[data-testid="sync-badge"]');
     const offlineText = await badge.textContent();
-    expect(offlineText).toContain('Hors ligne');
+    expect(offlineText).toContain('Offline');
     
     // Verify they are different
     expect(unconfiguredText).not.toEqual(offlineText);
