@@ -159,30 +159,21 @@ impl<U: EventListener> Crosswords<U> {
     }
 
     /// Rightmost column with a non-blank glyph or a style that renders
-    /// on a blank cell (bg color, underline, strikeout, inverse), or
-    /// `None` for a row with neither. Fg-only attributes must NOT count
-    /// as content: `ED`/`EL` reset cells with the full cursor template
-    /// style, so after `\x1b[31m` + `clear` every blank carries a red
-    /// fg: trimming on any non-default style would then emit the whole
+    /// on a blank cell (`Style::renders_on_blank`), or `None` for a row
+    /// with neither. Fg-only attributes must NOT count as content:
+    /// `ED`/`EL` reset cells with the full cursor template style, so
+    /// after `\x1b[31m` + `clear` every blank carries a red fg, and
+    /// trimming on any non-default style would then emit the whole
     /// screen as styled spaces.
     fn row_last_content_col(&self, line: i32, cols: usize, trim: bool) -> Option<usize> {
         if !trim {
             return Some(cols.saturating_sub(1));
         }
-        let default_bg = Style::default().bg;
         let row = &self.grid[Line(line)];
         (0..cols).rev().find(|&col| {
             let square = &row[Column(col)];
             let c = square.c();
-            if c != ' ' && c != '\0' {
-                return true;
-            }
-            let style = self.grid.style_of(square);
-            style.bg != default_bg
-                || style.flags.underline_kind().is_some()
-                || style
-                    .flags
-                    .intersects(StyleFlags::STRIKEOUT | StyleFlags::INVERSE)
+            (c != ' ' && c != '\0') || self.grid.style_of(square).renders_on_blank()
         })
     }
 }
