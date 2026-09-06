@@ -900,6 +900,63 @@ svg {
 }
 .sheet button.primary:hover { background: var(--blue-press); }
 .sheet button.danger { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.sheet button.danger:hover { background: color-mix(in srgb, var(--red) 22%, transparent); }
+.sheet button:disabled,
+.sheet button.is-pending {
+  opacity: 0.65;
+  cursor: default;
+  pointer-events: none;
+}
+.sheet button.primary.is-pending,
+.sheet button.danger.is-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: tofu-spin 0.7s linear infinite;
+  flex: none;
+}
+@keyframes tofu-spin {
+  to { transform: rotate(360deg); }
+}
+
+#sheet-tofu .tofu-meta code,
+.tofu-fp,
+.tofu-host,
+.tofu-algo {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0;
+  color: var(--text);
+  background: transparent;
+}
+.tofu-fp {
+  display: block;
+  width: 100%;
+  word-break: break-all;
+  white-space: pre-wrap;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--fill);
+  text-align: left;
+}
+.tofu-warn {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
 
 .seg {
   display: flex;
