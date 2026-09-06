@@ -91,3 +91,10 @@ jobs:
       - run: npm ci
       - run: python scripts/gen-icons.py
       - run: npm run tauri -- build --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terminus-windows-nsis
+          path: |
+            src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
+          retention-days: 14
