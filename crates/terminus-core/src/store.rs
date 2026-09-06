@@ -76,6 +76,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS identities (
               id TEXT PRIMARY KEY,
               name TEXT NOT NULL,
+              kind TEXT NOT NULL DEFAULT 'key',
               public_key TEXT,
               private_key TEXT,
               passphrase TEXT,
@@ -126,6 +127,12 @@ impl Store {
         )
         .execute(&self.pool)
         .await?;
+        // Legacy DBs created before `kind` — ignore if column already exists.
+        let _ = sqlx::query(
+            "ALTER TABLE identities ADD COLUMN kind TEXT NOT NULL DEFAULT 'key'",
+        )
+        .execute(&self.pool)
+        .await;
         Ok(())
     }
 
@@ -264,15 +271,18 @@ impl Store {
     }
 
     pub async fn upsert_identity(&self, identity: &Identity) -> Result<()> {
+        let mut identity = identity.clone();
+        identity.normalize_kind();
         sqlx::query(
-            r#"INSERT INTO identities (id,name,public_key,private_key,passphrase,created_at,updated_at,deleted_at)
-               VALUES (?,?,?,?,?,?,?,?)
+            r#"INSERT INTO identities (id,name,kind,public_key,private_key,passphrase,created_at,updated_at,deleted_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
-                 name=excluded.name, public_key=excluded.public_key, private_key=excluded.private_key,
+                 name=excluded.name, kind=excluded.kind, public_key=excluded.public_key, private_key=excluded.private_key,
                  passphrase=excluded.passphrase, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at"#,
         )
         .bind(&identity.id)
         .bind(&identity.name)
+        .bind(&identity.kind)
         .bind(&identity.public_key)
         .bind(&identity.private_key)
         .bind(&identity.passphrase)
@@ -290,15 +300,25 @@ impl Store {
             .await?;
         Ok(rows
             .into_iter()
-            .map(|row| Identity {
-                id: row.get("id"),
-                name: row.get("name"),
-                public_key: row.get("public_key"),
-                private_key: row.get("private_key"),
-                passphrase: row.get("passphrase"),
-                created_at: parse_dt(row.get("created_at")),
-                updated_at: parse_dt(row.get("updated_at")),
-                deleted_at: row.get::<Option<String>, _>("deleted_at").map(parse_dt),
+            .map(|row| {
+                let private_key: Option<String> = row.get("private_key");
+                let passphrase: Option<String> = row.get("passphrase");
+                let kind = row
+                    .try_get::<String, _>("kind")
+                    .ok()
+                    .filter(|k| !k.is_empty())
+                    .unwrap_or_else(|| infer_identity_kind(private_key.as_deref(), passphrase.as_deref()));
+                Identity {
+                    id: row.get("id"),
+                    name: row.get("name"),
+                    kind,
+                    public_key: row.get("public_key"),
+                    private_key,
+                    passphrase,
+                    created_at: parse_dt(row.get("created_at")),
+                    updated_at: parse_dt(row.get("updated_at")),
+                    deleted_at: row.get::<Option<String>, _>("deleted_at").map(parse_dt),
+                }
             })
             .collect())
     }
@@ -309,6 +329,17 @@ impl Store {
             .await?
             .into_iter()
             .find(|i| i.id == id))
+    }
+
+    pub async fn delete_identity(&self, id: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE identities SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn upsert_snippet(&self, snippet: &Snippet) -> Result<()> {
@@ -548,6 +579,16 @@ fn default_keybindings() -> serde_json::Map<String, Value> {
         .into_iter()
         .map(|(k, v)| (k.to_string(), Value::String(v.into())))
         .collect()
+}
+
+fn infer_identity_kind(private_key: Option<&str>, passphrase: Option<&str>) -> String {
+    if private_key.map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        IDENTITY_KIND_KEY.to_string()
+    } else if passphrase.map(|s| !s.is_empty()).unwrap_or(false) {
+        IDENTITY_KIND_PASSWORD.to_string()
+    } else {
+        IDENTITY_KIND_KEY.to_string()
+    }
 }
 
 fn parse_dt(raw: String) -> DateTime<Utc> {

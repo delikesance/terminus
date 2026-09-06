@@ -42,5 +42,6 @@ export function getTestBridge(page: Page) {
         ({ s, err }) => (window as any).__terminusTest.setSyncStatus(s, err),
         { s: state, err: lastError }
       ),
+    openVault: () => page.evaluate(() => (window as any).__terminusTest.openVault()),
   };
 }

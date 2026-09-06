@@ -17,4 +17,5 @@ npm-debug.log*
 src/groupSoftDelete.js
 src/groupExpand.js
 src/knownHostsParse.js
+src/identityKind.js
 test-results/
