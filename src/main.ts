@@ -2381,7 +2381,7 @@ function maybeShowOnboarding() {
     <p class="lead">A short checklist for your first SSH session.</p>
     <ol class="onboard-steps" data-testid="onboard-steps">
       <li><span class="step-num">1</span><span>Add a host</span></li>
-      <li><span class="step-num">2</span><span>Connect<small>TOFU if needed</small></span></li>
+      <li><span class="step-num">2</span><span>Connect<small>You'll confirm the server fingerprint on first connect</small></span></li>
       <li><span class="step-num">3</span><span>Optional: configure sync</span></li>
     </ol>
     <div class="row">
