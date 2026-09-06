@@ -1,3 +1,4 @@
+use serde::Serialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -10,13 +11,28 @@ pub enum Error {
     SyncNotConfigured,
     /// Server host key is not present in known_hosts (fail closed).
     #[error("SSH host key unknown for {host}:{port}")]
-    HostKeyUnknown { host: String, port: u16 },
+    HostKeyUnknown {
+        host: String,
+        port: u16,
+        /// OpenSSH-formatted public key presented by the server.
+        public_key: String,
+        /// Key algorithm (e.g. `ssh-ed25519`).
+        algo: String,
+        /// SHA256 fingerprint (`SHA256:…`).
+        fingerprint: String,
+    },
     /// Server host key differs from the key recorded in known_hosts (fail closed).
     #[error("SSH host key mismatch for {host}:{port} (known_hosts line {line})")]
     HostKeyMismatch {
         host: String,
         port: u16,
         line: usize,
+        /// OpenSSH-formatted public key presented by the server.
+        public_key: String,
+        /// Key algorithm (e.g. `ssh-ed25519`).
+        algo: String,
+        /// SHA256 fingerprint (`SHA256:…`).
+        fingerprint: String,
     },
     #[error("pty reader failed: {0}")]
     PtyReader(String),
@@ -38,6 +54,58 @@ impl Error {
     pub fn msg(msg: impl Into<String>) -> Self {
         Self::Message(msg.into())
     }
+
+    /// Serialize host-key errors as structured JSON for the UI; otherwise Display.
+    pub fn to_ipc_string(&self) -> String {
+        match self {
+            Self::HostKeyUnknown {
+                host,
+                port,
+                public_key,
+                algo,
+                fingerprint,
+            } => serde_json::to_string(&HostKeyIpc {
+                kind: "HostKeyUnknown",
+                host: host.clone(),
+                port: *port,
+                line: None,
+                public_key: public_key.clone(),
+                algo: algo.clone(),
+                fingerprint: fingerprint.clone(),
+            })
+            .unwrap_or_else(|_| self.to_string()),
+            Self::HostKeyMismatch {
+                host,
+                port,
+                line,
+                public_key,
+                algo,
+                fingerprint,
+            } => serde_json::to_string(&HostKeyIpc {
+                kind: "HostKeyMismatch",
+                host: host.clone(),
+                port: *port,
+                line: Some(*line),
+                public_key: public_key.clone(),
+                algo: algo.clone(),
+                fingerprint: fingerprint.clone(),
+            })
+            .unwrap_or_else(|_| self.to_string()),
+            other => other.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct HostKeyIpc {
+    kind: &'static str,
+    host: String,
+    port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    public_key: String,
+    algo: String,
+    fingerprint: String,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

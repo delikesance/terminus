@@ -2,9 +2,12 @@ use crate::error::{Error, Result};
 use crate::models::{Host, Identity, SftpEntry};
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
-use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
+use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg};
 use russh::{Channel, ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
+use serde::Serialize;
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,6 +48,219 @@ impl client::Handler for HostKeyVerifier {
     }
 }
 
+/// SHA256 fingerprint + algorithm for a presented host key.
+#[derive(Debug, Clone, Serialize)]
+pub struct HostKeyFingerprint {
+    pub algo: String,
+    pub sha256: String,
+}
+
+/// Resolve known_hosts path: `TERMINUS_KNOWN_HOSTS` or `~/.ssh/known_hosts`.
+pub fn resolve_known_hosts_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("TERMINUS_KNOWN_HOSTS") {
+        return Ok(PathBuf::from(path));
+    }
+    let home = dirs::home_dir().ok_or_else(|| Error::msg("home directory required for known_hosts"))?;
+    Ok(home.join(".ssh").join("known_hosts"))
+}
+
+fn describe_public_key(key: &PublicKey) -> Result<(String, String, String)> {
+    let public_key = key
+        .to_openssh()
+        .map_err(|e| Error::msg(format!("encode public key: {e}")))?;
+    let algo = key.algorithm().to_string();
+    let fingerprint = format!("{}", key.fingerprint(HashAlg::Sha256));
+    Ok((public_key, algo, fingerprint))
+}
+
+/// Parse an OpenSSH public key line (`algo base64 [comment]`) or bare base64 blob.
+pub fn parse_presented_public_key(public_key: &str) -> Result<PublicKey> {
+    let trimmed = public_key.trim();
+    if trimmed.is_empty() {
+        return Err(Error::msg("empty public key"));
+    }
+    if let Ok(key) = PublicKey::from_openssh(trimmed) {
+        return Ok(key);
+    }
+    // Accept "algo base64…" even if from_openssh is picky about trailing bits.
+    let mut parts = trimmed.split_whitespace();
+    let first = parts.next().unwrap_or("");
+    let second = parts.next();
+    if let Some(b64) = second {
+        if first.starts_with("ssh-") || first.starts_with("ecdsa-") || first == "rsa-sha2-256" || first == "rsa-sha2-512" {
+            return russh::keys::parse_public_key_base64(b64)
+                .map_err(|e| Error::msg(format!("parse public key: {e}")));
+        }
+    }
+    russh::keys::parse_public_key_base64(trimmed)
+        .map_err(|e| Error::msg(format!("parse public key: {e}")))
+}
+
+/// Compute `{ algo, sha256 }` for a presented public key string.
+pub fn host_key_fingerprint(public_key: &str) -> Result<HostKeyFingerprint> {
+    let key = parse_presented_public_key(public_key)?;
+    let (_, algo, sha256) = describe_public_key(&key)?;
+    Ok(HostKeyFingerprint { algo, sha256 })
+}
+
+fn format_known_hosts_line(host: &str, port: u16, pubkey: &PublicKey) -> Result<String> {
+    let encoded = pubkey
+        .to_openssh()
+        .map_err(|e| Error::msg(format!("encode public key: {e}")))?;
+    if port != 22 {
+        Ok(format!("[{host}]:{port} {encoded}"))
+    } else {
+        Ok(format!("{host} {encoded}"))
+    }
+}
+
+/// Atomically replace `path` with `contents` via a same-directory temp file.
+///
+/// - Unix: `rename(tmp, dest)` (replaces existing dest).
+/// - Windows: `rename` cannot overwrite, so remove dest (if present) then rename.
+///   No extra deps; best-effort atomicity without `MoveFileEx` bindings.
+fn atomic_write(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("known_hosts");
+    let tmp_name = format!(".{file_name}.terminus.tmp");
+    let tmp_path = path
+        .parent()
+        .map(|p| p.join(&tmp_name))
+        .unwrap_or_else(|| PathBuf::from(&tmp_name));
+
+    let write_tmp = || -> Result<()> {
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    };
+    if let Err(err) = write_tmp() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    let replace = || -> Result<()> {
+        #[cfg(windows)]
+        {
+            // Windows `rename` cannot overwrite an existing destination. Remove
+            // first (ignore NotFound), then rename — dep-free cross-platform replace.
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+            fs::rename(&tmp_path, path)?;
+        }
+        #[cfg(not(windows))]
+        {
+            fs::rename(&tmp_path, path)?;
+        }
+        Ok(())
+    };
+
+    if let Err(err) = replace() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// Remove a 1-indexed line from known_hosts (single atomic rewrite).
+pub fn remove_known_hosts_line(path: &Path, line: usize) -> Result<()> {
+    if line == 0 {
+        return Err(Error::msg("known_hosts line must be 1-indexed"));
+    }
+    if !path.exists() {
+        return Err(Error::msg("known_hosts file does not exist"));
+    }
+    let contents = fs::read_to_string(path)?;
+    let mut out = String::with_capacity(contents.len());
+    let mut found = false;
+    for (idx, row) in contents.lines().enumerate() {
+        if idx + 1 == line {
+            found = true;
+            continue;
+        }
+        out.push_str(row);
+        out.push('\n');
+    }
+    if !found {
+        return Err(Error::msg(format!("known_hosts line {line} not found")));
+    }
+    atomic_write(path, &out)
+}
+
+/// Build known_hosts contents: optionally drop `replace_line`, then append `entry`.
+fn known_hosts_contents_with_trust(
+    existing: &str,
+    entry: &str,
+    replace_line: Option<usize>,
+) -> Result<String> {
+    let mut contents = String::with_capacity(existing.len() + entry.len() + 2);
+    if let Some(line) = replace_line {
+        if line == 0 {
+            return Err(Error::msg("known_hosts line must be 1-indexed"));
+        }
+        let mut found = false;
+        for (idx, row) in existing.lines().enumerate() {
+            if idx + 1 == line {
+                found = true;
+                continue;
+            }
+            contents.push_str(row);
+            contents.push('\n');
+        }
+        if !existing.is_empty() && !found {
+            return Err(Error::msg(format!("known_hosts line {line} not found")));
+        }
+    } else {
+        contents.push_str(existing);
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+    }
+    contents.push_str(entry);
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    Ok(contents)
+}
+
+/// Trust a presented host key with a **single** atomic known_hosts rewrite.
+///
+/// When `replace_line` is set (mismatch), that 1-indexed line is omitted and the
+/// new key is appended in the same write — never a separate remove then append.
+///
+/// Path = `TERMINUS_KNOWN_HOSTS` or `~/.ssh/known_hosts`. When `path` is `Some`, that
+/// file is used instead (tests).
+pub fn trust_host_key(
+    host: &str,
+    port: u16,
+    public_key: &str,
+    replace_line: Option<usize>,
+    path: Option<&Path>,
+) -> Result<()> {
+    let resolved = match path {
+        Some(p) => p.to_path_buf(),
+        None => resolve_known_hosts_path()?,
+    };
+    let key = parse_presented_public_key(public_key)?;
+    let entry = format_known_hosts_line(host, port, &key)?;
+
+    let existing = if resolved.exists() {
+        fs::read_to_string(&resolved)?
+    } else {
+        String::new()
+    };
+    let contents = known_hosts_contents_with_trust(&existing, &entry, replace_line)?;
+    atomic_write(&resolved, &contents)
+}
+
 /// Verify `server_public_key` against OpenSSH known_hosts.
 ///
 /// Returns `Ok(true)` only when the key matches. Unknown hosts and algorithm
@@ -56,6 +272,7 @@ pub fn verify_host_key(
     server_public_key: &PublicKey,
     known_hosts_path: Option<&Path>,
 ) -> Result<bool> {
+    let (public_key, algo, fingerprint) = describe_public_key(server_public_key)?;
     let checked = match known_hosts_path {
         Some(path) => {
             russh::keys::known_hosts::check_known_hosts_path(host, port, server_public_key, path)
@@ -67,11 +284,17 @@ pub fn verify_host_key(
         Ok(false) => Err(Error::HostKeyUnknown {
             host: host.to_string(),
             port,
+            public_key,
+            algo,
+            fingerprint,
         }),
         Err(russh::keys::Error::KeyChanged { line }) => Err(Error::HostKeyMismatch {
             host: host.to_string(),
             port,
             line,
+            public_key,
+            algo,
+            fingerprint,
         }),
         Err(err) => Err(Error::Ssh(err.into())),
     }

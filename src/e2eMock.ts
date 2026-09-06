@@ -347,6 +347,10 @@ export function installE2eMock(): void {
           return db.sessions;
         case "session_frame":
           return new Uint8Array();
+        case "ssh_host_key_fingerprint":
+          return { algo: "ssh-ed25519", sha256: "SHA256:e2e-mock" };
+        case "ssh_host_key_trust":
+          return null;
         case "session_write":
         case "session_resize":
         case "identity_import_path":

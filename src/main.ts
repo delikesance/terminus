@@ -676,7 +676,9 @@ function bindUi() {
     /* vite preview has no window API */
   }
   $("modal").onclick = (ev) => {
-    if (ev.target === $("modal")) $("modal").classList.add("hidden");
+    if (ev.target !== $("modal")) return;
+    if (cancelTofuIfOpen()) return;
+    $("modal").classList.add("hidden");
   };
   window.addEventListener("resize", () => scheduleLayout());
   window.visualViewport?.addEventListener("resize", () => scheduleLayout());
@@ -684,6 +686,9 @@ function bindUi() {
 }
 
 function closeOverlays() {
+  if (cancelTofuIfOpen()) return;
+  const sheet = modalSheetEl();
+  sheet.id = "modal-sheet";
   $("modal").classList.add("hidden");
   $("palette").classList.add("hidden");
   hideMenu();
@@ -830,6 +835,192 @@ async function openLocal(reuse?: Pane) {
   }
 }
 
+type HostKeyError = {
+  kind: "HostKeyUnknown" | "HostKeyMismatch";
+  host: string;
+  port: number;
+  line?: number;
+  public_key: string;
+  algo: string;
+  fingerprint: string;
+};
+
+function parseHostKeyError(err: unknown): HostKeyError | null {
+  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
+  try {
+    const parsed = JSON.parse(raw) as Partial<HostKeyError>;
+    if (
+      (parsed.kind === "HostKeyUnknown" || parsed.kind === "HostKeyMismatch") &&
+      typeof parsed.host === "string" &&
+      typeof parsed.port === "number" &&
+      typeof parsed.public_key === "string" &&
+      typeof parsed.algo === "string" &&
+      typeof parsed.fingerprint === "string"
+    ) {
+      return parsed as HostKeyError;
+    }
+  } catch {
+    /* plain error string */
+  }
+  return null;
+}
+
+let tofuSession: {
+  decide: (choice: "trust" | "cancel") => void;
+  onKeyDown: (ev: KeyboardEvent) => void;
+} | null = null;
+
+function modalSheetEl(): HTMLElement {
+  return (document.getElementById("sheet-tofu") ?? document.getElementById("modal-sheet")) as HTMLElement;
+}
+
+function dismissTofuSheet() {
+  if (tofuSession) {
+    document.removeEventListener("keydown", tofuSession.onKeyDown, true);
+    tofuSession = null;
+  }
+  const sheet = modalSheetEl();
+  sheet.id = "modal-sheet";
+  $("modal").classList.add("hidden");
+}
+
+function focusableIn(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )].filter((el) => el.offsetParent !== null);
+}
+
+function setTofuPending(pending: boolean) {
+  const sheet = modalSheetEl();
+  const primary = sheet.querySelector<HTMLButtonElement>("#tofu-primary");
+  const cancel = sheet.querySelector<HTMLButtonElement>("#tofu-cancel");
+  const close = sheet.querySelector<HTMLButtonElement>("#sheet-close");
+  if (primary) {
+    primary.disabled = pending;
+    primary.classList.toggle("is-pending", pending);
+    const label = primary.dataset.label ?? primary.textContent?.trim() ?? "";
+    if (!primary.dataset.label) primary.dataset.label = label;
+    primary.innerHTML = pending
+      ? `<span class="btn-spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span>`
+      : escapeHtml(label);
+  }
+  if (cancel) cancel.disabled = pending;
+  if (close) close.disabled = pending;
+}
+
+function cancelTofuIfOpen(): boolean {
+  if (!tofuSession) return false;
+  const sheet = modalSheetEl();
+  if (sheet.querySelector("#tofu-primary")?.hasAttribute("disabled")) return true;
+  const decide = tofuSession.decide;
+  decide("cancel");
+  return true;
+}
+
+async function showTofuSheet(
+  hk: HostKeyError,
+  userAtHost: string,
+): Promise<"trust" | "cancel"> {
+  const mismatch = hk.kind === "HostKeyMismatch";
+  const title = mismatch ? "Host key changed" : "Unknown host key";
+  const lead = mismatch
+    ? "This server’s host key does not match the key recorded in known_hosts. Someone could be intercepting the connection (MITM). Trust only if you intentionally rotated the key."
+    : "Trust only if you recognize this server.";
+  const primaryLabel = mismatch ? "Remove & Trust new" : "Trust & Connect";
+  const warn = mismatch
+    ? `<p class="tofu-warn" role="alert">WARNING: Host key mismatch. Connecting without verifying the new key risks a man-in-the-middle attack.</p>`
+    : "";
+
+  const sheet = modalSheetEl();
+  sheet.id = "sheet-tofu";
+  sheet.innerHTML = `
+    <button type="button" class="sheet-close" id="sheet-close" title="Close">${icons.close}</button>
+    <h2>${escapeHtml(title)}</h2>
+    <p class="lead">${escapeHtml(lead)}</p>
+    ${warn}
+    <div class="group-card tofu-meta">
+      <div class="cell"><span>Host</span><code class="tofu-host">${escapeHtml(userAtHost)}</code></div>
+      <div class="cell stack"><span>Fingerprint (SHA256)</span><code class="tofu-fp" id="tofu-fp">${escapeHtml(hk.fingerprint)}</code></div>
+      <div class="cell"><span>Algorithm</span><code class="tofu-algo">${escapeHtml(hk.algo)}</code></div>
+    </div>
+    <div class="row">
+      <button type="button" class="ghost" id="tofu-cancel">Cancel</button>
+      <button type="button" class="${mismatch ? "danger" : "primary"}" id="tofu-primary" data-label="${escapeHtml(primaryLabel)}">${escapeHtml(primaryLabel)}</button>
+    </div>`;
+  $("modal").classList.remove("hidden");
+
+  return new Promise((resolve) => {
+    let decided = false;
+    const cleanupKeys = () => {
+      if (tofuSession) {
+        document.removeEventListener("keydown", tofuSession.onKeyDown, true);
+        tofuSession = null;
+      }
+    };
+
+    const settle = (choice: "trust" | "cancel") => {
+      if (decided) return;
+      decided = true;
+      if (choice === "cancel") {
+        cleanupKeys();
+        dismissTofuSheet();
+      }
+      // trust: keep sheet + trap until dismissTofuSheet after write+retry
+      resolve(choice);
+    };
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (sheet.id !== "sheet-tofu" || $("modal").classList.contains("hidden")) return;
+      const pending = !!sheet.querySelector("#tofu-primary")?.hasAttribute("disabled");
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        if (!pending && !decided) settle("cancel");
+        return;
+      }
+      if (ev.key === "Enter" && !ev.isComposing) {
+        const target = ev.target as HTMLElement | null;
+        if (target && (target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        if (pending || decided) return;
+        const primary = sheet.querySelector<HTMLButtonElement>("#tofu-primary");
+        if (primary && !primary.disabled) primary.click();
+        return;
+      }
+      if (ev.key === "Tab") {
+        const nodes = focusableIn(sheet);
+        if (nodes.length < 2) return;
+        const first = nodes[0]!;
+        const last = nodes[nodes.length - 1]!;
+        if (ev.shiftKey && document.activeElement === first) {
+          ev.preventDefault();
+          last.focus();
+        } else if (!ev.shiftKey && document.activeElement === last) {
+          ev.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    tofuSession = {
+      decide: (choice) => {
+        if (choice === "cancel") settle("cancel");
+      },
+      onKeyDown,
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+
+    $("sheet-close").onclick = () => settle("cancel");
+    $("tofu-cancel").onclick = () => settle("cancel");
+    $("tofu-primary").onclick = () => settle("trust");
+
+    requestAnimationFrame(() => {
+      $("tofu-primary").focus();
+    });
+  });
+}
+
 async function openSsh(hostId: string, reuse?: Pane) {
   const host = state.hosts.find((h) => h.id === hostId);
   const pane = reuse ?? createPendingPane(host?.name || host?.hostname || "SSH", "ssh", hostId);
@@ -843,6 +1034,34 @@ async function openSsh(hostId: string, reuse?: Pane) {
     });
     attachSession(info, pane);
   } catch (err) {
+    const hk = parseHostKeyError(err);
+    if (hk && host) {
+      const userAtHost = `${host.username}@${hk.host}:${hk.port}`;
+      const choice = await showTofuSheet(hk, userAtHost);
+      if (choice === "cancel") {
+        await closePane(pane.id);
+        return;
+      }
+      setTofuPending(true);
+      try {
+        await invoke("ssh_host_key_trust", {
+          host: hk.host,
+          port: hk.port,
+          publicKey: hk.public_key,
+          replaceLine: hk.kind === "HostKeyMismatch" ? hk.line ?? null : null,
+        });
+        dismissTofuSheet();
+        showBanner(pane, `Connecting to ${host.name || host.hostname}…`);
+        await openSsh(hostId, pane);
+      } catch (trustErr) {
+        setTofuPending(false);
+        dismissTofuSheet();
+        failPane(pane, `Couldn't trust host key`, String(trustErr));
+        openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(String(trustErr))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
+        $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
+      }
+      return;
+    }
     failPane(pane, `Couldn't reach ${host?.name || host?.hostname || "host"}`, String(err));
     openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(String(err))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
     $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
@@ -1678,7 +1897,9 @@ async function openSettings() {
 }
 
 function openSheet(html: string) {
-  $("modal-sheet").innerHTML = `<button type="button" class="sheet-close" id="sheet-close" title="Close">${icons.close}</button>${html}`;
+  const sheet = modalSheetEl();
+  sheet.id = "modal-sheet";
+  sheet.innerHTML = `<button type="button" class="sheet-close" id="sheet-close" title="Close">${icons.close}</button>${html}`;
   $("modal").classList.remove("hidden");
   $("sheet-close").onclick = () => $("modal").classList.add("hidden");
 }
