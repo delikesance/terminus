@@ -765,46 +765,107 @@ svg {
   padding: 7px 10px;
   outline: none;
 }
-.sftp-bar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 2px 8px;
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: color-mix(in srgb, var(--sidebar, var(--bg)) 92%, transparent);
+#workspace.sftp-mode > .pane {
+  visibility: hidden !important;
+  pointer-events: none !important;
+  z-index: 0;
 }
-.sftp-bar .sftp-host {
-  max-width: 88px;
-  flex: 0 1 88px;
+.sftp-view {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+.sftp-view.active {
+  display: flex;
+}
+.sftp-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 4px;
+}
+.sftp-side-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tertiary);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.sftp-side-host {
+  width: 100%;
   border: 0;
   background: var(--fill);
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   outline: none;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
 }
-.sftp-bar .sftp-path {
+.sftp-side-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--secondary);
+  font-size: 12.5px;
+}
+.sftp-side-status .connection-dot {
+  width: 8px;
+  height: 8px;
+}
+.sftp-side-hint {
+  margin: 8px 4px;
+  color: var(--tertiary);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.sftp-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  flex: none;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--elevated) 70%, var(--bg));
+}
+.sftp-toolbar .sftp-host {
+  max-width: 160px;
+  flex: 0 1 160px;
+  border: 0;
+  background: var(--fill);
+  border-radius: 8px;
+  padding: 7px 10px;
+  outline: none;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.sftp-toolbar .sftp-path {
   flex: 1;
   min-width: 0;
   border: 0;
   background: var(--fill);
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   outline: none;
-  font-size: 12px;
+  font-size: 12.5px;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   color: var(--text);
 }
-.sftp-bar .sftp-path:focus {
+.sftp-toolbar .sftp-path:focus {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 55%, transparent);
 }
 .sftp-icon-btn {
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -816,26 +877,37 @@ svg {
 }
 .sftp-icon-btn:hover { color: var(--text); background: var(--fill); }
 .sftp-icon-btn svg { width: 14px; height: 14px; }
-.sftp-list {
+.sftp-table {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 1px;
+  padding: 8px 10px 14px;
 }
-.sftp-row {
+.sftp-view .sftp-row {
   cursor: default;
+  min-height: 36px;
+  height: auto;
+  padding: 8px 10px;
 }
-.sftp-row .sftp-meta {
+.sftp-view .sftp-row .sftp-meta {
   display: flex;
-  gap: 8px;
+  gap: 12px;
 }
-.sftp-row .sftp-meta-inline { display: none; }
+.sftp-view .sftp-row .sftp-meta-inline { display: none; }
+.sftp-view .empty {
+  flex: 1;
+  min-height: 0;
+}
 .sftp-empty,
 .sftp-error {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
-  padding: 16px 10px;
+  padding: 24px 18px;
   color: var(--secondary);
   font-size: 13px;
 }
@@ -850,7 +922,7 @@ svg {
   background: color-mix(in srgb, var(--red) 8%, transparent);
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--red) 22%, transparent);
-  margin: 4px 2px;
+  margin: 12px 14px;
 }
 .sftp-error strong {
   font-size: 12px;

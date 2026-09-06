@@ -6,12 +6,14 @@ import os from "node:os";
 
 /**
  * C9 — SFTP browser v1 (full E2E, not smoke-only)
+ * P0b — listing in #workspace (.sftp-view) ≥60% width
  * AC: path traversal blocked · confirm before delete · typed I/O errors · navigate/up/open/rename
  */
 
 async function openFilesPanel(page: import("@playwright/test").Page) {
   await page.locator('.side-nav button[data-panel="sftp"]').click();
-  await expect(page.locator('[data-testid="sftp-bar"]')).toBeVisible();
+  await expect(page.locator('[data-testid="sftp-toolbar"]')).toBeVisible();
+  await expect(page.locator("#workspace .sftp-view.active")).toBeVisible();
 }
 
 test.describe("C9: SFTP browser v1", () => {
@@ -24,9 +26,10 @@ test.describe("C9: SFTP browser v1", () => {
     await bridge.seedSftpHost("sftp-e2e-host");
   });
 
-  test("lists files with bar + rows (name · size · mtime · ⋯)", async ({ page }) => {
+  test("lists files in workspace with toolbar + table (name · size · mtime · ⋯)", async ({ page }) => {
     await openFilesPanel(page);
-    await expect(page.locator('[data-testid="sftp-list"]')).toBeVisible();
+    const table = page.locator("#workspace [data-testid='sftp-table']");
+    await expect(table).toBeVisible();
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue(".");
     await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(2);
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible();
@@ -34,6 +37,40 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator('[data-testid="sftp-more"]').first()).toBeVisible();
     await expect(page.locator(".sftp-size").first()).toBeVisible();
     await expect(page.locator(".sftp-mtime").first()).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-side"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-side-host"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-side-status"]')).toBeVisible();
+  });
+
+  test("P0b: listing lives in #workspace at ≥60% of stage width", async ({ page }) => {
+    await openFilesPanel(page);
+    await expect(page.locator("#workspace [data-testid='sftp-table']")).toBeVisible();
+    const metrics = await page.evaluate(() => {
+      const stage = document.getElementById("stage")!;
+      const workspace = document.getElementById("workspace")!;
+      const view = workspace.querySelector(".sftp-view.active") as HTMLElement;
+      const table = workspace.querySelector('[data-testid="sftp-table"]');
+      return {
+        stageW: stage.clientWidth,
+        viewW: view?.clientWidth ?? 0,
+        tableInWorkspace: Boolean(table && workspace.contains(table)),
+        tableInSidebar: Boolean(document.getElementById("panel-sftp")?.querySelector('[data-testid="sftp-table"]')),
+      };
+    });
+    expect(metrics.tableInWorkspace).toBe(true);
+    expect(metrics.tableInSidebar).toBe(false);
+    expect(metrics.viewW / metrics.stageW).toBeGreaterThanOrEqual(0.6);
+  });
+
+  test("leaving Files restores terminal panes", async ({ page }) => {
+    await page.locator("#btn-new-local").click();
+    await expect(page.locator(".pane.active")).toBeVisible({ timeout: 10000 });
+    await openFilesPanel(page);
+    await expect(page.locator("#workspace.sftp-mode")).toHaveCount(1);
+    await page.locator('.side-nav button[data-panel="hosts"]').click();
+    await expect(page.locator(".sftp-view.active")).toHaveCount(0);
+    await expect(page.locator("#workspace.sftp-mode")).toHaveCount(0);
+    await expect(page.locator(".pane.active")).toBeVisible();
   });
 
   test("navigate into dir, Up returns, refresh keeps path", async ({ page }) => {
@@ -53,8 +90,6 @@ test.describe("C9: SFTP browser v1", () => {
 
   test("editable path bar navigates; empty folder shows .sftp-empty", async ({ page }) => {
     await openFilesPanel(page);
-    // Create empty dir via rename workaround: write then remove file inside new folder via upload into docs then…
-    // Navigate to a path that exists then delete sole child to empty — use mock write of empty folder by navigating after remove.
     await page.locator('[data-testid="sftp-path"]').fill("docs");
     await page.locator('[data-testid="sftp-path"]').press("Enter");
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible();
