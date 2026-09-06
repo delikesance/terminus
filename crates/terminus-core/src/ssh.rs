@@ -114,7 +114,11 @@ fn format_known_hosts_line(host: &str, port: u16, pubkey: &PublicKey) -> Result<
     }
 }
 
-/// Atomically write `contents` to `path` via temp file + rename in the same directory.
+/// Atomically replace `path` with `contents` via a same-directory temp file.
+///
+/// - Unix: `rename(tmp, dest)` (replaces existing dest).
+/// - Windows: `rename` cannot overwrite, so remove dest (if present) then rename.
+///   No extra deps; best-effort atomicity without `MoveFileEx` bindings.
 fn atomic_write(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -128,16 +132,45 @@ fn atomic_write(path: &Path, contents: &str) -> Result<()> {
         .parent()
         .map(|p| p.join(&tmp_name))
         .unwrap_or_else(|| PathBuf::from(&tmp_name));
-    {
+
+    let write_tmp = || -> Result<()> {
         let mut file = fs::File::create(&tmp_path)?;
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
+        Ok(())
+    };
+    if let Err(err) = write_tmp() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
     }
-    fs::rename(&tmp_path, path)?;
+
+    let replace = || -> Result<()> {
+        #[cfg(windows)]
+        {
+            // Windows `rename` cannot overwrite an existing destination. Remove
+            // first (ignore NotFound), then rename — dep-free cross-platform replace.
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+            fs::rename(&tmp_path, path)?;
+        }
+        #[cfg(not(windows))]
+        {
+            fs::rename(&tmp_path, path)?;
+        }
+        Ok(())
+    };
+
+    if let Err(err) = replace() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
     Ok(())
 }
 
-/// Remove a 1-indexed line from known_hosts (atomic rewrite).
+/// Remove a 1-indexed line from known_hosts (single atomic rewrite).
 pub fn remove_known_hosts_line(path: &Path, line: usize) -> Result<()> {
     if line == 0 {
         return Err(Error::msg("known_hosts line must be 1-indexed"));
@@ -162,7 +195,46 @@ pub fn remove_known_hosts_line(path: &Path, line: usize) -> Result<()> {
     atomic_write(path, &out)
 }
 
-/// Trust a presented host key: optionally remove a mismatched line, then atomic append.
+/// Build known_hosts contents: optionally drop `replace_line`, then append `entry`.
+fn known_hosts_contents_with_trust(
+    existing: &str,
+    entry: &str,
+    replace_line: Option<usize>,
+) -> Result<String> {
+    let mut contents = String::with_capacity(existing.len() + entry.len() + 2);
+    if let Some(line) = replace_line {
+        if line == 0 {
+            return Err(Error::msg("known_hosts line must be 1-indexed"));
+        }
+        let mut found = false;
+        for (idx, row) in existing.lines().enumerate() {
+            if idx + 1 == line {
+                found = true;
+                continue;
+            }
+            contents.push_str(row);
+            contents.push('\n');
+        }
+        if !existing.is_empty() && !found {
+            return Err(Error::msg(format!("known_hosts line {line} not found")));
+        }
+    } else {
+        contents.push_str(existing);
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+    }
+    contents.push_str(entry);
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    Ok(contents)
+}
+
+/// Trust a presented host key with a **single** atomic known_hosts rewrite.
+///
+/// When `replace_line` is set (mismatch), that 1-indexed line is omitted and the
+/// new key is appended in the same write — never a separate remove then append.
 ///
 /// Path = `TERMINUS_KNOWN_HOSTS` or `~/.ssh/known_hosts`. When `path` is `Some`, that
 /// file is used instead (tests).
@@ -177,26 +249,15 @@ pub fn trust_host_key(
         Some(p) => p.to_path_buf(),
         None => resolve_known_hosts_path()?,
     };
-    if let Some(line) = replace_line {
-        if resolved.exists() {
-            remove_known_hosts_line(&resolved, line)?;
-        }
-    }
     let key = parse_presented_public_key(public_key)?;
     let entry = format_known_hosts_line(host, port, &key)?;
 
-    let mut contents = if resolved.exists() {
+    let existing = if resolved.exists() {
         fs::read_to_string(&resolved)?
     } else {
         String::new()
     };
-    if !contents.is_empty() && !contents.ends_with('\n') {
-        contents.push('\n');
-    }
-    contents.push_str(&entry);
-    if !contents.ends_with('\n') {
-        contents.push('\n');
-    }
+    let contents = known_hosts_contents_with_trust(&existing, &entry, replace_line)?;
     atomic_write(&resolved, &contents)
 }
 
