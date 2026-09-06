@@ -146,3 +146,58 @@ fn cancel_leaves_known_hosts_untouched() {
     let after = std::fs::read_to_string(&path).unwrap();
     assert_eq!(before, after);
 }
+
+#[test]
+fn trust_overwrites_existing_known_hosts_file() {
+    // Exercises atomic_write replace when dest already exists (Windows-critical path).
+    let dir = write_known_hosts(&format!("other.example ssh-ed25519 {KEY_B}\n"));
+    let path = dir.path().join("known_hosts");
+    let key = parse_public_key_base64(KEY_A).unwrap();
+    let public_key = key.to_openssh().unwrap();
+
+    trust_host_key("127.0.0.1", 2222, &public_key, None, Some(&path)).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("other.example"), "prior entries preserved");
+    assert!(written.contains(KEY_A));
+    assert!(verify_host_key("127.0.0.1", 2222, &key, Some(&path)).unwrap());
+
+    // Second trust (append again) must also succeed when dest exists.
+    trust_host_key("10.0.0.1", 22, &public_key, None, Some(&path)).unwrap();
+    let again = std::fs::read_to_string(&path).unwrap();
+    assert!(again.contains("10.0.0.1"));
+    assert!(again.matches(KEY_A).count() >= 2);
+}
+
+#[test]
+fn mismatch_replace_is_single_rewrite() {
+    // replace_line + append must not leave a half-updated file: old gone, new present.
+    let dir = write_known_hosts(&format!(
+        "keep.example ssh-ed25519 {KEY_A}\n[127.0.0.1]:2222 ssh-ed25519 {KEY_A}\n"
+    ));
+    let path = dir.path().join("known_hosts");
+    let key_b = parse_public_key_base64(KEY_B).unwrap();
+    let public_key = key_b.to_openssh().unwrap();
+
+    trust_host_key(
+        "127.0.0.1",
+        2222,
+        &public_key,
+        Some(2),
+        Some(&path),
+    )
+    .unwrap();
+
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("keep.example"));
+    assert!(written.contains(KEY_A)); // keep.example still uses KEY_A
+    assert!(written.contains(KEY_B));
+    assert_eq!(
+        written
+            .lines()
+            .filter(|l| l.contains("[127.0.0.1]:2222"))
+            .count(),
+        1,
+        "exactly one entry for the replaced host"
+    );
+    assert!(verify_host_key("127.0.0.1", 2222, &key_b, Some(&path)).unwrap());
+}
