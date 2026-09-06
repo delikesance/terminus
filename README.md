@@ -48,3 +48,5 @@ Default local fixtures (docker compose):
 postgres://terminus:terminus@127.0.0.1:54329/terminus
 ssh terminus@127.0.0.1 -p 2222   # password: terminus
 ```
+
+SSH host keys use fail-closed verification against `~/.ssh/known_hosts` (override with `TERMINUS_KNOWN_HOSTS`). First connect shows a TOFU dialog; Trust appends the presented key atomically via `ssh_host_key_trust`.
