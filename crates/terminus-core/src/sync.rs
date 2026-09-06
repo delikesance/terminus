@@ -294,9 +294,11 @@ impl SyncEngine {
                     .get::<Option<String>, _>("deleted_at")
                     .map(parse_pg),
             };
+            // Same pattern as pull_hosts: when secrets are not synced, keep local
+            // private_key/passphrase instead of wiping them with remote nulls.
             if !sync_secrets {
-                identity.private_key = None;
-                identity.passphrase = None;
+                let existing = self.store.get_identity(&identity.id).await?;
+                preserve_identity_secrets(&mut identity, existing.as_ref());
             }
             self.store.upsert_identity(&identity).await?;
             n += 1;
@@ -663,5 +665,59 @@ fn opt_int(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
         Some(Value::Number(n)) => n.as_i64().map(|v| v as i32),
         Some(Value::String(s)) => s.parse().ok(),
         _ => None,
+    }
+}
+
+/// When sync_secrets is off, remote rows omit secrets. Keep local material on upsert
+/// (mirrors host password preservation in `pull_hosts`).
+fn preserve_identity_secrets(
+    remote: &mut crate::models::Identity,
+    existing: Option<&crate::models::Identity>,
+) {
+    if let Some(existing) = existing {
+        remote.private_key = existing.private_key.clone();
+        remote.passphrase = existing.passphrase.clone();
+    } else {
+        remote.private_key = None;
+        remote.passphrase = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Identity;
+
+    #[test]
+    fn pull_without_secrets_keeps_local_key_material() {
+        let mut remote = Identity::new("deploy");
+        remote.private_key = None;
+        remote.passphrase = None;
+
+        let mut local = Identity::new("deploy");
+        local.id = remote.id.clone();
+        local.private_key = Some("-----BEGIN OPENSSH PRIVATE KEY-----\nlocal\n".into());
+        local.passphrase = Some("local-pass".into());
+
+        preserve_identity_secrets(&mut remote, Some(&local));
+        assert_eq!(
+            remote.private_key.as_deref(),
+            Some("-----BEGIN OPENSSH PRIVATE KEY-----\nlocal\n")
+        );
+        assert_eq!(remote.passphrase.as_deref(), Some("local-pass"));
+    }
+
+    #[test]
+    fn pull_without_secrets_new_identity_stays_secretless() {
+        let mut remote = Identity::new("fresh");
+        remote.private_key = Some("should-not-keep-from-remote-when-stripped".into());
+        remote.passphrase = Some("x".into());
+        // After strip, remote fields are None before preserve — simulate that:
+        remote.private_key = None;
+        remote.passphrase = None;
+
+        preserve_identity_secrets(&mut remote, None);
+        assert!(remote.private_key.is_none());
+        assert!(remote.passphrase.is_none());
     }
 }
