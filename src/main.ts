@@ -8,6 +8,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
+import {
+  resolveUnderRoot,
+  parentSftpPath,
+  parseSftpError,
+} from "./sftpPath";
 import { parseKnownHosts } from "./knownHostsParse";
 import {
   inferIdentityKind,
@@ -82,7 +87,13 @@ type SyncStatus = {
   state?: string;
   sync_secrets?: boolean;
 };
-type SftpEntry = { name: string; path: string; is_dir: boolean; size: number };
+type SftpEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  mtime?: number | null;
+};
 
 type Pane = {
   id: string;
@@ -114,6 +125,8 @@ const state = {
   panes: [] as Pane[],
   activePane: null as string | null,
   sftpHostId: null as string | null,
+  sftpRoot: "." as string,
+  sftpPath: "." as string,
   customCss: document.createElement("style"),
   expandedGroups: new Set<string>(JSON.parse(localStorage.getItem("terminus-expanded-groups") || "[]")),
 };
@@ -2397,6 +2410,8 @@ async function importKnownHosts() {
 
 function openSftpFor(hostId: string) {
   state.sftpHostId = hostId;
+  state.sftpRoot = ".";
+  state.sftpPath = ".";
   document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
   document.querySelector<HTMLButtonElement>('[data-panel="sftp"]')?.classList.add("active");
   document.querySelectorAll(".side-panel").forEach((p) => p.classList.add("hidden"));
@@ -2417,48 +2432,313 @@ function renderSftpEmpty() {
   $("sftp-add-host").onclick = () => editHost();
 }
 
-async function loadSftp(hostId: string, path: string) {
-  state.sftpHostId = hostId;
-  const picker = `<div class="sftp-picker"><select id="sftp-host">${state.hosts
+function formatSftpSize(bytes: number, isDir: boolean): string {
+  if (isDir) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatSftpMtime(mtime?: number | null): string {
+  if (!mtime) return "—";
+  try {
+    return new Date(mtime * 1000).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function sftpBarHtml(hostId: string, path: string): string {
+  const hostOpts = state.hosts
     .map(
       (h) =>
         `<option value="${escapeHtml(h.id)}" ${h.id === hostId ? "selected" : ""}>${escapeHtml(h.name || h.hostname)}</option>`,
     )
-    .join("")}</select></div>`;
+    .join("");
+  return `<div class="sftp-bar" data-testid="sftp-bar">
+    <select id="sftp-host" class="sftp-host" title="Host" data-testid="sftp-host">${hostOpts}</select>
+    <button type="button" id="sftp-up" class="sftp-icon-btn" title="Up" aria-label="Up" data-testid="sftp-up">${icons.chevronLeft}</button>
+    <input id="sftp-path" class="sftp-path" type="text" spellcheck="false" value="${escapeHtml(path)}" data-testid="sftp-path" aria-label="Path" />
+    <button type="button" id="sftp-refresh" class="sftp-icon-btn" title="Refresh" aria-label="Refresh" data-testid="sftp-refresh">${icons.reconnect}</button>
+    <button type="button" id="sftp-upload" class="sftp-icon-btn" title="Upload" aria-label="Upload" data-testid="sftp-upload">${icons.plus}</button>
+  </div>`;
+}
+
+function bindSftpBar(hostId: string, path: string) {
+  $("sftp-host").onchange = () => {
+    state.sftpRoot = ".";
+    void loadSftp(($("sftp-host") as HTMLSelectElement).value, ".");
+  };
+  $("sftp-up").onclick = () => {
+    const parent = parentSftpPath(path);
+    if (parent != null) void loadSftp(hostId, parent);
+  };
+  $("sftp-refresh").onclick = () => void loadSftp(hostId, path);
+  $("sftp-upload").onclick = () => void sftpUpload(hostId, path);
+  const pathInput = $input("sftp-path") as HTMLInputElement;
+  pathInput.onkeydown = (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      void navigateSftpPath(hostId, pathInput.value);
+    }
+  };
+}
+
+function renderSftpError(hostId: string, path: string, err: unknown) {
+  const typed = parseSftpError(err);
+  $("panel-sftp").innerHTML = `${sftpBarHtml(hostId, path)}
+    <div class="sftp-error" data-testid="sftp-error" data-kind="${escapeHtml(typed.kind)}" role="alert">
+      <strong>${escapeHtml(typed.kind)}</strong>
+      <span>${escapeHtml(typed.message)}</span>
+    </div>`;
+  bindSftpBar(hostId, path);
+}
+
+async function navigateSftpPath(hostId: string, raw: string) {
+  try {
+    const next = resolveUnderRoot(state.sftpRoot, raw.trim() || ".");
+    await loadSftp(hostId, next);
+  } catch (err) {
+    renderSftpError(hostId, state.sftpPath, err);
+  }
+}
+
+async function loadSftp(hostId: string, path: string) {
+  state.sftpHostId = hostId;
   if (!state.hosts.length) {
     renderSftpEmpty();
     return;
   }
-  $("panel-sftp").innerHTML = `${picker}<div class="empty">${icons.folder}<span>Loading ${escapeHtml(path)}…</span></div>`;
-  $("sftp-host").onchange = () => loadSftp(($("sftp-host") as HTMLSelectElement).value, ".");
+  let safePath: string;
   try {
-    const entries = await invoke<SftpEntry[]>("sftp_list", { hostId, path });
-    const parent = path === "." || path === "/" ? "" : path.replace(/\/?[^/]+\/?$/, "") || ".";
-    $("panel-sftp").innerHTML =
-      picker +
-      `<div class="item" data-sftp="${escapeHtml(parent || ".")}" data-dir="true"><span class="leading">${icons.folder}</span><div class="body"><strong>${escapeHtml(path)}</strong><small>${parent ? "Go up" : "Current folder"}</small></div></div>` +
-      entries
-        .map(
-          (e) =>
-            `<div class="item" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}"><span class="leading">${e.is_dir ? icons.folder : icons.file}</span><div class="body"><strong>${escapeHtml(e.name)}</strong><small>${e.is_dir ? "Folder" : `${e.size} B`}</small></div></div>`,
-        )
-        .join("");
-    $("sftp-host").onchange = () => loadSftp(($("sftp-host") as HTMLSelectElement).value, ".");
-    $("panel-sftp").querySelectorAll<HTMLElement>("[data-sftp]").forEach((el) => {
-      el.onclick = () => {
-        if (el.dataset.dir === "true") loadSftp(hostId, el.dataset.sftp!);
+    safePath = resolveUnderRoot(state.sftpRoot, path);
+  } catch (err) {
+    renderSftpError(hostId, state.sftpPath, err);
+    return;
+  }
+  state.sftpPath = safePath;
+  $("panel-sftp").innerHTML = `${sftpBarHtml(hostId, safePath)}
+    <div class="empty" data-testid="sftp-loading">${icons.folder}<span>Loading ${escapeHtml(safePath)}…</span></div>`;
+  bindSftpBar(hostId, safePath);
+  try {
+    const entries = await invoke<SftpEntry[]>("sftp_list", {
+      hostId,
+      path: safePath,
+      root: state.sftpRoot,
+    });
+    if (!entries.length) {
+      $("panel-sftp").innerHTML = `${sftpBarHtml(hostId, safePath)}
+        <div class="sftp-empty" data-testid="sftp-empty">
+          ${icons.folder}
+          <span>This folder is empty</span>
+        </div>`;
+      bindSftpBar(hostId, safePath);
+      return;
+    }
+    const rows = entries
+      .map((e) => {
+        const meta = `${formatSftpSize(e.size, e.is_dir)} · ${formatSftpMtime(e.mtime)}`;
+        return `<div class="sftp-row item" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-name="${escapeHtml(e.name)}" data-testid="sftp-row">
+          <span class="leading">${e.is_dir ? icons.folder : icons.file}</span>
+          <div class="body">
+            <strong class="sftp-name">${escapeHtml(e.name)}</strong>
+            <small class="sftp-meta"><span class="sftp-size">${escapeHtml(formatSftpSize(e.size, e.is_dir))}</span><span class="sftp-mtime">${escapeHtml(formatSftpMtime(e.mtime))}</span></small>
+          </div>
+          <span class="trail">
+            <button type="button" class="quick sftp-more" data-testid="sftp-more" title="Actions" aria-label="Actions">${icons.more}</button>
+          </span>
+          <span class="sftp-meta-inline" aria-hidden="true">${escapeHtml(meta)}</span>
+        </div>`;
+      })
+      .join("");
+    $("panel-sftp").innerHTML = `${sftpBarHtml(hostId, safePath)}
+      <div class="sftp-list" data-testid="sftp-list">${rows}</div>`;
+    bindSftpBar(hostId, safePath);
+    $("panel-sftp").querySelectorAll<HTMLElement>(".sftp-row").forEach((el) => {
+      el.onclick = (ev) => {
+        if ((ev.target as HTMLElement).closest(".sftp-more")) return;
+        if (el.dataset.dir === "true") void loadSftp(hostId, el.dataset.sftp!);
+      };
+      el.querySelector<HTMLButtonElement>(".sftp-more")!.onclick = (ev) => {
+        ev.stopPropagation();
+        const entryPath = el.dataset.sftp!;
+        const isDir = el.dataset.dir === "true";
+        const name = el.dataset.name || "";
+        showMenu(ev.clientX, ev.clientY, [
+          {
+            label: isDir ? "Open" : "Download",
+            run: () => {
+              if (isDir) void loadSftp(hostId, entryPath);
+              else void sftpDownload(hostId, entryPath, name);
+            },
+          },
+          { label: "Rename", run: () => sftpRenameSheet(hostId, entryPath, name, isDir) },
+          {
+            label: "Delete",
+            danger: true,
+            run: () => sftpDeleteConfirm(hostId, entryPath, name, isDir),
+          },
+        ]);
       };
     });
   } catch (err) {
-    $("panel-sftp").innerHTML = `${picker}<div class="empty">${icons.folder}<span>${escapeHtml(String(err))}</span></div>`;
-    $("sftp-host").onchange = () => loadSftp(($("sftp-host") as HTMLSelectElement).value, ".");
+    renderSftpError(hostId, safePath, err);
   }
+}
+
+async function sftpDownload(hostId: string, path: string, name: string) {
+  try {
+    const safe = resolveUnderRoot(state.sftpRoot, path);
+    const bytes = await invoke<number[] | Uint8Array>("sftp_read", {
+      hostId,
+      path: safe,
+      root: state.sftpRoot,
+    });
+    const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+    await saveLocalFile(name, data);
+  } catch (err) {
+    renderSftpError(hostId, state.sftpPath, err);
+  }
+}
+
+async function saveLocalFile(name: string, data: Uint8Array) {
+  const w = window as unknown as {
+    showSaveFilePicker?: (opts: { suggestedName: string }) => Promise<{
+      createWritable: () => Promise<{ write: (d: Uint8Array) => Promise<void>; close: () => Promise<void> }>;
+    }>;
+  };
+  if (typeof w.showSaveFilePicker === "function") {
+    const handle = await w.showSaveFilePicker({ suggestedName: name });
+    const writable = await handle.createWritable();
+    await writable.write(data);
+    await writable.close();
+    return;
+  }
+  const copy = new Uint8Array(data.byteLength);
+  copy.set(data);
+  const blob = new Blob([copy]);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function sftpUpload(hostId: string, dirPath: string) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.multiple = false;
+  input.dataset.testid = "sftp-file-picker";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const joined =
+        dirPath === "/"
+          ? resolveUnderRoot(state.sftpRoot, `/${file.name}`)
+          : dirPath === "."
+            ? resolveUnderRoot(state.sftpRoot, file.name)
+            : resolveUnderRoot(state.sftpRoot, `${dirPath}/${file.name}`);
+      const buf = new Uint8Array(await file.arrayBuffer());
+      await invoke("sftp_write", {
+        hostId,
+        path: joined,
+        data: Array.from(buf),
+        root: state.sftpRoot,
+      });
+      await loadSftp(hostId, dirPath);
+    } catch (err) {
+      renderSftpError(hostId, dirPath, err);
+    }
+  };
+  input.click();
+}
+
+function sftpRenameSheet(hostId: string, path: string, name: string, _isDir: boolean) {
+  openSheet(`
+    <h2>Rename</h2>
+    <p class="lead">${escapeHtml(name)}</p>
+    <label class="field">New name<input id="sftp-rename-input" data-testid="sftp-rename-input" value="${escapeHtml(name)}" spellcheck="false" /></label>
+    <div class="row">
+      <button type="button" id="sftp-rename-cancel">Cancel</button>
+      <button type="button" class="primary" id="sftp-rename-ok" data-testid="sftp-rename-ok">Rename</button>
+    </div>`);
+  $("sftp-rename-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("sftp-rename-ok").onclick = async () => {
+    const nextName = ($input("sftp-rename-input") as HTMLInputElement).value.trim();
+    if (!nextName || nextName.includes("/") || nextName === "." || nextName === "..") {
+      renderSftpError(hostId, state.sftpPath, {
+        kind: "SftpPathTraversal",
+        message: "invalid name",
+        path: nextName,
+      });
+      $("modal").classList.add("hidden");
+      return;
+    }
+    try {
+      const parent = parentSftpPath(path) ?? state.sftpRoot;
+      const to =
+        parent === "/"
+          ? `/${nextName}`
+          : parent === "."
+            ? nextName
+            : `${parent}/${nextName}`;
+      const fromSafe = resolveUnderRoot(state.sftpRoot, path);
+      const toSafe = resolveUnderRoot(state.sftpRoot, to);
+      await invoke("sftp_rename", {
+        hostId,
+        from: fromSafe,
+        to: toSafe,
+        root: state.sftpRoot,
+      });
+      $("modal").classList.add("hidden");
+      await loadSftp(hostId, state.sftpPath);
+    } catch (err) {
+      $("modal").classList.add("hidden");
+      renderSftpError(hostId, state.sftpPath, err);
+    }
+  };
+}
+
+function sftpDeleteConfirm(hostId: string, path: string, name: string, isDir: boolean) {
+  openSheet(`
+    <h2>Delete ${isDir ? "folder" : "file"}?</h2>
+    <p class="lead">This cannot be undone.</p>
+    <p class="form-error">${escapeHtml(name)}</p>
+    <div class="row">
+      <button type="button" id="sftp-del-cancel" data-testid="sftp-del-cancel">Cancel</button>
+      <button type="button" class="danger" id="sftp-del-ok" data-testid="sftp-del-confirm">Delete</button>
+    </div>`);
+  $("sftp-del-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("sftp-del-ok").onclick = async () => {
+    try {
+      const safe = resolveUnderRoot(state.sftpRoot, path);
+      await invoke("sftp_remove", {
+        hostId,
+        path: safe,
+        isDir,
+        root: state.sftpRoot,
+      });
+      $("modal").classList.add("hidden");
+      await loadSftp(hostId, state.sftpPath);
+    } catch (err) {
+      $("modal").classList.add("hidden");
+      renderSftpError(hostId, state.sftpPath, err);
+    }
+  };
 }
 
 document.querySelector('[data-panel="sftp"]')?.addEventListener("click", () => {
   const activeHost = activePane()?.session?.host_id ?? activePane()?.pending?.hostId;
   const hostId = state.sftpHostId ?? activeHost ?? state.hosts[0]?.id;
-  if (hostId) void loadSftp(hostId, ".");
+  if (hostId) void loadSftp(hostId, state.sftpPath || ".");
   else renderSftpEmpty();
 });
 

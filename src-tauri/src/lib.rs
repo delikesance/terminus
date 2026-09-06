@@ -356,6 +356,7 @@ async fn sftp_list(
     state: State<'_, AppState>,
     host_id: String,
     path: String,
+    root: Option<String>,
 ) -> Result<Vec<SftpEntry>, String> {
     let host = state
         .store
@@ -367,9 +368,97 @@ async fn sftp_list(
         Some(id) => state.store.get_identity(id).await.map_err(map_err)?,
         None => None,
     };
-    ssh::sftp_list(&host, identity.as_ref(), &path)
+    let root = root.unwrap_or_else(|| {
+        if path.starts_with('/') {
+            "/".into()
+        } else {
+            ".".into()
+        }
+    });
+    ssh::sftp_list(&host, identity.as_ref(), &root, &path)
         .await
         .map_err(map_err)
+}
+
+#[tauri::command]
+async fn sftp_read(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: String,
+    root: Option<String>,
+) -> Result<Vec<u8>, String> {
+    let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
+    ssh::sftp_read(&host, identity.as_ref(), &root, &path)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn sftp_write(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: String,
+    data: Vec<u8>,
+    root: Option<String>,
+) -> Result<(), String> {
+    let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
+    ssh::sftp_write(&host, identity.as_ref(), &root, &path, &data)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn sftp_rename(
+    state: State<'_, AppState>,
+    host_id: String,
+    from: String,
+    to: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let (host, identity, root) = sftp_ctx(&state, &host_id, &from, root).await?;
+    ssh::sftp_rename(&host, identity.as_ref(), &root, &from, &to)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn sftp_remove(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: String,
+    is_dir: bool,
+    root: Option<String>,
+) -> Result<(), String> {
+    let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
+    ssh::sftp_remove(&host, identity.as_ref(), &root, &path, is_dir)
+        .await
+        .map_err(map_err)
+}
+
+async fn sftp_ctx(
+    state: &State<'_, AppState>,
+    host_id: &str,
+    path: &str,
+    root: Option<String>,
+) -> Result<(Host, Option<Identity>, String), String> {
+    let host = state
+        .store
+        .get_host(host_id)
+        .await
+        .map_err(map_err)?
+        .ok_or_else(|| "host not found".to_string())?;
+    let identity = match &host.identity_id {
+        Some(id) => state.store.get_identity(id).await.map_err(map_err)?,
+        None => None,
+    };
+    let root = root.unwrap_or_else(|| {
+        if path.starts_with('/') {
+            "/".into()
+        } else {
+            ".".into()
+        }
+    });
+    Ok((host, identity, root))
 }
 
 #[tauri::command]
@@ -497,6 +586,10 @@ pub fn run() {
             sync_now,
             sync_status,
             sftp_list,
+            sftp_read,
+            sftp_write,
+            sftp_rename,
+            sftp_remove,
             forwards_list,
             forwards_upsert,
             forward_start,
