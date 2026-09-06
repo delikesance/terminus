@@ -17,9 +17,6 @@ npm-debug.log*
 src/groupSoftDelete.js
 src/groupExpand.js
 src/knownHostsParse.js
-<<<<<<< HEAD
 src/identityKind.js
-=======
 src/sftpPath.js
->>>>>>> 5775a97 (chore: gitignore compiled sftpPath.js)
 test-results/
