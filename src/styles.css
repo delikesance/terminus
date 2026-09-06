@@ -489,6 +489,15 @@ svg {
   color: var(--text);
 }
 .item .trail { color: var(--tertiary); flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.item .trail .trail-identity {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--tertiary);
+  flex: none;
+}
+.item .trail .trail-identity svg { width: 12px; height: 12px; }
 .item .live {
   width: 7px;
   height: 7px;

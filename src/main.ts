@@ -353,11 +353,11 @@ async function refreshSync() {
   const syncState = status.state ?? (status.configured ? (status.last_error ? "error" : "idle") : "unconfigured");
 
   const stateConfig: Record<string, { label: string; icon: string; color: string }> = {
-    unconfigured: { label: "Sync non configuré", icon: icons.cloud, color: "var(--tertiary)" },
-    idle: { label: "À jour", icon: icons.cloud, color: "var(--green)" },
-    syncing: { label: "Synchronisation...", icon: icons.cloud, color: "var(--blue)" },
-    offline: { label: "Hors ligne", icon: icons.cloud, color: "var(--yellow)" },
-    error: { label: "Erreur de sync", icon: icons.cloud, color: "var(--red)" },
+    unconfigured: { label: "Sync not configured", icon: icons.cloud, color: "var(--tertiary)" },
+    idle: { label: "Up to date", icon: icons.cloud, color: "var(--green)" },
+    syncing: { label: "Syncing...", icon: icons.cloud, color: "var(--blue)" },
+    offline: { label: "Offline", icon: icons.cloud, color: "var(--yellow)" },
+    error: { label: "Sync error", icon: icons.cloud, color: "var(--red)" },
   };
 
   const config = stateConfig[syncState] ?? stateConfig.idle;
@@ -472,14 +472,15 @@ function renderHosts() {
       return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 3px color-mix(in srgb, ${color} 22%, transparent);" data-testid="connection-dot" data-state="${conn}"></span>`;
     };
     
-    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(h.name || h.hostname)} — ${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}">
+    const userAtHost = `${h.username}@${h.hostname}${h.port !== 22 ? `:${h.port}` : ""}`;
+    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}">
         <span class="leading">${icons.server}</span>
-        <div class="body"><strong>${escapeHtml(h.name || h.hostname)}</strong><small>${escapeHtml(h.username)}@${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}</small></div>
+        <div class="body"><strong>${escapeHtml(h.name || h.hostname)}</strong><small>${escapeHtml(userAtHost)}</small></div>
         <span class="trail">
           ${connectionDot(connection)}
           ${openCount > 0 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count-pill">${openCount}</span>` : ""}
           <button type="button" class="quick" data-new="${h.id}" title="New session">${icons.plus}</button>
-          ${h.auth_method === "password" ? icons.password : icons.key}
+          ${h.identity_id ? `<span class="trail-identity" data-testid="host-identity-icon" title="Identity">${icons.key}</span>` : ""}
         </span>
       </div>`;
   };
@@ -567,7 +568,7 @@ function renderHosts() {
       "beforeend",
       `<div class="empty" data-testid="empty-hosts">
         ${icons.server}
-        <span class="empty-title">No hosts yet</span>
+        <span class="empty-title">No remote hosts yet</span>
         <div class="empty-actions">
           <button type="button" class="primary" id="empty-add-host" data-testid="empty-add-host">Add host</button>
           <button type="button" class="ghost" id="empty-import-hosts" data-testid="empty-import-hosts">Import known_hosts…</button>
