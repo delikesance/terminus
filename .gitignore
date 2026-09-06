@@ -18,4 +18,5 @@ src/groupSoftDelete.js
 src/groupExpand.js
 src/knownHostsParse.js
 src/identityKind.js
+src/sftpPath.js
 test-results/

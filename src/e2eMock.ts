@@ -61,6 +61,22 @@ type Identity = {
   deleted_at?: string | null;
 };
 
+type SftpEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  mtime?: number | null;
+};
+
+type SftpNode = {
+  name: string;
+  is_dir: boolean;
+  content: Uint8Array;
+  mtime: number;
+  children: Map<string, SftpNode>;
+};
+
 type Db = {
   hosts: Host[];
   groups: Group[];
@@ -69,6 +85,10 @@ type Db = {
   connections: Map<string, string>;
   appearance: Record<string, unknown>;
   sync: SyncStatus;
+  /** Per-host virtual SFTP trees keyed by host id. */
+  sftp: Map<string, SftpNode>;
+  /** Force next sftp_* call to fail with typed IPC JSON. */
+  sftpForceError: string | null;
 };
 
 const stamp = () => new Date().toISOString();
@@ -163,6 +183,8 @@ function createDb(): Db {
       state: "unconfigured",
       sync_secrets: false,
     },
+    sftp: new Map(),
+    sftpForceError: null,
   };
   seedFixtureGroup(db);
   return db;
@@ -212,6 +234,147 @@ function argsOf(payload: unknown): Record<string, unknown> {
   return payload as Record<string, unknown>;
 }
 
+function sftpNow(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function makeDir(name: string): SftpNode {
+  return { name, is_dir: true, content: new Uint8Array(), mtime: sftpNow(), children: new Map() };
+}
+
+function makeFile(name: string, content: string | Uint8Array): SftpNode {
+  const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+  return { name, is_dir: false, content: bytes, mtime: sftpNow(), children: new Map() };
+}
+
+function ensureSftpRoot(db: Db, hostId: string): SftpNode {
+  let root = db.sftp.get(hostId);
+  if (!root) {
+    root = makeDir(".");
+    root.children.set("docs", makeDir("docs"));
+    root.children.get("docs")!.children.set("readme.txt", makeFile("readme.txt", "hello sftp"));
+    root.children.set("notes.txt", makeFile("notes.txt", "notes"));
+    db.sftp.set(hostId, root);
+  }
+  return root;
+}
+
+/** Mirror backend normalize — throw typed IPC JSON on traversal. */
+function mockNormalize(path: string): string {
+  if (!path) return ".";
+  const absolute = path.startsWith("/");
+  const stack: string[] = [];
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!stack.length) {
+        throw JSON.stringify({
+          kind: "SftpPathTraversal",
+          message: `path traversal blocked: ${path}`,
+          path,
+        });
+      }
+      stack.pop();
+      continue;
+    }
+    stack.push(part);
+  }
+  if (absolute) return stack.length ? `/${stack.join("/")}` : "/";
+  return stack.length ? stack.join("/") : ".";
+}
+
+function mockResolve(root: string, path: string): string {
+  const rootN = mockNormalize(root);
+  let candidate: string;
+  if (path.startsWith("/")) candidate = mockNormalize(path);
+  else if (rootN === ".") candidate = mockNormalize(path);
+  else if (rootN === "/") candidate = mockNormalize(`/${path}`);
+  else candidate = mockNormalize(`${rootN.replace(/\/$/, "")}/${path.replace(/^\//, "")}`);
+  const under =
+    rootN === "/"
+      ? candidate.startsWith("/")
+      : rootN === "."
+        ? !candidate.startsWith("/")
+        : candidate === rootN || candidate.startsWith(`${rootN}/`);
+  if (!under) {
+    throw JSON.stringify({
+      kind: "SftpPathTraversal",
+      message: `path traversal blocked: ${path}`,
+      path,
+    });
+  }
+  return candidate;
+}
+
+function splitRel(path: string): string[] {
+  const n = mockNormalize(path);
+  if (n === "." || n === "/") return [];
+  return n.replace(/^\//, "").split("/").filter(Boolean);
+}
+
+function getNode(root: SftpNode, path: string): SftpNode | null {
+  const parts = splitRel(path);
+  let cur: SftpNode = root;
+  for (const p of parts) {
+    const next = cur.children.get(p);
+    if (!next) return null;
+    cur = next;
+  }
+  return cur;
+}
+
+function parentAndName(path: string): { parent: string; name: string } {
+  const n = mockNormalize(path);
+  if (n === "." || n === "/") return { parent: n, name: "" };
+  const parts = splitRel(n);
+  const name = parts.pop()!;
+  const parent = n.startsWith("/")
+    ? parts.length
+      ? `/${parts.join("/")}`
+      : "/"
+    : parts.length
+      ? parts.join("/")
+      : ".";
+  return { parent, name };
+}
+
+function listEntries(root: SftpNode, path: string): SftpEntry[] {
+  const node = getNode(root, path);
+  if (!node) {
+    throw JSON.stringify({ kind: "SftpNotFound", message: `list: no such file: ${path}` });
+  }
+  if (!node.is_dir) {
+    throw JSON.stringify({ kind: "SftpIo", message: `list: not a directory: ${path}` });
+  }
+  const base = mockNormalize(path);
+  const out: SftpEntry[] = [];
+  for (const child of node.children.values()) {
+    const childPath =
+      base === "/"
+        ? `/${child.name}`
+        : base === "."
+          ? child.name
+          : `${base}/${child.name}`;
+    out.push({
+      name: child.name,
+      path: childPath,
+      is_dir: child.is_dir,
+      size: child.is_dir ? 0 : child.content.byteLength,
+      mtime: child.mtime,
+    });
+  }
+  out.sort((a, b) => Number(b.is_dir) - Number(a.is_dir) || a.name.localeCompare(b.name));
+  return out;
+}
+
+function maybeSftpForce(db: Db): void {
+  if (db.sftpForceError) {
+    const err = db.sftpForceError;
+    db.sftpForceError = null;
+    throw err;
+  }
+}
+
 /** Install mock IPC. No-op outside VITE_E2E or when real Tauri is present. */
 export function installE2eMock(): void {
   if (import.meta.env.VITE_E2E !== "1") return;
@@ -249,6 +412,7 @@ export function installE2eMock(): void {
           const id = String(args.id);
           db.hosts = db.hosts.filter((h) => h.id !== id);
           db.connections.delete(id);
+          db.sftp.delete(id);
           return null;
         }
         case "groups_list":
@@ -302,9 +466,102 @@ export function installE2eMock(): void {
         case "snippets_list":
         case "history_search":
         case "ssh_default_keys":
-        case "sftp_list":
         case "forwards_list":
           return [];
+        case "sftp_list": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? ".");
+          const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
+          const safe = mockResolve(root, path);
+          ensureHost(db, hostId);
+          return listEntries(ensureSftpRoot(db, hostId), safe);
+        }
+        case "sftp_read": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? "");
+          const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
+          const safe = mockResolve(root, path);
+          const node = getNode(ensureSftpRoot(db, hostId), safe);
+          if (!node || node.is_dir) {
+            throw JSON.stringify({ kind: "SftpNotFound", message: `read: no such file: ${safe}` });
+          }
+          return Array.from(node.content);
+        }
+        case "sftp_write": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? "");
+          const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
+          const safe = mockResolve(root, path);
+          const data = args.data as number[] | Uint8Array;
+          const bytes = data instanceof Uint8Array ? data : Uint8Array.from(data ?? []);
+          const { parent, name } = parentAndName(safe);
+          if (!name) throw JSON.stringify({ kind: "SftpIo", message: "write: invalid path" });
+          const rootNode = ensureSftpRoot(db, hostId);
+          const parentNode = getNode(rootNode, parent);
+          if (!parentNode || !parentNode.is_dir) {
+            throw JSON.stringify({ kind: "SftpNotFound", message: `write: no such dir: ${parent}` });
+          }
+          parentNode.children.set(name, makeFile(name, bytes));
+          return null;
+        }
+        case "sftp_rename": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const from = String(args.from ?? "");
+          const to = String(args.to ?? "");
+          const root = String(args.root ?? (from.startsWith("/") ? "/" : "."));
+          const fromSafe = mockResolve(root, from);
+          const toSafe = mockResolve(root, to);
+          const rootNode = ensureSftpRoot(db, hostId);
+          const { parent: fp, name: fn } = parentAndName(fromSafe);
+          const { parent: tp, name: tn } = parentAndName(toSafe);
+          const fromParent = getNode(rootNode, fp);
+          const node = fromParent?.children.get(fn);
+          if (!fromParent || !node) {
+            throw JSON.stringify({ kind: "SftpNotFound", message: `rename: no such file: ${fromSafe}` });
+          }
+          const toParent = getNode(rootNode, tp);
+          if (!toParent || !toParent.is_dir) {
+            throw JSON.stringify({ kind: "SftpNotFound", message: `rename: no such dir: ${tp}` });
+          }
+          fromParent.children.delete(fn);
+          node.name = tn;
+          toParent.children.set(tn, node);
+          return null;
+        }
+        case "sftp_remove": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? "");
+          const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
+          const safe = mockResolve(root, path);
+          const { parent, name } = parentAndName(safe);
+          const rootNode = ensureSftpRoot(db, hostId);
+          const parentNode = getNode(rootNode, parent);
+          const node = parentNode?.children.get(name);
+          if (!parentNode || !node) {
+            throw JSON.stringify({ kind: "SftpNotFound", message: `remove: no such file: ${safe}` });
+          }
+          if (node.is_dir && node.children.size > 0) {
+            throw JSON.stringify({ kind: "SftpIo", message: `remove: directory not empty: ${safe}` });
+          }
+          parentNode.children.delete(name);
+          return null;
+        }
+        case "test_sftp_force_error": {
+          db.sftpForceError = String(args.error ?? args.message ?? "");
+          return null;
+        }
+        case "test_sftp_reset": {
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          if (hostId) db.sftp.delete(hostId);
+          else db.sftp.clear();
+          db.sftpForceError = null;
+          return null;
+        }
         case "sync_status":
           return {
             ...db.sync,

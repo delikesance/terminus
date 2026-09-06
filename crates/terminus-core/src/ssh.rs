@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::models::{Host, Identity, SftpEntry};
+use crate::sftp_path::resolve_under_root;
 use russh::client::{self, Handle};
 use russh::keys::ssh_key::PublicKey;
 use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg};
@@ -12,6 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// Client-side SFTP op timeout; on expiry the SSH handle is disconnected.
+const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// russh client handler that verifies the server host key against known_hosts
 /// (fail closed: unknown and mismatched keys are rejected).
@@ -533,64 +537,145 @@ pub async fn exec_command(
 pub async fn sftp_list(
     host: &Host,
     identity: Option<&Identity>,
+    root: &str,
     path: &str,
 ) -> Result<Vec<SftpEntry>> {
-    let (_handle, sftp) = sftp_session(host, identity).await?;
-    let mut entries = Vec::new();
-    let dir = sftp.read_dir(path).await.map_err(|e| Error::msg(e.to_string()))?;
-    for entry in dir {
-        let name = entry.file_name();
-        if name == "." || name == ".." {
-            continue;
+    let safe = resolve_under_root(root, path)?;
+    with_sftp(host, identity, move |sftp| async move {
+        let mut entries = Vec::new();
+        let dir = sftp
+            .read_dir(&safe)
+            .await
+            .map_err(|e| map_sftp_io("list", e))?;
+        for entry in dir {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let meta = entry.metadata();
+            let child = if safe == "/" {
+                format!("/{name}")
+            } else if safe == "." {
+                name.to_string()
+            } else {
+                format!("{}/{}", safe.trim_end_matches('/'), name)
+            };
+            entries.push(SftpEntry {
+                name: name.to_string(),
+                path: child,
+                is_dir: meta.is_dir(),
+                size: meta.size.unwrap_or(0),
+                mtime: meta.mtime.map(|t| t as u64),
+            });
         }
-        let meta = entry.metadata();
-        entries.push(SftpEntry {
-            name: name.to_string(),
-            path: format!("{}/{}", path.trim_end_matches('/'), name),
-            is_dir: meta.is_dir(),
-            size: meta.size.unwrap_or(0),
-        });
-    }
-    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
-    Ok(entries)
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+        Ok(entries)
+    })
+    .await
 }
 
-pub async fn sftp_read(host: &Host, identity: Option<&Identity>, path: &str) -> Result<Vec<u8>> {
+pub async fn sftp_read(
+    host: &Host,
+    identity: Option<&Identity>,
+    root: &str,
+    path: &str,
+) -> Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
-    let (_handle, sftp) = sftp_session(host, identity).await?;
-    let mut file = sftp
-        .open(path)
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    Ok(buf)
+    let safe = resolve_under_root(root, path)?;
+    with_sftp(host, identity, move |sftp| async move {
+        let mut file = sftp
+            .open(&safe)
+            .await
+            .map_err(|e| map_sftp_io("read", e))?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)
+            .await
+            .map_err(|e| Error::Sftp {
+                kind: "SftpIo",
+                message: format!("read failed: {e}"),
+            })?;
+        Ok(buf)
+    })
+    .await
 }
 
 pub async fn sftp_write(
     host: &Host,
     identity: Option<&Identity>,
+    root: &str,
     path: &str,
     data: &[u8],
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
-    let (_handle, sftp) = sftp_session(host, identity).await?;
-    let mut file = sftp
-        .create(path)
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    file.write_all(data)
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    file.flush()
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    file.shutdown()
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    Ok(())
+    let safe = resolve_under_root(root, path)?;
+    let data = data.to_vec();
+    with_sftp(host, identity, move |sftp| async move {
+        let mut file = sftp
+            .create(&safe)
+            .await
+            .map_err(|e| map_sftp_io("write", e))?;
+        file.write_all(&data)
+            .await
+            .map_err(|e| Error::Sftp {
+                kind: "SftpIo",
+                message: format!("write failed: {e}"),
+            })?;
+        file.flush()
+            .await
+            .map_err(|e| Error::Sftp {
+                kind: "SftpIo",
+                message: format!("flush failed: {e}"),
+            })?;
+        file.shutdown()
+            .await
+            .map_err(|e| Error::Sftp {
+                kind: "SftpIo",
+                message: format!("close failed: {e}"),
+            })?;
+        Ok(())
+    })
+    .await
+}
+
+pub async fn sftp_rename(
+    host: &Host,
+    identity: Option<&Identity>,
+    root: &str,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    let from_safe = resolve_under_root(root, from)?;
+    let to_safe = resolve_under_root(root, to)?;
+    with_sftp(host, identity, move |sftp| async move {
+        sftp.rename(&from_safe, &to_safe)
+            .await
+            .map_err(|e| map_sftp_io("rename", e))?;
+        Ok(())
+    })
+    .await
+}
+
+pub async fn sftp_remove(
+    host: &Host,
+    identity: Option<&Identity>,
+    root: &str,
+    path: &str,
+    is_dir: bool,
+) -> Result<()> {
+    let safe = resolve_under_root(root, path)?;
+    with_sftp(host, identity, move |sftp| async move {
+        if is_dir {
+            sftp.remove_dir(&safe)
+                .await
+                .map_err(|e| map_sftp_io("remove_dir", e))?;
+        } else {
+            sftp.remove_file(&safe)
+                .await
+                .map_err(|e| map_sftp_io("remove", e))?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 pub async fn sftp_roundtrip(
@@ -599,43 +684,85 @@ pub async fn sftp_roundtrip(
     path: &str,
     data: &[u8],
 ) -> Result<Vec<u8>> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (_handle, sftp) = sftp_session(host, identity).await?;
+    let root = if path.starts_with('/') { "/" } else { "." };
+    sftp_write(host, identity, root, path, data).await?;
+    sftp_read(host, identity, root, path).await
+}
+
+fn map_sftp_io(op: &str, err: impl std::fmt::Display) -> Error {
+    let message = format!("{op}: {err}");
+    let lower = message.to_lowercase();
+    let kind = if lower.contains("no such")
+        || lower.contains("not found")
+        || lower.contains("enoent")
     {
-        let mut file = sftp
-            .create(path)
-            .await
-            .map_err(|e| Error::msg(e.to_string()))?;
-        file.write_all(data)
-            .await
-            .map_err(|e| Error::msg(e.to_string()))?;
-        file.shutdown()
-            .await
-            .map_err(|e| Error::msg(e.to_string()))?;
+        "SftpNotFound"
+    } else if lower.contains("permission") || lower.contains("eacces") || lower.contains("denied")
+    {
+        "SftpPermission"
+    } else if lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connection")
+        || lower.contains("broken pipe")
+        || lower.contains("reset")
+    {
+        "SftpNetwork"
+    } else {
+        "SftpIo"
+    };
+    Error::Sftp { kind, message }
+}
+
+async fn with_sftp<F, Fut, T>(host: &Host, identity: Option<&Identity>, f: F) -> Result<T>
+where
+    F: FnOnce(SftpSession) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let (handle, sftp) = sftp_session(host, identity).await?;
+    let timed = tokio::time::timeout(SFTP_OP_TIMEOUT, f(sftp)).await;
+    // Always disconnect — timeout/kill session clean.
+    let _ = handle
+        .disconnect(Disconnect::ByApplication, "", "en")
+        .await;
+    match timed {
+        Ok(result) => result,
+        Err(_) => Err(Error::SftpTimeout),
     }
-    let mut file = sftp
-        .open(path)
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)
-        .await
-        .map_err(|e| Error::msg(e.to_string()))?;
-    Ok(buf)
 }
 
 async fn sftp_session(
     host: &Host,
     identity: Option<&Identity>,
 ) -> Result<(Handle<HostKeyVerifier>, SftpSession)> {
-    let handle = connect_handle(host, identity).await?;
-    let channel = handle.channel_open_session().await?;
-    channel.request_subsystem(true, "sftp").await?;
+    let handle = connect_handle(host, identity).await.map_err(|e| match e {
+        Error::Ssh(ref ssh_err) => Error::Sftp {
+            kind: "SftpNetwork",
+            message: format!("connect failed: {ssh_err}"),
+        },
+        other => other,
+    })?;
+    let channel = handle.channel_open_session().await.map_err(|e| Error::Sftp {
+        kind: "SftpNetwork",
+        message: format!("channel open failed: {e}"),
+    })?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| Error::Sftp {
+            kind: "SftpNetwork",
+            message: format!("sftp subsystem failed: {e}"),
+        })?;
     let sftp = SftpSession::new(channel.into_stream())
         .await
-        .map_err(|e| Error::msg(e.to_string()))?;
+        .map_err(|e| Error::Sftp {
+            kind: "SftpNetwork",
+            message: format!("sftp handshake failed: {e}"),
+        })?;
     Ok((handle, sftp))
 }
+
+/// Re-export path helpers used by callers / tests.
+pub use crate::sftp_path::{normalize_sftp_path as sftp_normalize_path, parent_path as sftp_parent_path};
 
 pub async fn start_local_forward(
     host: &Host,
