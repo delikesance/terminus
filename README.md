@@ -46,11 +46,17 @@ npm run test:sftp-path
 
 ## Cross-platform builds
 
-GitHub Actions builds on Ubuntu, macOS, and Windows. Locally, build on the target OS:
+GitHub Actions builds on Ubuntu, macOS, and Windows. Pushing to `main` publishes a GitHub Release for all platforms and writes `latest.json` for the in-app updater.
+
+Locally, build on the target OS:
 
 ```bash
 npm run tauri -- build
 ```
+
+The desktop app checks GitHub Releases on launch when online and installs a newer version automatically.
+
+Updater signing uses GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty is fine). The matching public key lives in `src-tauri/tauri.conf.json`.
 
 The Rust core also lists GNU/Windows and Darwin targets in the flake toolchain for library-level cross compilation.
 

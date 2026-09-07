@@ -5,6 +5,8 @@ import { resolveMonoFont } from "./fonts";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
@@ -179,6 +181,7 @@ async function boot() {
   void Promise.all([refreshSide(), refreshSync()]).then(() => {
     maybeShowOnboarding();
   });
+  void checkForAppUpdate();
   await listen<{ id: string }>("session://output", (ev) => {
     scheduleFrame(ev.payload.id);
   });
@@ -193,6 +196,47 @@ async function boot() {
     state.appearance.font_family = resolveMonoFont();
     applyAppearance();
   });
+}
+
+function setUpdateToast(message: string | null) {
+  const el = $("update-toast");
+  if (!message) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+async function checkForAppUpdate() {
+  if (import.meta.env.VITE_E2E === "1") return;
+  try {
+    const update = await check({ timeout: 10_000 });
+    if (!update) return;
+    setUpdateToast(`Downloading Terminus ${update.version}…`);
+    let downloaded = 0;
+    let total = 0;
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        downloaded = 0;
+        total = event.data.contentLength ?? 0;
+      }
+      if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+        if (total) {
+          setUpdateToast(
+            `Downloading Terminus ${update.version}… ${Math.round((downloaded / total) * 100)}%`,
+          );
+        }
+      }
+      if (event.event === "Finished") setUpdateToast("Installing update…");
+    });
+    setUpdateToast("Restarting…");
+    await relaunch();
+  } catch {
+    setUpdateToast(null);
+  }
 }
 
 const pendingFrames = new Set<string>();
