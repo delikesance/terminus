@@ -54,5 +54,7 @@ export function getTestBridge(page: Page) {
       ),
     sftpReset: (hostId?: string) =>
       page.evaluate((id) => (window as any).__terminusTest.sftpReset(id), hostId),
+    seedTofuHost: (hostId?: string) =>
+      page.evaluate((id) => (window as any).__terminusTest.seedTofuHost(id), hostId),
   };
 }
