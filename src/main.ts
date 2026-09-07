@@ -548,7 +548,10 @@ function renderHosts() {
   const hostRow = (h: Host) => {
     const runtime = state.hostsRuntime.find((r) => r.host_id === h.id);
     const connection = runtime?.connection ?? "disconnected";
-    const openCount = runtime?.open_count ?? 0;
+    const openCount = Math.max(
+      runtime?.open_count ?? 0,
+      hostPanes(h.id).filter((p) => p.session).length,
+    );
     const isActive = hostPanes(h.id).some((p) => p.id === state.activePane);
     
     const connectionDot = (conn: string): string => {
@@ -1336,6 +1339,7 @@ function attachSession(info: SessionInfo, pane = createPane()) {
   layoutPane(pane);
   scheduleFrame(info.id, true);
   renderHosts();
+  void refreshSide();
 }
 
 function encodeTermKey(ev: KeyboardEvent): string | null {
@@ -1654,7 +1658,7 @@ async function closePane(id: string) {
     if (next) selectPane(next.id);
   }
   renderTabs();
-  renderHosts();
+  await refreshSide();
   scheduleLayout();
 }
 

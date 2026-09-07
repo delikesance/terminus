@@ -680,9 +680,14 @@ export function installE2eMock(): void {
         case "ssh_host_key_fingerprint":
           return { algo: "ssh-ed25519", sha256: "SHA256:e2e-mock" };
         case "ssh_host_key_trust": {
-          const host = String(args.host ?? "");
+          const hostName = String(args.host ?? "");
           const port = Number(args.port ?? 22);
-          db.tofuTrusted.add(`${host}:${port}`);
+          db.tofuTrusted.add(`${hostName}:${port}`);
+          for (const h of db.hosts) {
+            if (h.hostname === hostName && Number(h.port) === port) {
+              db.tofuTrusted.add(`${h.hostname}:${h.port}`);
+            }
+          }
           return null;
         }
         case "session_write":
