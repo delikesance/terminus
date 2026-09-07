@@ -54,6 +54,7 @@ jobs:
           retention-days: 7
 
   build-linux:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +68,7 @@ jobs:
         run: nix develop --command npm run tauri -- build --bundles deb
 
   build-macos:
+    if: github.event_name == 'pull_request'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,6 +82,7 @@ jobs:
       - run: npm run tauri -- build --bundles app
 
   build-windows:
+    if: github.event_name == 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

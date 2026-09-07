@@ -1,0 +1,77 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --config src-tauri/tauri.release.conf.json --target aarch64-apple-darwin
+          - platform: macos-latest
+            args: --config src-tauri/tauri.release.conf.json --target x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            args: --config src-tauri/tauri.release.conf.json --bundles appimage,deb
+          - platform: windows-latest
+            args: --config src-tauri/tauri.release.conf.json --bundles nsis
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2
+      - run: npm ci
+      - name: Generate icons
+        if: runner.os != 'Windows'
+        run: python3 scripts/gen-icons.py
+      - name: Generate icons
+        if: runner.os == 'Windows'
+        run: python scripts/gen-icons.py
+      - name: Stamp version from run number
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const version = "0.1." + process.env.GITHUB_RUN_NUMBER;
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = version;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            const confPath = "src-tauri/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+            conf.version = version;
+            fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+            console.log("release version", version);
+          '
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Terminus v__VERSION__
+          releaseBody: Linux, macOS, and Windows builds. Installed apps fetch this release automatically when online.
+          releaseDraft: false
+          prerelease: false
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}
