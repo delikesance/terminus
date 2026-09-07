@@ -21,8 +21,8 @@ test.describe("TOFU Trust & Connect", () => {
     await page.locator('[data-testid="tofu-primary"]').click();
 
     await expect(page.locator("#modal")).toHaveClass(/hidden/);
-    await expect(page.locator("#sheet-tofu")).toHaveCount(0);
     await expect(page.locator('[data-testid="tofu-primary"]')).toHaveCount(0);
+    await expect(page.locator("#sheet-tofu")).toHaveCount(0);
     await expect(page.locator(`[data-testid="host-${hostId}"] [data-testid="open-count-pill"]`)).toBeVisible();
   });
 });
