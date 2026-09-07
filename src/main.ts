@@ -883,7 +883,7 @@ function bindUi() {
   $("modal").onclick = (ev) => {
     if (ev.target !== $("modal")) return;
     if (cancelTofuIfOpen()) return;
-    $("modal").classList.add("hidden");
+    hideModalSheet();
   };
   window.addEventListener("resize", () => scheduleLayout());
   window.visualViewport?.addEventListener("resize", () => scheduleLayout());
@@ -892,9 +892,7 @@ function bindUi() {
 
 function closeOverlays() {
   if (cancelTofuIfOpen()) return;
-  const sheet = modalSheetEl();
-  sheet.id = "modal-sheet";
-  $("modal").classList.add("hidden");
+  hideModalSheet();
   $("palette").classList.add("hidden");
   hideMenu();
 }
@@ -1106,14 +1104,19 @@ function modalSheetEl(): HTMLElement {
   ) as HTMLElement;
 }
 
+function hideModalSheet() {
+  const sheet = modalSheetEl();
+  sheet.id = "modal-sheet";
+  sheet.innerHTML = "";
+  $("modal").classList.add("hidden");
+}
+
 function dismissTofuSheet() {
   if (tofuSession) {
     document.removeEventListener("keydown", tofuSession.onKeyDown, true);
     tofuSession = null;
   }
-  const sheet = modalSheetEl();
-  sheet.id = "modal-sheet";
-  $("modal").classList.add("hidden");
+  hideModalSheet();
 }
 
 function focusableIn(root: HTMLElement): HTMLElement[] {
@@ -2488,8 +2491,7 @@ function openSheet(html: string, sheetId = "modal-sheet") {
   $("modal").classList.remove("hidden");
   $("sheet-close").onclick = () => {
     clearVaultReveal();
-    sheet.id = "modal-sheet";
-    $("modal").classList.add("hidden");
+    hideModalSheet();
   };
 }
 
