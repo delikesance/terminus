@@ -1003,11 +1003,36 @@ type HostKeyError = {
   fingerprint: string;
 };
 
+function ipcErrorText(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    if (typeof o.message === "string") return o.message;
+    if (typeof o.kind === "string") return JSON.stringify(err);
+  }
+  return String(err);
+}
+
 function parseHostKeyError(err: unknown): HostKeyError | null {
-  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
-  try {
-    const parsed = JSON.parse(raw) as Partial<HostKeyError>;
+  const candidates: unknown[] = [err];
+  const raw = ipcErrorText(err);
+  candidates.push(raw);
+  const brace = raw.indexOf("{");
+  if (brace > 0) candidates.push(raw.slice(brace));
+  for (const candidate of candidates) {
+    let parsed: Partial<HostKeyError> | null = null;
+    if (candidate && typeof candidate === "object") {
+      parsed = candidate as Partial<HostKeyError>;
+    } else if (typeof candidate === "string") {
+      try {
+        parsed = JSON.parse(candidate) as Partial<HostKeyError>;
+      } catch {
+        continue;
+      }
+    }
     if (
+      parsed &&
       (parsed.kind === "HostKeyUnknown" || parsed.kind === "HostKeyMismatch") &&
       typeof parsed.host === "string" &&
       typeof parsed.port === "number" &&
@@ -1017,8 +1042,6 @@ function parseHostKeyError(err: unknown): HostKeyError | null {
     ) {
       return parsed as HostKeyError;
     }
-  } catch {
-    /* plain error string */
   }
   return null;
 }
@@ -1106,8 +1129,8 @@ async function showTofuSheet(
       <div class="cell"><span>Algorithm</span><code class="tofu-algo">${escapeHtml(hk.algo)}</code></div>
     </div>
     <div class="row">
-      <button type="button" class="ghost" id="tofu-cancel">Cancel</button>
-      <button type="button" class="${mismatch ? "danger" : "primary"}" id="tofu-primary" data-label="${escapeHtml(primaryLabel)}">${escapeHtml(primaryLabel)}</button>
+      <button type="button" class="ghost" id="tofu-cancel" data-testid="tofu-cancel">Cancel</button>
+      <button type="button" class="${mismatch ? "danger" : "primary"}" id="tofu-primary" data-testid="tofu-primary" data-label="${escapeHtml(primaryLabel)}">${escapeHtml(primaryLabel)}</button>
     </div>`;
   $("modal").classList.remove("hidden");
 
@@ -1183,7 +1206,7 @@ async function showTofuSheet(
   });
 }
 
-async function openSsh(hostId: string, reuse?: Pane) {
+async function openSsh(hostId: string, reuse?: Pane, afterTrust = false) {
   const host = state.hosts.find((h) => h.id === hostId);
   const pane = reuse ?? createPendingPane(host?.name || host?.hostname || "SSH", "ssh", hostId);
   try {
@@ -1198,6 +1221,14 @@ async function openSsh(hostId: string, reuse?: Pane) {
   } catch (err) {
     const hk = parseHostKeyError(err);
     if (hk && host) {
+      if (afterTrust) {
+        dismissTofuSheet();
+        const detail = ipcErrorText(err);
+        failPane(pane, `Couldn't reach ${host.name || host.hostname}`, detail);
+        openSheet(`<h2>SSH failed</h2><p class="form-error">Host key was saved, but the server is still untrusted. ${escapeHtml(detail)}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
+        $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
+        return;
+      }
       const userAtHost = `${host.username}@${hk.host}:${hk.port}`;
       const choice = await showTofuSheet(hk, userAtHost);
       if (choice === "cancel") {
@@ -1210,22 +1241,24 @@ async function openSsh(hostId: string, reuse?: Pane) {
           host: hk.host,
           port: hk.port,
           publicKey: hk.public_key,
+          public_key: hk.public_key,
           replaceLine: hk.kind === "HostKeyMismatch" ? hk.line ?? null : null,
+          replace_line: hk.kind === "HostKeyMismatch" ? hk.line ?? null : null,
         });
         dismissTofuSheet();
         showBanner(pane, `Connecting to ${host.name || host.hostname}…`);
-        await openSsh(hostId, pane);
+        await openSsh(hostId, pane, true);
       } catch (trustErr) {
         setTofuPending(false);
         dismissTofuSheet();
-        failPane(pane, `Couldn't trust host key`, String(trustErr));
-        openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(String(trustErr))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
+        failPane(pane, `Couldn't trust host key`, ipcErrorText(trustErr));
+        openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(ipcErrorText(trustErr))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
         $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
       }
       return;
     }
-    failPane(pane, `Couldn't reach ${host?.name || host?.hostname || "host"}`, String(err));
-    openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(String(err))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
+    failPane(pane, `Couldn't reach ${host?.name || host?.hostname || "host"}`, ipcErrorText(err));
+    openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(ipcErrorText(err))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
     $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
   }
 }

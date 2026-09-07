@@ -22,7 +22,8 @@ const SFTP_OP_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct HostKeyVerifier {
     hostname: String,
     port: u16,
-    /// When set, check this known_hosts file instead of `~/.ssh/known_hosts`.
+    /// Resolved `known_hosts` path (`TERMINUS_KNOWN_HOSTS` or `~/.ssh/known_hosts`).
+    /// Same file `trust_host_key` writes — never russh's Windows `~/ssh/known_hosts`.
     known_hosts_path: Option<PathBuf>,
 }
 
@@ -31,7 +32,9 @@ impl HostKeyVerifier {
         Self {
             hostname: hostname.into(),
             port,
-            known_hosts_path: std::env::var_os("TERMINUS_KNOWN_HOSTS").map(PathBuf::from),
+            // Always the same file `trust_host_key` writes. russh's default
+            // `check_known_hosts` uses `~/ssh/known_hosts` on Windows (no dot).
+            known_hosts_path: resolve_known_hosts_path().ok(),
         }
     }
 }
@@ -111,10 +114,20 @@ fn format_known_hosts_line(host: &str, port: u16, pubkey: &PublicKey) -> Result<
     let encoded = pubkey
         .to_openssh()
         .map_err(|e| Error::msg(format!("encode public key: {e}")))?;
+    // russh splits known_hosts on ASCII space (host, algo, base64). Drop comments
+    // so a comment with spaces cannot shift the key field.
+    let mut parts = encoded.split_whitespace();
+    let algo = parts
+        .next()
+        .ok_or_else(|| Error::msg("public key missing algorithm"))?;
+    let b64 = parts
+        .next()
+        .ok_or_else(|| Error::msg("public key missing body"))?;
+    let record = format!("{algo} {b64}");
     if port != 22 {
-        Ok(format!("[{host}]:{port} {encoded}"))
+        Ok(format!("[{host}]:{port} {record}"))
     } else {
-        Ok(format!("{host} {encoded}"))
+        Ok(format!("{host} {record}"))
     }
 }
 
@@ -262,7 +275,9 @@ pub fn trust_host_key(
         String::new()
     };
     let contents = known_hosts_contents_with_trust(&existing, &entry, replace_line)?;
-    atomic_write(&resolved, &contents)
+    atomic_write(&resolved, &contents)?;
+    // Fail closed if russh still cannot see the key we just wrote (path / format mismatch).
+    verify_host_key(host, port, &key, Some(&resolved)).map(|_| ())
 }
 
 /// Verify `server_public_key` against OpenSSH known_hosts.
@@ -277,12 +292,18 @@ pub fn verify_host_key(
     known_hosts_path: Option<&Path>,
 ) -> Result<bool> {
     let (public_key, algo, fingerprint) = describe_public_key(server_public_key)?;
-    let checked = match known_hosts_path {
-        Some(path) => {
-            russh::keys::known_hosts::check_known_hosts_path(host, port, server_public_key, path)
+    let owned;
+    let path = match known_hosts_path {
+        Some(p) => p,
+        None => {
+            owned = resolve_known_hosts_path()?;
+            &owned
         }
-        None => russh::keys::known_hosts::check_known_hosts(host, port, server_public_key),
     };
+    // Never call russh `check_known_hosts()` — on Windows it reads `~/ssh/known_hosts`
+    // while we write OpenSSH's `~/.ssh/known_hosts`.
+    let checked =
+        russh::keys::known_hosts::check_known_hosts_path(host, port, server_public_key, path);
     match checked {
         Ok(true) => Ok(true),
         Ok(false) => Err(Error::HostKeyUnknown {

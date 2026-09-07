@@ -25,6 +25,7 @@ interface TerminusTestBridge {
   /** C9: force next sftp_* IPC to fail with typed JSON error string */
   sftpForceError(kind: string, message: string): Promise<void>;
   sftpReset(hostId?: string): Promise<void>;
+  seedTofuHost(hostId?: string): Promise<string>;
 }
 
 async function refreshUi(): Promise<void> {
@@ -194,6 +195,30 @@ export function initTestBridge(): void {
 
     async sftpReset(hostId?: string): Promise<void> {
       await invoke("test_sftp_reset", { hostId: hostId ?? "" });
+    },
+
+    async seedTofuHost(hostId = `tofu-host-${Date.now()}`): Promise<string> {
+      await invoke("hosts_upsert", {
+        host: {
+          id: hostId,
+          name: "TOFU Lab",
+          hostname: "tofu.example.com",
+          port: 22,
+          username: "lab",
+          auth_method: "key",
+          password: null,
+          identity_id: null,
+          group_id: null,
+          tags: [],
+          notes: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          deleted_at: null,
+        },
+      });
+      await invoke("test_require_tofu", { hostId }).catch(() => undefined);
+      await refreshUi();
+      return hostId;
     },
   };
 

@@ -201,3 +201,52 @@ fn mismatch_replace_is_single_rewrite() {
     );
     assert!(verify_host_key("127.0.0.1", 2222, &key_b, Some(&path)).unwrap());
 }
+
+#[test]
+fn known_hosts_line_is_host_algo_base64_only() {
+    let dir = write_known_hosts("");
+    let path = dir.path().join("known_hosts");
+    let key = parse_public_key_base64(KEY_A).unwrap();
+    let public_key = key.to_openssh().unwrap();
+    trust_host_key("example.test", 22, &public_key, None, Some(&path)).unwrap();
+    let line = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let fields: Vec<_> = line.split(' ').collect();
+    assert_eq!(fields.len(), 3, "line={line}");
+    assert_eq!(fields[0], "example.test");
+    assert_eq!(fields[1], "ssh-ed25519");
+    assert_eq!(fields[2], KEY_A);
+}
+
+#[test]
+fn trust_and_verify_none_share_resolved_path() {
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    let dir = write_known_hosts("");
+    let path = dir.path().join("known_hosts");
+    let prev = std::env::var_os("TERMINUS_KNOWN_HOSTS");
+    std::env::set_var("TERMINUS_KNOWN_HOSTS", &path);
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("TERMINUS_KNOWN_HOSTS", v),
+                None => std::env::remove_var("TERMINUS_KNOWN_HOSTS"),
+            }
+        }
+    }
+    let _restore = Restore(prev);
+
+    let key = parse_public_key_base64(KEY_A).unwrap();
+    let public_key = key.to_openssh().unwrap();
+    trust_host_key("env.example", 22, &public_key, None, None).unwrap();
+    assert!(
+        verify_host_key("env.example", 22, &key, None).unwrap(),
+        "trust(None) and verify(None) must use the same known_hosts file"
+    );
+}

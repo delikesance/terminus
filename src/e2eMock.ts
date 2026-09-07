@@ -89,6 +89,10 @@ type Db = {
   sftp: Map<string, SftpNode>;
   /** Force next sftp_* call to fail with typed IPC JSON. */
   sftpForceError: string | null;
+  /** Host ids that must pass TOFU before session_open_ssh succeeds. */
+  tofuRequired: Set<string>;
+  /** `${hostname}:${port}` keys accepted via ssh_host_key_trust. */
+  tofuTrusted: Set<string>;
 };
 
 const stamp = () => new Date().toISOString();
@@ -185,6 +189,8 @@ function createDb(): Db {
     },
     sftp: new Map(),
     sftpForceError: null,
+    tofuRequired: new Set(),
+    tofuTrusted: new Set(),
   };
   seedFixtureGroup(db);
   return db;
@@ -562,6 +568,11 @@ export function installE2eMock(): void {
           db.sftpForceError = null;
           return null;
         }
+        case "test_require_tofu": {
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          if (hostId) db.tofuRequired.add(hostId);
+          return null;
+        }
         case "sync_status":
           return {
             ...db.sync,
@@ -632,6 +643,20 @@ export function installE2eMock(): void {
         case "session_open_ssh": {
           const hostId = String(args.hostId ?? args.host_id ?? "");
           ensureHost(db, hostId);
+          const host = db.hosts.find((h) => h.id === hostId);
+          if (host && db.tofuRequired.has(hostId)) {
+            const key = `${host.hostname}:${host.port}`;
+            if (!db.tofuTrusted.has(key)) {
+              throw JSON.stringify({
+                kind: "HostKeyUnknown",
+                host: host.hostname,
+                port: host.port,
+                public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ",
+                algo: "ssh-ed25519",
+                fingerprint: "SHA256:e2e-mock-fingerprint",
+              });
+            }
+          }
           if (!db.connections.has(hostId) || db.connections.get(hostId) === "disconnected") {
             db.connections.set(hostId, "connected");
           }
@@ -654,8 +679,12 @@ export function installE2eMock(): void {
           return new Uint8Array();
         case "ssh_host_key_fingerprint":
           return { algo: "ssh-ed25519", sha256: "SHA256:e2e-mock" };
-        case "ssh_host_key_trust":
+        case "ssh_host_key_trust": {
+          const host = String(args.host ?? "");
+          const port = Number(args.port ?? 22);
+          db.tofuTrusted.add(`${host}:${port}`);
           return null;
+        }
         case "session_write":
         case "session_resize":
         case "identity_import_path":
