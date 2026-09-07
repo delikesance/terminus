@@ -5,7 +5,7 @@ import { resolveMonoFont } from "./fonts";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
@@ -181,7 +181,7 @@ async function boot() {
   void Promise.all([refreshSide(), refreshSync()]).then(() => {
     maybeShowOnboarding();
   });
-  void checkForAppUpdate();
+  window.setTimeout(() => void checkForAppUpdate(), 1500);
   await listen<{ id: string }>("session://output", (ev) => {
     scheduleFrame(ev.payload.id);
   });
@@ -198,23 +198,58 @@ async function boot() {
   });
 }
 
-function setUpdateToast(message: string | null) {
+function hideUpdateToast() {
   const el = $("update-toast");
-  if (!message) {
-    el.classList.add("hidden");
-    el.textContent = "";
-    return;
-  }
-  el.textContent = message;
+  el.classList.add("hidden");
+  el.innerHTML = "";
+}
+
+function showUpdateToast(html: string) {
+  const el = $("update-toast");
+  el.innerHTML = html;
   el.classList.remove("hidden");
 }
+
+let updateBusy = false;
 
 async function checkForAppUpdate() {
   if (import.meta.env.VITE_E2E === "1") return;
   try {
     const update = await check({ timeout: 10_000 });
     if (!update) return;
-    setUpdateToast(`Downloading Terminus ${update.version}…`);
+    if (sessionStorage.getItem(`terminus.skip-update.${update.version}`)) return;
+    promptAppUpdate(update);
+  } catch {
+    /* offline, unsigned, or no endpoint */
+  }
+}
+
+function promptAppUpdate(update: Update) {
+  showUpdateToast(`
+    <div class="update-copy">
+      <strong>Terminus ${escapeHtml(update.version)}</strong>
+      <span>Restart to install this update.</span>
+    </div>
+    <div class="update-actions">
+      <button type="button" class="ghost" id="update-later">Later</button>
+      <button type="button" class="primary" id="update-now">Restart</button>
+    </div>`);
+  $("update-later").onclick = () => {
+    sessionStorage.setItem(`terminus.skip-update.${update.version}`, "1");
+    hideUpdateToast();
+  };
+  $("update-now").onclick = () => void installAppUpdate(update);
+}
+
+async function installAppUpdate(update: Update) {
+  if (updateBusy) return;
+  updateBusy = true;
+  try {
+    showUpdateToast(`
+      <div class="update-copy">
+        <strong>Downloading Terminus ${escapeHtml(update.version)}…</strong>
+        <span id="update-progress"></span>
+      </div>`);
     let downloaded = 0;
     let total = 0;
     await update.downloadAndInstall((event) => {
@@ -224,18 +259,30 @@ async function checkForAppUpdate() {
       }
       if (event.event === "Progress") {
         downloaded += event.data.chunkLength;
-        if (total) {
-          setUpdateToast(
-            `Downloading Terminus ${update.version}… ${Math.round((downloaded / total) * 100)}%`,
-          );
+        const progress = document.getElementById("update-progress");
+        if (progress && total) {
+          progress.textContent = `${Math.round((downloaded / total) * 100)}%`;
         }
       }
-      if (event.event === "Finished") setUpdateToast("Installing update…");
+      if (event.event === "Finished") {
+        const progress = document.getElementById("update-progress");
+        if (progress) progress.textContent = "Installing…";
+      }
     });
-    setUpdateToast("Restarting…");
+    // Windows NSIS exits the process during install and relaunches itself.
+    showUpdateToast(`<div class="update-copy"><strong>Restarting…</strong></div>`);
     await relaunch();
-  } catch {
-    setUpdateToast(null);
+  } catch (err) {
+    updateBusy = false;
+    showUpdateToast(`
+      <div class="update-copy">
+        <strong>Couldn't install update</strong>
+        <span>${escapeHtml(ipcErrorText(err))}</span>
+      </div>
+      <div class="update-actions">
+        <button type="button" class="ghost" id="update-dismiss">Dismiss</button>
+      </div>`);
+    $("update-dismiss").onclick = () => hideUpdateToast();
   }
 }
 
