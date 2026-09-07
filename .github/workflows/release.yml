@@ -6,7 +6,7 @@ on:
 
 concurrency:
   group: release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -25,10 +25,10 @@ jobs:
         include:
           - platform: macos-latest
             cache: macos-arm
-            args: --config src-tauri/tauri.release.conf.json --target aarch64-apple-darwin
+            args: --config src-tauri/tauri.release.conf.json --target aarch64-apple-darwin --bundles app,dmg
           - platform: macos-latest
             cache: macos-intel
-            args: --config src-tauri/tauri.release.conf.json --target x86_64-apple-darwin
+            args: --config src-tauri/tauri.release.conf.json --target x86_64-apple-darwin --bundles app,dmg
           - platform: ubuntu-22.04
             cache: linux
             args: --config src-tauri/tauri.release.conf.json --bundles appimage,deb
@@ -86,7 +86,14 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: Terminus v__VERSION__
-          releaseBody: Linux, macOS, and Windows builds. Installed apps fetch this release automatically when online.
+          releaseBody: |
+            First install (pick your OS):
+            - Windows: `Terminus_*_x64-setup.exe`
+            - macOS Apple Silicon: `Terminus_*_aarch64.dmg`
+            - macOS Intel: `Terminus_*_x64.dmg`
+            - Linux: `Terminus_*_amd64.deb` or the `.AppImage`
+
+            `.tar.gz`, `.sig`, and `latest.json` are for the in-app updater only.
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
