@@ -1428,8 +1428,11 @@ svg {
   right: 16px;
   bottom: 16px;
   z-index: 30;
-  padding: 10px 14px;
-  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
   background: color-mix(in srgb, var(--elevated) 92%, transparent);
   border: 1px solid var(--line-strong);
   box-shadow: var(--shadow);
@@ -1439,3 +1442,40 @@ svg {
   max-width: min(360px, calc(100vw - 32px));
 }
 #update-toast.hidden { display: none; }
+#update-toast .update-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#update-toast .update-copy strong {
+  font-size: 13.5px;
+  font-weight: 620;
+}
+#update-toast .update-copy span { color: var(--secondary); }
+#update-toast .update-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+#update-toast button {
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 12px;
+  min-height: 32px;
+  background: var(--fill);
+  color: var(--text);
+}
+#update-toast button:hover { background: var(--fill-strong); }
+#update-toast button.primary {
+  background: var(--blue);
+  color: #fff;
+}
+#update-toast button.primary:hover { background: var(--blue-press); }
+#update-toast button.ghost {
+  background: transparent;
+  color: var(--secondary);
+}
+#update-toast button.ghost:hover {
+  color: var(--text);
+  background: var(--fill);
+}
