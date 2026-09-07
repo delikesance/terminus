@@ -23,6 +23,7 @@ test.describe("TOFU Trust & Connect", () => {
     await expect(page.locator("#modal")).toHaveClass(/hidden/);
     await expect(page.locator('[data-testid="tofu-primary"]')).toHaveCount(0);
     await expect(page.locator("#sheet-tofu")).toHaveCount(0);
+    await expect(page.locator("h2", { hasText: "SSH failed" })).toHaveCount(0);
     await expect(page.locator(`[data-testid="host-${hostId}"] [data-testid="open-count-pill"]`)).toBeVisible();
   });
 });

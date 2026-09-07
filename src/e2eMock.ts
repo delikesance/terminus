@@ -240,6 +240,25 @@ function argsOf(payload: unknown): Record<string, unknown> {
   return payload as Record<string, unknown>;
 }
 
+function tofuHostKey(hostname: string, port: unknown): string {
+  return `${hostname}:${Number(port) || 22}`;
+}
+
+function trustHostFromArgs(args: Record<string, unknown>): { hostName: string; port: number } {
+  const nested = args.host;
+  if (nested && typeof nested === "object") {
+    const o = nested as Record<string, unknown>;
+    return {
+      hostName: String(o.hostname ?? o.host ?? ""),
+      port: Number(o.port ?? args.port ?? 22) || 22,
+    };
+  }
+  return {
+    hostName: String(args.host ?? args.hostname ?? args.hostName ?? ""),
+    port: Number(args.port ?? 22) || 22,
+  };
+}
+
 function sftpNow(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -419,6 +438,7 @@ export function installE2eMock(): void {
           db.hosts = db.hosts.filter((h) => h.id !== id);
           db.connections.delete(id);
           db.sftp.delete(id);
+          db.tofuRequired.delete(id);
           return null;
         }
         case "groups_list":
@@ -645,12 +665,12 @@ export function installE2eMock(): void {
           ensureHost(db, hostId);
           const host = db.hosts.find((h) => h.id === hostId);
           if (host && db.tofuRequired.has(hostId)) {
-            const key = `${host.hostname}:${host.port}`;
+            const key = tofuHostKey(host.hostname, host.port);
             if (!db.tofuTrusted.has(key)) {
               throw JSON.stringify({
                 kind: "HostKeyUnknown",
                 host: host.hostname,
-                port: host.port,
+                port: Number(host.port) || 22,
                 public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ",
                 algo: "ssh-ed25519",
                 fingerprint: "SHA256:e2e-mock-fingerprint",
@@ -680,14 +700,13 @@ export function installE2eMock(): void {
         case "ssh_host_key_fingerprint":
           return { algo: "ssh-ed25519", sha256: "SHA256:e2e-mock" };
         case "ssh_host_key_trust": {
-          const hostName = String(args.host ?? "");
-          const port = Number(args.port ?? 22);
-          db.tofuTrusted.add(`${hostName}:${port}`);
-          for (const h of db.hosts) {
-            if (h.hostname === hostName && Number(h.port) === port) {
-              db.tofuTrusted.add(`${h.hostname}:${h.port}`);
-            }
+          const { hostName, port } = trustHostFromArgs(args);
+          if (hostName) db.tofuTrusted.add(tofuHostKey(hostName, port));
+          for (const id of [...db.tofuRequired]) {
+            const h = db.hosts.find((x) => x.id === id);
+            if (h) db.tofuTrusted.add(tofuHostKey(h.hostname, h.port));
           }
+          db.tofuRequired.clear();
           return null;
         }
         case "session_write":

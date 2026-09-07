@@ -1259,7 +1259,7 @@ async function showTofuSheet(
   });
 }
 
-async function openSsh(hostId: string, reuse?: Pane, afterTrust = false) {
+async function openSsh(hostId: string, reuse?: Pane, afterTrust = false): Promise<boolean> {
   const host = state.hosts.find((h) => h.id === hostId);
   const pane = reuse ?? createPendingPane(host?.name || host?.hostname || "SSH", "ssh", hostId);
   try {
@@ -1271,6 +1271,7 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false) {
       scale: displayScale(),
     });
     attachSession(info, pane);
+    return true;
   } catch (err) {
     const hk = parseHostKeyError(err);
     if (hk && host) {
@@ -1280,13 +1281,13 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false) {
         failPane(pane, `Couldn't reach ${host.name || host.hostname}`, detail);
         openSheet(`<h2>SSH failed</h2><p class="form-error">Host key was saved, but the server is still untrusted. ${escapeHtml(detail)}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
         $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
-        return;
+        return false;
       }
       const userAtHost = `${host.username}@${hk.host}:${hk.port}`;
       const choice = await showTofuSheet(hk, userAtHost);
       if (choice === "cancel") {
         await closePane(pane.id);
-        return;
+        return false;
       }
       setTofuPending(true);
       try {
@@ -1298,9 +1299,9 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false) {
           replaceLine: hk.kind === "HostKeyMismatch" ? hk.line ?? null : null,
           replace_line: hk.kind === "HostKeyMismatch" ? hk.line ?? null : null,
         });
-        dismissTofuSheet();
         showBanner(pane, `Connecting to ${host.name || host.hostname}…`);
-        await openSsh(hostId, pane, true);
+        const connected = await openSsh(hostId, pane, true);
+        if (connected) dismissTofuSheet();
       } catch (trustErr) {
         setTofuPending(false);
         dismissTofuSheet();
@@ -1308,11 +1309,12 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false) {
         openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(ipcErrorText(trustErr))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
         $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
       }
-      return;
+      return Boolean(pane.session);
     }
     failPane(pane, `Couldn't reach ${host?.name || host?.hostname || "host"}`, ipcErrorText(err));
     openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(ipcErrorText(err))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
     $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
+    return false;
   }
 }
 
