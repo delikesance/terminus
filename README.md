@@ -56,6 +56,8 @@ npm run tauri -- build
 
 The desktop app checks GitHub Releases on launch when online and installs a newer version automatically.
 
+CI caches the Cargo registry and compiled crates (`Swatinem/rust-cache` + `sccache`) so later runs skip re-downloading and recompiling russh/tauri/sqlx. The first run after a `Cargo.lock` change is still cold.
+
 Updater signing uses GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty is fine). The matching public key lives in `src-tauri/tauri.conf.json`.
 
 The Rust core also lists GNU/Windows and Darwin targets in the flake toolchain for library-level cross compilation.

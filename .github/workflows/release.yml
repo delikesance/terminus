@@ -11,6 +11,12 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
 jobs:
   publish:
     strategy:
@@ -18,12 +24,16 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
+            cache: macos-arm
             args: --config src-tauri/tauri.release.conf.json --target aarch64-apple-darwin
           - platform: macos-latest
+            cache: macos-intel
             args: --config src-tauri/tauri.release.conf.json --target x86_64-apple-darwin
           - platform: ubuntu-22.04
+            cache: linux
             args: --config src-tauri/tauri.release.conf.json --bundles appimage,deb
           - platform: windows-latest
+            cache: windows
             args: --config src-tauri/tauri.release.conf.json --bundles nsis
     runs-on: ${{ matrix.platform }}
     steps:
@@ -35,6 +45,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          prefix-key: release-${{ matrix.cache }}
+          cache-on-failure: true
       - name: Install Linux deps
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -75,3 +91,6 @@ jobs:
           prerelease: false
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
