@@ -699,6 +699,27 @@ pub async fn sftp_remove(
     .await
 }
 
+/// Resolve a remote path to an absolute one (`SSH_FXP_REALPATH`).
+pub async fn sftp_realpath(
+    host: &Host,
+    identity: Option<&Identity>,
+    path: &str,
+) -> Result<String> {
+    let query = if path.is_empty() { ".".to_string() } else { path.to_string() };
+    with_sftp(host, identity, move |sftp| async move {
+        let abs = sftp
+            .canonicalize(&query)
+            .await
+            .map_err(|e| map_sftp_io("realpath", e))?;
+        Ok(if abs == "/" {
+            abs
+        } else {
+            abs.trim_end_matches('/').to_string()
+        })
+    })
+    .await
+}
+
 pub async fn sftp_roundtrip(
     host: &Host,
     identity: Option<&Identity>,

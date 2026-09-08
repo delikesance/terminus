@@ -1,5 +1,5 @@
 import "./styles.css";
-import { icons } from "./icons";
+import { icons, sftpKindIcon } from "./icons";
 import { applyChrome, type Theme } from "./theme";
 import { resolveMonoFont } from "./fonts";
 import { invoke } from "@tauri-apps/api/core";
@@ -14,6 +14,8 @@ import {
   resolveUnderRoot,
   parentSftpPath,
   parseSftpError,
+  sftpDisplayPath,
+  logicalFromDisplayPath,
 } from "./sftpPath";
 import { parseKnownHosts } from "./knownHostsParse";
 import {
@@ -129,6 +131,8 @@ const state = {
   sftpHostId: null as string | null,
   sftpRoot: "." as string,
   sftpPath: "." as string,
+  sftpCwd: "" as string,
+  sftpCwdHostId: null as string | null,
   sftpMode: false,
   customCss: document.createElement("style"),
   expandedGroups: new Set<string>(JSON.parse(localStorage.getItem("terminus-expanded-groups") || "[]")),
@@ -2605,10 +2609,27 @@ async function importKnownHosts() {
   $("import-ok").onclick = () => $("modal").classList.add("hidden");
 }
 
+function resetSftpCwd() {
+  state.sftpCwd = "";
+  state.sftpCwdHostId = null;
+}
+
+async function ensureSftpCwd(hostId: string) {
+  if (state.sftpCwdHostId === hostId && state.sftpCwd) return;
+  state.sftpCwdHostId = hostId;
+  try {
+    const cwd = await invoke<string>("sftp_realpath", { hostId, path: "." });
+    state.sftpCwd = typeof cwd === "string" ? cwd.replace(/\/+$/, "") || cwd : "";
+  } catch {
+    state.sftpCwd = "";
+  }
+}
+
 function openSftpFor(hostId: string) {
   state.sftpHostId = hostId;
   state.sftpRoot = ".";
   state.sftpPath = ".";
+  resetSftpCwd();
   document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
   document.querySelector<HTMLButtonElement>('[data-panel="sftp"]')?.classList.add("active");
   document.querySelectorAll(".side-panel").forEach((p) => p.classList.add("hidden"));
@@ -2699,6 +2720,7 @@ function renderSftpSidebar(hostId: string | null) {
   if (sideHost) {
     sideHost.onchange = () => {
       state.sftpRoot = ".";
+      resetSftpCwd();
       void loadSftp(sideHost.value, ".");
     };
   }
@@ -2750,18 +2772,25 @@ function formatSftpMtime(mtime?: number | null): string {
 }
 
 function sftpToolbarHtml(hostId: string, path: string): string {
+  const display = sftpDisplayPath(state.sftpCwd, path);
+  const atRoot = parentSftpPath(path) == null;
+  const pathIcon = atRoot ? icons.home : icons.folder;
   return `<div class="sftp-toolbar" data-testid="sftp-toolbar">
     <select id="sftp-host" class="sftp-host" title="Host" data-testid="sftp-host">${sftpHostOptions(hostId)}</select>
-    <button type="button" id="sftp-up" class="sftp-icon-btn" title="Up" aria-label="Up" data-testid="sftp-up">${icons.chevronLeft}</button>
-    <input id="sftp-path" class="sftp-path" type="text" spellcheck="false" value="${escapeHtml(path)}" data-testid="sftp-path" aria-label="Path" />
+    <button type="button" id="sftp-up" class="sftp-icon-btn" title="Up" aria-label="Up" data-testid="sftp-up" ${atRoot ? "disabled" : ""}>${icons.arrowUp}</button>
+    <label class="sftp-path-wrap">
+      <span class="sftp-path-ico" aria-hidden="true">${pathIcon}</span>
+      <input id="sftp-path" class="sftp-path" type="text" spellcheck="false" value="${escapeHtml(display)}" data-testid="sftp-path" aria-label="Path" />
+    </label>
     <button type="button" id="sftp-refresh" class="sftp-icon-btn" title="Refresh" aria-label="Refresh" data-testid="sftp-refresh">${icons.reconnect}</button>
-    <button type="button" id="sftp-upload" class="sftp-icon-btn" title="Upload" aria-label="Upload" data-testid="sftp-upload">${icons.plus}</button>
+    <button type="button" id="sftp-upload" class="sftp-icon-btn" title="Upload" aria-label="Upload" data-testid="sftp-upload">${icons.upload}</button>
   </div>`;
 }
 
 function bindSftpToolbar(hostId: string, path: string) {
   $("sftp-host").onchange = () => {
     state.sftpRoot = ".";
+    resetSftpCwd();
     void loadSftp(($("sftp-host") as HTMLSelectElement).value, ".");
   };
   $("sftp-up").onclick = () => {
@@ -2793,7 +2822,7 @@ function renderSftpError(hostId: string, path: string, err: unknown) {
 
 async function navigateSftpPath(hostId: string, raw: string) {
   try {
-    const next = resolveUnderRoot(state.sftpRoot, raw.trim() || ".");
+    const next = logicalFromDisplayPath(state.sftpCwd, state.sftpRoot, raw.trim() || ".");
     await loadSftp(hostId, next);
   } catch (err) {
     renderSftpError(hostId, state.sftpPath, err);
@@ -2805,6 +2834,7 @@ function bindSftpRows(hostId: string, root: ParentNode) {
     el.onclick = (ev) => {
       if ((ev.target as HTMLElement).closest(".sftp-more")) return;
       if (el.dataset.dir === "true") void loadSftp(hostId, el.dataset.sftp!);
+      else void sftpOpen(hostId, el.dataset.sftp!, el.dataset.name || "", el);
     };
     el.querySelector<HTMLButtonElement>(".sftp-more")!.onclick = (ev) => {
       ev.stopPropagation();
@@ -2813,11 +2843,16 @@ function bindSftpRows(hostId: string, root: ParentNode) {
       const name = el.dataset.name || "";
       showMenu(ev.clientX, ev.clientY, [
         {
-          label: isDir ? "Open" : "Download",
+          label: "Open",
           run: () => {
             if (isDir) void loadSftp(hostId, entryPath);
-            else void sftpDownload(hostId, entryPath, name);
+            else void sftpOpen(hostId, entryPath, name, el);
           },
+        },
+        {
+          label: "Download",
+          hidden: isDir,
+          run: () => void sftpDownload(hostId, entryPath, name),
         },
         { label: "Rename", run: () => sftpRenameSheet(hostId, entryPath, name, isDir) },
         {
@@ -2836,6 +2871,7 @@ async function loadSftp(hostId: string, path: string) {
     renderSftpEmpty();
     return;
   }
+  await ensureSftpCwd(hostId);
   let safePath: string;
   try {
     safePath = resolveUnderRoot(state.sftpRoot, path);
@@ -2844,10 +2880,11 @@ async function loadSftp(hostId: string, path: string) {
     return;
   }
   state.sftpPath = safePath;
+  const loadingPath = sftpDisplayPath(state.sftpCwd, safePath);
   renderSftpWorkspace(
     hostId,
     safePath,
-    `<div class="empty" data-testid="sftp-loading">${icons.folder}<span>Loading ${escapeHtml(safePath)}…</span></div>`,
+    `<div class="empty" data-testid="sftp-loading">${icons.folder}<span>Loading ${escapeHtml(loadingPath)}…</span></div>`,
   );
   try {
     const entries = await invoke<SftpEntry[]>("sftp_list", {
@@ -2869,8 +2906,9 @@ async function loadSftp(hostId: string, path: string) {
     const rows = entries
       .map((e) => {
         const meta = `${formatSftpSize(e.size, e.is_dir)} · ${formatSftpMtime(e.mtime)}`;
-        return `<div class="sftp-row item" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-name="${escapeHtml(e.name)}" data-testid="sftp-row">
-          <span class="leading">${e.is_dir ? icons.folder : icons.file}</span>
+        const glyph = sftpKindIcon(e.name, e.is_dir);
+        return `<div class="sftp-row item" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-kind="${glyph.kind}" data-name="${escapeHtml(e.name)}" data-testid="sftp-row" title="${e.is_dir ? "Open folder" : "Open with default app"}">
+          <span class="leading">${glyph.icon}</span>
           <div class="body">
             <strong class="sftp-name">${escapeHtml(e.name)}</strong>
             <small class="sftp-meta"><span class="sftp-size">${escapeHtml(formatSftpSize(e.size, e.is_dir))}</span><span class="sftp-mtime">${escapeHtml(formatSftpMtime(e.mtime))}</span></small>
@@ -2890,6 +2928,22 @@ async function loadSftp(hostId: string, path: string) {
     bindSftpRows(hostId, ensureSftpView());
   } catch (err) {
     renderSftpError(hostId, safePath, err);
+  }
+}
+
+async function sftpOpen(hostId: string, path: string, _name: string, row?: HTMLElement) {
+  row?.classList.add("is-pending");
+  try {
+    const safe = resolveUnderRoot(state.sftpRoot, path);
+    await invoke("sftp_open", {
+      hostId,
+      path: safe,
+      root: state.sftpRoot,
+    });
+  } catch (err) {
+    renderSftpError(hostId, state.sftpPath, err);
+  } finally {
+    row?.classList.remove("is-pending");
   }
 }
 

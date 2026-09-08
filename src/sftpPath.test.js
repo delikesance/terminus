@@ -3,6 +3,8 @@ import {
   resolveUnderRoot,
   parentSftpPath,
   parseSftpError,
+  sftpDisplayPath,
+  logicalFromDisplayPath,
 } from "./sftpPath.js";
 
 function assert(cond, msg) {
@@ -56,5 +58,23 @@ const typed = parseSftpError(
 );
 assert(typed.kind === "SftpTimeout", "parse typed");
 assert(parseSftpError("boom").kind === "SftpIo", "plain fallback");
+
+assert(sftpDisplayPath("/home/lab", ".") === "/home/lab", "display cwd");
+assert(sftpDisplayPath("/home/lab", "docs") === "/home/lab/docs", "display child");
+assert(sftpDisplayPath("/", "docs") === "/docs", "display under /");
+assert(sftpDisplayPath("", ".") === ".", "display fallback");
+assert(logicalFromDisplayPath("/home/lab", ".", "/home/lab") === ".", "bar home → root");
+assert(logicalFromDisplayPath("/home/lab", ".", "/home/lab/docs") === "docs", "bar abs → rel");
+assert(logicalFromDisplayPath("/home/lab", ".", "docs") === "docs", "bar relative");
+assert(logicalFromDisplayPath("/", ".", "/") === ".", "bar fs root");
+assert(logicalFromDisplayPath("/", ".", "/etc") === "etc", "bar under fs root");
+
+threw = false;
+try {
+  logicalFromDisplayPath("/home/lab", ".", "/etc/passwd");
+} catch (e) {
+  threw = e.kind === "SftpPathTraversal";
+}
+assert(threw, "bar blocks other abs");
 
 console.log("sftpPath tests ok");

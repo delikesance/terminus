@@ -7,8 +7,10 @@ use terminus_core::ssh;
 use terminus_core::store::Store;
 use terminus_core::sync::SyncEngine;
 use terminus_core::Error;
+use std::path::{Path, PathBuf};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State};
+use uuid::Uuid;
 
 struct AppState {
     store: Store,
@@ -422,6 +424,87 @@ async fn sftp_rename(
 }
 
 #[tauri::command]
+async fn sftp_realpath(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: Option<String>,
+) -> Result<String, String> {
+    let query = path.unwrap_or_else(|| ".".into());
+    let (host, identity, _) = sftp_ctx(&state, &host_id, &query, Some(".".into())).await?;
+    ssh::sftp_realpath(&host, identity.as_ref(), &query)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn sftp_open(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: String,
+    root: Option<String>,
+) -> Result<String, String> {
+    let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
+    let bytes = ssh::sftp_read(&host, identity.as_ref(), &root, &path)
+        .await
+        .map_err(map_err)?;
+    let dest = write_sftp_temp(&path, &bytes)?;
+    open_path_with_default_app(&dest)?;
+    Ok(dest.display().to_string())
+}
+
+fn open_path_with_default_app(path: &Path) -> Result<(), String> {
+    let err = |e| format!("couldn't open with the default app: {e}");
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.display().to_string()])
+            .spawn()
+            .map_err(err)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(err)?;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(err)?;
+    }
+    Ok(())
+}
+
+fn write_sftp_temp(remote_path: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let name = Path::new(remote_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty() && *n != "." && *n != "..")
+        .unwrap_or("file");
+    let safe: String = name
+        .chars()
+        .filter(|c| *c != '/' && *c != '\\')
+        .collect();
+    let safe = if safe.is_empty() { "file".into() } else { safe };
+    let dest_dir = std::env::temp_dir().join("terminus-sftp-open");
+    std::fs::create_dir_all(&dest_dir).map_err(|e| format!("temp dir: {e}"))?;
+    let path = Path::new(&safe);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let unique = format!("{stem}-{}{ext}", &Uuid::new_v4().to_string()[..8]);
+    let dest = dest_dir.join(unique);
+    std::fs::write(&dest, bytes).map_err(|e| format!("temp write: {e}"))?;
+    Ok(dest)
+}
+
+#[tauri::command]
 async fn sftp_remove(
     state: State<'_, AppState>,
     host_id: String,
@@ -591,6 +674,8 @@ pub fn run() {
             sftp_read,
             sftp_write,
             sftp_rename,
+            sftp_realpath,
+            sftp_open,
             sftp_remove,
             forwards_list,
             forwards_upsert,

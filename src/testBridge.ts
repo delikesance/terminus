@@ -25,6 +25,7 @@ interface TerminusTestBridge {
   /** C9: force next sftp_* IPC to fail with typed JSON error string */
   sftpForceError(kind: string, message: string): Promise<void>;
   sftpReset(hostId?: string): Promise<void>;
+  lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null>;
   seedTofuHost(hostId?: string): Promise<string>;
 }
 
@@ -195,6 +196,10 @@ export function initTestBridge(): void {
 
     async sftpReset(hostId?: string): Promise<void> {
       await invoke("test_sftp_reset", { hostId: hostId ?? "" });
+    },
+
+    async lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null> {
+      return invoke("test_sftp_last_open");
     },
 
     async seedTofuHost(hostId = `tofu-host-${Date.now()}`): Promise<string> {
