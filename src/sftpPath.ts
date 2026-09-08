@@ -56,6 +56,56 @@ export function resolveUnderRoot(root: string, path: string): string {
   return candidate;
 }
 
+/** Show the remote folder as an absolute path when the session cwd is known. */
+export function sftpDisplayPath(cwd: string | null | undefined, logical: string): string {
+  let norm: string;
+  try {
+    norm = normalizeSftpPath(logical || ".");
+  } catch {
+    norm = logical || ".";
+  }
+  const home = tidyAbs(cwd);
+  if (!home) return norm;
+  if (norm === "." || norm === "") return home;
+  if (norm.startsWith("/")) return norm;
+  return home === "/" ? `/${norm}` : `${home}/${norm}`;
+}
+
+/**
+ * Map a path-bar value (absolute under cwd, or relative) back to a logical
+ * session path that `resolveUnderRoot` can send over IPC.
+ */
+export function logicalFromDisplayPath(
+  cwd: string | null | undefined,
+  root: string,
+  typed: string,
+): string {
+  const raw = typed.trim() || ".";
+  const home = tidyAbs(cwd);
+  if (home) {
+    if (raw === home || raw === `${home}/`) return resolveUnderRoot(root, ".");
+    const prefix = home === "/" ? "/" : `${home}/`;
+    if (raw.startsWith(prefix)) {
+      return resolveUnderRoot(root, raw.slice(prefix.length) || ".");
+    }
+    if (raw.startsWith("/")) {
+      const err: SftpPathError = {
+        kind: "SftpPathTraversal",
+        message: `path traversal blocked: ${raw}`,
+        path: raw,
+      };
+      throw err;
+    }
+  }
+  return resolveUnderRoot(root, raw);
+}
+
+function tidyAbs(path: string | null | undefined): string {
+  if (!path) return "";
+  if (path === "/") return "/";
+  return path.replace(/\/+$/, "");
+}
+
 export function parentSftpPath(path: string): string | null {
   let norm: string;
   try {

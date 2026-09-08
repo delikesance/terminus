@@ -30,7 +30,7 @@ test.describe("C9: SFTP browser v1", () => {
     await openFilesPanel(page);
     const table = page.locator("#workspace [data-testid='sftp-table']");
     await expect(table).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue(".");
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab");
     await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(2);
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible();
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
@@ -76,22 +76,32 @@ test.describe("C9: SFTP browser v1", () => {
   test("navigate into dir, Up returns, refresh keeps path", async ({ page }) => {
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
-    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("docs");
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible();
 
     await page.locator('[data-testid="sftp-up"]').click();
-    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue(".");
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab");
 
     await page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
     await page.locator('[data-testid="sftp-refresh"]').click();
-    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("docs");
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible();
+  });
+
+  test("clicking a file opens it with the default app", async ({ page }) => {
+    const bridge = getTestBridge(page);
+    await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" }).click();
+    await expect.poll(async () => (await bridge.lastSftpOpen())?.name).toBe("notes.txt");
+    await expect(page.locator('[data-testid="sftp-error"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab");
   });
 
   test("editable path bar navigates; empty folder shows .sftp-empty", async ({ page }) => {
     await openFilesPanel(page);
-    await page.locator('[data-testid="sftp-path"]').fill("docs");
+    await page.locator('[data-testid="sftp-path"]').fill("/home/lab/docs");
     await page.locator('[data-testid="sftp-path"]').press("Enter");
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible();
 
     // Delete readme → empty

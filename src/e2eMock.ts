@@ -89,6 +89,8 @@ type Db = {
   sftp: Map<string, SftpNode>;
   /** Force next sftp_* call to fail with typed IPC JSON. */
   sftpForceError: string | null;
+  /** Last file opened via sftp_open (E2E). */
+  sftpLastOpen: { hostId: string; path: string; name: string } | null;
   /** Host ids that must pass TOFU before session_open_ssh succeeds. */
   tofuRequired: Set<string>;
   /** `${hostname}:${port}` keys accepted via ssh_host_key_trust. */
@@ -189,6 +191,7 @@ function createDb(): Db {
     },
     sftp: new Map(),
     sftpForceError: null,
+    sftpLastOpen: null,
     tofuRequired: new Set(),
     tofuTrusted: new Set(),
   };
@@ -270,6 +273,21 @@ function makeDir(name: string): SftpNode {
 function makeFile(name: string, content: string | Uint8Array): SftpNode {
   const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
   return { name, is_dir: false, content: bytes, mtime: sftpNow(), children: new Map() };
+}
+
+function mockHome(db: Db, hostId: string): string {
+  const user = db.hosts.find((h) => h.id === hostId)?.username || "lab";
+  return `/home/${user}`;
+}
+
+function mockRealpath(db: Db, hostId: string, path: string): string {
+  const home = mockHome(db, hostId);
+  const raw = path || ".";
+  if (raw === "." || raw === "") return home;
+  if (raw.startsWith("/")) return mockNormalize(raw);
+  const rel = mockNormalize(raw);
+  if (rel === ".") return home;
+  return `${home}/${rel}`;
 }
 
 function ensureSftpRoot(db: Db, hostId: string): SftpNode {
@@ -558,6 +576,29 @@ export function installE2eMock(): void {
           toParent.children.set(tn, node);
           return null;
         }
+        case "sftp_realpath": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? ".");
+          ensureHost(db, hostId);
+          return mockRealpath(db, hostId, path);
+        }
+        case "sftp_open": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? "");
+          const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
+          const safe = mockResolve(root, path);
+          const node = getNode(ensureSftpRoot(db, hostId), safe);
+          if (!node || node.is_dir) {
+            throw JSON.stringify({ kind: "SftpNotFound", message: `open: no such file: ${safe}` });
+          }
+          const name = safe.split("/").filter(Boolean).pop() || "file";
+          db.sftpLastOpen = { hostId, path: safe, name };
+          return { opened: true, localPath: `/tmp/terminus-sftp-open/${name}` };
+        }
+        case "test_sftp_last_open":
+          return db.sftpLastOpen;
         case "sftp_remove": {
           maybeSftpForce(db);
           const hostId = String(args.hostId ?? args.host_id ?? "");
@@ -586,6 +627,7 @@ export function installE2eMock(): void {
           if (hostId) db.sftp.delete(hostId);
           else db.sftp.clear();
           db.sftpForceError = null;
+          db.sftpLastOpen = null;
           return null;
         }
         case "test_require_tofu": {

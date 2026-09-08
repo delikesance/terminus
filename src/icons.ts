@@ -43,4 +43,59 @@ export const icons = {
   chevronRight: svg(`<path d="M10 6l6 6-6 6"/>`),
   reconnect: svg(`<path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v6h-6"/>`),
   more: svg(`<circle cx="6.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="17.5" cy="12" r="1.2"/>`),
+  home: svg(
+    `<path d="M4.5 11 12 4.5 19.5 11"/><path d="M6.5 10.5V19h11v-8.5"/>`,
+  ),
+  arrowUp: svg(`<path d="M12 19V6"/><path d="m7 11 5-5 5 5"/>`),
+  upload: svg(`<path d="M12 16V5"/><path d="m8 8 4-4 4 4"/><path d="M5 19h14"/>`),
+  download: svg(`<path d="M12 5v11"/><path d="m8 12 4 4 4-4"/><path d="M5 19h14"/>`),
+  fileCode: svg(
+    `<path d="M7 3.5h7l5 5V20a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M14 3.5V9h5.5M9.5 13.5 8 15l1.5 1.5M14.5 13.5 16 15l-1.5 1.5"/>`,
+  ),
+  fileImage: svg(
+    `<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m6.5 17 3.5-3.5 2.5 2.5 2.5-3.5 3 4.5"/>`,
+  ),
+  fileVideo: svg(
+    `<rect x="3.5" y="6" width="12" height="12" rx="2"/><path d="m15.5 10 5-2.5v9L15.5 14z"/>`,
+  ),
+  fileAudio: svg(
+    `<path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="16" r="2.2"/>`,
+  ),
+  fileArchive: svg(
+    `<path d="M7 3.5h10V20.5H7z"/><path d="M10 4.5h2M10 7h2M10 9.5h2"/><rect x="9.5" y="12.5" width="5" height="3.5" rx="0.6"/>`,
+  ),
+  filePdf: svg(
+    `<path d="M7 3.5h7l5 5V20a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M14 3.5V9h5.5M8 14h2.6a1.4 1.4 0 1 1 0 2.8H8V12.5"/>`,
+  ),
+  fileTable: svg(
+    `<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M4 15h16M10 5v14"/>`,
+  ),
 };
+
+const CODE_EXT = new Set([
+  "js", "jsx", "ts", "tsx", "mjs", "cjs", "py", "rs", "go", "java", "kt", "c", "cc", "cpp", "h", "hpp",
+  "cs", "rb", "php", "swift", "lua", "sh", "bash", "zsh", "fish", "ps1", "html", "htm", "css", "scss",
+  "less", "vue", "svelte", "json", "jsonc", "yaml", "yml", "toml", "xml", "sql", "graphql", "dockerfile",
+]);
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "heic", "avif"]);
+const VIDEO_EXT = new Set(["mp4", "mov", "mkv", "webm", "avi", "m4v"]);
+const AUDIO_EXT = new Set(["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"]);
+const ARCHIVE_EXT = new Set(["zip", "tar", "gz", "tgz", "bz2", "7z", "rar", "xz"]);
+const TABLE_EXT = new Set(["csv", "tsv", "xls", "xlsx", "ods"]);
+const KEY_EXT = new Set(["pem", "key", "pub", "crt", "cer", "p12", "pfx"]);
+const TEXT_EXT = new Set(["txt", "md", "markdown", "rst", "log", "ini", "cfg", "conf", "env"]);
+
+export function sftpKindIcon(name: string, isDir: boolean): { icon: string; kind: string } {
+  if (isDir) return { icon: icons.folder, kind: "dir" };
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+  if (ext === "pdf") return { icon: icons.filePdf, kind: "pdf" };
+  if (CODE_EXT.has(ext)) return { icon: icons.fileCode, kind: "code" };
+  if (IMAGE_EXT.has(ext)) return { icon: icons.fileImage, kind: "image" };
+  if (VIDEO_EXT.has(ext)) return { icon: icons.fileVideo, kind: "video" };
+  if (AUDIO_EXT.has(ext)) return { icon: icons.fileAudio, kind: "audio" };
+  if (ARCHIVE_EXT.has(ext)) return { icon: icons.fileArchive, kind: "archive" };
+  if (TABLE_EXT.has(ext)) return { icon: icons.fileTable, kind: "table" };
+  if (KEY_EXT.has(ext)) return { icon: icons.key, kind: "key" };
+  if (TEXT_EXT.has(ext) || !ext) return { icon: icons.file, kind: "text" };
+  return { icon: icons.file, kind: "file" };
+}
