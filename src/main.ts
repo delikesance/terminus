@@ -3631,18 +3631,22 @@ async function changePaneEndpoint(slot: SftpPaneSlot, endpoint: SftpEndpointId) 
 }
 
 async function activateSplit() {
+  const keepA = paneBodyIsReady("a");
+  const fragA = keepA ? takePaneBody("a") : null;
   sftpBrowser = enterSplit(
     sftpBrowser,
     state.hosts.map((h) => h.id),
   );
   ensureSftpShell(true);
   renderSftpSidebar(state.sftpHostId);
-  // Prioritize remote (or local-as-A) first; defer companion local pane (#55).
-  if (!isLocalEndpoint(sftpBrowser.paneA)) {
+  if (fragA && putPaneBody("a", fragA)) {
+    rehydratePaneA();
+  } else if (!isLocalEndpoint(sftpBrowser.paneA)) {
     await loadSftp(sftpBrowser.paneA, state.sftpPath || ".");
   } else {
     await initLocalPane();
   }
+  // Companion pane only — do not reload the preserved primary pane.
   if (sftpBrowser.paneB && isLocalEndpoint(sftpBrowser.paneB)) {
     scheduleLocalPaneInit();
   } else if (sftpBrowser.paneB) {
@@ -3661,10 +3665,59 @@ function scheduleLocalPaneInit(): void {
   else window.setTimeout(run, 0);
 }
 
+function paneBodyIsReady(slot: SftpPaneSlot): boolean {
+  const body = paneBodyEl(slot);
+  if (!body) return false;
+  return Boolean(
+    body.querySelector(
+      '[data-testid="sftp-toolbar"], [data-testid="local-toolbar"], [data-testid="sftp-table"], [data-testid="local-table"], [data-testid="sftp-empty"], [data-testid="local-empty"], [data-testid="sftp-error"]',
+    ),
+  );
+}
+
+/** Move pane body nodes out before a shell rebuild so they survive `innerHTML` replace. */
+function takePaneBody(slot: SftpPaneSlot): DocumentFragment | null {
+  const body = paneBodyEl(slot);
+  if (!body?.hasChildNodes()) return null;
+  const frag = document.createDocumentFragment();
+  while (body.firstChild) frag.appendChild(body.firstChild);
+  return frag;
+}
+
+function putPaneBody(slot: SftpPaneSlot, frag: DocumentFragment | null): boolean {
+  const body = paneBodyEl(slot);
+  if (!body || !frag?.childNodes.length) return false;
+  body.appendChild(frag);
+  return true;
+}
+
+/** Re-bind handlers / virtual list after moving a preserved pane body into a new shell. */
+function rehydratePaneA(): void {
+  const endpoint = sftpBrowser.paneA;
+  if (isLocalEndpoint(endpoint)) {
+    if (state.localCwd) {
+      bindLocalToolbar();
+      mountLocalVirtualList(state.localEntries);
+      bindLocalRows();
+    }
+  } else if (state.sftpHostId) {
+    bindSftpToolbar(state.sftpHostId, state.sftpPath || ".");
+    if (state.sftpEntries.length) mountRemoteVirtualList(state.sftpEntries);
+    bindSftpRows(state.sftpHostId, remotePaneEl());
+  }
+  updateTransferUi();
+}
+
 function deactivateSplit() {
+  const keepA = paneBodyIsReady("a");
+  const fragA = keepA ? takePaneBody("a") : null;
   sftpBrowser = exitSplit(sftpBrowser);
   ensureSftpShell(true);
   renderSftpSidebar(state.sftpHostId);
+  if (fragA && putPaneBody("a", fragA)) {
+    rehydratePaneA();
+    return;
+  }
   if (isLocalEndpoint(sftpBrowser.paneA)) void initLocalPane();
   else void loadSftp(sftpBrowser.paneA, state.sftpPath || ".");
 }
