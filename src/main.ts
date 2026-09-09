@@ -4638,18 +4638,18 @@ function updateTransferUi(): void {
     const upload = batch.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-upload"]');
     const download = batch.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-download"]');
     const canUpload = canTx && batchUploadEnabled(localN);
-    const canDownload = canTx && batchDownloadEnabled(remoteN);
+    const canDownload = batchDownloadEnabled(remoteN);
     if (upload) {
       upload.disabled = !canUpload;
       upload.title = canTx
-        ? "Upload selection"
-        : "Open Split view to upload";
+        ? "Upload selection to remote pane"
+        : "Open Split view to upload from This computer";
     }
     if (download) {
       download.disabled = !canDownload;
       download.title = canTx
-        ? "Download selection"
-        : "Open Split view to download";
+        ? "Download selection to local pane"
+        : "Download selection to your home folder";
     }
   }
 }
@@ -4684,6 +4684,7 @@ async function transferSelected(direction: "upload" | "download"): Promise<void>
   const hostId = state.sftpHostId;
   if (!hostId) return;
   if (direction === "upload") {
+    if (!canTransferBetween(sftpBrowser.paneA, sftpBrowser.paneB)) return;
     const items = state.localEntries.filter((e) => state.localSelected.has(e.path));
     if (!items.length) return;
     const files: FileRef[] = [];
@@ -4695,19 +4696,38 @@ async function transferSelected(direction: "upload" | "download"): Promise<void>
       localTargetDir: state.localCwd,
       files,
     });
-  } else {
-    const items = state.sftpEntries.filter((e) => state.sftpSelected.has(e.path));
-    if (!items.length) return;
-    const files: FileRef[] = [];
-    await collectRemoteTree(hostId, items, files);
-    await transferFiles({
-      direction: "download",
-      hostId,
-      remoteTargetDir: state.sftpPath,
-      localTargetDir: state.localCwd,
-      files,
-    });
+    return;
   }
+
+  const items = state.sftpEntries.filter((e) => state.sftpSelected.has(e.path));
+  if (!items.length) return;
+  let localTarget = state.localCwd;
+  if (!localTarget || !canTransferBetween(sftpBrowser.paneA, sftpBrowser.paneB)) {
+    try {
+      localTarget = state.localCwd || (await invoke<string>("local_home"));
+      if (!state.localCwd) {
+        state.localCwd = localTarget;
+        state.localRoot = localTarget;
+      }
+    } catch {
+      for (const it of items) {
+        if (!it.is_dir) await sftpDownload(hostId, it.path, it.name);
+      }
+      state.sftpSelected.clear();
+      refreshRemoteSelection();
+      updateTransferUi();
+      return;
+    }
+  }
+  const files: FileRef[] = [];
+  await collectRemoteTree(hostId, items, files);
+  await transferFiles({
+    direction: "download",
+    hostId,
+    remoteTargetDir: state.sftpPath,
+    localTargetDir: localTarget,
+    files,
+  });
 }
 
 async function collectLocalTree(
@@ -4823,7 +4843,9 @@ async function transferFiles(p: {
   state.localSelected.clear();
   state.sftpSelected.clear();
   if (p.direction === "upload") await loadSftp(p.hostId, state.sftpPath);
-  else await loadLocal();
+  else if (sftpBrowser.mode === "split" || document.querySelector('[data-testid="local-toolbar"]')) {
+    await loadLocal();
+  }
   refreshLocalSelection();
   refreshRemoteSelection();
   updateTransferUi();
