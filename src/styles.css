@@ -2562,12 +2562,11 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   top: 14%;
   transform: translateX(-50%);
   width: min(560px, calc(100vw - 24px));
-  background: color-mix(in srgb, var(--elevated) 86%, transparent);
+  background: var(--elevated);
   border: 1px solid var(--line-strong);
   border-radius: 16px;
   padding: 10px;
   z-index: 30;
-  backdrop-filter: blur(28px) saturate(160%);
   box-shadow: var(--shadow);
 }
 #palette.motion-prep {
