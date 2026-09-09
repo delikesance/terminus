@@ -12,7 +12,9 @@ export function webglOk(): boolean {
   }
 }
 
+/** Resolve stored preference → concrete renderer. Honors explicit canvas. */
 export function pickRenderer(pref: string): RendererKind {
-  if (pref === "webgl" && webglOk()) return "webgl";
+  if (pref === "canvas") return "canvas";
+  if ((pref === "webgl" || pref === "auto" || !pref) && webglOk()) return "webgl";
   return "canvas";
 }

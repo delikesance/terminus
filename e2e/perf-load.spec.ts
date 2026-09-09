@@ -69,7 +69,10 @@ test.describe("#45: perf crash/load", () => {
 
     await page.locator('#activity-bar button[data-activity="sftp"]').click();
     await expect(page.locator('[data-testid="sftp-toolbar"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-row"]').first()).toBeVisible({ timeout: 10_000 });
+    // Virtual list: only ~viewport rows should be mounted for bulk listings (#50).
+    const rowCount = await page.locator('[data-testid="sftp-row"]').count();
+    expect(rowCount).toBeGreaterThan(0);
+    expect(rowCount).toBeLessThan(120);
 
     const before = await bridge.perfSnapshot();
     const t0 = Date.now();

@@ -1596,6 +1596,34 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   gap: 1px;
   padding: 8px 10px 14px;
 }
+.sftp-virtual-table {
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+}
+.sftp-virtual-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 14px;
+}
+.sftp-virtual-spacer {
+  position: relative;
+  width: 100%;
+}
+.sftp-virtual-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sftp-view.compact-rows .sftp-virtual-table .sftp-row,
+.sftp-view.compact-rows .sftp-virtual-table .local-row {
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
 .sftp-view .sftp-row {
   cursor: pointer;
   min-height: 36px;
