@@ -31,7 +31,7 @@ test.describe("C9: SFTP browser v1", () => {
     const table = page.locator("#workspace [data-testid='sftp-table']");
     await expect(table).toBeVisible();
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab");
-    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(3);
+    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(3); // .cache hidden by default
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible();
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "remote-only.txt" })).toBeVisible();
@@ -39,7 +39,8 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator(".sftp-size").first()).toBeVisible();
     await expect(page.locator(".sftp-mtime").first()).toBeVisible();
     await expect(page.locator('[data-testid="sftp-side"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-side-host"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-side-host"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-toggle-hidden"]')).toBeVisible();
     await expect(page.locator('[data-testid="sftp-side-status"]')).toHaveAttribute("data-state", "connected");
     await expect(page.locator('[data-testid="sftp-side-status"]')).toContainText("Connected");
   });
@@ -318,5 +319,69 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="sftp-arrows"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible();
+  });
+
+  test("#43 AC3: host-filter filters active remote pane listing", async ({ page }) => {
+    await openFilesPanel(page);
+    await expect(page.locator("#host-filter")).toHaveAttribute("placeholder", /Filter pane A/i);
+    await page.locator("#host-filter").fill("notes");
+    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
+    await page.locator("#host-filter").fill("");
+    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(3);
+  });
+
+  test("#43 AC4: hidden files toggle shows and hides dotfiles", async ({ page }) => {
+    await openFilesPanel(page);
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: ".cache" })).toHaveCount(0);
+    await page.locator('[data-testid="sftp-toggle-hidden"]').click();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: ".cache" })).toBeVisible();
+    await page.locator('[data-testid="sftp-toggle-hidden"]').click();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: ".cache" })).toHaveCount(0);
+  });
+
+  test("#43 AC5: batch bar appears on multi-select in split mode", async ({ page }) => {
+    await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-split-btn"]').click();
+    await expect(page.locator('[data-testid="sftp-batch-bar"]')).toHaveClass(/hidden/);
+    await page
+      .locator('[data-testid="local-row"]')
+      .filter({ hasText: "local-upload.txt" })
+      .locator('[data-testid="local-select"]')
+      .click();
+    const batch = page.locator('[data-testid="sftp-batch-bar"]');
+    await expect(batch).not.toHaveClass(/hidden/);
+    await expect(page.locator('[data-testid="sftp-batch-count"]')).toContainText("1 selected");
+    await expect(page.locator('[data-testid="sftp-batch-upload"]')).toBeEnabled();
+    await expect(page.locator('[data-testid="sftp-batch-download"]')).toBeDisabled();
+    await page
+      .locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]')
+      .filter({ hasText: "remote-only.txt" })
+      .locator('[data-testid="sftp-select"]')
+      .click();
+    await expect(page.locator('[data-testid="sftp-batch-count"]')).toContainText("2 selected");
+    await expect(page.locator('[data-testid="sftp-batch-upload"]')).toBeEnabled();
+    await expect(page.locator('[data-testid="sftp-batch-download"]')).toBeEnabled();
+    await page.locator('[data-testid="sftp-batch-clear"]').click();
+    await expect(batch).toHaveClass(/hidden/);
+  });
+
+  test("#43 AC6: remote and local toolbars share Up, Refresh, New folder", async ({ page }) => {
+    await openFilesPanel(page);
+    await expect(page.locator('[data-testid="sftp-mkdir"]')).toBeVisible();
+    await page.locator('[data-testid="sftp-split-btn"]').click();
+    await expect(page.locator('[data-testid="local-mkdir"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-up"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-refresh"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-up"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-refresh"]')).toBeVisible();
+  });
+
+  test("#43 AC1: compact rows default to ≤30px min-height", async ({ page }) => {
+    await openFilesPanel(page);
+    const minH = await page.locator('[data-testid="sftp-row"]').first().evaluate((el) => {
+      return parseFloat(getComputedStyle(el).minHeight);
+    });
+    expect(minH).toBeLessThanOrEqual(30);
   });
 });
