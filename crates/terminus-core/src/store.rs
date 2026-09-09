@@ -563,8 +563,10 @@ fn default_keybindings() -> serde_json::Map<String, Value> {
     let pairs = [
         ("ctrl+shift+t", "tab.new"),
         ("ctrl+shift+w", "tab.close"),
-        ("ctrl+tab", "tab.next"),
-        ("ctrl+shift+tab", "tab.prev"),
+        ("ctrl+tab", "host.next"),
+        ("ctrl+shift+tab", "host.prev"),
+        ("cmd+tab", "host.next"),
+        ("cmd+shift+tab", "host.prev"),
         ("ctrl+shift+d", "tab.new"),
         ("ctrl+shift+e", "tab.new"),
         ("ctrl+k", "palette.toggle"),
