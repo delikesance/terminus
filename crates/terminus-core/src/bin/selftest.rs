@@ -524,11 +524,10 @@ async fn test_host_runtime(store: &Store) -> Value {
             // 4. Close the session
             let _ = manager.close(&ssh_session.id);
             
-            // 5. Get runtime after closing - CRITICAL: should be connected with count=0
-            //    Connection MUST NOT flip to disconnected just because open_count=0
+            // 5. Get runtime after closing — no shells left → disconnected
             let runtimes3 = manager.hosts_runtime().await.unwrap_or_default();
             let host_rt3 = runtimes3.iter().find(|r| r.host_id == test_host.id);
-            let after_close_conn = host_rt3.map(|r| r.connection == "connected").unwrap_or(false);
+            let after_close_conn = host_rt3.map(|r| r.connection == "disconnected").unwrap_or(false);
             let after_close_cnt = host_rt3.map(|r| r.open_count).unwrap_or(999);
             
             (after_open_conn, after_open_cnt, after_close_conn, after_close_cnt)
@@ -553,12 +552,12 @@ async fn test_host_runtime(store: &Store) -> Value {
     // Verify all conditions:
     // - Initial: disconnected, count=0
     // - After open: connected, count=1
-    // - After close: STILL connected, count=0 (CRITICAL FIX)
+    // - After close: disconnected, count=0
     let all_pass = initial_disconnected 
         && initial_count == 0
         && after_open_connected 
         && after_open_count == 1
-        && after_close_connected  // This is the critical check
+        && after_close_connected
         && after_close_count == 0;
     
     check(

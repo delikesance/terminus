@@ -61,6 +61,7 @@ impl Store {
               group_id TEXT,
               tags TEXT NOT NULL DEFAULT '[]',
               notes TEXT NOT NULL DEFAULT '',
+              os_id TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               deleted_at TEXT
@@ -133,18 +134,21 @@ impl Store {
         )
         .execute(&self.pool)
         .await;
+        let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN os_id TEXT")
+            .execute(&self.pool)
+            .await;
         Ok(())
     }
 
     pub async fn upsert_host(&self, host: &Host) -> Result<()> {
         sqlx::query(
-            r#"INSERT INTO hosts (id,name,hostname,port,username,auth_method,password,identity_id,group_id,tags,notes,created_at,updated_at,deleted_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            r#"INSERT INTO hosts (id,name,hostname,port,username,auth_method,password,identity_id,group_id,tags,notes,os_id,created_at,updated_at,deleted_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  name=excluded.name, hostname=excluded.hostname, port=excluded.port,
                  username=excluded.username, auth_method=excluded.auth_method, password=excluded.password,
                  identity_id=excluded.identity_id, group_id=excluded.group_id, tags=excluded.tags,
-                 notes=excluded.notes, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at"#,
+                 notes=excluded.notes, os_id=excluded.os_id, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at"#,
         )
         .bind(&host.id)
         .bind(&host.name)
@@ -157,6 +161,7 @@ impl Store {
         .bind(&host.group_id)
         .bind(serde_json::to_string(&host.tags)?)
         .bind(&host.notes)
+        .bind(&host.os_id)
         .bind(host.created_at.to_rfc3339())
         .bind(host.updated_at.to_rfc3339())
         .bind(host.deleted_at.map(|d| d.to_rfc3339()))
@@ -611,6 +616,7 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> Result<Host> {
         group_id: row.get("group_id"),
         tags: serde_json::from_str(&tags).unwrap_or_default(),
         notes: row.get("notes"),
+        os_id: row.try_get::<Option<String>, _>("os_id").ok().flatten(),
         created_at: parse_dt(row.get("created_at")),
         updated_at: parse_dt(row.get("updated_at")),
         deleted_at: row.get::<Option<String>, _>("deleted_at").map(parse_dt),

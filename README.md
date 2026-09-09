@@ -58,7 +58,7 @@ The desktop app checks GitHub Releases on launch when online and installs a newe
 
 CI caches the Cargo registry and compiled crates (`Swatinem/rust-cache` + `sccache`) so later runs skip re-downloading and recompiling russh/tauri/sqlx. The first run after a `Cargo.lock` change is still cold.
 
-Updater signing uses GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty is fine). The matching public key lives in `src-tauri/tauri.conf.json`.
+Updater signing uses GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty is fine). The matching public key lives in `src-tauri/tauri.conf.json`. That key only authenticates in-app updates; it does **not** Authenticode-sign the Windows installer. SmartScreen will keep saying the `.exe` is unrecognized until you add an OV/EV code-signing certificate as secrets `WINDOWS_CERTIFICATE` (base64-encoded `.pfx`) and `WINDOWS_CERTIFICATE_PASSWORD`. The Windows release job imports it and Tauri signs the NSIS setup with `signtool`. A self-signed cert will not clear SmartScreen.
 
 The Rust core also lists GNU/Windows and Darwin targets in the flake toolchain for library-level cross compilation.
 

@@ -34,7 +34,7 @@ jobs:
             args: --config src-tauri/tauri.release.conf.json --bundles appimage,deb
           - platform: windows-latest
             cache: windows
-            args: --config src-tauri/tauri.release.conf.json --bundles nsis
+            args: --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.windows-sign.conf.json --bundles nsis
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +78,33 @@ jobs:
             fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
             console.log("release version", version);
           '
+      - name: Import Windows Authenticode certificate
+        if: runner.os == 'Windows'
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        shell: pwsh
+        run: |
+          $confPath = "src-tauri/tauri.windows-sign.conf.json"
+          $windows = [ordered]@{
+            digestAlgorithm = "sha256"
+            timestampUrl = "http://timestamp.digicert.com"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) {
+            Write-Host "No WINDOWS_CERTIFICATE secret; NSIS installer stays unsigned (SmartScreen)."
+          } else {
+            $dir = Join-Path $env:RUNNER_TEMP "codesign"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $pfx = Join-Path $dir "certificate.pfx"
+            $b64 = ($env:WINDOWS_CERTIFICATE -replace '\s','')
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($b64))
+            $secure = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
+            $imported = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $secure
+            $windows.certificateThumbprint = $imported.Thumbprint
+            Write-Host "Imported Authenticode certificate $($imported.Thumbprint)"
+          }
+          $json = (@{ bundle = @{ windows = $windows } } | ConvertTo-Json -Depth 6)
+          [IO.File]::WriteAllText((Join-Path (Get-Location) $confPath), $json)
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,6 +119,9 @@ jobs:
             - macOS Apple Silicon: `Terminus_*_aarch64.dmg`
             - macOS Intel: `Terminus_*_x64.dmg`
             - Linux: `Terminus_*_amd64.deb` or the `.AppImage`
+
+            If Windows SmartScreen says the installer is unrecognized: More info → Run anyway.
+            That warning goes away only after the NSIS `.exe` is Authenticode-signed (not the updater key).
 
             `.tar.gz`, `.sig`, and `latest.json` are for the in-app updater only.
           releaseDraft: false

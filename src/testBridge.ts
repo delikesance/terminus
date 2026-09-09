@@ -31,6 +31,9 @@ interface TerminusTestBridge {
   /** C9b: poll transfer op counters (uploads = local→remote, downloads = remote→local). */
   transferOps(): Promise<{ uploads: number; downloads: number }>;
   seedTofuHost(hostId?: string): Promise<string>;
+  seedSlowConnectHost(hostId?: string, ms?: number): Promise<string>;
+  seedAuthFailHost(hostId?: string): Promise<string>;
+  hostsRuntime(): Promise<Array<{ host_id: string; connection: string; open_count: number }>>;
 }
 
 async function refreshUi(): Promise<void> {
@@ -238,6 +241,61 @@ export function initTestBridge(): void {
       await invoke("test_require_tofu", { hostId }).catch(() => undefined);
       await refreshUi();
       return hostId;
+    },
+
+    async seedSlowConnectHost(
+      hostId = `slow-host-${Date.now()}`,
+      ms = 500,
+    ): Promise<string> {
+      await invoke("hosts_upsert", {
+        host: {
+          id: hostId,
+          name: "Slow Connect",
+          hostname: "slow.example.com",
+          port: 22,
+          username: "lab",
+          auth_method: "key",
+          password: null,
+          identity_id: null,
+          group_id: null,
+          tags: [],
+          notes: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          deleted_at: null,
+        },
+      });
+      await invoke("test_slow_connect", { hostId, ms }).catch(() => undefined);
+      await refreshUi();
+      return hostId;
+    },
+
+    async seedAuthFailHost(hostId = `auth-fail-${Date.now()}`): Promise<string> {
+      await invoke("hosts_upsert", {
+        host: {
+          id: hostId,
+          name: "Auth Fail",
+          hostname: "authfail.example.com",
+          port: 22,
+          username: "lab",
+          auth_method: "password",
+          password: "bad",
+          identity_id: null,
+          group_id: null,
+          tags: [],
+          notes: "",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          deleted_at: null,
+        },
+      });
+      await invoke("test_auth_fail", { hostId }).catch(() => undefined);
+      await refreshUi();
+      return hostId;
+    },
+
+    async hostsRuntime(): Promise<Array<{ host_id: string; connection: string; open_count: number }>> {
+      return invoke("hosts_runtime");
     },
   };
 

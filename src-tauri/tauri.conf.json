@@ -31,13 +31,25 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "delikesance",
+    "copyright": "Copyright © delikesance",
+    "category": "DeveloperTool",
+    "shortDescription": "SSH and SFTP desktop terminal",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
   },
   "plugins": {
     "updater": {

@@ -1,0 +1,53 @@
+---
+description: Global TDD workflow orchestrator — classifies task size and enforces sequential Ticket → Architect → QA/TDD → Implementation gates
+alwaysApply: true
+---
+
+# Engineering Orchestrator
+
+You are the **global workflow orchestrator**. Before writing any production code, classify the request and route work through the mandated pipeline.
+
+## Step 0 — Classify request size
+
+| Size | Examples | Allowed path |
+|------|----------|--------------|
+| **Trivial** | Typo, rename, one-liner fix, pure docs tweak | Direct fix. Skip the 4-agent pipeline. Still run relevant checks. |
+| **Complex / feature** | New behavior, non-trivial bug, API/schema change, refactor with behavior risk | **Pipeline mandatory.** No production code until Green phase. |
+
+If unsure, treat as **complex**.
+
+## Complex tasks — mandatory sequence
+
+For complex work, **forbid immediate production code**. Advance strictly through these roles, one at a time:
+
+1. **Ticket Agent** (`.cursor/rules/ticket-agent.mdc`) — draft need + ACs, then after user validation publish a **GitHub issue via `gh`**.
+2. **Architect Agent** (`.cursor/rules/architect-agent.mdc`) — impact analysis, design, atomic plan.
+3. **QA/TDD Agent** (`.cursor/rules/tdd-agent.mdc`) — write failing tests only (*Red*).
+4. **Implementation Agent** (`.cursor/rules/implementation-agent.mdc`) — minimal production code (*Green*).
+
+Announce the active role at each stage (e.g. `🎭 Role: Ticket Agent`).
+
+## Hard gates (no skipping)
+
+| From → To | Unlock condition |
+|-----------|------------------|
+| Ticket → Architect | Draft complete + **user validation** + GitHub issue created with `gh issue create`; issue URL shared in chat. |
+| Architect → QA/TDD | Architecture plan + interfaces documented. User confirms the plan. |
+| QA/TDD → Implementation | Tests written, suite executed, **failures confirmed** (Red). |
+| Implementation → Done | Suite executed, **all new/relevant tests green**. Optional refactor only after green. |
+
+**Never** jump ahead. **Never** write production code during Ticket, Architect, or Red phases. **Never** weaken or rewrite tests during Implementation to force green.
+
+## Output discipline
+
+- Keep each phase's deliverable explicit and reviewable before moving on.
+- Prefer asking for confirmation at gates over assuming approval.
+- Trivial work: say briefly that the pipeline is skipped and why, then ship the fix.
+---
+
+## Anti-patterns (reject)
+
+- Coding the feature first, then adding tests.
+- Mixing test and production edits in the same Red/Green step.
+- Collapsing Architect + Implementation into one unreviewed dump.
+- Declaring "done" without running the project's test command when tests exist.

@@ -555,6 +555,11 @@ pub async fn exec_command(
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
+pub async fn detect_os(host: &Host, identity: Option<&Identity>) -> Result<String> {
+    let raw = exec_command(host, identity, crate::os_detect::DETECT_CMD).await?;
+    Ok(crate::os_detect::parse_os_id(&raw))
+}
+
 pub async fn sftp_list(
     host: &Host,
     identity: Option<&Identity>,

@@ -73,6 +73,98 @@ export const icons = {
   ),
 };
 
+/** Official distro glyphs from font-logos (https://github.com/Lukas-W/font-logos). */
+const DISTRO_FL: Record<string, string> = {
+  ubuntu: "fl-ubuntu",
+  kubuntu: "fl-kubuntu",
+  zorin: "fl-zorin",
+  neon: "fl-kde-neon",
+  pop: "fl-pop-os",
+  debian: "fl-debian",
+  raspberry: "fl-raspberry-pi",
+  fedora: "fl-fedora",
+  nobara: "fl-nobara",
+  centos: "fl-centos",
+  rhel: "fl-redhat",
+  rocky: "fl-rocky-linux",
+  alma: "fl-almalinux",
+  arch: "fl-archlinux",
+  endeavour: "fl-endeavour",
+  garuda: "fl-garuda",
+  artix: "fl-artix",
+  manjaro: "fl-manjaro",
+  nixos: "fl-nixos",
+  alpine: "fl-alpine",
+  opensuse: "fl-opensuse",
+  leap: "fl-leap",
+  tumbleweed: "fl-tumbleweed",
+  kali: "fl-kali-linux",
+  mint: "fl-linuxmint",
+  elementary: "fl-elementary",
+  gentoo: "fl-gentoo",
+  void: "fl-void",
+  macos: "fl-apple",
+  freebsd: "fl-freebsd",
+  openbsd: "fl-openbsd",
+  linux: "fl-tux",
+  amazon: "fl-tux",
+  oracle: "fl-tux",
+  netbsd: "fl-tux",
+  solus: "fl-solus",
+  deepin: "fl-deepin",
+  devuan: "fl-devuan",
+  coreos: "fl-coreos",
+  mageia: "fl-mageia",
+  slackware: "fl-slackware",
+  parrot: "fl-parrot",
+  postmarketos: "fl-postmarketos",
+  qubesos: "fl-qubesos",
+  tails: "fl-tails",
+  vanilla: "fl-vanilla",
+  guix: "fl-gnu-guix",
+  mxlinux: "fl-mxlinux",
+  aosc: "fl-aosc",
+};
+
+const OS_ALIASES: Record<string, string> = {
+  archlinux: "arch",
+  "pop-os": "pop",
+  pop_os: "pop",
+  linuxmint: "mint",
+  almalinux: "alma",
+  "rocky-linux": "rocky",
+  redhat: "rhel",
+  raspbian: "raspberry",
+  raspberrypi: "raspberry",
+  raspios: "raspberry",
+  "kde-neon": "neon",
+  kdeneon: "neon",
+  endeavouros: "endeavour",
+  darwin: "macos",
+  "opensuse-leap": "leap",
+  "opensuse-tumbleweed": "tumbleweed",
+  qubes: "qubesos",
+  guixsd: "guix",
+  mx: "mxlinux",
+  zorinos: "zorin",
+};
+
+/** Windows is not in font-logos; keep a filled mark. */
+const WINDOWS_ICON =
+  `<svg class="os-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.2 11.2 5.2v6.2H4V6.2zm8.4-.9L20 4.2v7.2h-7.6V5.3zM4 12.8h7.2V18.9L4 17.8v-5zm8.4 0H20V19.8l-7.6-1.2v-5.8z"/></svg>`;
+
+const flIcon = (cls: string) => `<span class="os-fl ${cls}" aria-hidden="true"></span>`;
+
+export function hostOsIcon(osId?: string | null): { icon: string; os: string } {
+  const raw = (osId ?? "").trim().toLowerCase();
+  if (!raw || raw === "unknown") return { icon: icons.server, os: "" };
+  const os = OS_ALIASES[raw] ?? raw;
+  if (os === "windows") return { icon: WINDOWS_ICON, os: "windows" };
+  const cls = DISTRO_FL[os];
+  if (cls) return { icon: flIcon(cls), os };
+  return { icon: flIcon("fl-tux"), os: "linux" };
+}
+
 const CODE_EXT = new Set([
   "js", "jsx", "ts", "tsx", "mjs", "cjs", "py", "rs", "go", "java", "kt", "c", "cc", "cpp", "h", "hpp",
   "cs", "rb", "php", "swift", "lua", "sh", "bash", "zsh", "fish", "ps1", "html", "htm", "css", "scss",

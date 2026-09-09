@@ -17,7 +17,7 @@ test.describe("C7: empty states smoke", () => {
 
   test("shows No remote hosts yet empty with Add host + Import when 0 hosts", async ({ page }) => {
     await expect(page.locator('[data-testid="host-local"]')).toBeVisible();
-    await expect(page.locator('[data-testid="group-ungrouped"]')).toBeVisible();
+    await expect(page.locator('[data-testid="group-ungrouped"]')).toHaveCount(0);
     const empty = page.locator('[data-testid="empty-hosts"]');
     await expect(empty).toBeVisible();
     await expect(empty.locator(".empty-title")).toHaveText("No remote hosts yet");
