@@ -191,6 +191,32 @@ pub struct PortForward {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+impl PortForward {
+    pub fn new_local(
+        host_id: impl Into<String>,
+        name: impl Into<String>,
+        bind_host: impl Into<String>,
+        bind_port: u16,
+        dest_host: impl Into<String>,
+        dest_port: u16,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            host_id: host_id.into(),
+            kind: "local".into(),
+            name: name.into(),
+            bind_host: bind_host.into(),
+            bind_port,
+            dest_host: Some(dest_host.into()),
+            dest_port: Some(dest_port),
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalAppearance {
     pub font_family: String,

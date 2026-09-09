@@ -109,6 +109,24 @@ type Db = {
   authFail: Set<string>;
   /** In-flight SSH connect attempts per host (Architect aggregation). */
   inflight: Map<string, number>;
+  /** Saved local port forwards. */
+  forwards: Array<{
+    id: string;
+    host_id: string;
+    kind: string;
+    name: string;
+    bind_host: string;
+    bind_port: number;
+    dest_host?: string | null;
+    dest_port?: number | null;
+    created_at: string;
+    updated_at: string;
+    deleted_at?: string | null;
+  }>;
+  /** Running forward ids. */
+  forwardsRunning: Set<string>;
+  /** Force next forward_start to fail. */
+  forwardStartError: string | null;
 };
 
 const stamp = () => new Date().toISOString();
@@ -215,6 +233,9 @@ function createDb(): Db {
     slowConnectMs: new Map(),
     authFail: new Set(),
     inflight: new Map(),
+    forwards: [],
+    forwardsRunning: new Set(),
+    forwardStartError: null,
   };
   seedFixtureGroup(db);
   return db;
@@ -680,8 +701,55 @@ export function installE2eMock(): void {
         case "snippets_list":
         case "history_search":
         case "ssh_default_keys":
-        case "forwards_list":
           return [];
+        case "forwards_list":
+          return db.forwards.filter((f) => !f.deleted_at);
+        case "forwards_upsert": {
+          const forward = (args.forward ?? args) as (typeof db.forwards)[number];
+          db.forwardsRunning.delete(forward.id);
+          const idx = db.forwards.findIndex((f) => f.id === forward.id);
+          if (idx >= 0) db.forwards[idx] = { ...forward };
+          else db.forwards.push({ ...forward });
+          return forward;
+        }
+        case "forwards_delete": {
+          const id = String(args.id);
+          db.forwardsRunning.delete(id);
+          const row = db.forwards.find((f) => f.id === id);
+          if (row) {
+            row.deleted_at = stamp();
+            row.updated_at = stamp();
+          }
+          return null;
+        }
+        case "forwards_running":
+          return [...db.forwardsRunning];
+        case "forward_start": {
+          const id = String(args.id);
+          if (db.forwardStartError) {
+            const msg = db.forwardStartError;
+            db.forwardStartError = null;
+            throw msg;
+          }
+          if (db.forwardsRunning.has(id)) throw `forward ${id} is already running`;
+          const fwd = db.forwards.find((f) => f.id === id && !f.deleted_at);
+          if (!fwd) throw "forward not found";
+          const host = db.hosts.find((h) => h.id === fwd.host_id && !h.deleted_at);
+          if (!host) throw "host not found";
+          if (fwd.dest_port == null) throw "destination port is required";
+          db.forwardsRunning.add(id);
+          return null;
+        }
+        case "forward_stop": {
+          const id = String(args.id);
+          if (!db.forwardsRunning.has(id)) throw "forward is not running";
+          db.forwardsRunning.delete(id);
+          return null;
+        }
+        case "test_forward_fail_next": {
+          db.forwardStartError = String(args.message ?? args.error ?? "bind failed");
+          return null;
+        }
         case "sftp_list": {
           maybeSftpForce(db);
           const hostId = String(args.hostId ?? args.host_id ?? "");

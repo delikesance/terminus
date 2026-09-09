@@ -59,6 +59,18 @@ export function getTestBridge(page: Page) {
     seedTofuHost: (hostId?: string) =>
       page.evaluate((id) => (window as any).__terminusTest.seedTofuHost(id), hostId),
 
+    seedForwardHost: (hostId?: string) =>
+      page.evaluate((id) => (window as any).__terminusTest.seedForwardHost(id), hostId),
+    seedForward: (opts: {
+      id?: string;
+      hostId: string;
+      name?: string;
+      bindPort?: number;
+      destPort?: number;
+    }) => page.evaluate((o) => (window as any).__terminusTest.seedForward(o), opts),
+    forwardFailNext: (message: string) =>
+      page.evaluate((m) => (window as any).__terminusTest.forwardFailNext(m), message),
+
     seedSlowConnectHost: (hostId?: string, ms?: number) =>
       page.evaluate(
         ({ id, delay }) => (window as any).__terminusTest.seedSlowConnectHost(id, delay),
