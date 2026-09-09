@@ -764,6 +764,12 @@ svg {
   image-rendering: auto;
   background: var(--term-bg, var(--bg));
 }
+.term-selection {
+  position: absolute;
+  z-index: 1;
+  background: rgba(120, 170, 255, 0.30);
+  pointer-events: none;
+}
 .pane-banner {
   position: absolute;
   left: 16px;
@@ -1028,6 +1034,173 @@ svg {
   font-size: 12.5px;
   word-break: break-word;
 }
+
+/* ─── Bidirectional SFTP (local | remote) + transfer ─── */
+.sftp-view .sftp-transfer {
+  flex: none;
+  padding: 8px 12px 0;
+}
+.sftp-view .sftp-transfer:empty { display: none; padding: 0; }
+.sftp-transfer-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: color-mix(in srgb, var(--blue) 10%, var(--elevated));
+  border: 1px solid color-mix(in srgb, var(--blue) 20%, var(--line));
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.sftp-transfer-label { flex: none; white-space: nowrap; }
+.sftp-transfer-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.sftp-transfer-fill {
+  display: block;
+  height: 100%;
+  background: var(--blue);
+  border-radius: 3px;
+  transition: width 0.15s ease;
+}
+.sftp-transfer-inner button {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+.sftp-transfer-inner button:hover { background: var(--fill); color: var(--text); }
+.sftp-transfer-inner button svg { width: 14px; height: 14px; }
+
+.sftp-dual {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+.sftp-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  position: relative;
+}
+.sftp-pane:last-child { border-right: 0; }
+.sftp-pane.drop-target {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--blue) 60%, transparent);
+}
+.sftp-arrows {
+  flex: none;
+  width: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--bg);
+}
+.sftp-arrow-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.sftp-arrow-btn:hover:not(:disabled) {
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 12%, var(--fill));
+}
+.sftp-arrow-btn:disabled { opacity: 0.35; cursor: default; }
+.sftp-arrow-btn svg { width: 16px; height: 16px; }
+
+.sftp-pane-empty,
+.local-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1;
+  color: var(--tertiary);
+  font-size: 13px;
+  padding: 20px;
+}
+.local-loading { align-items: flex-start; color: var(--secondary); }
+
+.sftp-view .local-row {
+  cursor: pointer;
+  min-height: 36px;
+  height: auto;
+  padding: 8px 10px;
+}
+.sftp-view .local-row .leading {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.sftp-view .local-row .leading svg { width: 15px; height: 15px; }
+.sftp-view .local-row[data-kind="dir"] .leading {
+  color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+}
+.sftp-view .local-row[data-kind="dir"] .leading svg {
+  fill: color-mix(in srgb, var(--yellow) 28%, transparent);
+}
+.sftp-view .local-row[data-kind="code"] .leading { color: #64d2ff; background: color-mix(in srgb, #64d2ff 12%, transparent); }
+.sftp-view .local-row[data-kind="image"] .leading { color: #bf5af2; background: color-mix(in srgb, #bf5af2 12%, transparent); }
+.sftp-view .local-row[data-kind="video"] .leading { color: #ff375f; background: color-mix(in srgb, #ff375f 12%, transparent); }
+.sftp-view .local-row[data-kind="audio"] .leading { color: #30d158; background: color-mix(in srgb, #30d158 12%, transparent); }
+.sftp-view .local-row[data-kind="archive"] .leading { color: #ff9f0a; background: color-mix(in srgb, #ff9f0a 12%, transparent); }
+.sftp-view .local-row[data-kind="pdf"] .leading { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.sftp-view .local-row[data-kind="table"] .leading { color: #30d158; background: color-mix(in srgb, #30d158 12%, transparent); }
+.sftp-view .local-row[data-kind="key"] .leading { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, transparent); }
+.sftp-view .local-row[data-kind="text"] .leading,
+.sftp-view .local-row[data-kind="file"] .leading {
+  color: #8e8e93;
+  background: rgba(255, 255, 255, 0.05);
+}
+.sftp-view .local-row .sftp-meta { display: flex; gap: 12px; }
+.sftp-view .local-row .sftp-meta-inline { display: none; }
+
+.cell-sel {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--blue);
+  background: transparent;
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+.cell-sel svg { width: 12px; height: 12px; }
+.sftp-row[data-selected="true"],
+.local-row[data-selected="true"] {
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
+}
+
 #ctx-menu {
   position: fixed;
   z-index: 40;

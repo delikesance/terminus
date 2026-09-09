@@ -446,6 +446,20 @@ pub struct SftpEntry {
     pub mtime: Option<u64>,
 }
 
+/// An entry from the **local** filesystem (the user's machine). Mirrors
+/// [`SftpEntry`] but carries a real OS path and a millisecond modified time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalEntry {
+    pub name: String,
+    /// Absolute OS path of the entry.
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    /// Modified time as epoch milliseconds, or 0 when unavailable.
+    #[serde(default)]
+    pub modified: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,

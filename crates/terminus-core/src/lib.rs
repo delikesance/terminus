@@ -1,4 +1,5 @@
 pub mod error;
+pub mod local_fs;
 pub mod models;
 pub mod pty;
 pub mod session;
