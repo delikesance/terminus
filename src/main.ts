@@ -42,6 +42,7 @@ import {
   sftpSearchPlaceholder,
   type SftpListFilter,
 } from "./sftpUx";
+import { mountVirtualList, type VirtualListHandle } from "./sftpVirtualList";
 import { pickRenderer } from "./perf";
 import { createTrailingDebounce, FRAME_MIN_MS, SFTP_FILTER_DEBOUNCE_MS } from "./perfTiming";
 import { parseKnownHosts } from "./knownHostsParse";
@@ -260,6 +261,8 @@ let sftpBrowser: SftpBrowserState = createSftpBrowserState();
 const sftpFilterDebounce = createTrailingDebounce(SFTP_FILTER_DEBOUNCE_MS, () => {
   rerenderSftpListings();
 });
+let localVirtual: VirtualListHandle<LocalEntry> | null = null;
+let remoteVirtual: VirtualListHandle<SftpEntry> | null = null;
 
 document.head.appendChild(state.customCss);
 
@@ -3660,12 +3663,10 @@ function sftpTableHeadHtml(): string {
   </div>`;
 }
 
-function buildLocalRowsHtml(entries: LocalEntry[]): string {
-  return entries
-    .map((e) => {
-      const glyph = sftpKindIcon(e.name, e.is_dir);
-      const sel = state.localSelected.has(e.path);
-      return `<div class="local-row sftp-file-row item" draggable="true" data-path="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-name="${escapeHtml(e.name)}" data-selected="${sel}" data-testid="local-row" title="${e.is_dir ? "Open folder" : "File"}">
+function buildLocalRowHtml(e: LocalEntry): string {
+  const glyph = sftpKindIcon(e.name, e.is_dir);
+  const sel = state.localSelected.has(e.path);
+  return `<div class="local-row sftp-file-row item" draggable="true" data-path="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-name="${escapeHtml(e.name)}" data-selected="${sel}" data-testid="local-row" title="${e.is_dir ? "Open folder" : "File"}">
           <span class="cell-sel" data-testid="local-select" role="checkbox" aria-checked="${sel}" title="Select">${sel ? icons.check : ""}</span>
           <span class="leading">${glyph.icon}</span>
           <strong class="sftp-name col-name">${escapeHtml(e.name)}</strong>
@@ -3673,16 +3674,12 @@ function buildLocalRowsHtml(entries: LocalEntry[]): string {
           <span class="sftp-mtime col-mtime">${escapeHtml(formatLocalMtime(e.modified))}</span>
           <span class="col-actions"></span>
         </div>`;
-    })
-    .join("");
 }
 
-function buildRemoteRowsHtml(entries: SftpEntry[]): string {
-  return entries
-    .map((e) => {
-      const glyph = sftpKindIcon(e.name, e.is_dir);
-      const sel = state.sftpSelected.has(e.path);
-      return `<div class="sftp-row sftp-file-row item" draggable="true" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-kind="${glyph.kind}" data-name="${escapeHtml(e.name)}" data-selected="${sel}" data-testid="sftp-row" title="${e.is_dir ? "Open folder" : "Open with default app"}">
+function buildRemoteRowHtml(e: SftpEntry): string {
+  const glyph = sftpKindIcon(e.name, e.is_dir);
+  const sel = state.sftpSelected.has(e.path);
+  return `<div class="sftp-row sftp-file-row item" draggable="true" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-kind="${glyph.kind}" data-name="${escapeHtml(e.name)}" data-selected="${sel}" data-testid="sftp-row" title="${e.is_dir ? "Open folder" : "Open with default app"}">
           <span class="cell-sel" data-testid="sftp-select" role="checkbox" aria-checked="${sel}" title="Select">${sel ? icons.check : ""}</span>
           <span class="leading">${glyph.icon}</span>
           <strong class="sftp-name col-name">${escapeHtml(e.name)}</strong>
@@ -3692,8 +3689,6 @@ function buildRemoteRowsHtml(entries: SftpEntry[]): string {
             <button type="button" class="quick sftp-more" data-testid="sftp-more" title="Actions" aria-label="Actions">${icons.more}</button>
           </span>
         </div>`;
-    })
-    .join("");
 }
 
 function localTableHtml(entries: LocalEntry[]): string {
@@ -3702,7 +3697,7 @@ function localTableHtml(entries: LocalEntry[]): string {
     const msg = entries.length ? "No matching files" : "This folder is empty";
     return `${sftpTableHeadHtml()}<div class="sftp-empty" data-testid="local-empty"><span>${msg}</span></div>`;
   }
-  return `${sftpTableHeadHtml()}<div class="sftp-table" data-testid="local-table">${buildLocalRowsHtml(filtered)}</div>`;
+  return `${sftpTableHeadHtml()}<div class="sftp-table sftp-virtual-table" data-testid="local-table"><div class="sftp-virtual-viewport" data-testid="local-virtual-viewport"></div></div>`;
 }
 
 function remoteTableHtml(entries: SftpEntry[]): string {
@@ -3711,26 +3706,72 @@ function remoteTableHtml(entries: SftpEntry[]): string {
     const msg = entries.length ? "No matching files" : "This folder is empty";
     return `${sftpTableHeadHtml()}<div class="sftp-empty" data-testid="sftp-empty"><span>${msg}</span></div>`;
   }
-  return `${sftpTableHeadHtml()}<div class="sftp-table" data-testid="sftp-table">${buildRemoteRowsHtml(filtered)}</div>`;
+  return `${sftpTableHeadHtml()}<div class="sftp-table sftp-virtual-table" data-testid="sftp-table"><div class="sftp-virtual-viewport" data-testid="sftp-virtual-viewport"></div></div>`;
+}
+
+function mountLocalVirtualList(entries: LocalEntry[]) {
+  localVirtual?.destroy();
+  localVirtual = null;
+  const filtered = filterFileEntries(entries, sftpListFilter());
+  const vp = localPaneEl()?.querySelector<HTMLElement>('[data-testid="local-virtual-viewport"]');
+  if (!vp || !filtered.length) return;
+  delete vp.dataset.boundLocal;
+  localVirtual = mountVirtualList({
+    viewport: vp,
+    items: filtered,
+    renderRow: (e) => buildLocalRowHtml(e),
+  });
+}
+
+function mountRemoteVirtualList(entries: SftpEntry[]) {
+  remoteVirtual?.destroy();
+  remoteVirtual = null;
+  const filtered = filterFileEntries(entries, sftpListFilter());
+  const vp = remotePaneEl()?.querySelector<HTMLElement>('[data-testid="sftp-virtual-viewport"]');
+  if (!vp || !filtered.length) return;
+  delete vp.dataset.boundSftp;
+  remoteVirtual = mountVirtualList({
+    viewport: vp,
+    items: filtered,
+    renderRow: (e) => buildRemoteRowHtml(e),
+  });
 }
 
 function renderLocalTableBody() {
   const pane = localPaneEl();
   if (!pane || !state.localCwd) return;
+  const filtered = filterFileEntries(state.localEntries, sftpListFilter());
+  const vp = pane.querySelector<HTMLElement>('[data-testid="local-virtual-viewport"]');
+  if (vp && localVirtual && filtered.length) {
+    localVirtual.setItems(filtered);
+    return;
+  }
   const toolbar = pane.querySelector('[data-testid="local-toolbar"]');
   const after = toolbar ? toolbar.outerHTML : "";
+  localVirtual?.destroy();
+  localVirtual = null;
   pane.innerHTML = `${after}${localTableHtml(state.localEntries)}`;
   bindLocalToolbar();
+  mountLocalVirtualList(state.localEntries);
   bindLocalRows();
 }
 
 function renderRemoteTableBody(hostId: string) {
   const pane = remotePaneEl();
   if (!pane) return;
+  const filtered = filterFileEntries(state.sftpEntries, sftpListFilter());
+  const vp = pane.querySelector<HTMLElement>('[data-testid="sftp-virtual-viewport"]');
+  if (vp && remoteVirtual && filtered.length) {
+    remoteVirtual.setItems(filtered);
+    return;
+  }
   const toolbar = pane.querySelector('[data-testid="sftp-toolbar"]');
   const after = toolbar ? toolbar.outerHTML : "";
+  remoteVirtual?.destroy();
+  remoteVirtual = null;
   pane.innerHTML = `${after}${remoteTableHtml(state.sftpEntries)}`;
   bindSftpToolbar(hostId, state.sftpPath);
+  mountRemoteVirtualList(state.sftpEntries);
   bindSftpRows(hostId, pane);
 }
 
@@ -3895,53 +3936,71 @@ async function navigateSftpPath(hostId: string, raw: string) {
   }
 }
 
-function bindSftpRows(hostId: string, root: ParentNode) {
-  root.querySelectorAll<HTMLElement>(".sftp-row").forEach((el) => {
-    el.onclick = (ev) => {
-      if ((ev.target as HTMLElement).closest(".sftp-more")) return;
-      if ((ev.target as HTMLElement).closest(".cell-sel")) return;
-      if (el.dataset.dir === "true") void loadSftp(hostId, el.dataset.sftp!);
-      else void sftpOpen(hostId, el.dataset.sftp!, el.dataset.name || "", el);
-    };
-    const selCell = el.querySelector<HTMLElement>(".cell-sel");
-    selCell?.addEventListener("click", (ev) => {
+function bindSftpRows(_hostId: string, root: ParentNode) {
+  const viewport =
+    (root as HTMLElement).querySelector?.(".sftp-virtual-viewport") ??
+    (root as HTMLElement).closest?.(".sftp-pane") ??
+    root;
+  const el = viewport as HTMLElement;
+  if (el.dataset.boundSftp === "1") return;
+  el.dataset.boundSftp = "1";
+  const host = () => state.sftpHostId || _hostId;
+  el.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement;
+    const row = t.closest(".sftp-row") as HTMLElement | null;
+    if (!row || !el.contains(row)) return;
+    if (t.closest(".sftp-more")) return;
+    if (t.closest(".cell-sel")) {
       ev.stopPropagation();
-      toggleRemoteSelection(el.dataset.sftp!, el.dataset.selected === "true");
-    });
-    el.addEventListener("dragstart", (ev) => {
-      const path = el.dataset.sftp!;
-      const items =
-        state.sftpSelected.size > 0
-          ? state.sftpEntries.filter((x) => state.sftpSelected.has(x.path))
-          : [{ path, name: el.dataset.name || "", is_dir: el.dataset.dir === "true" }];
-      setDragPayload(ev, "remote", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
-    });
-    el.querySelector<HTMLButtonElement>(".sftp-more")!.onclick = (ev) => {
-      ev.stopPropagation();
-      const entryPath = el.dataset.sftp!;
-      const isDir = el.dataset.dir === "true";
-      const name = el.dataset.name || "";
-      showMenu(ev.clientX, ev.clientY, [
-        {
-          label: "Open",
-          run: () => {
-            if (isDir) void loadSftp(hostId, entryPath);
-            else void sftpOpen(hostId, entryPath, name, el);
-          },
+      toggleRemoteSelection(row.dataset.sftp!, row.dataset.selected === "true");
+      return;
+    }
+    const hid = host();
+    if (!hid) return;
+    if (row.dataset.dir === "true") void loadSftp(hid, row.dataset.sftp!);
+    else void sftpOpen(hid, row.dataset.sftp!, row.dataset.name || "", row);
+  });
+  el.addEventListener("dragstart", (ev) => {
+    const row = (ev.target as HTMLElement).closest(".sftp-row") as HTMLElement | null;
+    if (!row || !el.contains(row)) return;
+    const path = row.dataset.sftp!;
+    const items =
+      state.sftpSelected.size > 0
+        ? state.sftpEntries.filter((x) => state.sftpSelected.has(x.path))
+        : [{ path, name: row.dataset.name || "", is_dir: row.dataset.dir === "true" }];
+    setDragPayload(ev, "remote", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
+  });
+  el.addEventListener("click", (ev) => {
+    const more = (ev.target as HTMLElement).closest(".sftp-more") as HTMLButtonElement | null;
+    if (!more) return;
+    ev.stopPropagation();
+    const row = more.closest(".sftp-row") as HTMLElement | null;
+    if (!row) return;
+    const hid = host();
+    if (!hid) return;
+    const entryPath = row.dataset.sftp!;
+    const isDir = row.dataset.dir === "true";
+    const name = row.dataset.name || "";
+    showMenu(ev.clientX, ev.clientY, [
+      {
+        label: "Open",
+        run: () => {
+          if (isDir) void loadSftp(hid, entryPath);
+          else void sftpOpen(hid, entryPath, name, row);
         },
-        {
-          label: "Download",
-          hidden: isDir,
-          run: () => void sftpDownload(hostId, entryPath, name),
-        },
-        { label: "Rename", run: () => sftpRenameSheet(hostId, entryPath, name, isDir) },
-        {
-          label: "Delete",
-          danger: true,
-          run: () => sftpDeleteConfirm(hostId, entryPath, name, isDir),
-        },
-      ]);
-    };
+      },
+      {
+        label: "Download",
+        hidden: isDir,
+        run: () => void sftpDownload(hid, entryPath, name),
+      },
+      { label: "Rename", run: () => sftpRenameSheet(hid, entryPath, name, isDir) },
+      {
+        label: "Delete",
+        danger: true,
+        run: () => sftpDeleteConfirm(hid, entryPath, name, isDir),
+      },
+    ]);
   });
 }
 
@@ -4021,6 +4080,7 @@ async function loadSftp(hostId: string, path: string) {
     }
     state.sftpEntries = entries;
     renderSftpWorkspace(hostId, safePath, remoteTableHtml(entries));
+    mountRemoteVirtualList(entries);
     bindSftpRows(hostId, remotePaneEl());
     updateTransferUi();
   } catch (err) {
@@ -4277,6 +4337,7 @@ async function loadLocal(): Promise<void> {
     state.localEntries = entries;
     pane.innerHTML = `${localToolbarHtml(state.localCwd)}${localTableHtml(entries)}`;
     bindLocalToolbar();
+    mountLocalVirtualList(entries);
     bindLocalRows();
   } catch (err) {
     pane.innerHTML = `${localToolbarHtml(state.localCwd)}<div class="sftp-error" data-testid="sftp-error"><strong>Local</strong><span>${escapeHtml(String(err))}</span></div>`;
@@ -4341,27 +4402,32 @@ function bindLocalToolbar(): void {
 
 function bindLocalRows(): void {
   const pane = localPaneEl();
-  pane.querySelectorAll<HTMLElement>(".local-row").forEach((el) => {
-    const selCell = el.querySelector<HTMLElement>(".cell-sel");
-    selCell?.addEventListener("click", (ev) => {
+  const root = (pane.querySelector(".sftp-virtual-viewport") as HTMLElement | null) ?? pane;
+  if (root.dataset.boundLocal === "1") return;
+  root.dataset.boundLocal = "1";
+  root.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement;
+    const row = t.closest(".local-row") as HTMLElement | null;
+    if (!row || !root.contains(row)) return;
+    if (t.closest(".cell-sel")) {
       ev.stopPropagation();
-      toggleLocalSelection(el.dataset.path!, el.dataset.selected === "true");
-    });
-    el.onclick = (ev) => {
-      if ((ev.target as HTMLElement).closest(".cell-sel")) return;
-      if (el.dataset.dir === "true") {
-        state.localCwd = el.dataset.path!;
-        void loadLocal();
-      }
-    };
-    el.addEventListener("dragstart", (ev) => {
-      const path = el.dataset.path!;
-      const items =
-        state.localSelected.size > 0
-          ? state.localEntries.filter((x) => state.localSelected.has(x.path))
-          : [{ path, name: el.dataset.name || "", is_dir: el.dataset.dir === "true" }];
-      setDragPayload(ev, "local", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
-    });
+      toggleLocalSelection(row.dataset.path!, row.dataset.selected === "true");
+      return;
+    }
+    if (row.dataset.dir === "true") {
+      state.localCwd = row.dataset.path!;
+      void loadLocal();
+    }
+  });
+  root.addEventListener("dragstart", (ev) => {
+    const row = (ev.target as HTMLElement).closest(".local-row") as HTMLElement | null;
+    if (!row || !root.contains(row)) return;
+    const path = row.dataset.path!;
+    const items =
+      state.localSelected.size > 0
+        ? state.localEntries.filter((x) => state.localSelected.has(x.path))
+        : [{ path, name: row.dataset.name || "", is_dir: row.dataset.dir === "true" }];
+    setDragPayload(ev, "local", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
   });
 }
 
