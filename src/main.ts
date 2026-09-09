@@ -54,6 +54,7 @@ import {
   sessionCountLabel,
   shouldShowSessionCount,
 } from "./hostCard";
+import { settingsHasUpdateBadge, shouldShowFloatingUpdateToast } from "./updateNotify";
 
 const ONBOARD_KEY = "terminus.onboarded";
 
@@ -299,12 +300,37 @@ function hideUpdateToast() {
 }
 
 function showUpdateToast(html: string) {
-  const el = $("update-toast");
-  el.innerHTML = html;
-  el.classList.remove("hidden");
+  // Floating toast retired (#33). Keep helper for rare install progress fallback in sheet.
+  if (shouldShowFloatingUpdateToast("progress")) {
+    const el = $("update-toast");
+    el.innerHTML = html;
+    el.classList.remove("hidden");
+  }
 }
 
 let updateBusy = false;
+let pendingAppUpdate: Update | null = null;
+
+function renderSettingsUpdateBadge() {
+  const btn = $("btn-settings");
+  const available = settingsHasUpdateBadge(!!pendingAppUpdate);
+  btn.dataset.updateAvailable = available ? "true" : "false";
+  const badge = available
+    ? `<span data-testid="settings-update-badge" class="settings-update-badge" aria-hidden="true"></span>`
+    : "";
+  btn.innerHTML = `${icons.settings}${badge}`;
+  if (pendingAppUpdate) {
+    btn.title = `Settings — update ${pendingAppUpdate.version} available`;
+  } else {
+    btn.title = "Settings";
+  }
+  btn.setAttribute("aria-label", btn.title);
+}
+
+function clearPendingAppUpdate() {
+  pendingAppUpdate = null;
+  renderSettingsUpdateBadge();
+}
 
 async function checkForAppUpdate() {
   if (import.meta.env.VITE_E2E === "1") return;
@@ -312,25 +338,25 @@ async function checkForAppUpdate() {
     const update = await check({ timeout: 10_000 });
     if (!update) return;
     if (sessionStorage.getItem(`terminus.skip-update.${update.version}`)) return;
-    promptAppUpdate(update);
+    pendingAppUpdate = update;
+    renderSettingsUpdateBadge();
   } catch {
     /* offline, unsigned, or no endpoint */
   }
 }
 
 function promptAppUpdate(update: Update) {
-  showUpdateToast(`
-    <div class="update-copy">
-      <strong>Terminus ${escapeHtml(update.version)}</strong>
-      <span>Restart to install this update.</span>
-    </div>
-    <div class="update-actions">
-      <button type="button" class="ghost" id="update-later">Later</button>
-      <button type="button" class="primary" id="update-now">Restart</button>
+  openSheet(`
+    <h2>Update available</h2>
+    <p class="lead">Terminus <strong>${escapeHtml(update.version)}</strong> is ready. Restart to install.</p>
+    <div class="row">
+      <button type="button" class="ghost" id="update-later" data-testid="update-later">Later</button>
+      <button type="button" class="primary" id="update-now" data-testid="update-now">Restart</button>
     </div>`);
   $("update-later").onclick = () => {
     sessionStorage.setItem(`terminus.skip-update.${update.version}`, "1");
-    hideUpdateToast();
+    clearPendingAppUpdate();
+    $("modal").classList.add("hidden");
   };
   $("update-now").onclick = () => void installAppUpdate(update);
 }
@@ -339,11 +365,9 @@ async function installAppUpdate(update: Update) {
   if (updateBusy) return;
   updateBusy = true;
   try {
-    showUpdateToast(`
-      <div class="update-copy">
-        <strong>Downloading Terminus ${escapeHtml(update.version)}…</strong>
-        <span id="update-progress"></span>
-      </div>`);
+    openSheet(`
+      <h2>Downloading update</h2>
+      <p class="lead">Terminus ${escapeHtml(update.version)}… <span id="update-progress"></span></p>`);
     let downloaded = 0;
     let total = 0;
     await update.downloadAndInstall((event) => {
@@ -363,21 +387,25 @@ async function installAppUpdate(update: Update) {
         if (progress) progress.textContent = "Installing…";
       }
     });
-    // Windows NSIS exits the process during install and relaunches itself.
-    showUpdateToast(`<div class="update-copy"><strong>Restarting…</strong></div>`);
+    openSheet(`<h2>Restarting…</h2><p class="lead">Almost done.</p>`);
     await relaunch();
   } catch (err) {
     updateBusy = false;
-    showUpdateToast(`
-      <div class="update-copy">
-        <strong>Couldn't install update</strong>
-        <span>${escapeHtml(ipcErrorText(err))}</span>
-      </div>
-      <div class="update-actions">
-        <button type="button" class="ghost" id="update-dismiss">Dismiss</button>
-      </div>`);
-    $("update-dismiss").onclick = () => hideUpdateToast();
+    openSheet(`
+      <h2>Couldn't install update</h2>
+      <p class="form-error">${escapeHtml(ipcErrorText(err))}</p>
+      <div class="row"><button type="button" class="primary" id="update-dismiss">Dismiss</button></div>`);
+    $("update-dismiss").onclick = () => $("modal").classList.add("hidden");
   }
+}
+
+/** E2E / tests: mark an update as available without hitting the network. */
+function setPendingAppUpdateForTest(version: string) {
+  pendingAppUpdate = {
+    version,
+    downloadAndInstall: async () => undefined,
+  } as unknown as Update;
+  renderSettingsUpdateBadge();
 }
 
 const pendingFrames = new Set<string>();
@@ -1228,7 +1256,7 @@ function bindUi() {
   $("btn-sidebar").innerHTML = icons.sidebar;
   $("btn-new-local").innerHTML = icons.plus;
   $("btn-palette").innerHTML = icons.search;
-  $("btn-settings").innerHTML = icons.settings;
+  renderSettingsUpdateBadge();
   $("search-ico").innerHTML = icons.search;
   $("palette-ico").innerHTML = icons.search;
   $("btn-new-host").innerHTML = `${icons.plus}<span>New host</span>`;
@@ -1258,7 +1286,10 @@ function bindUi() {
   $("btn-new-host").onclick = () => editHost();
   $("btn-new-group").onclick = () => editGroup();
   $("btn-new-local").onclick = () => openLocal();
-  $("btn-settings").onclick = () => openSettings();
+  $("btn-settings").onclick = () => {
+    if (pendingAppUpdate) promptAppUpdate(pendingAppUpdate);
+    else openSettings();
+  };
   $("btn-palette").onclick = () => togglePalette();
   $("btn-sidebar").onclick = () => toggleSidebar();
   $("btn-sidebar").setAttribute("aria-expanded", "true");
@@ -4274,6 +4305,9 @@ boot().catch((err) => {
 // E2E-only bridge: opt-in via VITE_E2E=1 at build time (not every build / not DEV).
 if (import.meta.env.VITE_E2E === "1") {
   initTestBridge();
+  (window as any).__terminusUpdateTest = {
+    setPendingAppUpdate: setPendingAppUpdateForTest,
+  };
   window.addEventListener("terminus-e2e-refresh", () => {
     void refreshSide();
     void refreshSync();

@@ -43,6 +43,7 @@ interface TerminusTestBridge {
   seedSlowConnectHost(hostId?: string, ms?: number): Promise<string>;
   seedAuthFailHost(hostId?: string): Promise<string>;
   hostsRuntime(): Promise<Array<{ host_id: string; connection: string; open_count: number }>>;
+  setUpdateAvailable(version: string): Promise<void>;
 }
 
 async function refreshUi(): Promise<void> {
@@ -363,6 +364,13 @@ export function initTestBridge(): void {
 
     async hostsRuntime(): Promise<Array<{ host_id: string; connection: string; open_count: number }>> {
       return invoke("hosts_runtime");
+    },
+
+    async setUpdateAvailable(version: string): Promise<void> {
+      const api = (window as any).__terminusUpdateTest;
+      if (typeof api?.setPendingAppUpdate === "function") {
+        api.setPendingAppUpdate(version);
+      }
     },
   };
 

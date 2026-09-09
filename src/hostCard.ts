@@ -28,6 +28,17 @@ export const CONNECTION_DOT_COLORS: Record<ConnectionVisualState, string> = {
   local: "#8B5CF6",
 };
 
+/** Status column width — keeps connection dots on one vertical axis (#33). */
+export const HOST_STATUS_COLUMN_PX = 28;
+
+/** Actions column width reserved so hover buttons never shift the status column. */
+export const HOST_ACTIONS_COLUMN_PX = 48;
+
+/** CSS grid template for `.host-card`: icon | body | status | actions */
+export function hostCardGridTemplate(): string {
+  return `24px minmax(0, 1fr) ${HOST_STATUS_COLUMN_PX}px ${HOST_ACTIONS_COLUMN_PX}px`;
+}
+
 export type HostCardKind = "host" | "local";
 
 export type HostCardFlags = {

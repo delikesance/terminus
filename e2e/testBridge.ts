@@ -86,5 +86,7 @@ export function getTestBridge(page: Page) {
       page.evaluate((p) => (window as any).__terminusTest.seedLocalDir(p), path),
     transferOps: () =>
       page.evaluate(() => (window as any).__terminusTest.transferOps()),
+    setUpdateAvailable: (version: string) =>
+      page.evaluate((v) => (window as any).__terminusTest.setUpdateAvailable(v), version),
   };
 }
