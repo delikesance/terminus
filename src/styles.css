@@ -384,6 +384,22 @@ svg {
   color: var(--icon-muted);
   cursor: pointer;
   padding: 0;
+  position: relative;
+}
+.activity-bar-footer #btn-settings[data-update-available="true"] {
+  color: var(--text);
+}
+.activity-bar-footer #btn-settings .settings-update-badge,
+.activity-bar-footer #btn-settings [data-testid="settings-update-badge"] {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 0 2px var(--grouped);
+  pointer-events: none;
 }
 
 .activity-bar-footer .tb-btn:hover,
@@ -819,23 +835,50 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   vertical-align: -1px;
 }
 .item .host-key-badge svg { width: 11px; height: 11px; }
+.item.host-card {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 28px 48px;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 0;
+  gap: 0 10px;
+}
+.item.host-card .leading {
+  width: 24px;
+  height: 24px;
+}
+.item.host-card .body {
+  min-width: 0;
+}
 .item .trail,
 .item .host-status {
   color: var(--tertiary);
   flex: none;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 14px;
-  justify-content: flex-end;
+  justify-content: center;
+  position: relative;
+  width: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  box-sizing: border-box;
+}
+.item .host-status .sess-count {
+  position: absolute;
+  right: calc(100% + 2px);
+  top: 50%;
+  transform: translateY(-50%);
 }
 .item .host-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
   flex: none;
-  min-width: 44px;
-  justify-content: flex-end;
+  width: 48px;
+  min-width: 48px;
+  max-width: 48px;
+  box-sizing: border-box;
 }
 .item .trail .trail-identity {
   display: grid;
@@ -1967,61 +2010,10 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 }
 
 #update-toast {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--elevated) 92%, transparent);
-  border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(16px) saturate(140%);
-  font-size: 12.5px;
-  color: var(--text);
-  max-width: min(360px, calc(100vw - 32px));
+  /* Floating update toast retired (#33) — keep DOM node, never show. */
+  display: none !important;
 }
-#update-toast.hidden { display: none; }
-#update-toast .update-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-#update-toast .update-copy strong {
-  font-size: 13.5px;
-  font-weight: 620;
-}
-#update-toast .update-copy span { color: var(--secondary); }
-#update-toast .update-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-#update-toast button {
-  border: 0;
-  border-radius: 9px;
-  padding: 7px 12px;
-  min-height: 32px;
-  background: var(--fill);
-  color: var(--text);
-}
-#update-toast button:hover { background: var(--fill-strong); }
-#update-toast button.primary {
-  background: var(--blue);
-  color: var(--on-accent);
-}
-#update-toast button.primary:hover { background: var(--blue-press); }
-#update-toast button.ghost {
-  background: transparent;
-  color: var(--secondary);
-}
-#update-toast button.ghost:hover {
-  color: var(--text);
-  background: var(--fill);
-}
+#update-toast.hidden { display: none !important; }
 
 html[data-scheme="light"] .toggle .track::after {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
