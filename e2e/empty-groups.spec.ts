@@ -40,4 +40,26 @@ test.describe("Empty groups + host drag-drop", () => {
     });
     await expect(page.locator("#panel-hosts > [data-testid^='host-test-ungrouped-']")).toHaveCount(0);
   });
+
+  test("drag host out of group ungroups it", async ({ page }) => {
+    const bridge = getTestBridge(page);
+    await bridge.seedUngroupedHosts(1);
+    await page.locator("#btn-new-group").click();
+    await page.locator('[data-testid="group-name"]').fill("Leave me");
+    await page.locator('[data-testid="group-save"]').click();
+    const group = page.locator(".group-row").filter({ hasText: "Leave me" });
+    await expect(group).toBeVisible({ timeout: 5000 });
+    const host = page.locator('[data-testid^="host-test-ungrouped-"]').first();
+    await host.dragTo(group);
+    await expect(page.locator(".group-children [data-testid^='host-test-ungrouped-']")).toHaveCount(1, {
+      timeout: 5000,
+    });
+
+    const grouped = page.locator(".group-children [data-testid^='host-test-ungrouped-']").first();
+    await grouped.dragTo(page.locator('[data-testid="host-local"]'));
+    await expect(page.locator("#panel-hosts > [data-testid^='host-test-ungrouped-']")).toHaveCount(1, {
+      timeout: 5000,
+    });
+    await expect(page.locator(".group-children [data-testid^='host-test-ungrouped-']")).toHaveCount(0);
+  });
 });
