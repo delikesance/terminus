@@ -49,18 +49,19 @@ test.describe("Host Cards UX (#31)", () => {
     await expect(page.locator("#ctx-menu")).toContainText(/Edit|SFTP|Delete/);
   });
 
-  test("AC4: active host has left accent border", async ({ page }) => {
+  test("AC4: active host uses highlight background without left border", async ({ page }) => {
     await page.locator("#btn-new-local").click();
     const local = page.locator('[data-testid="host-local"]');
     await expect(local).toHaveClass(/active-host/);
-    const border = await local.evaluate((el) => {
+    const style = await local.evaluate((el) => {
       const s = getComputedStyle(el);
       return {
-        width: s.borderLeftWidth,
-        style: s.borderLeftStyle,
+        borderWidth: s.borderLeftWidth,
+        bg: s.backgroundColor,
       };
     });
-    expect(parseFloat(border.width)).toBeGreaterThanOrEqual(2);
-    expect(border.style).not.toBe("none");
+    expect(parseFloat(style.borderWidth)).toBeLessThan(1);
+    expect(style.bg).not.toBe("rgba(0, 0, 0, 0)");
+    expect(style.bg).not.toBe("transparent");
   });
 });

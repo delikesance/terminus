@@ -504,7 +504,39 @@ svg {
 
 .search { 
   padding: 14px 14px 10px; 
-  position: relative; 
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.sidebar-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+}
+.side-add-btn {
+  width: 32px;
+  height: 32px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--blue);
+  color: var(--on-accent, #fff);
+  display: grid;
+  place-items: center;
+  flex: none;
+  cursor: pointer;
+  padding: 0;
+}
+.side-add-btn:hover { background: var(--blue-press, var(--blue)); filter: brightness(1.05); }
+.side-add-btn.active { box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 40%, transparent); }
+.side-add-btn.hidden { display: none; }
+.side-add-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
 }
 .search svg {
   position: absolute;
@@ -529,6 +561,11 @@ svg {
 .search input:focus { background: var(--track-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 28%, transparent); }
 
 .side-panel { flex: 1; overflow: auto; padding: 2px 12px 14px; }
+#panel-hosts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .hidden { display: none !important; }
 
 .empty {
@@ -592,19 +629,44 @@ svg {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 10px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--separator, rgba(127, 127, 127, 0.25));
+  padding: 4px 10px 12px;
+  margin-bottom: 4px;
+  border-bottom: 0;
+}
+.forward-form-lead {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--tertiary);
 }
 .forward-form-fields {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+}
+.forward-form .cell.stack {
+  border: 0;
+  box-shadow: none;
+}
+.forward-form-actions {
+  justify-content: flex-end;
+  gap: 8px;
+}
+.forward-form-actions .primary {
+  background: var(--blue);
+  color: var(--on-accent, #fff);
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.forward-form-actions .primary:hover {
+  background: var(--blue-press, var(--blue));
 }
 .forward-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 .forward-item {
   align-items: center;
@@ -837,7 +899,7 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 .item .host-key-badge svg { width: 11px; height: 11px; }
 .item.host-card {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 28px 48px;
+  grid-template-columns: 24px minmax(0, 1fr) 48px 28px;
   align-items: center;
   column-gap: 10px;
   row-gap: 0;
@@ -912,13 +974,10 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 }
 .item.open { background: transparent; }
 .item.active-host {
-  background: color-mix(in srgb, var(--blue) 12%, transparent);
-  border-left: 3px solid var(--blue);
-  border-radius: 0 8px 8px 0;
-  padding-left: 7px; /* 10px - 3px border to keep content aligned */
+  background: color-mix(in srgb, var(--blue) 14%, transparent);
 }
 .item.active-host:hover {
-  background: color-mix(in srgb, var(--blue) 18%, transparent);
+  background: color-mix(in srgb, var(--blue) 20%, transparent);
 }
 .item .sess-count {
   color: var(--tertiary);
@@ -941,9 +1000,17 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   padding: 0;
   opacity: 0;
   pointer-events: none;
-  font-size: 14px;
-  line-height: 1;
   cursor: pointer;
+}
+.item .quick svg,
+.item .more svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+.item .more svg {
+  fill: currentColor;
+  stroke: none;
 }
 .item:hover .quick,
 .item:hover .more,
@@ -966,7 +1033,6 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   outline: 2px solid var(--blue);
   outline-offset: 1px;
 }
-.item .quick svg { width: 11px; height: 11px; }
 .group-label {
   padding: 16px 10px 8px;
   font-size: 11px;
@@ -1043,14 +1109,9 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 
 .group-children {
   margin-left: 22px;
-}
-
-.group-children .item {
-  margin-top: 2px;
-}
-
-.group-children .item:first-child {
-  margin-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .side-actions {

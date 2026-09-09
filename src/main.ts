@@ -43,8 +43,15 @@ import {
   applyToggleFailure,
   applyToggleSuccess,
   buildForwardRows,
+  closeCreateForm,
+  createForwardUiState,
+  formatForwardSubtitle,
+  shouldShowCreateForm,
+  shouldShowHostFooterActions,
   toggleActionFromChecked,
+  toggleCreateForm,
   validateForwardForm,
+  type ForwardUiState,
 } from "./forwardPanel";
 import {
   connectionDotClassList,
@@ -220,6 +227,7 @@ const state = {
 
 /** Activity Bar + contextual sidebar navigation (#27). */
 let navState: NavState = createNavState();
+let forwardUi: ForwardUiState = createForwardUiState();
 
 document.head.appendChild(state.customCss);
 
@@ -739,13 +747,13 @@ function renderHosts() {
           <strong class="host-title">${escapeHtml(h.name || h.hostname)}</strong>
           <small class="host-subtitle"><span class="host-user">${escapeHtml(h.username)}</span><span class="host-sep">@</span><span class="host-addr">${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}</span>${keyHtml}</small>
         </div>
+        <span class="host-actions">
+          <button type="button" class="quick" data-new="${h.id}" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
+          <button type="button" class="more" data-more="${h.id}" data-testid="host-action-more" title="More actions" aria-label="More actions" aria-haspopup="menu">${icons.more}</button>
+        </span>
         <span class="host-status">
           <span class="${dotClass}" style="background: ${dotColor};" data-testid="connection-dot" data-state="${connection}" role="status" aria-label="${escapeHtml(aria)}"></span>
           ${countHtml}
-        </span>
-        <span class="host-actions">
-          <button type="button" class="quick" data-new="${h.id}" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
-          <button type="button" class="more" data-more="${h.id}" data-testid="host-action-more" title="More actions" aria-label="More actions" aria-haspopup="menu">…</button>
         </span>
       </div>`;
   };
@@ -799,12 +807,12 @@ function renderHosts() {
         <strong class="host-title">This computer</strong>
         <small class="host-subtitle">${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small>
       </div>
+      <span class="host-actions">
+        <button type="button" class="quick" data-new-local="1" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
+      </span>
       <span class="host-status">
         <span class="${localDotClass}" style="background: ${localDotColor};" data-testid="connection-dot" data-state="local" role="status" aria-label="${escapeHtml(localAria)}"></span>
         ${localCountHtml}
-      </span>
-      <span class="host-actions">
-        <button type="button" class="quick" data-new-local="1" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
       </span>
     </div>`;
   
@@ -975,19 +983,21 @@ function renderHistory() {
 }
 
 function forwardFormHtml(): string {
-  if (!state.hosts.length) return "";
+  if (!state.hosts.length || !shouldShowCreateForm(forwardUi)) return "";
   const hostOpts = state.hosts
     .map((h) => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name || h.hostname)}</option>`)
     .join("");
   return `<form class="forward-form" data-testid="forward-form" id="forward-form" autocomplete="off">
+    <p class="forward-form-lead">Local port → remote destination via SSH host</p>
     <div class="forward-form-fields">
-      <label class="cell stack"><span>SSH host</span><select id="fwd-host" data-testid="fwd-ssh-host">${hostOpts}</select></label>
       <label class="cell stack"><span>Local port</span><input id="fwd-local-port" data-testid="fwd-local-port" type="number" min="1" max="65535" placeholder="8080" required /></label>
-      <label class="cell stack"><span>Remote host</span><input id="fwd-remote-host" data-testid="fwd-remote-host" value="127.0.0.1" required /></label>
+      <label class="cell stack"><span>Remote host</span><input id="fwd-remote-host" data-testid="fwd-remote-host" value="127.0.0.1" placeholder="127.0.0.1" required /></label>
       <label class="cell stack"><span>Remote port</span><input id="fwd-remote-port" data-testid="fwd-remote-port" type="number" min="1" max="65535" placeholder="80" required /></label>
+      <label class="cell stack"><span>SSH host</span><select id="fwd-host" data-testid="fwd-ssh-host">${hostOpts}</select></label>
     </div>
     <p class="form-error hidden" id="fwd-form-error" data-testid="fwd-form-error"></p>
-    <div class="row">
+    <div class="row forward-form-actions">
+      <button type="button" class="ghost" data-testid="fwd-form-cancel" id="fwd-form-cancel">Cancel</button>
       <button type="submit" class="primary" data-testid="fwd-form-submit">Add forward</button>
     </div>
   </form>`;
@@ -996,6 +1006,14 @@ function forwardFormHtml(): string {
 function bindForwardForm() {
   const form = document.getElementById("forward-form") as HTMLFormElement | null;
   if (!form) return;
+  const cancel = document.getElementById("fwd-form-cancel");
+  if (cancel) {
+    cancel.onclick = () => {
+      forwardUi = closeCreateForm(forwardUi);
+      renderForwards();
+      syncForwardAddBtn();
+    };
+  }
   form.onsubmit = async (ev) => {
     ev.preventDefault();
     const result = validateForwardForm({
@@ -1026,12 +1044,24 @@ function bindForwardForm() {
       deleted_at: null,
     };
     await invoke("forwards_upsert", { forward: payload });
+    forwardUi = closeCreateForm(forwardUi);
     await refreshSide();
+    syncForwardAddBtn();
   };
+}
+
+function syncForwardAddBtn() {
+  const btn = document.getElementById("btn-forward-add") as HTMLButtonElement | null;
+  if (!btn) return;
+  const show = navState.active === "forwards" && navState.sidebarOpen && state.hosts.length > 0;
+  btn.classList.toggle("hidden", !show);
+  btn.setAttribute("aria-expanded", shouldShowCreateForm(forwardUi) ? "true" : "false");
+  btn.classList.toggle("active", shouldShowCreateForm(forwardUi));
 }
 
 function renderForwards() {
   const panel = $("panel-forwards");
+  const q = $input("host-filter").value.toLowerCase().trim();
   if (!state.forwards.length && !state.hosts.length) {
     panel.innerHTML = `<div class="empty" data-testid="empty-forwards">
       ${icons.tunnel}
@@ -1042,21 +1072,35 @@ function renderForwards() {
       </div>
     </div>`;
     $("new-forward").onclick = () => editForward();
+    syncForwardAddBtn();
     return;
   }
 
-  const rows = buildForwardRows(state.forwards, state.forwardsRunning);
+  const filtered = state.forwards.filter((f) => {
+    if (!q) return true;
+    const host = state.hosts.find((h) => h.id === f.host_id);
+    const hay = `${f.name} ${f.bind_host} ${f.bind_port} ${f.dest_host} ${f.dest_port} ${host?.name ?? ""} ${host?.hostname ?? ""}`.toLowerCase();
+    return hay.includes(q);
+  });
+
+  const rows = buildForwardRows(filtered, state.forwardsRunning);
   const listHtml = rows.length
     ? rows
         .map((row) => {
           const host = state.hosts.find((h) => h.id === row.hostId);
           const hostLabel = host ? host.name || host.hostname : "missing host";
-          const dest = `${row.destHost}:${row.destPort ?? "?"}`;
+          const subtitle = formatForwardSubtitle({
+            bindHost: row.bindHost,
+            bindPort: row.bindPort,
+            destHost: row.destHost,
+            destPort: row.destPort,
+            sshLabel: hostLabel,
+          });
           return `<div class="item forward-item" data-forward="${escapeHtml(row.id)}" data-testid="forward-${escapeHtml(row.id)}">
           <span class="leading">${icons.tunnel}</span>
           <div class="body">
-            <strong>${escapeHtml(row.name)}</strong>
-            <small>${escapeHtml(row.bindHost)}:${row.bindPort} → ${escapeHtml(hostLabel)} → ${escapeHtml(dest)}</small>
+            <strong class="host-title">${escapeHtml(row.name)}</strong>
+            <small class="host-subtitle">${escapeHtml(subtitle)}</small>
           </div>
           <span class="forward-state" data-testid="forward-state-${escapeHtml(row.id)}" data-state="${row.state}">${row.state}</span>
           <label class="forward-switch" title="${row.active ? "Stop" : "Start"}">
@@ -1068,11 +1112,16 @@ function renderForwards() {
         })
         .join("")
     : `<div class="empty compact" data-testid="empty-forwards-list">
-        <span class="empty-hint">No forwards yet — use the form above.</span>
+        <span class="empty-hint">${q ? "No forwards match." : "No forwards yet — press + to create one."}</span>
       </div>`;
 
   panel.innerHTML = forwardFormHtml() + `<div class="forward-list">${listHtml}</div>`;
   bindForwardForm();
+  syncForwardAddBtn();
+  if (shouldShowCreateForm(forwardUi)) {
+    const localPort = document.getElementById("fwd-local-port") as HTMLInputElement | null;
+    localPort?.focus();
+  }
   panel.querySelectorAll<HTMLInputElement>('input[data-action="toggle"]').forEach((input) => {
     input.onchange = () => {
       const id = input.dataset.id ?? "";
@@ -1244,6 +1293,10 @@ function applyNavState() {
     sftp: "Search files...",
   };
   ($("host-filter") as HTMLInputElement).placeholder = placeholders[navState.active] ?? "Search...";
+  const showHostFooter = shouldShowHostFooterActions(navState.active);
+  $("btn-new-host").classList.toggle("hidden", !showHostFooter);
+  $("btn-new-group").classList.toggle("hidden", !showHostFooter);
+  syncForwardAddBtn();
   scheduleLayout();
 }
 
@@ -1282,7 +1335,20 @@ function bindUi() {
     };
   });
   applyNavState();
-  $("host-filter").oninput = () => renderHosts();
+  $("host-filter").oninput = () => {
+    renderHosts();
+    if (navState.active === "forwards") renderForwards();
+  };
+  $("btn-forward-add").innerHTML = icons.plus;
+  $("btn-forward-add").onclick = () => {
+    if (!state.hosts.length) {
+      editForward();
+      return;
+    }
+    forwardUi = toggleCreateForm(forwardUi);
+    renderForwards();
+    syncForwardAddBtn();
+  };
   $("btn-new-host").onclick = () => editHost();
   $("btn-new-group").onclick = () => editGroup();
   $("btn-new-local").onclick = () => openLocal();
