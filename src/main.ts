@@ -206,6 +206,8 @@ type Pane = {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   el: HTMLDivElement;
+  /** Wraps canvas + selection so overlay coords share the canvas origin. */
+  viewport: HTMLDivElement;
   banner: HTMLDivElement;
   cellW: number;
   cellH: number;
@@ -518,11 +520,19 @@ function termBgColor(): string {
   return fromCss || "#1c1c1e";
 }
 
-/** Size canvas to pane client × dpr and fill theme bg — never leave HTML 300×150 black. */
+/** Size canvas to pane content box × dpr and fill theme bg — never leave HTML 300×150 black. */
 function clearPaneSurface(pane: Pane) {
   const workspace = $("workspace");
-  const cssW = Math.max(1, pane.el.clientWidth || workspace.clientWidth || 1);
-  const cssH = Math.max(1, pane.el.clientHeight || workspace.clientHeight || 1);
+  const padX = TERMINAL_PANE_PADDING_X_PX;
+  const padY = TERMINAL_PANE_PADDING_Y_PX;
+  const cssW = Math.max(
+    1,
+    (pane.el.clientWidth || workspace.clientWidth || 1) - padX * 2,
+  );
+  const cssH = Math.max(
+    1,
+    (pane.el.clientHeight || workspace.clientHeight || 1) - padY * 2,
+  );
   const dpr = displayScale();
   const width = Math.max(1, Math.round(cssW * dpr));
   const height = Math.max(1, Math.round(cssH * dpr));
@@ -2041,14 +2051,17 @@ function encodeTermKey(ev: KeyboardEvent): string | null {
 function createPane(pending?: Pane["pending"]): Pane {
   const el = document.createElement("div");
   el.className = "pane";
+  const viewport = document.createElement("div");
+  viewport.className = "term-viewport";
   const canvas = document.createElement("canvas");
   canvas.className = "term-canvas";
   const selLayer = document.createElement("div");
   selLayer.className = "term-selection";
   selLayer.style.display = "none";
+  viewport.append(canvas, selLayer);
   const banner = document.createElement("div");
   banner.className = "pane-banner hidden";
-  el.append(canvas, selLayer, banner);
+  el.append(viewport, banner);
   $("workspace").appendChild(el);
   const ctx = canvas.getContext("2d", { alpha: false })!;
   const pane: Pane = {
@@ -2056,6 +2069,7 @@ function createPane(pending?: Pane["pending"]): Pane {
     canvas,
     ctx,
     el,
+    viewport,
     banner,
     cellW: 9,
     cellH: 23,
