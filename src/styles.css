@@ -1370,18 +1370,105 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 }
 .sftp-pane-head {
   flex: none;
-  padding: 8px 10px 0;
+  display: flex;
+  width: 100%;
+  height: 40px;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--elevated) 70%, var(--bg));
 }
-.sftp-pane-host {
+.sftp-host-select {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  flex: 1;
+}
+.sftp-host-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  min-height: 40px;
+  margin: 0;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  box-sizing: border-box;
+}
+.sftp-host-trigger:hover {
+  background: color-mix(in srgb, var(--fill) 55%, transparent);
+}
+.sftp-host-select.open .sftp-host-trigger,
+.sftp-host-trigger:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 55%, transparent);
+}
+.sftp-host-ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--secondary);
+}
+.sftp-host-ico svg { width: 15px; height: 15px; }
+.sftp-host-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sftp-host-chevron {
+  flex: none;
+  color: var(--tertiary);
+  display: grid;
+  place-items: center;
+  transition: transform 0.12s ease;
+}
+.sftp-host-chevron svg { width: 14px; height: 14px; }
+.sftp-host-select.open .sftp-host-chevron { transform: rotate(180deg); }
+.sftp-host-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--elevated, var(--bg));
+  border: 1px solid var(--line);
+  border-top: 0;
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 28%, transparent);
+  max-height: min(280px, 50vh);
+  overflow: auto;
+}
+.sftp-host-menu.hidden { display: none; }
+.sftp-host-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   border: 0;
-  background: var(--fill);
-  border-radius: 8px;
-  padding: 6px 10px;
-  outline: none;
-  font-size: 12.5px;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text);
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 12.5px;
+  text-align: left;
 }
+.sftp-host-option:hover,
+.sftp-host-option[aria-selected="true"] {
+  background: var(--fill);
+}
+.sftp-host-option[aria-selected="true"] { font-weight: 600; }
 .sftp-pane-body {
   flex: 1;
   min-height: 0;
@@ -1389,54 +1476,16 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   display: flex;
   flex-direction: column;
 }
-.sftp-side-split {
-  margin-top: 4px;
-  width: 100%;
-  cursor: pointer;
-  border-radius: 8px;
-  padding: 8px 10px;
-}
 .sftp-side {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 8px 4px;
 }
-.sftp-side-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--tertiary);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-.sftp-side-host {
-  width: 100%;
-  border: 0;
-  background: var(--fill);
-  border-radius: 8px;
-  padding: 8px 10px;
-  outline: none;
-  font-size: 13px;
-  color: var(--text);
-}
-.sftp-side-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: var(--muted-fill);
-  color: var(--secondary);
-  font-size: 12.5px;
-}
-.sftp-side-status .connection-dot {
-  width: 8px;
-  height: 8px;
-}
 .sftp-side-hint {
-  margin: 8px 4px;
+  margin: 4px 4px 0;
   color: var(--tertiary);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.4;
 }
 .sftp-side-toggle {
@@ -1447,14 +1496,23 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   justify-content: flex-start;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 0;
-  background: var(--fill);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--secondary);
   cursor: pointer;
   font-size: 12.5px;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 .sftp-side-toggle svg { width: 16px; height: 16px; flex: none; }
-.sftp-side-toggle:hover { color: var(--text); }
+.sftp-side-toggle:hover {
+  color: var(--text);
+  background: var(--fill);
+}
+.sftp-side-toggle[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--fill);
+  border-color: var(--line);
+}
 
 .sftp-view.compact-rows .sftp-row,
 .sftp-view.compact-rows .local-row {
