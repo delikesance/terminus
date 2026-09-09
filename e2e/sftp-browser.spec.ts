@@ -313,14 +313,42 @@ test.describe("C9: SFTP browser v1", () => {
     ).toBeVisible({ timeout: 10000 });
   });
 
-  test("#41: Close split returns to single pane", async ({ page }) => {
+  test("right-click opens custom context menu with Copy/Paste", async ({ page }) => {
+    await openFilesPanel(page);
+    const notes = page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" });
+    await notes.click({ button: "right" });
+    const menu = page.locator("#ctx-menu");
+    await expect(menu).toBeVisible({ timeout: 5000 });
+    await expect(menu.locator("button", { hasText: "Copy" })).toBeVisible();
+    await expect(menu.locator("button", { hasText: "Cut" })).toBeVisible();
+    await expect(menu.locator("button", { hasText: "Paste" })).toBeDisabled();
+    await expect(menu.locator("button", { hasText: "Delete" })).toHaveClass(/danger/);
+    await menu.locator("button", { hasText: "Copy" }).click();
+    await expect(menu).toHaveClass(/hidden/);
+
+    await page.locator('[data-testid="sftp-virtual-viewport"], [data-testid="sftp-table"]').first().click({
+      button: "right",
+      position: { x: 20, y: 20 },
+    });
+    await expect(page.locator("#ctx-menu")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("#ctx-menu button", { hasText: "Paste" })).toBeEnabled();
+    await page.locator("#ctx-menu button", { hasText: "Paste" }).click();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toHaveCount(1, {
+      timeout: 5000,
+    });
+  });
+
+  test("split local pane right-click has Rename/Delete", async ({ page }) => {
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-split-btn"]').click();
-    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible({ timeout: 5000 });
-    await page.locator('[data-testid="sftp-close-split-btn"]').click();
-    await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="sftp-arrows"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible({ timeout: 5000 });
+    const localRow = page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" });
+    await expect(localRow).toBeVisible({ timeout: 5000 });
+    await localRow.click({ button: "right" });
+    const menu = page.locator("#ctx-menu");
+    await expect(menu).toBeVisible({ timeout: 5000 });
+    await expect(menu.locator("button", { hasText: "Copy" })).toBeVisible();
+    await expect(menu.locator("button", { hasText: "Rename" })).toBeVisible();
+    await expect(menu.locator("button", { hasText: "Delete" })).toBeVisible();
   });
 
   test("Close split keeps remote listing without reload flash", async ({ page }) => {

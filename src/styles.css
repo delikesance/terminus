@@ -1715,10 +1715,14 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 .sftp-view .sftp-row .trail {
   pointer-events: none;
 }
-.sftp-view .sftp-row .trail .sftp-more {
+.sftp-view .sftp-row .trail .sftp-more,
+.sftp-view .local-row .trail .local-more {
   pointer-events: auto;
   position: relative;
   z-index: 1;
+}
+.sftp-view .local-row .trail {
+  pointer-events: none;
 }
 .sftp-view .sftp-row .leading {
   width: 22px;
@@ -2079,7 +2083,11 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   text-align: left;
   font-size: 13px;
 }
-#ctx-menu button:hover { background: var(--fill); }
+#ctx-menu button:hover:not(:disabled) { background: var(--fill); }
+#ctx-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 #ctx-menu button.danger { color: var(--red); }
 #ctx-menu hr {
   border: 0;
