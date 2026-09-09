@@ -3727,6 +3727,40 @@ function sftpTableHeadHtml(): string {
   </div>`;
 }
 
+const SFTP_SKELETON_WIDTHS = [68, 52, 74, 46, 61, 57, 70];
+
+function sftpListLoadingHtml(label: string, testId: string): string {
+  const rows = SFTP_SKELETON_WIDTHS.map(
+    (w, i) => `<div class="sftp-skeleton-row sftp-file-row" style="--sk-delay:${i * 60}ms;--sk-name:${w}%">
+      <span class="sk sk-check"></span>
+      <span class="sk sk-ico"></span>
+      <span class="sk sk-name"></span>
+      <span class="sk sk-size"></span>
+      <span class="sk sk-mtime"></span>
+      <span class="sk sk-action"></span>
+    </div>`,
+  ).join("");
+  return `${sftpTableHeadHtml()}
+    <div class="sftp-list-loading" data-testid="${escapeHtml(testId)}" role="status" aria-live="polite">
+      <span class="sftp-spinner" aria-hidden="true"></span>
+      <span>Loading ${escapeHtml(label)}…</span>
+    </div>
+    <div class="sftp-skeleton" aria-hidden="true">${rows}</div>`;
+}
+
+function wrapSftpContentEnter(html: string): string {
+  return `<div class="sftp-content-enter">${html}</div>`;
+}
+
+function setPaneListingLoading(pane: HTMLElement | null, loading: boolean) {
+  if (!pane) return;
+  pane.classList.toggle("is-listing-loading", loading);
+  pane.querySelectorAll<HTMLElement>('[data-testid="sftp-refresh"], [data-testid="local-refresh"]').forEach((btn) => {
+    btn.classList.toggle("is-loading", loading);
+    btn.setAttribute("aria-busy", loading ? "true" : "false");
+  });
+}
+
 function buildLocalRowHtml(e: LocalEntry): string {
   const glyph = sftpKindIcon(e.name, e.is_dir);
   const sel = state.localSelected.has(e.path);
@@ -4097,6 +4131,10 @@ async function loadSftp(hostId: string, path: string) {
     return;
   }
   renderSftpSidebar(hostId);
+  const hintRaw = path && path.trim() ? path : state.sftpPath || ".";
+  const hintLabel = sftpDisplayPath(state.sftpCwd, hintRaw);
+  renderSftpWorkspace(hostId, hintRaw, sftpListLoadingHtml(hintLabel, "sftp-loading"));
+  setPaneListingLoading(remotePaneEl(), true);
   await ensureSftpCwd(hostId);
   if (seq !== sftpLoadSeq) return;
   let safePath: string;
@@ -4110,16 +4148,14 @@ async function loadSftp(hostId: string, path: string) {
         : raw;
     safePath = resolveUnderRoot(state.sftpRoot, anchored);
   } catch (err) {
+    setPaneListingLoading(remotePaneEl(), false);
     renderSftpError(hostId, state.sftpPath, err);
     return;
   }
   state.sftpPath = safePath;
   const loadingPath = sftpDisplayPath(state.sftpCwd, safePath);
-  renderSftpWorkspace(
-    hostId,
-    safePath,
-    `<div class="empty" data-testid="sftp-loading">${icons.folder}<span>Loading ${escapeHtml(loadingPath)}…</span></div>`,
-  );
+  renderSftpWorkspace(hostId, safePath, sftpListLoadingHtml(loadingPath, "sftp-loading"));
+  setPaneListingLoading(remotePaneEl(), true);
   try {
     const entries = await invoke<SftpEntry[]>("sftp_list", {
       hostId,
@@ -4130,16 +4166,19 @@ async function loadSftp(hostId: string, path: string) {
     setSftpConn("connected");
     if (!entries.length) {
       state.sftpEntries = [];
-      renderSftpWorkspace(hostId, safePath, remoteTableHtml([]));
+      renderSftpWorkspace(hostId, safePath, wrapSftpContentEnter(remoteTableHtml([])));
+      setPaneListingLoading(remotePaneEl(), false);
       return;
     }
     state.sftpEntries = entries;
-    renderSftpWorkspace(hostId, safePath, remoteTableHtml(entries));
+    renderSftpWorkspace(hostId, safePath, wrapSftpContentEnter(remoteTableHtml(entries)));
     mountRemoteVirtualList(entries);
     bindSftpRows(hostId, remotePaneEl());
+    setPaneListingLoading(remotePaneEl(), false);
     updateTransferUi();
   } catch (err) {
     if (seq !== sftpLoadSeq) return;
+    setPaneListingLoading(remotePaneEl(), false);
     renderSftpError(hostId, safePath, err);
   }
 }
@@ -4385,18 +4424,21 @@ async function loadLocal(): Promise<void> {
     updateTransferUi();
     return;
   }
-  pane.innerHTML = `${localToolbarHtml(state.localCwd)}<div class="local-loading" data-testid="local-loading">Loading ${escapeHtml(state.localCwd)}…</div>`;
+  pane.innerHTML = `${localToolbarHtml(state.localCwd)}${sftpListLoadingHtml(state.localCwd, "local-loading")}`;
   bindLocalToolbar();
+  setPaneListingLoading(pane, true);
   try {
     const entries = await invoke<LocalEntry[]>("local_list", { path: state.localCwd });
     state.localEntries = entries;
-    pane.innerHTML = `${localToolbarHtml(state.localCwd)}${localTableHtml(entries)}`;
+    pane.innerHTML = `${localToolbarHtml(state.localCwd)}${wrapSftpContentEnter(localTableHtml(entries))}`;
     bindLocalToolbar();
     mountLocalVirtualList(entries);
     bindLocalRows();
+    setPaneListingLoading(pane, false);
   } catch (err) {
     pane.innerHTML = `${localToolbarHtml(state.localCwd)}<div class="sftp-error" data-testid="sftp-error"><strong>Local</strong><span>${escapeHtml(String(err))}</span></div>`;
     bindLocalToolbar();
+    setPaneListingLoading(pane, false);
   }
   updateTransferUi();
 }
