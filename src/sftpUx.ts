@@ -33,12 +33,9 @@ export function selectionCount(local: number, remote: number): number {
 }
 
 export function shouldShowBatchBar(opts: {
-  split: boolean;
-  canTransfer: boolean;
   localSelected: number;
   remoteSelected: number;
 }): boolean {
-  if (!opts.split || !opts.canTransfer) return false;
   return opts.localSelected + opts.remoteSelected > 0;
 }
 

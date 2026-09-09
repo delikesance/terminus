@@ -368,6 +368,23 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(batch).toHaveClass(/hidden/);
   });
 
+  test("#43: batch bar also appears in single pane on selection", async ({ page }) => {
+    await openFilesPanel(page);
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
+    await page
+      .locator('[data-testid="sftp-row"]')
+      .filter({ hasText: "notes.txt" })
+      .locator('[data-testid="sftp-select"]')
+      .click();
+    const batch = page.locator('[data-testid="sftp-batch-bar"]');
+    await expect(batch).not.toHaveClass(/hidden/);
+    await expect(page.locator('[data-testid="sftp-batch-count"]')).toContainText("1 selected");
+    await expect(page.locator('[data-testid="sftp-batch-download"]')).toBeDisabled();
+    await expect(page.locator('[data-testid="sftp-batch-upload"]')).toBeDisabled();
+    await page.locator('[data-testid="sftp-batch-clear"]').click();
+    await expect(batch).toHaveClass(/hidden/);
+  });
+
   test("#43 AC6: remote and local toolbars share Up, Refresh, New folder", async ({ page }) => {
     await openFilesPanel(page);
     await expect(page.locator('[data-testid="sftp-mkdir"]')).toBeVisible({ timeout: 5000 });
