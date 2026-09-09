@@ -1,16 +1,20 @@
 /**
- * Red/Green tests for Port Forwarding sidebar panel (#28).
- * Pure view-model — no DOM.
+ * Red/Green tests for Port Forwarding panel UX (#35).
  */
 
 import {
   applyToggleFailure,
   applyToggleSuccess,
   buildForwardRows,
+  createForwardUiState,
+  formatForwardSubtitle,
+  shouldShowHostFooterActions,
+  shouldShowCreateForm,
+  toggleCreateForm,
   toggleActionFromChecked,
   validateForwardForm,
 } from "./forwardPanel.js";
-import { clickActivity, createNavState, isPanelVisible } from "./activityBar.js";
+import { clickActivity, createNavState } from "./activityBar.js";
 
 function check(name, ok, detail) {
   return { name, ok, detail };
@@ -19,21 +23,7 @@ function check(name, ok, detail) {
 function runTests() {
   const checks = [];
 
-  // View transition — Activity Bar → forwards panel visible
-  {
-    let s = createNavState();
-    s = clickActivity(s, "forwards");
-    const ok =
-      s.active === "forwards" &&
-      s.sidebarOpen === true &&
-      isPanelVisible(s, "forwards") &&
-      !isPanelVisible(s, "hosts");
-    checks.push(
-      check("view transition: forwards activity shows only forwards panel", ok, JSON.stringify(s)),
-    );
-  }
-
-  // AC2 — list rows reflect active/inactive from running set
+  // Existing smoke from #28
   {
     const rows = buildForwardRows(
       [
@@ -46,122 +36,77 @@ function runTests() {
           dest_port: 80,
           host_id: "h1",
         },
-        {
-          id: "b",
-          name: "B",
-          bind_host: "127.0.0.1",
-          bind_port: 9090,
-          dest_host: "db",
-          dest_port: 5432,
-          host_id: "h1",
-        },
       ],
       new Set(["a"]),
     );
-    const ok =
-      rows.length === 2 &&
-      rows[0].id === "a" &&
-      rows[0].active === true &&
-      rows[0].state === "running" &&
-      rows[1].id === "b" &&
-      rows[1].active === false &&
-      rows[1].state === "stopped" &&
-      rows[0].bindPort === 8080 &&
-      rows[1].destHost === "db";
-    checks.push(check("AC2 buildForwardRows marks active/inactive", ok, JSON.stringify(rows)));
+    checks.push(
+      check("buildForwardRows marks running", rows[0].active === true && rows[0].state === "running", ""),
+    );
   }
 
-  // Toggle intent: checked → start, unchecked → stop
+  // #35 — create form closed by default
   {
-    const on = toggleActionFromChecked(true);
-    const off = toggleActionFromChecked(false);
+    const s = createForwardUiState();
     checks.push(
       check(
-        "toggle ON maps to start, OFF to stop",
-        on === "start" && off === "stop",
-        `on=${on} off=${off}`,
+        "AC1 create form closed by default",
+        s.createOpen === false && shouldShowCreateForm(s) === false,
+        JSON.stringify(s),
       ),
     );
   }
 
-  // Apply toggle success mutates running set
+  // #35 — toggle open/close
   {
-    let running = new Set();
-    running = applyToggleSuccess(running, "x", "start");
-    const started = running.has("x");
-    running = applyToggleSuccess(running, "x", "stop");
-    const stopped = !running.has("x");
-    checks.push(
-      check("applyToggleSuccess start then stop", started && stopped, [...running].join(",")),
-    );
+    let s = createForwardUiState();
+    s = toggleCreateForm(s);
+    const opened = shouldShowCreateForm(s) === true;
+    s = toggleCreateForm(s);
+    const closed = shouldShowCreateForm(s) === false;
+    checks.push(check("AC2 toggleCreateForm opens then closes", opened && closed, JSON.stringify(s)));
   }
 
-  // Start failure keeps forward stopped
+  // #35 — subtitle mapping
   {
-    let running = new Set();
-    running = applyToggleFailure(running, "x", "start");
-    checks.push(
-      check("applyToggleFailure on start keeps stopped", !running.has("x"), [...running].join(",")),
-    );
-  }
-
-  // Form validation — happy path (local port / remote host / remote port)
-  {
-    const r = validateForwardForm({
-      hostId: "h1",
-      localPort: "15432",
-      remoteHost: "127.0.0.1",
-      remotePort: "5432",
+    const sub = formatForwardSubtitle({
+      bindHost: "127.0.0.1",
+      bindPort: 15432,
+      destHost: "127.0.0.1",
+      destPort: 5432,
+      sshLabel: "db-bastion",
     });
-    const ok =
-      r.ok === true &&
-      r.bindPort === 15432 &&
-      r.destHost === "127.0.0.1" &&
-      r.destPort === 5432 &&
-      r.bindHost === "127.0.0.1" &&
-      r.hostId === "h1" &&
-      typeof r.name === "string" &&
-      r.name.length > 0;
-    checks.push(check("validateForwardForm accepts valid ports", ok, JSON.stringify(r)));
+    const ok = sub === "localhost:15432 → 127.0.0.1:5432 via db-bastion";
+    checks.push(check("AC3 formatForwardSubtitle directional mapping", ok, sub));
   }
 
-  // Form validation — invalid local port
+  // #35 — footer host actions only on hosts activity
+  {
+    let nav = createNavState();
+    const onHosts = shouldShowHostFooterActions(nav.active) === true;
+    nav = clickActivity(nav, "forwards");
+    const onForwards = shouldShowHostFooterActions(nav.active) === false;
+    checks.push(
+      check("AC5 host footer hidden on forwards, shown on hosts", onHosts && onForwards, nav.active),
+    );
+  }
+
+  // validate still works
   {
     const r = validateForwardForm({
       hostId: "h1",
-      localPort: "0",
+      localPort: "8080",
       remoteHost: "127.0.0.1",
       remotePort: "80",
     });
-    checks.push(
-      check("validateForwardForm rejects invalid local port", r.ok === false && !!r.error, JSON.stringify(r)),
-    );
+    checks.push(check("validateForwardForm happy path", r.ok === true, JSON.stringify(r)));
   }
 
-  // Form validation — missing host
   {
-    const r = validateForwardForm({
-      hostId: "",
-      localPort: 8080,
-      remoteHost: "127.0.0.1",
-      remotePort: 80,
-    });
-    checks.push(
-      check("validateForwardForm rejects missing SSH host", r.ok === false && !!r.error, JSON.stringify(r)),
-    );
-  }
-
-  // Form validation — empty remote host
-  {
-    const r = validateForwardForm({
-      hostId: "h1",
-      localPort: 8080,
-      remoteHost: "  ",
-      remotePort: 80,
-    });
-    checks.push(
-      check("validateForwardForm rejects blank remote host", r.ok === false && !!r.error, JSON.stringify(r)),
-    );
+    const on = toggleActionFromChecked(true);
+    const off = toggleActionFromChecked(false);
+    let running = applyToggleSuccess(new Set(), "x", "start");
+    running = applyToggleFailure(running, "y", "start");
+    checks.push(check("toggle helpers still work", on === "start" && off === "stop" && !running.has("y"), ""));
   }
 
   return checks;

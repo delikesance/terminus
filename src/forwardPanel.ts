@@ -120,3 +120,49 @@ export function validateForwardForm(input: ForwardFormInput): ForwardFormValid |
 
   return { ok: true, hostId, bindHost, bindPort, destHost, destPort, name };
 }
+
+/** UI state for the forwards create form (#35). */
+export type ForwardUiState = {
+  createOpen: boolean;
+};
+
+export function createForwardUiState(initial?: Partial<ForwardUiState>): ForwardUiState {
+  return { createOpen: initial?.createOpen ?? false };
+}
+
+export function toggleCreateForm(state: ForwardUiState): ForwardUiState {
+  return { ...state, createOpen: !state.createOpen };
+}
+
+export function openCreateForm(state: ForwardUiState): ForwardUiState {
+  return { ...state, createOpen: true };
+}
+
+export function closeCreateForm(state: ForwardUiState): ForwardUiState {
+  return { ...state, createOpen: false };
+}
+
+export function shouldShowCreateForm(state: ForwardUiState): boolean {
+  return state.createOpen === true;
+}
+
+/** Directional subtitle: localhost:port → remote:port via ssh */
+export function formatForwardSubtitle(opts: {
+  bindHost: string;
+  bindPort: number;
+  destHost: string;
+  destPort: number | null;
+  sshLabel: string;
+}): string {
+  const local =
+    opts.bindHost === "127.0.0.1" || opts.bindHost === "localhost"
+      ? `localhost:${opts.bindPort}`
+      : `${opts.bindHost}:${opts.bindPort}`;
+  const remote = `${opts.destHost}:${opts.destPort ?? "?"}`;
+  return `${local} → ${remote} via ${opts.sshLabel}`;
+}
+
+/** Host-only footer CTAs (New host / New group). */
+export function shouldShowHostFooterActions(activity: string): boolean {
+  return activity === "hosts";
+}

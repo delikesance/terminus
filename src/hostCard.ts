@@ -34,9 +34,9 @@ export const HOST_STATUS_COLUMN_PX = 28;
 /** Actions column width reserved so hover buttons never shift the status column. */
 export const HOST_ACTIONS_COLUMN_PX = 48;
 
-/** CSS grid template for `.host-card`: icon | body | status | actions */
+/** CSS grid template for `.host-card`: icon | body | actions | status (dot far right) */
 export function hostCardGridTemplate(): string {
-  return `24px minmax(0, 1fr) ${HOST_STATUS_COLUMN_PX}px ${HOST_ACTIONS_COLUMN_PX}px`;
+  return `24px minmax(0, 1fr) ${HOST_ACTIONS_COLUMN_PX}px ${HOST_STATUS_COLUMN_PX}px`;
 }
 
 export type HostCardKind = "host" | "local";

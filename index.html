@@ -43,10 +43,13 @@
           </div>
         </nav>
         <aside id="sidebar" data-testid="sidebar">
-          <label class="search">
-            <span id="search-ico"></span>
-            <input id="host-filter" placeholder="Search hosts..." spellcheck="false" />
-          </label>
+          <div class="sidebar-toolbar" data-testid="sidebar-toolbar">
+            <label class="search">
+              <span id="search-ico"></span>
+              <input id="host-filter" placeholder="Search hosts..." spellcheck="false" />
+            </label>
+            <button type="button" id="btn-forward-add" class="side-add-btn hidden" data-testid="forward-add-btn" title="New forward" aria-label="New forward" aria-expanded="false"></button>
+          </div>
           <section id="panel-hosts" class="side-panel"></section>
           <section id="panel-snippets" class="side-panel hidden"></section>
           <section id="panel-history" class="side-panel hidden"></section>
