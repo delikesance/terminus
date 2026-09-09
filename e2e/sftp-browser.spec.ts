@@ -323,6 +323,27 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible({ timeout: 5000 });
   });
 
+  test("Close split keeps remote listing without reload flash", async ({ page }) => {
+    await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.md" })).toBeVisible({
+      timeout: 5000,
+    });
+    await page.locator('[data-testid="sftp-split-btn"]').click();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-path"]')).toHaveValue(
+      "/home/lab/docs",
+    );
+    await page.locator('[data-testid="sftp-close-split-btn"]').click();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-loading"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.md" })).toBeVisible({
+      timeout: 5000,
+    });
+  });
+
   test("#43 AC3: host-filter filters active remote pane listing", async ({ page }) => {
     await openFilesPanel(page);
     await expect(page.locator("#host-filter")).toHaveAttribute("placeholder", /Filter pane A/i);
