@@ -282,6 +282,7 @@ export function initTestBridge(): void {
             }
           : null,
         webglOk,
+        activeRenderer: (window as any).__terminusActiveRenderer ?? null,
       };
     },
 
