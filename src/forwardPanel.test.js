@@ -1,13 +1,16 @@
 /**
- * Red/Green tests for Port Forwarding panel UX (#35).
+ * Port Forwarding panel UX tests (#35 + #37 compact form).
  */
 
 import {
   applyToggleFailure,
   applyToggleSuccess,
   buildForwardRows,
+  compactForwardTabOrder,
   createForwardUiState,
   formatForwardSubtitle,
+  forwardAddBtnMode,
+  shouldCloseCreateFormOnEscape,
   shouldShowHostFooterActions,
   shouldShowCreateForm,
   toggleCreateForm,
@@ -87,6 +90,44 @@ function runTests() {
     const onForwards = shouldShowHostFooterActions(nav.active) === false;
     checks.push(
       check("AC5 host footer hidden on forwards, shown on hosts", onHosts && onForwards, nav.active),
+    );
+  }
+
+  // #37 — compact tab order (mapping row then SSH + actions)
+  {
+    const order = compactForwardTabOrder();
+    const expected = [
+      "fwd-local-port",
+      "fwd-remote-host",
+      "fwd-remote-port",
+      "fwd-host",
+      "fwd-form-cancel",
+      "fwd-form-submit",
+    ];
+    const ok = JSON.stringify(order) === JSON.stringify(expected);
+    checks.push(check("AC5 compactForwardTabOrder sequential", ok, JSON.stringify(order)));
+  }
+
+  // #37 — Escape closes only when form open
+  {
+    const open = createForwardUiState({ createOpen: true });
+    const closed = createForwardUiState({ createOpen: false });
+    const a = shouldCloseCreateFormOnEscape("Escape", open.createOpen) === true;
+    const b = shouldCloseCreateFormOnEscape("Escape", closed.createOpen) === false;
+    const c = shouldCloseCreateFormOnEscape("Enter", open.createOpen) === false;
+    checks.push(check("AC4 shouldCloseCreateFormOnEscape", a && b && c, ""));
+  }
+
+  // #37 — add button mode flips when form open
+  {
+    const add = forwardAddBtnMode(false);
+    const close = forwardAddBtnMode(true);
+    checks.push(
+      check(
+        "AC3 forwardAddBtnMode add vs close",
+        add === "add" && close === "close",
+        `${add}/${close}`,
+      ),
     );
   }
 
