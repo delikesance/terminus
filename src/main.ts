@@ -46,6 +46,8 @@ import {
   closeCreateForm,
   createForwardUiState,
   formatForwardSubtitle,
+  forwardAddBtnMode,
+  shouldCloseCreateFormOnEscape,
   shouldShowCreateForm,
   shouldShowHostFooterActions,
   toggleActionFromChecked,
@@ -987,18 +989,21 @@ function forwardFormHtml(): string {
   const hostOpts = state.hosts
     .map((h) => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name || h.hostname)}</option>`)
     .join("");
-  return `<form class="forward-form" data-testid="forward-form" id="forward-form" autocomplete="off">
-    <p class="forward-form-lead">Local port → remote destination via SSH host</p>
-    <div class="forward-form-fields">
-      <label class="cell stack"><span>Local port</span><input id="fwd-local-port" data-testid="fwd-local-port" type="number" min="1" max="65535" placeholder="8080" required /></label>
-      <label class="cell stack"><span>Remote host</span><input id="fwd-remote-host" data-testid="fwd-remote-host" value="127.0.0.1" placeholder="127.0.0.1" required /></label>
-      <label class="cell stack"><span>Remote port</span><input id="fwd-remote-port" data-testid="fwd-remote-port" type="number" min="1" max="65535" placeholder="80" required /></label>
-      <label class="cell stack"><span>SSH host</span><select id="fwd-host" data-testid="fwd-ssh-host">${hostOpts}</select></label>
+  return `<form class="forward-form forward-form-card" data-testid="forward-form" id="forward-form" autocomplete="off">
+    <div class="fwd-route-row" data-testid="fwd-route-row">
+      <input id="fwd-local-port" data-testid="fwd-local-port" class="fwd-inline-input fwd-flex-1" type="number" min="1" max="65535" placeholder="Local port" aria-label="Local port" required />
+      <span class="fwd-route-arrow" aria-hidden="true">→</span>
+      <input id="fwd-remote-host" data-testid="fwd-remote-host" class="fwd-inline-input fwd-flex-2" value="127.0.0.1" placeholder="127.0.0.1" aria-label="Remote host" required />
+      <span class="fwd-route-sep" aria-hidden="true">:</span>
+      <input id="fwd-remote-port" data-testid="fwd-remote-port" class="fwd-inline-input fwd-flex-1" type="number" min="1" max="65535" placeholder="Port" aria-label="Remote port" required />
     </div>
     <p class="form-error hidden" id="fwd-form-error" data-testid="fwd-form-error"></p>
-    <div class="row forward-form-actions">
-      <button type="button" class="ghost" data-testid="fwd-form-cancel" id="fwd-form-cancel">Cancel</button>
-      <button type="submit" class="primary" data-testid="fwd-form-submit">Add forward</button>
+    <div class="fwd-actions-row" data-testid="fwd-actions-row">
+      <select id="fwd-host" data-testid="fwd-ssh-host" class="fwd-inline-select fwd-flex-1" aria-label="SSH host">${hostOpts}</select>
+      <div class="forward-form-actions">
+        <button type="button" class="ghost" data-testid="fwd-form-cancel" id="fwd-form-cancel">Cancel</button>
+        <button type="submit" class="primary" data-testid="fwd-form-submit">Add forward</button>
+      </div>
     </div>
   </form>`;
 }
@@ -1054,9 +1059,15 @@ function syncForwardAddBtn() {
   const btn = document.getElementById("btn-forward-add") as HTMLButtonElement | null;
   if (!btn) return;
   const show = navState.active === "forwards" && navState.sidebarOpen && state.hosts.length > 0;
+  const open = shouldShowCreateForm(forwardUi);
+  const mode = forwardAddBtnMode(open);
   btn.classList.toggle("hidden", !show);
-  btn.setAttribute("aria-expanded", shouldShowCreateForm(forwardUi) ? "true" : "false");
-  btn.classList.toggle("active", shouldShowCreateForm(forwardUi));
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.setAttribute("data-mode", mode);
+  btn.setAttribute("aria-label", mode === "close" ? "Close create forward" : "Add forward");
+  btn.title = mode === "close" ? "Close" : "Add forward";
+  btn.classList.toggle("active", open);
+  btn.innerHTML = mode === "close" ? icons.close : icons.plus;
 }
 
 function renderForwards() {
@@ -1339,7 +1350,6 @@ function bindUi() {
     renderHosts();
     if (navState.active === "forwards") renderForwards();
   };
-  $("btn-forward-add").innerHTML = icons.plus;
   $("btn-forward-add").onclick = () => {
     if (!state.hosts.length) {
       editForward();
@@ -1349,6 +1359,7 @@ function bindUi() {
     renderForwards();
     syncForwardAddBtn();
   };
+  syncForwardAddBtn();
   $("btn-new-host").onclick = () => editHost();
   $("btn-new-group").onclick = () => editGroup();
   $("btn-new-local").onclick = () => openLocal();
@@ -1423,6 +1434,13 @@ function fitWorkspace() {
 }
 
 function onGlobalKey(ev: KeyboardEvent) {
+  if (shouldCloseCreateFormOnEscape(ev.key, forwardUi.createOpen)) {
+    ev.preventDefault();
+    forwardUi = closeCreateForm(forwardUi);
+    renderForwards();
+    syncForwardAddBtn();
+    return;
+  }
   if (ev.key === "Escape") {
     closeOverlays();
     hideMenu();
