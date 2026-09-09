@@ -49,6 +49,10 @@ export const icons = {
   more: svg(`<circle cx="6.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="17.5" cy="12" r="1.2"/>`),
   eye: svg(`<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/>`),
   eyeOff: svg(`<path d="M3 3l18 18"/><path d="M10.6 10.6A2.5 2.5 0 0 0 12 14.5a2.5 2.5 0 0 0 1.4-.4M6.7 6.7C4.6 8.1 3 10 3 10s3.5 6 10 6c1.2 0 2.3-.3 3.3-.8M14 9.3c.6-.8 1-1.7 1-2.3 0-2.2-1.8-4-4-4-.6 0-1.5.4-2.3 1"/>`),
+  columns: svg(
+    `<rect x="4" y="5" width="7" height="14" rx="1.5"/><rect x="13" y="5" width="7" height="14" rx="1.5"/>`,
+  ),
+  chevronDown: svg(`<path d="m6 9 6 6 6-6"/>`),
   home: svg(
     `<path d="M4.5 11 12 4.5 19.5 11"/><path d="M6.5 10.5V19h11v-8.5"/>`,
   ),

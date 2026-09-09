@@ -41,8 +41,7 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator('[data-testid="sftp-side"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-side-host"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="sftp-toggle-hidden"]')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('[data-testid="sftp-side-status"]')).toHaveAttribute("data-state", "connected");
-    await expect(page.locator('[data-testid="sftp-side-status"]')).toContainText("Connected");
+    await expect(page.locator('[data-testid="sftp-side-status"]')).toHaveCount(0);
   });
 
   test("P0b: listing lives in #workspace at ≥60% of stage width", async ({ page }) => {
@@ -237,7 +236,7 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator('[data-testid="sftp-pane-a-host"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toBeVisible({ timeout: 5000 });
     // Default companion for remote A is This computer
-    await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toHaveValue("__local__");
+    await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toHaveAttribute("data-value", "__local__");
     await expect(page.locator('[data-testid="local-toolbar"]')).toBeVisible({ timeout: 5000 });
   });
 
