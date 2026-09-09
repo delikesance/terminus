@@ -21,6 +21,7 @@ src/identityKind.js
 src/sftpPath.js
 src/activityBar.js
 src/forwardPanel.js
+src/hostCard.js
 test-results/
 
 # Hermes plan artifacts
