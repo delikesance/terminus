@@ -46,6 +46,14 @@ import {
   toggleActionFromChecked,
   validateForwardForm,
 } from "./forwardPanel";
+import {
+  connectionDotClassList,
+  connectionDotColor,
+  hostCardAriaStatus,
+  hostCardClassList,
+  sessionCountLabel,
+  shouldShowSessionCount,
+} from "./hostCard";
 
 const ONBOARD_KEY = "terminus.onboarded";
 
@@ -686,28 +694,30 @@ function renderHosts() {
       hostPanes(h.id).filter((p) => p.session && !p.exited).length,
     );
     const isActive = hostPanes(h.id).some((p) => p.id === state.activePane);
-    
-    const connectionDot = (conn: string): string => {
-      const colors: Record<string, string> = {
-        local: "var(--blue)",
-        connected: "var(--green)",
-        disconnected: "var(--tertiary)",
-        connecting: "var(--yellow)",
-        error: "var(--red)",
-      };
-      const color = colors[conn] ?? colors.disconnected;
-      return `<span class="connection-dot" style="background: ${color}; box-shadow: 0 0 0 3px color-mix(in srgb, ${color} 22%, transparent);" data-testid="connection-dot" data-state="${conn}"></span>`;
-    };
-    
     const userAtHost = `${h.username}@${h.hostname}${h.port !== 22 ? `:${h.port}` : ""}`;
-    return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}">
+    const classes = hostCardClassList({ openCount, active: isActive, kind: "host" });
+    const dotClass = connectionDotClassList(connection);
+    const dotColor = connectionDotColor(connection);
+    const aria = hostCardAriaStatus(connection);
+    const countHtml = shouldShowSessionCount(openCount)
+      ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count-pill" title="${openCount} sessions">${sessionCountLabel(openCount)}</span>`
+      : "";
+    const keyHtml = h.identity_id
+      ? `<span class="host-key-badge" data-testid="host-identity-icon" title="SSH identity">${icons.key}</span>`
+      : "";
+    return `<div class="${classes}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}" tabindex="0">
         ${hostLeading(h)}
-        <div class="body"><strong>${escapeHtml(h.name || h.hostname)}</strong><small>${escapeHtml(userAtHost)}</small></div>
-        <span class="trail">
-          ${connectionDot(connection)}
-          ${openCount > 1 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count-pill" title="${openCount} sessions">×${openCount}</span>` : ""}
-          <button type="button" class="quick" data-new="${h.id}" title="New session">${icons.plus}</button>
-          ${h.identity_id ? `<span class="trail-identity" data-testid="host-identity-icon" title="Identity">${icons.key}</span>` : ""}
+        <div class="body">
+          <strong class="host-title">${escapeHtml(h.name || h.hostname)}</strong>
+          <small class="host-subtitle"><span class="host-user">${escapeHtml(h.username)}</span><span class="host-sep">@</span><span class="host-addr">${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}</span>${keyHtml}</small>
+        </div>
+        <span class="host-status">
+          <span class="${dotClass}" style="background: ${dotColor};" data-testid="connection-dot" data-state="${connection}" role="status" aria-label="${escapeHtml(aria)}"></span>
+          ${countHtml}
+        </span>
+        <span class="host-actions">
+          <button type="button" class="quick" data-new="${h.id}" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
+          <button type="button" class="more" data-more="${h.id}" data-testid="host-action-more" title="More actions" aria-label="More actions" aria-haspopup="menu">…</button>
         </span>
       </div>`;
   };
@@ -747,14 +757,26 @@ function renderHosts() {
   };
   
   // Build the panel HTML
-  const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);" data-testid="connection-dot" data-state="local"></span>`;
-  let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="host-local">
+  const localActive = active?.session?.kind === "local" || active?.pending?.kind === "local";
+  const localClasses = hostCardClassList({ openCount: localOpen, active: !!localActive, kind: "local" });
+  const localDotClass = connectionDotClassList("local");
+  const localDotColor = connectionDotColor("local");
+  const localAria = hostCardAriaStatus("local");
+  const localCountHtml = shouldShowSessionCount(localOpen)
+    ? `<span class="sess-count" data-testid="open-count-pill" title="${localOpen} sessions">${sessionCountLabel(localOpen)}</span>`
+    : "";
+  let panelHtml = `<div class="${localClasses}" data-local="1" data-testid="host-local" tabindex="0">
       ${localLeading()}
-      <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
-      <span class="trail">
-        ${localConnectionDot}
-        ${localOpen > 1 ? `<span class="sess-count" data-testid="open-count-pill" title="${localOpen} sessions">×${localOpen}</span>` : ""}
-        <button type="button" class="quick" data-new-local="1" title="New session">${icons.plus}</button>
+      <div class="body">
+        <strong class="host-title">This computer</strong>
+        <small class="host-subtitle">${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small>
+      </div>
+      <span class="host-status">
+        <span class="${localDotClass}" style="background: ${localDotColor};" data-testid="connection-dot" data-state="local" role="status" aria-label="${escapeHtml(localAria)}"></span>
+        ${localCountHtml}
+      </span>
+      <span class="host-actions">
+        <button type="button" class="quick" data-new-local="1" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
       </span>
     </div>`;
   
@@ -843,6 +865,22 @@ function renderHosts() {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       void openSsh(btn.dataset.new!);
+    };
+  });
+
+  $("panel-hosts").querySelectorAll<HTMLButtonElement>("[data-more]").forEach((btn) => {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const host = state.hosts.find((h) => h.id === btn.dataset.more);
+      if (!host) return;
+      const rect = btn.getBoundingClientRect();
+      showMenu(rect.left, rect.bottom + 4, [
+        { label: "Connect", run: () => void openSsh(host.id) },
+        { label: "Focus session", run: () => focusHost(host.id), hidden: !hostPanes(host.id).length },
+        { label: "SFTP", run: () => openSftpFor(host.id) },
+        { label: "Edit", run: () => editHost(host) },
+        { danger: true, label: "Delete", run: () => void deleteHost(host) },
+      ]);
     };
   });
 }
