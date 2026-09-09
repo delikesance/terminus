@@ -29,6 +29,7 @@ src/perfLoad.js
 src/perfTiming.js
 src/perf.js
 src/sftpVirtualList.js
+src/motion.js
 test-results/
 
 # Perf / load reports (#45)
