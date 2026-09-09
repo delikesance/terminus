@@ -325,10 +325,10 @@ test.describe("C9: SFTP browser v1", () => {
     await openFilesPanel(page);
     await expect(page.locator("#host-filter")).toHaveAttribute("placeholder", /Filter pane A/i);
     await page.locator("#host-filter").fill("notes");
-    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(1, { timeout: 3000 });
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
     await page.locator("#host-filter").fill("");
-    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(3);
+    await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(3, { timeout: 3000 });
   });
 
   test("#43 AC4: hidden files toggle shows and hides dotfiles", async ({ page }) => {
@@ -383,5 +383,22 @@ test.describe("C9: SFTP browser v1", () => {
       return parseFloat(getComputedStyle(el).minHeight);
     });
     expect(minH).toBeLessThanOrEqual(30);
+  });
+
+  test("#49 soft-restore: leave Hosts and return keeps split local pane", async ({ page }) => {
+    await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-split-btn"]').click();
+    await expect(page.locator('[data-testid="local-table"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible();
+
+    await page.locator('#activity-bar button[data-activity="hosts"]').click();
+    await expect(page.locator(".sftp-view.active")).toHaveCount(0);
+
+    await page.locator('#activity-bar button[data-activity="sftp"]').click();
+    await expect(page.locator("#workspace .sftp-view.active")).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-table"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').first()).toBeVisible();
   });
 });

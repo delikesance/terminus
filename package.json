@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux && npm run test:group-softdelete && npm run test:known-hosts && npm run test:identity-kind && npm run test:sftp-path && npm run test:activity-bar && npm run test:forward-panel && npm run test:host-card && npm run test:polish-finish && npm run test:sftp-layout && npm run test:sftp-ux && npm run test:perf-load",
+    "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux && npm run test:group-softdelete && npm run test:known-hosts && npm run test:identity-kind && npm run test:sftp-path && npm run test:activity-bar && npm run test:forward-panel && npm run test:host-card && npm run test:polish-finish && npm run test:sftp-layout && npm run test:sftp-ux && npm run test:perf-load && npm run test:perf-timing",
     "test:search-ux": "npm run compile:test-groupexpand && node src/groupExpand.test.js",
     "test:group-softdelete": "npm run compile:test-groupsoftdelete && node src/groupSoftDelete.test.js",
     "test:known-hosts": "npm run compile:test-knownhosts && node src/knownHostsParse.test.js",
@@ -37,6 +37,8 @@
     "test:sftp-ux": "npm run compile:test-sftpux && node src/sftpUx.test.js",
     "compile:test-perfload": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/perfLoad.ts src/sftpUx.ts",
     "test:perf-load": "npm run compile:test-perfload && node src/perfLoad.test.js",
+    "compile:test-perftiming": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/perfTiming.ts src/perf.ts",
+    "test:perf-timing": "npm run compile:test-perftiming && node src/perfTiming.test.js",
     "test:e2e:perf": "playwright test e2e/perf-load.spec.ts"
   },
   "dependencies": {

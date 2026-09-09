@@ -26,6 +26,8 @@ src/updateNotify.js
 src/sftpLayout.js
 src/sftpUx.js
 src/perfLoad.js
+src/perfTiming.js
+src/perf.js
 test-results/
 
 # Perf / load reports (#45)

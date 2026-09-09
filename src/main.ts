@@ -42,6 +42,8 @@ import {
   sftpSearchPlaceholder,
   type SftpListFilter,
 } from "./sftpUx";
+import { pickRenderer } from "./perf";
+import { createTrailingDebounce, FRAME_MIN_MS, SFTP_FILTER_DEBOUNCE_MS } from "./perfTiming";
 import { parseKnownHosts } from "./knownHostsParse";
 import {
   inferIdentityKind,
@@ -255,6 +257,9 @@ let navState: NavState = createNavState();
 let forwardUi: ForwardUiState = createForwardUiState();
 /** SFTP single/split browser (#41). */
 let sftpBrowser: SftpBrowserState = createSftpBrowserState();
+const sftpFilterDebounce = createTrailingDebounce(SFTP_FILTER_DEBOUNCE_MS, () => {
+  rerenderSftpListings();
+});
 
 document.head.appendChild(state.customCss);
 
@@ -284,8 +289,10 @@ async function boot() {
   state.keybindings = keybindings;
   state.localOsId = localOsId || "linux";
   if (state.appearance) {
-    if (state.appearance.renderer === "webgl" || state.appearance.renderer === "canvas") {
-      state.appearance.renderer = "auto";
+    // Resolve auto/webgl → concrete renderer; honor explicit canvas (#52).
+    state.appearance.renderer = pickRenderer(state.appearance.renderer || "auto");
+    if (import.meta.env.VITE_E2E === "1") {
+      (window as any).__terminusActiveRenderer = state.appearance.renderer;
     }
     if (
       !localStorage.getItem("terminus-ux-v2") &&
@@ -293,12 +300,10 @@ async function boot() {
     ) {
       state.appearance.theme_id = "graphite";
       localStorage.setItem("terminus-ux-v2", "1");
-      void invoke("appearance_set", { appearance: state.appearance });
     }
     state.appearance.font_family = resolveMonoFont();
     state.appearance.letter_spacing = 0;
     state.appearance.line_height = 1.0;
-    state.appearance.renderer = "canvas";
     void invoke("appearance_set", { appearance: state.appearance });
   }
   applyAppearance();
@@ -446,17 +451,36 @@ function setPendingAppUpdateForTest(version: string) {
 const pendingFrames = new Set<string>();
 const forcedFrames = new Set<string>();
 let frameTick = 0;
+let frameDeferTimer = 0;
+let lastFlushAt = 0;
 let layoutTick = 0;
 
 function scheduleFrame(sessionId: string, force = false) {
   pendingFrames.add(sessionId);
   if (force) forcedFrames.add(sessionId);
-  if (frameTick) return;
-  frameTick = requestAnimationFrame(flushFrames);
+  if (force) {
+    if (frameDeferTimer) {
+      clearTimeout(frameDeferTimer);
+      frameDeferTimer = 0;
+    }
+    if (!frameTick) frameTick = requestAnimationFrame(flushFrames);
+    return;
+  }
+  if (frameTick || frameDeferTimer) return;
+  const wait = FRAME_MIN_MS - (performance.now() - lastFlushAt);
+  if (wait <= 0) {
+    frameTick = requestAnimationFrame(flushFrames);
+  } else {
+    frameDeferTimer = window.setTimeout(() => {
+      frameDeferTimer = 0;
+      if (!frameTick) frameTick = requestAnimationFrame(flushFrames);
+    }, wait);
+  }
 }
 
 async function flushFrames() {
   frameTick = 0;
+  lastFlushAt = performance.now();
   const ids = [...pendingFrames];
   pendingFrames.clear();
   const forced = new Set(forcedFrames);
@@ -531,6 +555,7 @@ async function paintFrame(sessionId: string, force = false) {
     clearPaneSurface(pane);
     return;
   }
+  // Copy into ImageData then putImageData (sync) — avoids createImageBitmap overhead (#54).
   const copy = new Uint8ClampedArray(pixels.byteLength);
   copy.set(pixels);
   const image = new ImageData(copy, width, height);
@@ -542,21 +567,9 @@ async function paintFrame(sessionId: string, force = false) {
     pane.canvas.height = height;
   }
   pane.paintGen += 1;
-  const gen = pane.paintGen;
-  try {
-    const bitmap = await createImageBitmap(image);
-    if (gen !== pane.paintGen) {
-      bitmap.close();
-      return;
-    }
-    pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    pane.ctx.imageSmoothingEnabled = false;
-    pane.ctx.drawImage(bitmap, 0, 0);
-    bitmap.close();
-  } catch {
-    if (gen !== pane.paintGen) return;
-    pane.ctx.putImageData(image, 0, 0);
-  }
+  pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
+  pane.ctx.imageSmoothingEnabled = false;
+  pane.ctx.putImageData(image, 0, 0);
   if (cellChanged) scheduleLayout();
 }
 
@@ -1378,7 +1391,7 @@ function bindUi() {
   $("host-filter").oninput = () => {
     renderHosts();
     if (navState.active === "forwards") renderForwards();
-    if (navState.active === "sftp") rerenderSftpListings();
+    if (navState.active === "sftp") sftpFilterDebounce.schedule();
   };
   $("btn-forward-add").onclick = () => {
     if (!state.hosts.length) {
@@ -3177,7 +3190,7 @@ async function openSettings() {
   $("a-save").onclick = async () => {
     appearance.theme_id =
       $("a-theme").querySelector<HTMLButtonElement>(".swatch.on")?.dataset.theme ?? appearance.theme_id;
-    appearance.renderer = "auto";
+    appearance.renderer = pickRenderer(appearance.renderer || "auto");
     appearance.font_family = ($("a-font") as HTMLInputElement).value;
     appearance.font_size = Number(($("a-size") as HTMLInputElement).value);
     appearance.line_height = Number(($("a-lh") as HTMLInputElement).value);
@@ -3437,10 +3450,23 @@ function paneChrome(slot: SftpPaneSlot, endpoint: SftpEndpointId): string {
 }
 
 /** Build single or split shell from sftpBrowser state. */
+function sftpShellMatchesBrowser(view: HTMLElement): boolean {
+  if (view.dataset.layoutMode !== sftpBrowser.mode) return false;
+  if (!view.querySelector('[data-testid="sftp-pane-a"]')) return false;
+  const a = view.querySelector<HTMLElement>('[data-testid="sftp-pane-a"]');
+  if (!a || a.dataset.endpoint !== sftpBrowser.paneA) return false;
+  if (sftpBrowser.mode === "split") {
+    const b = view.querySelector<HTMLElement>('[data-testid="sftp-pane-b"]');
+    const want = sftpBrowser.paneB ?? SFTP_LOCAL_ID;
+    if (!b || b.dataset.endpoint !== want) return false;
+  }
+  return true;
+}
+
 function ensureSftpShell(force = false): HTMLElement {
   const view = ensureSftpView();
   const mode = sftpBrowser.mode;
-  if (!force && view.dataset.layoutMode === mode && view.querySelector('[data-testid="sftp-pane-a"]')) {
+  if (!force && sftpShellMatchesBrowser(view)) {
     syncPaneEndpoints();
     return view;
   }
@@ -3548,6 +3574,7 @@ function enterSftpMode() {
 
 function exitSftpMode() {
   if (!state.sftpMode && !$("workspace").classList.contains("sftp-mode")) return;
+  sftpFilterDebounce.cancel();
   state.sftpMode = false;
   $("workspace").classList.remove("sftp-mode");
   ensureSftpView().classList.remove("active");
@@ -4707,20 +4734,58 @@ async function handleDrop(
 }
 
 document.querySelector('[data-activity="sftp"]')?.addEventListener("click", () => {
+  void reopenSftpBrowser();
+});
+
+/** Re-enter Files: soft-restore shell when layout unchanged; reload only empty panes (#49). */
+async function reopenSftpBrowser(): Promise<void> {
   const activeHost = activePane()?.session?.host_id ?? activePane()?.pending?.hostId;
-  const hostId = state.sftpHostId ?? activeHost ?? state.hosts[0]?.id;
-  if (hostId) {
-    if (sftpBrowser.mode === "single") sftpBrowser = openSingle(sftpBrowser, hostId);
-    ensureSftpShell(true);
-    void loadSftp(hostId, state.sftpPath || ".");
-  } else {
+  const hostId = state.sftpHostId ?? activeHost ?? state.hosts[0]?.id ?? null;
+
+  if (!hostId) {
     sftpBrowser = openSingle(sftpBrowser, SFTP_LOCAL_ID);
     ensureSftpShell(true);
     enterSftpMode();
     renderSftpSidebar(null);
-    void initLocalPane();
+    await initLocalPane();
+    return;
   }
-});
+
+  if (sftpBrowser.mode === "single") {
+    sftpBrowser = openSingle(sftpBrowser, hostId);
+  } else if (
+    sftpBrowser.paneA !== hostId &&
+    sftpBrowser.paneB !== hostId &&
+    !isLocalEndpoint(sftpBrowser.paneA)
+  ) {
+    sftpBrowser = setPaneEndpoint(sftpBrowser, "a", hostId);
+  }
+
+  const view = ensureSftpView();
+  const soft = sftpShellMatchesBrowser(view);
+  ensureSftpShell(!soft);
+  enterSftpMode();
+  renderSftpSidebar(hostId);
+
+  const remoteReady = Boolean(
+    remotePaneEl()?.querySelector(
+      '[data-testid="sftp-table"], [data-testid="sftp-row"], [data-testid="sftp-empty"], [data-testid="sftp-error"]',
+    ),
+  );
+  const localReady = Boolean(
+    localPaneEl()?.querySelector(
+      '[data-testid="local-table"], [data-testid="local-row"], [data-testid="local-empty"]',
+    ),
+  );
+  const needsLocal =
+    isLocalEndpoint(sftpBrowser.paneA) ||
+    (sftpBrowser.paneB != null && isLocalEndpoint(sftpBrowser.paneB));
+
+  const loads: Promise<void>[] = [];
+  if (!remoteReady || !soft) loads.push(loadSftp(hostId, state.sftpPath || "."));
+  if (needsLocal && (!localReady || !soft)) loads.push(initLocalPane());
+  if (loads.length) await Promise.all(loads);
+}
 
 boot().catch((err) => {
   console.error(err);
