@@ -955,6 +955,22 @@ export function installE2eMock(): void {
           db.sftpLastOpen = null;
           return null;
         }
+        case "test_sftp_bulk": {
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const count = Math.max(0, Math.min(5000, Number(args.count ?? 500)));
+          const root = ensureSftpRoot(db, hostId);
+          const user = db.hosts.find((h) => h.id === hostId)?.username || "lab";
+          const home = root.children.get("home");
+          const userDir = home?.children.get(user);
+          if (!userDir) throw JSON.stringify({ kind: "SftpNotFound", message: "bulk: no home" });
+          for (let i = 0; i < count; i++) {
+            const name = `bulk-${String(i).padStart(4, "0")}.dat`;
+            if (!userDir.children.has(name)) {
+              userDir.children.set(name, makeFile(name, `bulk-${i}`));
+            }
+          }
+          return { count, path: `/home/${user}` };
+        }
         case "test_require_tofu": {
           const hostId = String(args.hostId ?? args.host_id ?? "");
           if (hostId) db.tofuRequired.add(hostId);

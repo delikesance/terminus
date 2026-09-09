@@ -28,6 +28,18 @@ jobs:
         run: nix develop --command npm run test:search-ux
       - name: Prove behavioral asserts (group-softdelete)
         run: nix develop --command npm run test:group-softdelete
+      - name: Prove behavioral asserts (sftp-ux)
+        run: nix develop --command npm run test:sftp-ux
+      - name: Prove CPU perf-load harness
+        run: nix develop --command npm run test:perf-load
+      - name: Upload perf report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report-cpu
+          path: artifacts/perf-report.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   e2e-playwright:
     runs-on: ubuntu-latest
@@ -55,6 +67,14 @@ jobs:
         run: nix develop --command npm run build
       - name: Run Playwright E2E tests
         run: nix develop --command npm run test:e2e
+      - name: Upload perf e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report-e2e
+          path: artifacts/perf-e2e-*.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4

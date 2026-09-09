@@ -30,6 +30,24 @@ interface TerminusTestBridge {
   seedLocalDir(path?: string): Promise<string>;
   /** C9b: poll transfer op counters (uploads = local→remote, downloads = remote→local). */
   transferOps(): Promise<{ uploads: number; downloads: number }>;
+  /** #45: seed N files into the SFTP home for listing load tests. */
+  seedSftpBulk(hostId: string, count: number): Promise<{ count: number; path: string }>;
+  /** #45: DOM/heap/webgl snapshot for crash-load assertions. */
+  perfSnapshot(): Promise<{
+    at: number;
+    panes: number;
+    canvases: number;
+    heap: { usedMb: number; totalMb: number; limitMb: number } | null;
+    webglOk: boolean;
+  }>;
+  /** #45: stress canvas 2D paint (CPU+GPU upload path). */
+  stressCanvases(opts: {
+    iterations: number;
+    width: number;
+    height: number;
+  }): Promise<{ paints: number; ms: number; canvases: number }>;
+  /** #45: sample rAF cadence for ~durationMs. */
+  measureFps(durationMs: number): Promise<{ frames: number; fps: number; ms: number }>;
   seedTofuHost(hostId?: string): Promise<string>;
   seedForwardHost(hostId?: string): Promise<string>;
   seedForward(opts: {
@@ -231,6 +249,111 @@ export function initTestBridge(): void {
 
     async transferOps(): Promise<{ uploads: number; downloads: number }> {
       return invoke("test_transfer_ops");
+    },
+
+    async seedSftpBulk(hostId: string, count: number): Promise<{ count: number; path: string }> {
+      return invoke("test_sftp_bulk", { hostId, count });
+    },
+
+    async perfSnapshot() {
+      const mem = (performance as any).memory as
+        | { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number }
+        | undefined;
+      const mb = (b: number) => Math.round((b / (1024 * 1024)) * 10) / 10;
+      let webglOk = false;
+      try {
+        const c = document.createElement("canvas");
+        webglOk = !!(
+          c.getContext("webgl2", { failIfMajorPerformanceCaveat: true }) ||
+          c.getContext("webgl", { failIfMajorPerformanceCaveat: true })
+        );
+      } catch {
+        webglOk = false;
+      }
+      return {
+        at: performance.now(),
+        panes: document.querySelectorAll(".pane").length,
+        canvases: document.querySelectorAll("canvas.term-canvas").length,
+        heap: mem
+          ? {
+              usedMb: mb(mem.usedJSHeapSize),
+              totalMb: mb(mem.totalJSHeapSize),
+              limitMb: mb(mem.jsHeapSizeLimit),
+            }
+          : null,
+        webglOk,
+      };
+    },
+
+    async stressCanvases(opts: {
+      iterations: number;
+      width: number;
+      height: number;
+    }): Promise<{ paints: number; ms: number; canvases: number }> {
+      const canvases = [...document.querySelectorAll("canvas.term-canvas")] as HTMLCanvasElement[];
+      const w = Math.max(8, Math.min(320, opts.width | 0));
+      const h = Math.max(8, Math.min(180, opts.height | 0));
+      const iterations = Math.max(1, Math.min(200, opts.iterations | 0));
+      const t0 = performance.now();
+      let paints = 0;
+      for (let i = 0; i < iterations; i++) {
+        for (const canvas of canvases) {
+          const ctx = canvas.getContext("2d", { alpha: false });
+          if (!ctx) continue;
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+          }
+          const image = ctx.createImageData(w, h);
+          const data = image.data;
+          const base = (i * 37) & 255;
+          for (let p = 0; p < data.length; p += 16) {
+            data[p] = base;
+            data[p + 1] = (p >> 2) & 255;
+            data[p + 2] = 90;
+            data[p + 3] = 255;
+            data[p + 4] = base;
+            data[p + 5] = ((p >> 2) + 40) & 255;
+            data[p + 6] = 110;
+            data[p + 7] = 255;
+            data[p + 8] = base;
+            data[p + 9] = ((p >> 2) + 80) & 255;
+            data[p + 10] = 130;
+            data[p + 11] = 255;
+            data[p + 12] = base;
+            data[p + 13] = ((p >> 2) + 120) & 255;
+            data[p + 14] = 150;
+            data[p + 15] = 255;
+          }
+          try {
+            const bitmap = await createImageBitmap(image);
+            ctx.drawImage(bitmap, 0, 0);
+            bitmap.close();
+          } catch {
+            ctx.putImageData(image, 0, 0);
+          }
+          paints += 1;
+        }
+        await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      }
+      return { paints, ms: performance.now() - t0, canvases: canvases.length };
+    },
+
+    async measureFps(durationMs: number): Promise<{ frames: number; fps: number; ms: number }> {
+      const budget = Math.max(200, Math.min(5000, durationMs));
+      return new Promise((resolve) => {
+        let frames = 0;
+        const t0 = performance.now();
+        const tick = (now: number) => {
+          frames += 1;
+          if (now - t0 < budget) requestAnimationFrame(tick);
+          else {
+            const ms = now - t0;
+            resolve({ frames, ms, fps: ms > 0 ? (frames / ms) * 1000 : 0 });
+          }
+        };
+        requestAnimationFrame(tick);
+      });
     },
 
     async seedTofuHost(hostId = `tofu-host-${Date.now()}`): Promise<string> {

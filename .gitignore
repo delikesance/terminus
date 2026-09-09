@@ -25,7 +25,12 @@ src/hostCard.js
 src/updateNotify.js
 src/sftpLayout.js
 src/sftpUx.js
+src/perfLoad.js
 test-results/
+
+# Perf / load reports (#45)
+/artifacts/
+
 
 # Hermes plan artifacts
 /.hermes
