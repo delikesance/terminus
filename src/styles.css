@@ -1351,6 +1351,51 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 .sftp-view.active {
   display: flex;
 }
+.sftp-single {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.sftp-single > .sftp-pane {
+  flex: 1;
+  min-width: 0;
+}
+.sftp-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.sftp-pane-head {
+  flex: none;
+  padding: 8px 10px 0;
+}
+.sftp-pane-host {
+  width: 100%;
+  border: 0;
+  background: var(--fill);
+  border-radius: 8px;
+  padding: 6px 10px;
+  outline: none;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.sftp-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+.sftp-side-split {
+  margin-top: 4px;
+  width: 100%;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
 .sftp-side {
   display: flex;
   flex-direction: column;
@@ -1468,6 +1513,14 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   min-height: 36px;
   height: auto;
   padding: 8px 10px;
+}
+.sftp-view .sftp-row .trail {
+  pointer-events: none;
+}
+.sftp-view .sftp-row .trail .sftp-more {
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
 }
 .sftp-view .sftp-row .leading {
   width: 22px;
