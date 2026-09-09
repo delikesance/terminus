@@ -14,6 +14,14 @@ import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
 import { joinLocalPath, parentLocalPath, fileNameOfPath } from "./localPath";
 import {
+  MOTION_FAST_MS,
+  beginOverlayClose,
+  finishOverlayClose,
+  motionDurationMs,
+  prepareOverlayOpen,
+  prefersReducedMotion,
+} from "./motion";
+import {
   resolveUnderRoot,
   normalizeSftpPath,
   parentSftpPath,
@@ -412,7 +420,7 @@ function promptAppUpdate(update: Update) {
   $("update-later").onclick = () => {
     sessionStorage.setItem(`terminus.skip-update.${update.version}`, "1");
     clearPendingAppUpdate();
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
   };
   $("update-now").onclick = () => void installAppUpdate(update);
 }
@@ -451,7 +459,7 @@ async function installAppUpdate(update: Update) {
       <h2>Couldn't install update</h2>
       <p class="form-error">${escapeHtml(ipcErrorText(err))}</p>
       <div class="row"><button type="button" class="primary" id="update-dismiss">Dismiss</button></div>`);
-    $("update-dismiss").onclick = () => $("modal").classList.add("hidden");
+    $("update-dismiss").onclick = () => hideModalOverlay();
   }
 }
 
@@ -1240,7 +1248,7 @@ async function startForward(id: string) {
       `<h2>Forward failed</h2><p class="form-error">${escapeHtml(ipcErrorText(err))}</p><div class="row"><button class="primary" id="fwd-err-ok">Close</button></div>`,
     );
     $("fwd-err-ok").onclick = () => {
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       void refreshSide();
     };
   }
@@ -1261,7 +1269,7 @@ function editForward(existing?: PortForward) {
     openSheet(
       `<h2>No hosts</h2><p class="lead">Add an SSH host before creating a port forward.</p><div class="row"><button class="primary" id="fwd-nohost-ok">Close</button></div>`,
     );
-    $("fwd-nohost-ok").onclick = () => $("modal").classList.add("hidden");
+    $("fwd-nohost-ok").onclick = () => hideModalOverlay();
     return;
   }
   const fwd = existing ?? {
@@ -1331,13 +1339,13 @@ function editForward(existing?: PortForward) {
       deleted_at: null,
     };
     await invoke("forwards_upsert", { forward: payload });
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     await refreshSide();
   };
   if (existing) {
     $("f-del").onclick = async () => {
       await invoke("forwards_delete", { id: existing.id });
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       await refreshSide();
     };
   }
@@ -1465,8 +1473,11 @@ function bindUi() {
     },
     { passive: false },
   );
-  window.addEventListener("click", () => hideMenu());
-  window.addEventListener("blur", () => hideMenu());
+  window.addEventListener("click", (ev) => {
+    if ((ev.target as HTMLElement | null)?.closest?.("#ctx-menu")) return;
+    hideMenu();
+  });
+  window.addEventListener("blur", () => hideMenu(true));
   installContextMenuGuard();
   new ResizeObserver(() => scheduleLayout()).observe($("workspace"));
   try {
@@ -1501,8 +1512,8 @@ function bindUi() {
 function closeOverlays() {
   if (cancelTofuIfOpen()) return;
   hideModalSheet();
-  $("palette").classList.add("hidden");
-  hideMenu();
+  finishOverlayClose($("palette"));
+  hideMenu(true);
 }
 
 function toggleSidebar(force?: boolean) {
@@ -1765,12 +1776,57 @@ function modalSheetEl(): HTMLElement {
   ) as HTMLElement;
 }
 
+function revealOverlay(el: HTMLElement): void {
+  // Instant open under E2E so Playwright hit-targets stay layout-stable.
+  const reduced = prefersReducedMotion() || import.meta.env.VITE_E2E === "1";
+  prepareOverlayOpen(el, reduced);
+  if (reduced) return;
+  void el.offsetWidth;
+  requestAnimationFrame(() => {
+    el.classList.remove("motion-prep");
+    el.classList.add("motion-open");
+  });
+}
+
+function concealOverlay(el: HTMLElement, after?: () => void): void {
+  const reduced = prefersReducedMotion() || import.meta.env.VITE_E2E === "1";
+  const mode = beginOverlayClose(el, reduced);
+  if (mode === "instant") {
+    after?.();
+    return;
+  }
+  const ms = motionDurationMs(MOTION_FAST_MS, false);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    el.removeEventListener("transitionend", onEnd);
+    finishOverlayClose(el);
+    after?.();
+  };
+  const onEnd = (ev: TransitionEvent) => {
+    if (ev.target !== el) return;
+    finish();
+  };
+  el.addEventListener("transitionend", onEnd);
+  window.setTimeout(finish, ms + 50);
+}
+
 function hideModalSheet() {
   const sheet = modalSheetEl();
   sheet.id = "modal-sheet";
   sheet.innerHTML = "";
-  $("modal").classList.add("hidden");
+  concealOverlay($("modal"));
 }
+
+function showModalOverlay(): void {
+  revealOverlay($("modal"));
+}
+
+function hideModalOverlay(): void {
+  concealOverlay($("modal"));
+}
+
 
 function dismissTofuSheet() {
   if (tofuSession) {
@@ -1843,7 +1899,7 @@ async function showTofuSheet(
       <button type="button" class="ghost" id="tofu-cancel" data-testid="tofu-cancel">Cancel</button>
       <button type="button" class="${mismatch ? "danger" : "primary"}" id="tofu-primary" data-testid="tofu-primary" data-label="${escapeHtml(primaryLabel)}">${escapeHtml(primaryLabel)}</button>
     </div>`;
-  $("modal").classList.remove("hidden");
+  showModalOverlay();
 
   return new Promise((resolve) => {
     let decided = false;
@@ -1943,7 +1999,7 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false): Promis
         const detail = ipcErrorText(err);
         failPane(pane, `Couldn't reach ${host.name || host.hostname}`, detail);
         openSheet(`<h2>SSH failed</h2><p class="form-error">Host key was saved, but the server is still untrusted. ${escapeHtml(detail)}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
-        $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
+        $("ssh-fail-ok").onclick = () => hideModalOverlay();
         return false;
       }
       const userAtHost = `${host.username}@${hk.host}:${hk.port}`;
@@ -1970,13 +2026,13 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false): Promis
         dismissTofuSheet();
         failPane(pane, `Couldn't trust host key`, ipcErrorText(trustErr));
         openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(ipcErrorText(trustErr))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
-        $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
+        $("ssh-fail-ok").onclick = () => hideModalOverlay();
       }
       return Boolean(pane.session);
     }
     failPane(pane, `Couldn't reach ${host?.name || host?.hostname || "host"}`, ipcErrorText(err));
     openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(ipcErrorText(err))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
-    $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
+    $("ssh-fail-ok").onclick = () => hideModalOverlay();
     return false;
   } finally {
     await refreshHostsRuntime();
@@ -2677,13 +2733,14 @@ function showMenu(x: number, y: number, items: MenuItem[]) {
       const run = item.run;
       btn.onclick = (ev) => {
         ev.stopPropagation();
-        hideMenu();
+        hideMenu(true);
         run();
       };
     }
     menu.appendChild(btn);
   }
-  menu.classList.remove("hidden");
+  revealOverlay(menu);
+  menu.onclick = (ev) => ev.stopPropagation();
   const pad = 8;
   const left = Math.min(x, window.innerWidth - menu.offsetWidth - pad);
   const top = Math.min(y, window.innerHeight - menu.offsetHeight - pad);
@@ -2691,9 +2748,17 @@ function showMenu(x: number, y: number, items: MenuItem[]) {
   menu.style.top = `${Math.max(pad, top)}px`;
 }
 
-function hideMenu() {
-  $("ctx-menu").classList.add("hidden");
-  $("ctx-menu").innerHTML = "";
+function hideMenu(immediate = false) {
+  const menu = $("ctx-menu");
+  const clear = () => {
+    menu.innerHTML = "";
+  };
+  if (immediate || prefersReducedMotion()) {
+    finishOverlayClose(menu);
+    clear();
+    return;
+  }
+  concealOverlay(menu, clear);
 }
 
 /** Always block the Tauri/browser native context menu; scoped handlers show `#ctx-menu`. */
@@ -2777,12 +2842,14 @@ function sendText(text: string, target?: Pane) {
 
 function togglePalette() {
   const el = $("palette");
-  el.classList.toggle("hidden");
-  if (!el.classList.contains("hidden")) {
+  if (el.classList.contains("hidden") || el.classList.contains("motion-out")) {
     $input("palette-input").value = "";
     renderPalette("");
+    revealOverlay(el);
     $input("palette-input").focus();
+    return;
   }
+  concealOverlay(el);
 }
 
 function renderPalette(query: string) {
@@ -2824,7 +2891,7 @@ function renderPalette(query: string) {
   $("palette-results").querySelectorAll<HTMLElement>("li").forEach((li) => {
     li.onclick = () => {
       items[Number(li.dataset.i)]?.run();
-      $("palette").classList.add("hidden");
+      finishOverlayClose($("palette"));
     };
   });
 }
@@ -2832,7 +2899,7 @@ function renderPalette(query: string) {
 $input("palette-input").addEventListener("input", () => renderPalette($input("palette-input").value));
 $input("palette-input").addEventListener("keydown", (ev: Event) => {
   const key = (ev as KeyboardEvent).key;
-  if (key === "Escape") $("palette").classList.add("hidden");
+  if (key === "Escape") concealOverlay($("palette"));
   if (key === "Enter") {
     const first = $("palette-results").querySelector("li") as HTMLElement | null;
     first?.click();
@@ -2975,14 +3042,14 @@ async function editHost(existing?: Host) {
       }
     }
     await invoke("hosts_upsert", { host });
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     await refreshSide();
   };
   const del = document.getElementById("f-del");
   if (del) {
     del.onclick = async () => {
       await invoke("hosts_delete", { id: host.id });
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       await refreshSide();
     };
   }
@@ -3008,7 +3075,7 @@ function editSnippet() {
         updated_at: new Date().toISOString(),
       },
     });
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     await refreshSide();
   };
 }
@@ -3064,14 +3131,14 @@ function editGroup(existing?: Group) {
       state.expandedGroups.add(group.id);
       localStorage.setItem("terminus-expanded-groups", JSON.stringify([...state.expandedGroups]));
     }
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     await refreshSide();
   };
 
   const del = document.getElementById("g-del");
   if (del) {
     del.onclick = () => {
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       void deleteGroupConfirm(group);
     };
   }
@@ -3086,7 +3153,7 @@ async function deleteGroupConfirm(group: Group) {
       <button type="button" id="g-del-cancel">Cancel</button>
       <button type="button" class="danger" id="g-del-ok" data-testid="group-delete-confirm">Delete</button>
     </div>`);
-  $("g-del-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("g-del-cancel").onclick = () => hideModalOverlay();
   $("g-del-ok").onclick = async () => {
     const affectedGroupIds = computeAffectedGroups(group.id, state.groups);
     const now = new Date().toISOString();
@@ -3104,7 +3171,7 @@ async function deleteGroupConfirm(group: Group) {
     }
     for (const id of affectedGroupIds) state.expandedGroups.delete(id);
     localStorage.setItem("terminus-expanded-groups", JSON.stringify([...state.expandedGroups]));
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     await refreshSide();
   };
 }
@@ -3600,7 +3667,7 @@ async function openSettings() {
     }
     applyAppearance();
     await refreshSync();
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
   };
   $("sync-now").onclick = async () => {
     try {
@@ -3618,7 +3685,7 @@ function openSheet(html: string, sheetId = "modal-sheet") {
   const sheet = modalSheetEl();
   sheet.id = sheetId;
   sheet.innerHTML = `<button type="button" class="sheet-close" id="sheet-close" title="Close">${icons.close}</button>${html}`;
-  $("modal").classList.remove("hidden");
+  showModalOverlay();
   $("sheet-close").onclick = () => {
     clearVaultReveal();
     hideModalSheet();
@@ -3648,7 +3715,7 @@ function maybeShowOnboarding() {
   const finish = (start: boolean) => {
     markOnboarded();
     localStorage.removeItem("terminus.e2e.showOnboard");
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     if (start) void editHost();
   };
   $("onboard-skip").onclick = () => finish(false);
@@ -3656,7 +3723,7 @@ function maybeShowOnboarding() {
   $("sheet-close").onclick = () => {
     markOnboarded();
     localStorage.removeItem("terminus.e2e.showOnboard");
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
   };
 }
 
@@ -3682,7 +3749,7 @@ async function importKnownHosts() {
   } catch (err) {
     openSheet(`<h2>Import failed</h2><p class="lead">${escapeHtml(String(err))}</p>
       <div class="row"><button type="button" class="primary" id="import-ok">OK</button></div>`);
-    $("import-ok").onclick = () => $("modal").classList.add("hidden");
+    $("import-ok").onclick = () => hideModalOverlay();
     return;
   }
 
@@ -3726,7 +3793,7 @@ async function importKnownHosts() {
       <div class="cell"><span>Skipped / errors</span><strong>${totalErrors}</strong></div>
     </div>
     <div class="row"><button type="button" class="primary" id="import-ok" data-testid="import-ok">OK</button></div>`);
-  $("import-ok").onclick = () => $("modal").classList.add("hidden");
+  $("import-ok").onclick = () => hideModalOverlay();
 }
 
 function resetSftpCwd() {
@@ -5089,10 +5156,10 @@ function sftpMkdirSheet(hostId: string, dirPath: string) {
       <button type="button" id="sftp-mkdir-cancel">Cancel</button>
       <button type="button" class="primary" id="sftp-mkdir-ok" data-testid="sftp-mkdir-ok">Create</button>
     </div>`);
-  $("sftp-mkdir-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("sftp-mkdir-cancel").onclick = () => hideModalOverlay();
   $("sftp-mkdir-ok").onclick = async () => {
     const name = ($input("sftp-mkdir-input") as HTMLInputElement).value.trim();
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     if (!name || name.includes("/") || name === "." || name === "..") return;
     try {
       const target = dirPath === "/" || dirPath === "." ? name : `${dirPath.replace(/\/+$/, "")}/${name}`;
@@ -5117,7 +5184,7 @@ function sftpRenameSheet(hostId: string, path: string, name: string, _isDir: boo
       <button type="button" id="sftp-rename-cancel">Cancel</button>
       <button type="button" class="primary" id="sftp-rename-ok" data-testid="sftp-rename-ok">Rename</button>
     </div>`);
-  $("sftp-rename-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("sftp-rename-cancel").onclick = () => hideModalOverlay();
   $("sftp-rename-ok").onclick = async () => {
     const nextName = ($input("sftp-rename-input") as HTMLInputElement).value.trim();
     if (!nextName || nextName.includes("/") || nextName === "." || nextName === "..") {
@@ -5126,7 +5193,7 @@ function sftpRenameSheet(hostId: string, path: string, name: string, _isDir: boo
         message: "invalid name",
         path: nextName,
       });
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       return;
     }
     try {
@@ -5145,10 +5212,10 @@ function sftpRenameSheet(hostId: string, path: string, name: string, _isDir: boo
         to: toSafe,
         root: state.sftpRoot,
       });
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       await loadSftp(hostId, state.sftpPath);
     } catch (err) {
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       renderSftpError(hostId, state.sftpPath, err);
     }
   };
@@ -5163,7 +5230,7 @@ function sftpDeleteConfirm(hostId: string, path: string, name: string, isDir: bo
       <button type="button" id="sftp-del-cancel" data-testid="sftp-del-cancel">Cancel</button>
       <button type="button" class="danger" id="sftp-del-ok" data-testid="sftp-del-confirm">Delete</button>
     </div>`);
-  $("sftp-del-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("sftp-del-cancel").onclick = () => hideModalOverlay();
   $("sftp-del-ok").onclick = async () => {
     try {
       const safe = resolveUnderRoot(state.sftpRoot, path);
@@ -5173,10 +5240,10 @@ function sftpDeleteConfirm(hostId: string, path: string, name: string, isDir: bo
       } else {
         await invoke("sftp_remove", { hostId, path: safe, isDir, root: state.sftpRoot });
       }
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       await loadSftp(hostId, state.sftpPath);
     } catch (err) {
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       renderSftpError(hostId, state.sftpPath, err);
     }
   };
@@ -5404,10 +5471,10 @@ function localMkdirSheet(): void {
       <button type="button" id="local-mkdir-cancel">Cancel</button>
       <button type="button" class="primary" id="local-mkdir-ok" data-testid="local-mkdir-ok">Create</button>
     </div>`);
-  $("local-mkdir-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("local-mkdir-cancel").onclick = () => hideModalOverlay();
   $("local-mkdir-ok").onclick = async () => {
     const name = ($input("local-mkdir-input") as HTMLInputElement).value.trim();
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     if (!name || name.includes("/") || name.includes("\\")) return;
     try {
       await invoke("local_mkdir", { path: joinLocalPath(state.localCwd, name) });
@@ -5427,10 +5494,10 @@ function localRenameSheet(path: string, name: string, _isDir: boolean): void {
       <button type="button" id="local-rename-cancel">Cancel</button>
       <button type="button" class="primary" id="local-rename-ok" data-testid="local-rename-ok">Rename</button>
     </div>`);
-  $("local-rename-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("local-rename-cancel").onclick = () => hideModalOverlay();
   $("local-rename-ok").onclick = async () => {
     const nextName = ($input("local-rename-input") as HTMLInputElement).value.trim();
-    $("modal").classList.add("hidden");
+    hideModalOverlay();
     if (!nextName || nextName.includes("/") || nextName.includes("\\")) return;
     try {
       const parent = parentLocalPath(path) ?? state.localCwd;
@@ -5452,15 +5519,15 @@ function localDeleteConfirm(path: string, name: string, isDir: boolean): void {
       <button type="button" id="local-del-cancel" data-testid="local-del-cancel">Cancel</button>
       <button type="button" class="danger" id="local-del-ok" data-testid="local-del-confirm">Delete</button>
     </div>`);
-  $("local-del-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("local-del-cancel").onclick = () => hideModalOverlay();
   $("local-del-ok").onclick = async () => {
     try {
       await invoke("local_remove", { path, isDir });
       state.localSelected.delete(path);
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       await loadLocal();
     } catch (err) {
-      $("modal").classList.add("hidden");
+      hideModalOverlay();
       console.error("local_remove failed", err);
     }
   };
