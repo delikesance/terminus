@@ -1,6 +1,7 @@
 pub mod error;
 pub mod local_fs;
 pub mod models;
+pub mod os_detect;
 pub mod pty;
 pub mod session;
 pub mod sftp_path;
@@ -11,6 +12,6 @@ pub mod term;
 
 pub use error::{Error, Result};
 pub use models::*;
-pub use session::{OutputSink, SessionManager};
+pub use session::{ConnectFailKind, OutputSink, SessionManager};
 pub use store::Store;
 pub use sync::SyncEngine;

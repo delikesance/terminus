@@ -40,7 +40,8 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator(".sftp-mtime").first()).toBeVisible();
     await expect(page.locator('[data-testid="sftp-side"]')).toBeVisible();
     await expect(page.locator('[data-testid="sftp-side-host"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-side-status"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-side-status"]')).toHaveAttribute("data-state", "connected");
+    await expect(page.locator('[data-testid="sftp-side-status"]')).toContainText("Connected");
   });
 
   test("P0b: listing lives in #workspace at ≥60% of stage width", async ({ page }) => {

@@ -8,7 +8,9 @@ use terminus_core::ssh;
 use terminus_core::store::Store;
 use terminus_core::sync::SyncEngine;
 use terminus_core::Error;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -43,10 +45,23 @@ impl OutputSink for TauriSink {
             serde_json::json!({ "id": session_id, "error": message }),
         );
     }
+
+    async fn emit_hosts_changed(&self) {
+        let _ = self.app.emit("hosts://changed", ());
+    }
+
+    async fn emit_host_runtime(&self, runtime: &HostRuntime) {
+        let _ = self.app.emit("hosts://runtime", runtime);
+    }
 }
 
 fn map_err(err: Error) -> String {
     err.to_ipc_string()
+}
+
+#[tauri::command]
+fn local_os_id() -> String {
+    terminus_core::os_detect::detect_local_os_id()
 }
 
 #[tauri::command]
@@ -393,9 +408,12 @@ async fn sftp_list(
             ".".into()
         }
     });
-    ssh::sftp_list(&host, identity.as_ref(), &root, &path)
+    let entries = ssh::sftp_list(&host, identity.as_ref(), &root, &path)
         .await
-        .map_err(map_err)
+        .map_err(map_err)?;
+    state.sessions.mark_ssh_connected(&host_id);
+    state.sessions.spawn_os_probe(host_id.clone());
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -447,9 +465,12 @@ async fn sftp_realpath(
 ) -> Result<String, String> {
     let query = path.unwrap_or_else(|| ".".into());
     let (host, identity, _) = sftp_ctx(&state, &host_id, &query, Some(".".into())).await?;
-    ssh::sftp_realpath(&host, identity.as_ref(), &query)
+    let resolved = ssh::sftp_realpath(&host, identity.as_ref(), &query)
         .await
-        .map_err(map_err)
+        .map_err(map_err)?;
+    state.sessions.mark_ssh_connected(&host_id);
+    state.sessions.spawn_os_probe(host_id.clone());
+    Ok(resolved)
 }
 
 #[tauri::command]
@@ -468,30 +489,93 @@ async fn sftp_open(
     Ok(dest.display().to_string())
 }
 
+fn spawn_detached(program: impl AsRef<OsStr>, args: &[impl AsRef<OsStr>]) -> bool {
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn wsl_windows_path(path: &Path) -> Option<String> {
+    for wslpath in ["wslpath", "/sbin/wslpath", "/usr/bin/wslpath"] {
+        let Ok(out) = Command::new(wslpath).arg("-w").arg(path).output() else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let converted = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !converted.is_empty() {
+            return Some(converted);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn open_path_impl(path: &Path) -> bool {
+    spawn_detached("cmd", &["/C", "start", "", &path.display().to_string()])
+}
+
+#[cfg(target_os = "macos")]
+fn open_path_impl(path: &Path) -> bool {
+    spawn_detached("open", &[path.as_os_str()])
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn open_path_impl(path: &Path) -> bool {
+    let file = path.as_os_str();
+    if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+        if let Some(win) = wsl_windows_path(path) {
+            for explorer in ["explorer.exe", "/mnt/c/Windows/explorer.exe"] {
+                if spawn_detached(explorer, &[OsStr::new(&win)]) {
+                    return true;
+                }
+            }
+        }
+    }
+    if spawn_detached("xdg-open", &[file]) {
+        return true;
+    }
+    if spawn_detached("gio", &[OsStr::new("open"), file]) {
+        return true;
+    }
+    for bin in [
+        "/usr/bin/xdg-open",
+        "/run/current-system/sw/bin/xdg-open",
+        "/usr/bin/gio",
+    ] {
+        let args: Vec<&OsStr> = if bin.ends_with("gio") {
+            vec![OsStr::new("open"), file]
+        } else {
+            vec![file]
+        };
+        if spawn_detached(bin, &args) {
+            return true;
+        }
+    }
+    false
+}
+
 fn open_path_with_default_app(path: &Path) -> Result<(), String> {
-    let err = |e| format!("couldn't open with the default app: {e}");
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &path.display().to_string()])
-            .spawn()
-            .map_err(err)?;
+    if !path.exists() {
+        return Err(format!(
+            "couldn't open with the default app: missing file {}",
+            path.display()
+        ));
     }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(path)
-            .spawn()
-            .map_err(err)?;
+    if open_path_impl(path) {
+        Ok(())
+    } else {
+        Err(format!(
+            "couldn't open with the default app: no opener found. File saved to {}",
+            path.display()
+        ))
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .spawn()
-            .map_err(err)?;
-    }
-    Ok(())
 }
 
 fn write_sftp_temp(remote_path: &str, bytes: &[u8]) -> Result<PathBuf, String> {
@@ -712,6 +796,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            local_os_id,
             session_open_local,
             session_open_ssh,
             session_write,

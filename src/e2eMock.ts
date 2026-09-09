@@ -6,6 +6,7 @@
 
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { isTauri } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 
 type Host = {
   id: string;
@@ -19,6 +20,7 @@ type Host = {
   group_id?: string | null;
   tags: string[];
   notes: string;
+  os_id?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
@@ -101,6 +103,12 @@ type Db = {
   tofuRequired: Set<string>;
   /** `${hostname}:${port}` keys accepted via ssh_host_key_trust. */
   tofuTrusted: Set<string>;
+  /** Artificial handshake delay (ms) before session_open_ssh resolves. */
+  slowConnectMs: Map<string, number>;
+  /** Host ids whose next session_open_ssh fails with a transport/auth error. */
+  authFail: Set<string>;
+  /** In-flight SSH connect attempts per host (Architect aggregation). */
+  inflight: Map<string, number>;
 };
 
 const stamp = () => new Date().toISOString();
@@ -204,6 +212,9 @@ function createDb(): Db {
     sftpLastOpen: null,
     tofuRequired: new Set(),
     tofuTrusted: new Set(),
+    slowConnectMs: new Map(),
+    authFail: new Set(),
+    inflight: new Map(),
   };
   seedFixtureGroup(db);
   return db;
@@ -241,11 +252,31 @@ function runtimes(db: Db) {
   }
   return db.hosts
     .filter((h) => !h.deleted_at)
-    .map((h) => ({
-      host_id: h.id,
-      connection: db.connections.get(h.id) ?? "disconnected",
-      open_count: counts.get(h.id) ?? 0,
-    }));
+    .map((h) => {
+      const open_count = counts.get(h.id) ?? 0;
+      const inflight = db.inflight.get(h.id) ?? 0;
+      const tracked = db.connections.get(h.id) ?? "disconnected";
+      let connection: string;
+      if (inflight > 0) {
+        connection = "connecting";
+      } else if (open_count > 0) {
+        connection = "connected";
+      } else if (tracked === "error") {
+        connection = "error";
+      } else if (tracked === "connecting") {
+        connection = "connecting";
+      } else if (tracked === "connected") {
+        connection = "connected";
+      } else {
+        connection = "disconnected";
+      }
+      return { host_id: h.id, connection, open_count };
+    });
+}
+
+async function emitHostRuntime(db: Db, hostId: string) {
+  const rt = runtimes(db).find((r) => r.host_id === hostId);
+  if (rt) await emit("hosts://runtime", rt);
 }
 
 function argsOf(payload: unknown): Record<string, unknown> {
@@ -564,10 +595,12 @@ export function installE2eMock(): void {
   const db = createDb();
   mockWindows("main");
   mockIPC(
-    (cmd, payload) => {
+    async (cmd, payload) => {
       const args = argsOf(payload);
 
       switch (cmd) {
+        case "local_os_id":
+          return "linux";
         case "themes_list":
           return [GRAPHITE];
         case "appearance_get":
@@ -656,6 +689,9 @@ export function installE2eMock(): void {
           const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
           const safe = mockResolve(root, path);
           ensureHost(db, hostId);
+          if (!db.connections.has(hostId) || db.connections.get(hostId) === "disconnected") {
+            db.connections.set(hostId, "connected");
+          }
           return listEntries(ensureSftpRoot(db, hostId), safe);
         }
         case "sftp_read": {
@@ -719,6 +755,9 @@ export function installE2eMock(): void {
           const hostId = String(args.hostId ?? args.host_id ?? "");
           const path = String(args.path ?? ".");
           ensureHost(db, hostId);
+          if (!db.connections.has(hostId) || db.connections.get(hostId) === "disconnected") {
+            db.connections.set(hostId, "connected");
+          }
           return mockRealpath(db, hostId, path);
         }
         case "sftp_open": {
@@ -851,6 +890,17 @@ export function installE2eMock(): void {
           if (hostId) db.tofuRequired.add(hostId);
           return null;
         }
+        case "test_slow_connect": {
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const ms = Number(args.ms ?? args.delayMs ?? 400);
+          if (hostId) db.slowConnectMs.set(hostId, ms);
+          return null;
+        }
+        case "test_auth_fail": {
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          if (hostId) db.authFail.add(hostId);
+          return null;
+        }
         case "sync_status":
           return {
             ...db.sync,
@@ -922,9 +972,31 @@ export function installE2eMock(): void {
           const hostId = String(args.hostId ?? args.host_id ?? "");
           ensureHost(db, hostId);
           const host = db.hosts.find((h) => h.id === hostId);
+
+          // Mirror Rust begin_ssh_connect: inflight + connecting + emit.
+          db.inflight.set(hostId, (db.inflight.get(hostId) ?? 0) + 1);
+          db.connections.set(hostId, "connecting");
+          await emitHostRuntime(db, hostId);
+
+          const delay = db.slowConnectMs.get(hostId) ?? 0;
+          if (delay > 0) {
+            await new Promise((r) => setTimeout(r, delay));
+            db.slowConnectMs.delete(hostId);
+          }
+
+          const decInflight = () => {
+            const next = Math.max(0, (db.inflight.get(hostId) ?? 1) - 1);
+            if (next === 0) db.inflight.delete(hostId);
+            else db.inflight.set(hostId, next);
+          };
+
           if (host && db.tofuRequired.has(hostId)) {
             const key = tofuHostKey(host.hostname, host.port);
             if (!db.tofuTrusted.has(key)) {
+              decInflight();
+              // AC4: HostKey → disconnected (not sticky error).
+              db.connections.set(hostId, "disconnected");
+              await emitHostRuntime(db, hostId);
               throw JSON.stringify({
                 kind: "HostKeyUnknown",
                 host: host.hostname,
@@ -935,9 +1007,18 @@ export function installE2eMock(): void {
               });
             }
           }
-          if (!db.connections.has(hostId) || db.connections.get(hostId) === "disconnected") {
-            db.connections.set(hostId, "connected");
+
+          if (db.authFail.has(hostId)) {
+            db.authFail.delete(hostId);
+            decInflight();
+            db.connections.set(hostId, "error");
+            await emitHostRuntime(db, hostId);
+            throw "SSH authentication failed (e2e mock)";
           }
+
+          decInflight();
+          db.connections.set(hostId, "connected");
+          await emitHostRuntime(db, hostId);
           const info: SessionInfo = {
             id: `ssh-${crypto.randomUUID()}`,
             title: hostId,
@@ -948,7 +1029,18 @@ export function installE2eMock(): void {
           return info;
         }
         case "session_close": {
-          db.sessions = db.sessions.filter((s) => s.id !== String(args.id));
+          const sid = String(args.id);
+          const closing = db.sessions.find((s) => s.id === sid);
+          db.sessions = db.sessions.filter((s) => s.id !== sid);
+          if (closing?.host_id) {
+            const still = db.sessions.some((s) => s.host_id === closing.host_id);
+            if (!still) {
+              const cur = db.connections.get(closing.host_id);
+              if (cur === "connected" || cur === "connecting") {
+                db.connections.set(closing.host_id, "disconnected");
+              }
+            }
+          }
           return null;
         }
         case "session_list":

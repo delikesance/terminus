@@ -231,6 +231,7 @@ impl SyncEngine {
                 group_id: row.get("group_id"),
                 tags: serde_json::from_str(row.get::<String, _>("tags").as_str()).unwrap_or_default(),
                 notes: row.get("notes"),
+                os_id: row.try_get::<Option<String>, _>("os_id").ok().flatten(),
                 created_at: parse_pg(row.get("created_at")),
                 updated_at: parse_pg(row.get("updated_at")),
                 deleted_at: row
@@ -428,6 +429,7 @@ async fn ensure_remote_schema(pool: &PgPool) -> Result<()> {
           group_id TEXT,
           tags TEXT NOT NULL DEFAULT '[]',
           notes TEXT NOT NULL DEFAULT '',
+          os_id TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           deleted_at TEXT
@@ -486,6 +488,9 @@ async fn ensure_remote_schema(pool: &PgPool) -> Result<()> {
     for sql in statements {
         sqlx::query(sql).execute(pool).await?;
     }
+    let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN os_id TEXT")
+        .execute(pool)
+        .await;
     Ok(())
 }
 
@@ -496,13 +501,13 @@ async fn push_rows(pool: &PgPool, table: &str, rows: &[Value]) -> Result<usize> 
         match table {
             "hosts" => {
                 sqlx::query(
-                    r#"INSERT INTO hosts (id,name,hostname,port,username,auth_method,password,identity_id,group_id,tags,notes,created_at,updated_at,deleted_at)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                    r#"INSERT INTO hosts (id,name,hostname,port,username,auth_method,password,identity_id,group_id,tags,notes,os_id,created_at,updated_at,deleted_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
                        ON CONFLICT (id) DO UPDATE SET
                          name=EXCLUDED.name, hostname=EXCLUDED.hostname, port=EXCLUDED.port,
                          username=EXCLUDED.username, auth_method=EXCLUDED.auth_method, password=EXCLUDED.password,
                          identity_id=EXCLUDED.identity_id, group_id=EXCLUDED.group_id, tags=EXCLUDED.tags,
-                         notes=EXCLUDED.notes, updated_at=EXCLUDED.updated_at, deleted_at=EXCLUDED.deleted_at
+                         notes=EXCLUDED.notes, os_id=EXCLUDED.os_id, updated_at=EXCLUDED.updated_at, deleted_at=EXCLUDED.deleted_at
                          WHERE hosts.updated_at <= EXCLUDED.updated_at"#,
                 )
                 .bind(str_field(obj, "id"))
@@ -516,6 +521,7 @@ async fn push_rows(pool: &PgPool, table: &str, rows: &[Value]) -> Result<usize> 
                 .bind(opt_str(obj, "group_id"))
                 .bind(str_field(obj, "tags"))
                 .bind(str_field(obj, "notes"))
+                .bind(opt_str(obj, "os_id"))
                 .bind(str_field(obj, "created_at"))
                 .bind(str_field(obj, "updated_at"))
                 .bind(opt_str(obj, "deleted_at"))

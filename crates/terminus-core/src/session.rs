@@ -16,6 +16,18 @@ pub trait OutputSink: Send + Sync {
     /// Called when a session backend reports a failure (e.g. local PTY reader).
     /// Default is a no-op so existing sinks keep compiling; override to surface errors.
     async fn emit_error(&self, _session_id: &str, _message: &str) {}
+    async fn emit_hosts_changed(&self) {}
+    /// Host connection/runtime snapshot changed (`hosts://runtime` on the UI side).
+    async fn emit_host_runtime(&self, _runtime: &HostRuntime) {}
+}
+
+/// Why an SSH connect attempt failed — drives sticky sidebar state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectFailKind {
+    /// TOFU / known_hosts unknown or mismatch — never sticky-error.
+    HostKey,
+    /// Auth, transport, or other failure — sticky `error` when idle.
+    Other,
 }
 
 enum Backend {
@@ -33,12 +45,13 @@ struct LiveSession {
 pub struct SessionManager {
     sessions: DashMap<String, LiveSession>,
     ssh_connections: DashMap<String, String>,
+    /// In-flight `open_ssh` attempts per host (Architect aggregation).
+    ssh_inflight: DashMap<String, usize>,
     /// Last reader/backend failure per session id (visible to the session layer).
     session_errors: DashMap<String, String>,
     store: Store,
     sink: Arc<dyn OutputSink>,
-    // Track SSH connection state per host_id independently of session count
-    // Once a host has a successful SSH session, it stays "connected" until explicit disconnect/error
+    os_probe_tried: DashMap<String, ()>,
 }
 
 impl SessionManager {
@@ -46,9 +59,11 @@ impl SessionManager {
         Arc::new(Self {
             sessions: DashMap::new(),
             ssh_connections: DashMap::new(),
+            ssh_inflight: DashMap::new(),
             session_errors: DashMap::new(),
             store,
             sink,
+            os_probe_tried: DashMap::new(),
         })
     }
 
@@ -64,29 +79,120 @@ impl SessionManager {
             .collect()
     }
 
+    fn open_count_for(&self, host_id: &str) -> usize {
+        self.sessions
+            .iter()
+            .filter(|s| s.info.host_id.as_deref() == Some(host_id))
+            .count()
+    }
+
+    fn inflight_for(&self, host_id: &str) -> usize {
+        self.ssh_inflight
+            .get(host_id)
+            .map(|e| *e.value())
+            .unwrap_or(0)
+    }
+
+    fn tracked_for(&self, host_id: &str) -> String {
+        self.ssh_connections
+            .get(host_id)
+            .map(|e| e.value().clone())
+            .unwrap_or_else(|| "disconnected".to_string())
+    }
+
+    fn aggregate_connection(open_count: usize, inflight: usize, tracked: &str) -> String {
+        if inflight > 0 {
+            return "connecting".to_string();
+        }
+        if open_count > 0 {
+            return "connected".to_string();
+        }
+        match tracked {
+            "error" => "error".to_string(),
+            "connecting" => "connecting".to_string(),
+            "connected" => "connected".to_string(),
+            _ => "disconnected".to_string(),
+        }
+    }
+
+    fn host_runtime_snapshot(&self, host_id: &str) -> HostRuntime {
+        let open_count = self.open_count_for(host_id);
+        let inflight = self.inflight_for(host_id);
+        let tracked = self.tracked_for(host_id);
+        HostRuntime {
+            host_id: host_id.to_string(),
+            connection: Self::aggregate_connection(open_count, inflight, &tracked),
+            open_count,
+        }
+    }
+
+    fn emit_runtime_now(&self, host_id: &str) {
+        let runtime = self.host_runtime_snapshot(host_id);
+        // Emit futures are immediate (mutex push / Tauri emit); block_on is safe here.
+        futures::executor::block_on(self.sink.emit_host_runtime(&runtime));
+    }
+
+    /// Start an SSH connect attempt: bump inflight, set `connecting`, emit runtime.
+    pub fn begin_ssh_connect(&self, host_id: &str) {
+        let next = self.inflight_for(host_id).saturating_add(1);
+        self.ssh_inflight.insert(host_id.to_string(), next);
+        self.ssh_connections
+            .insert(host_id.to_string(), "connecting".to_string());
+        self.emit_runtime_now(host_id);
+    }
+
+    fn dec_inflight(&self, host_id: &str) {
+        let next = self.inflight_for(host_id).saturating_sub(1);
+        if next == 0 {
+            self.ssh_inflight.remove(host_id);
+        } else {
+            self.ssh_inflight.insert(host_id.to_string(), next);
+        }
+    }
+
+    /// Connect succeeded — clear inflight, mark `connected`, emit.
+    pub fn end_ssh_connect_ok(&self, host_id: &str) {
+        self.dec_inflight(host_id);
+        self.ssh_connections
+            .insert(host_id.to_string(), "connected".to_string());
+        self.emit_runtime_now(host_id);
+    }
+
+    /// Connect failed — classify HostKey vs Other; preserve live shells.
+    pub fn end_ssh_connect_err(&self, host_id: &str, kind: ConnectFailKind) {
+        self.dec_inflight(host_id);
+        let open_count = self.open_count_for(host_id);
+        let inflight = self.inflight_for(host_id);
+        let state = if inflight > 0 {
+            "connecting"
+        } else if open_count > 0 {
+            "connected"
+        } else {
+            match kind {
+                ConnectFailKind::HostKey => "disconnected",
+                ConnectFailKind::Other => "error",
+            }
+        };
+        self.ssh_connections
+            .insert(host_id.to_string(), state.to_string());
+        self.emit_runtime_now(host_id);
+    }
+
     /// Compute runtime state for all hosts by joining hosts from the store with active sessions.
     /// Returns a HostRuntime for each host, plus one for the local "This computer" entry.
     ///
     /// # Connection State Logic
     ///
-    /// - Local sessions (host_id == None) → connection = "local", grouped under a synthetic
-    ///   host_id = "local" entry
-    /// - SSH hosts: connection state is tracked independently in ssh_connections map
-    ///   - Once a host has had a successful SSH session (open_ssh succeeds), it's marked "connected"
-    ///   - This state persists even when open_count becomes 0 (closing last shell)
-    ///   - State only changes on explicit disconnect/error events (future enhancement)
-    /// - Hosts that have never had a session → connection = "disconnected"
-    ///
-    /// **Critical**: open_count and connection are INDEPENDENT. Closing the last shell sets
-    /// open_count=0 but MUST NOT change connection from "connected" to "disconnected".
+    /// - Local sessions (host_id == None) → connection = "local"
+    /// - `inflight > 0` → `connecting`
+    /// - SSH shells open → `connected`
+    /// - Idle sticky `error` preserved; HostKey failures → `disconnected`
     pub async fn hosts_runtime(&self) -> Result<Vec<HostRuntime>> {
-        // Get all hosts from the store
         let hosts = self.store.list_hosts().await?;
-        
-        // Count open sessions per host_id
+
         let mut open_counts = std::collections::HashMap::<String, usize>::new();
         let mut local_count = 0usize;
-        
+
         for session in self.sessions.iter() {
             match &session.info.host_id {
                 Some(host_id) => {
@@ -97,10 +203,9 @@ impl SessionManager {
                 }
             }
         }
-        
+
         let mut runtimes = Vec::new();
-        
-        // Add local runtime if there are any local sessions
+
         if local_count > 0 {
             runtimes.push(HostRuntime {
                 host_id: "local".to_string(),
@@ -108,32 +213,24 @@ impl SessionManager {
                 open_count: local_count,
             });
         }
-        
-        // Add runtime for each SSH host
+
         for host in hosts {
-            // Skip soft-deleted hosts
             if host.deleted_at.is_some() {
                 continue;
             }
-            
+
             let open_count = open_counts.get(&host.id).copied().unwrap_or(0);
-            
-            // Use tracked connection state, NOT derived from open_count
-            // If this host has had a successful SSH session, it stays "connected"
-            // even when open_count goes to 0
-            let connection = self
-                .ssh_connections
-                .get(&host.id)
-                .map(|entry| entry.value().clone())
-                .unwrap_or_else(|| "disconnected".to_string());
-            
+            let inflight = self.inflight_for(&host.id);
+            let tracked = self.tracked_for(&host.id);
+            let connection = Self::aggregate_connection(open_count, inflight, &tracked);
+
             runtimes.push(HostRuntime {
                 host_id: host.id.clone(),
                 connection,
                 open_count,
             });
         }
-        
+
         Ok(runtimes)
     }
 
@@ -186,14 +283,17 @@ impl SessionManager {
         };
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel::<Result<Vec<u8>>>();
-        self.ssh_connections.insert(host_id.to_string(), "connecting".to_string());
+        self.begin_ssh_connect(host_id);
         let cmd_tx = match ssh::open_shell(&host, identity.as_ref(), cols, rows, tx).await {
-            Ok(tx) => {
-                self.ssh_connections.insert(host_id.to_string(), "connected".to_string());
-                tx
-            }
+            Ok(tx) => tx,
             Err(e) => {
-                self.ssh_connections.insert(host_id.to_string(), "error".to_string());
+                let kind = match &e {
+                    Error::HostKeyUnknown { .. } | Error::HostKeyMismatch { .. } => {
+                        ConnectFailKind::HostKey
+                    }
+                    _ => ConnectFailKind::Other,
+                };
+                self.end_ssh_connect_err(host_id, kind);
                 return Err(e);
             }
         };
@@ -215,12 +315,56 @@ impl SessionManager {
                 emulator,
             },
         );
-        
-        // Mark this SSH host as connected - this state persists even when open_count becomes 0
-        self.ssh_connections.insert(host.id.clone(), "connected".to_string());
-        
+
+        self.end_ssh_connect_ok(&host.id);
+
         self.spawn_reader(id, rx);
+        self.spawn_os_probe(host.id.clone());
         Ok(info)
+    }
+
+    /// A successful SFTP session is SSH too — mark the host connected even
+    /// when no shell tab is open.
+    pub fn mark_ssh_connected(&self, host_id: &str) {
+        self.ssh_connections
+            .insert(host_id.to_string(), "connected".to_string());
+        self.emit_runtime_now(host_id);
+    }
+
+    /// Probe `/etc/os-release` in the background the first time we reach a host.
+    pub fn spawn_os_probe(self: &Arc<Self>, host_id: String) {
+        if self.os_probe_tried.contains_key(&host_id) {
+            return;
+        }
+        self.os_probe_tried.insert(host_id.clone(), ());
+        let mgr = Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = mgr.probe_host_os(&host_id).await;
+        });
+    }
+
+    async fn probe_host_os(&self, host_id: &str) -> Result<()> {
+        let host = match self.store.get_host(host_id).await? {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+        if host.os_id.is_some() {
+            return Ok(());
+        }
+        let identity = match &host.identity_id {
+            Some(id) => self.store.get_identity(id).await?,
+            None => None,
+        };
+        let os_id = ssh::detect_os(&host, identity.as_ref()).await?;
+        if os_id.is_empty() || os_id == "unknown" {
+            return Ok(());
+        }
+        let mut host = host;
+        host.os_id = Some(os_id);
+        host.updated_at = chrono::Utc::now();
+        self.store.upsert_host(&host).await?;
+        self.sink.emit_hosts_changed().await;
+        Ok(())
     }
 
     pub async fn write(&self, session_id: &str, data: &[u8]) -> Result<()> {
@@ -333,17 +477,41 @@ impl SessionManager {
 
     pub fn close(&self, session_id: &str) -> Result<()> {
         if let Some((_, session)) = self.sessions.remove(session_id) {
+            let host_id = session.info.host_id.clone();
             match session.backend {
                 Backend::Local(pty) => {
-                    // Local PTY kill failures must surface (typed Error::PtyKill).
-                    pty.kill()?;
+                    // Always drop the session from the map; a kill race on an
+                    // already-dead PTY must not leave the shell "open".
+                    let _ = pty.kill();
                 }
                 Backend::Ssh(tx) => {
                     let _ = tx.send(SshCommand::Close);
                 }
             }
+            self.clear_connection_if_idle(host_id.as_deref());
         }
         Ok(())
+    }
+
+    /// When the last shell for a host is gone, drop the sticky "connected" flag.
+    fn clear_connection_if_idle(&self, host_id: Option<&str>) {
+        let Some(host_id) = host_id else { return };
+        let still_open = self
+            .sessions
+            .iter()
+            .any(|s| s.info.host_id.as_deref() == Some(host_id));
+        if still_open {
+            return;
+        }
+        if let Some(entry) = self.ssh_connections.get(host_id) {
+            let state = entry.value().clone();
+            drop(entry);
+            if state == "connected" || state == "connecting" {
+                self.ssh_connections
+                    .insert(host_id.to_string(), "disconnected".to_string());
+                self.emit_runtime_now(host_id);
+            }
+        }
     }
 
     /// Test/E2E helper: force connection state. Available in debug unit tests
@@ -408,7 +576,9 @@ impl SessionManager {
                 }
             }
             sink.emit_exit(&id).await;
-            sessions.sessions.remove(&id);
+            if let Some((_, session)) = sessions.sessions.remove(&id) {
+                sessions.clear_connection_if_idle(session.info.host_id.as_deref());
+            }
         });
     }
 }
@@ -450,13 +620,28 @@ mod tests {
 
     struct TestSink {
         errors: parking_lot::Mutex<Vec<(String, String)>>,
+        runtimes: parking_lot::Mutex<Vec<HostRuntime>>,
     }
 
     impl TestSink {
         fn new() -> Self {
             Self {
                 errors: parking_lot::Mutex::new(Vec::new()),
+                runtimes: parking_lot::Mutex::new(Vec::new()),
             }
+        }
+
+        fn runtime_emits(&self) -> Vec<HostRuntime> {
+            self.runtimes.lock().clone()
+        }
+
+        fn last_runtime_for(&self, host_id: &str) -> Option<HostRuntime> {
+            self.runtimes
+                .lock()
+                .iter()
+                .rev()
+                .find(|r| r.host_id == host_id)
+                .cloned()
         }
     }
 
@@ -468,6 +653,9 @@ mod tests {
             self.errors
                 .lock()
                 .push((session_id.to_string(), message.to_string()));
+        }
+        async fn emit_host_runtime(&self, runtime: &HostRuntime) {
+            self.runtimes.lock().push(runtime.clone());
         }
     }
 
@@ -501,17 +689,23 @@ mod tests {
             let host_runtime = runtime.iter().find(|r| r.host_id == host.id);
             assert!(host_runtime.is_some(), "Host runtime should exist");
             let host_runtime = host_runtime.unwrap();
+            // Tracked `connected` is visible even with zero shells (SFTP / post-handshake).
             assert_eq!(host_runtime.connection, "connected");
             assert_eq!(
                 host_runtime.open_count, 0,
                 "Open count should be 0 when no sessions are open"
             );
+
+            manager.test_set_connection(&host.id, "error").unwrap();
+            let runtime = manager.hosts_runtime().await.unwrap();
+            let host_runtime = runtime.iter().find(|r| r.host_id == host.id).unwrap();
+            assert_eq!(host_runtime.connection, "error");
         });
     }
 
     #[cfg(debug_assertions)]
     #[test]
-    fn test_last_shell_preserves_connection_state() {
+    fn test_last_shell_clears_connection_state() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let (manager, _sink, store, _tmp) = test_manager().await;
             let mut host = Host::new("test", "127.0.0.1", 22, "user");
@@ -525,18 +719,26 @@ mod tests {
             let runtime_before = manager.hosts_runtime().await.unwrap();
             let host_before = runtime_before.iter().find(|r| r.host_id == host.id);
             assert!(host_before.is_some());
+            // Sticky "connected" with zero shells is visible until clear_connection_if_idle.
             assert_eq!(
                 host_before.unwrap().connection, "connected",
-                "Should be connected after open_ssh"
+                "Tracked connected remains visible with no open shells"
             );
+
+            // Simulate open_count via a local-only path: force connected with a fake
+            // session is hard without SSH; instead verify clear_connection_if_idle.
+            manager
+                .test_set_connection(&host.id, "connected")
+                .unwrap();
+            manager.clear_connection_if_idle(Some(&host.id));
 
             let runtime_after = manager.hosts_runtime().await.unwrap();
             let host_after = runtime_after.iter().find(|r| r.host_id == host.id);
             assert!(host_after.is_some());
             let host_after = host_after.unwrap();
             assert_eq!(
-                host_after.connection, "connected",
-                "Connection MUST stay 'connected' after closing last shell (last-shell contract)"
+                host_after.connection, "disconnected",
+                "Closing last shell should clear the green connected state"
             );
             assert_eq!(host_after.open_count, 0, "Open count should be 0 after close");
         });
@@ -606,6 +808,155 @@ mod tests {
                 errors.iter().any(|(sid, msg)| sid == &id && msg.contains("synthetic")),
                 "OutputSink.emit_error should see the failure: {errors:?}"
             );
+        });
+    }
+
+    /// AC1 — begin_ssh_connect must expose `connecting` and emit `hosts://runtime`.
+    #[test]
+    fn ac1_begin_ssh_connect_emits_connecting_runtime() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, sink, store, _tmp) = test_manager().await;
+            let mut host = Host::new("ac1", "127.0.0.1", 22, "user");
+            host.id = "host-ac1-connecting".into();
+            store.upsert_host(&host).await.unwrap();
+
+            manager.begin_ssh_connect(&host.id);
+
+            let runtime = manager.hosts_runtime().await.unwrap();
+            let host_rt = runtime
+                .iter()
+                .find(|r| r.host_id == host.id)
+                .expect("host runtime present");
+            assert_eq!(
+                host_rt.connection, "connecting",
+                "inflight connect must surface connecting (AC1)"
+            );
+
+            let emitted = sink.last_runtime_for(&host.id);
+            assert!(
+                emitted.is_some(),
+                "begin_ssh_connect must emit_host_runtime (AC1); got {:?}",
+                sink.runtime_emits()
+            );
+            assert_eq!(emitted.unwrap().connection, "connecting");
+        });
+    }
+
+    /// AC2 — transport/auth failure with no shells → sticky `error` + emit.
+    #[test]
+    fn ac2_end_ssh_connect_other_sets_sticky_error_and_emits() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, sink, store, _tmp) = test_manager().await;
+            let mut host = Host::new("ac2", "127.0.0.1", 22, "user");
+            host.id = "host-ac2-error".into();
+            store.upsert_host(&host).await.unwrap();
+
+            manager.begin_ssh_connect(&host.id);
+            manager.end_ssh_connect_err(&host.id, ConnectFailKind::Other);
+
+            let runtime = manager.hosts_runtime().await.unwrap();
+            let host_rt = runtime
+                .iter()
+                .find(|r| r.host_id == host.id)
+                .expect("host runtime present");
+            assert_eq!(
+                host_rt.connection, "error",
+                "auth/transport failure must sticky-error when idle (AC2)"
+            );
+
+            let emitted = sink.last_runtime_for(&host.id);
+            assert!(
+                emitted.is_some(),
+                "end_ssh_connect_err must emit_host_runtime (AC2); got {:?}",
+                sink.runtime_emits()
+            );
+            assert_eq!(emitted.unwrap().connection, "error");
+        });
+    }
+
+    /// AC3 — sticky error cleared by a successful connect.
+    #[test]
+    fn ac3_success_after_error_becomes_connected_and_emits() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, sink, store, _tmp) = test_manager().await;
+            let mut host = Host::new("ac3", "127.0.0.1", 22, "user");
+            host.id = "host-ac3-recover".into();
+            store.upsert_host(&host).await.unwrap();
+
+            manager.begin_ssh_connect(&host.id);
+            manager.end_ssh_connect_err(&host.id, ConnectFailKind::Other);
+            assert_eq!(
+                manager
+                    .hosts_runtime()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find(|r| r.host_id == host.id)
+                    .unwrap()
+                    .connection,
+                "error"
+            );
+
+            manager.begin_ssh_connect(&host.id);
+            let mid = manager
+                .hosts_runtime()
+                .await
+                .unwrap()
+                .iter()
+                .find(|r| r.host_id == host.id)
+                .unwrap()
+                .connection
+                .clone();
+            assert_eq!(
+                mid, "connecting",
+                "new attempt must clear sticky error via connecting (AC3)"
+            );
+
+            manager.end_ssh_connect_ok(&host.id);
+            let host_rt = manager
+                .hosts_runtime()
+                .await
+                .unwrap()
+                .iter()
+                .find(|r| r.host_id == host.id)
+                .unwrap()
+                .clone();
+            assert_eq!(host_rt.connection, "connected");
+
+            let emitted = sink.last_runtime_for(&host.id).expect("emit on success");
+            assert_eq!(emitted.connection, "connected");
+        });
+    }
+
+    /// AC4 — HostKey failure must land on `disconnected`, never sticky `error`.
+    #[test]
+    fn ac4_host_key_failure_sets_disconnected_not_error() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, sink, store, _tmp) = test_manager().await;
+            let mut host = Host::new("ac4", "127.0.0.1", 22, "user");
+            host.id = "host-ac4-hostkey".into();
+            store.upsert_host(&host).await.unwrap();
+
+            manager.begin_ssh_connect(&host.id);
+            manager.end_ssh_connect_err(&host.id, ConnectFailKind::HostKey);
+
+            let host_rt = manager
+                .hosts_runtime()
+                .await
+                .unwrap()
+                .iter()
+                .find(|r| r.host_id == host.id)
+                .expect("host runtime present")
+                .clone();
+            assert_eq!(
+                host_rt.connection, "disconnected",
+                "HostKeyUnknown/Mismatch must not sticky-error (AC4); got {}",
+                host_rt.connection
+            );
+            assert_ne!(host_rt.connection, "error");
+
+            let emitted = sink.last_runtime_for(&host.id).expect("emit on host-key fail");
+            assert_eq!(emitted.connection, "disconnected");
         });
     }
 }

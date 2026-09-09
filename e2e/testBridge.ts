@@ -59,6 +59,16 @@ export function getTestBridge(page: Page) {
     seedTofuHost: (hostId?: string) =>
       page.evaluate((id) => (window as any).__terminusTest.seedTofuHost(id), hostId),
 
+    seedSlowConnectHost: (hostId?: string, ms?: number) =>
+      page.evaluate(
+        ({ id, delay }) => (window as any).__terminusTest.seedSlowConnectHost(id, delay),
+        { id: hostId, delay: ms },
+      ),
+    seedAuthFailHost: (hostId?: string) =>
+      page.evaluate((id) => (window as any).__terminusTest.seedAuthFailHost(id), hostId),
+    hostsRuntime: () =>
+      page.evaluate(() => (window as any).__terminusTest.hostsRuntime()),
+
     // C9b: bidirectional SFTP (local pane + transfer)
     seedLocalDir: (path?: string) =>
       page.evaluate((p) => (window as any).__terminusTest.seedLocalDir(p), path),

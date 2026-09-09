@@ -47,7 +47,7 @@ test.describe('E2E-2: Connection dots distinct from open_count (QA Contract)', (
     }
   });
 
-  test('CRITICAL: close last shell → connection=connected + pill absent', async ({ page }) => {
+  test('CRITICAL: close last shell → connection=disconnected + pill absent', async ({ page }) => {
     const bridge = getTestBridge(page);
     
     // Setup: set host connection to "connected" (no docker/sshd needed)
@@ -62,38 +62,37 @@ test.describe('E2E-2: Connection dots distinct from open_count (QA Contract)', (
     const connectionDot = hostItem.locator('[data-testid="connection-dot"]');
     await expect(connectionDot).toHaveAttribute('data-state', 'connected');
     
-    // Verify pill shows count ≥ 1
+    // Verify pill is hidden for a single session (dot is enough)
     const openCountPill = hostItem.locator('[data-testid="open-count-pill"]');
-    await expect(openCountPill).toBeVisible();
+    await expect(openCountPill).toHaveCount(0);
     
     // Close the last session
     await bridge.sessionClose(sessionId);
     
-    // CRITICAL AC: connection dot remains "connected", pill disappears
-    await expect(connectionDot).toHaveAttribute('data-state', 'connected');
-    await expect(openCountPill).not.toBeVisible();
+    // Last shell gone → gray disconnected dot, no count pill
+    await expect(connectionDot).toHaveAttribute('data-state', 'disconnected');
+    await expect(openCountPill).toHaveCount(0);
   });
 
-  test('host with open sessions shows both dot and pill', async ({ page }) => {
+  test('host with multiple sessions shows a muted count, single session does not', async ({ page }) => {
     const bridge = getTestBridge(page);
     
     const testHostId = 'test-host-both-indicators';
     
-    // Setup connection state
     await bridge.setConnection(testHostId, 'connected');
-    
-    // Open session
     await bridge.sessionOpenSsh(testHostId);
     
     const hostItem = page.locator(`[data-testid="host-${testHostId}"]`);
-    
-    // Both should be visible
     const connectionDot = hostItem.locator('[data-testid="connection-dot"]');
     const openCountPill = hostItem.locator('[data-testid="open-count-pill"]');
     
     await expect(connectionDot).toBeVisible();
     await expect(connectionDot).toHaveAttribute('data-state', 'connected');
+    await expect(openCountPill).toHaveCount(0);
+
+    await bridge.sessionOpenSsh(testHostId);
     await expect(openCountPill).toBeVisible();
+    await expect(openCountPill).toHaveText('×2');
   });
 
   test('all connection states are distinct: local, connected, disconnected, connecting, error', async ({ page }) => {
@@ -149,5 +148,54 @@ test.describe('E2E-2: Connection dots distinct from open_count (QA Contract)', (
     
     // No pill when open_count=0
     await expect(pill).not.toBeVisible();
+  });
+
+  test('AC1: connecting is visible during slow SSH handshake via hosts://runtime', async ({ page }) => {
+    const bridge = getTestBridge(page);
+    const hostId = await bridge.seedSlowConnectHost('test-host-ac1-connecting', 800);
+
+    const connectPromise = page.locator(`[data-testid="host-${hostId}"]`).click();
+    const connectionDot = page.locator(
+      `[data-testid="host-${hostId}"] [data-testid="connection-dot"]`,
+    );
+
+    // Backend emits connecting mid-flight; UI must apply hosts://runtime (Red until listener exists).
+    await expect(connectionDot).toHaveAttribute('data-state', 'connecting', { timeout: 600 });
+    await connectPromise;
+    await expect(connectionDot).toHaveAttribute('data-state', 'connected');
+  });
+
+  test('AC2: auth failure leaves sticky error on hosts_runtime', async ({ page }) => {
+    const bridge = getTestBridge(page);
+    const hostId = await bridge.seedAuthFailHost('test-host-ac2-error');
+
+    await page.locator(`[data-testid="host-${hostId}"]`).click();
+    await expect(page.locator('h2', { hasText: 'SSH failed' })).toBeVisible();
+    await page.locator('#ssh-fail-ok').click();
+
+    const runtimes = await bridge.hostsRuntime();
+    const rt = runtimes.find((r) => r.host_id === hostId);
+    expect(rt?.connection).toBe('error');
+
+    const connectionDot = page.locator(
+      `[data-testid="host-${hostId}"] [data-testid="connection-dot"]`,
+    );
+    // Dot must reflect sticky error (Red until UI listens / refreshes runtime).
+    await expect(connectionDot).toHaveAttribute('data-state', 'error');
+  });
+
+  test('AC4: TOFU cancel must leave host disconnected not error', async ({ page }) => {
+    const bridge = getTestBridge(page);
+    const hostId = await bridge.seedTofuHost('test-host-ac4-tofu-cancel');
+
+    await page.locator(`[data-testid="host-${hostId}"]`).click();
+    await expect(page.locator('#sheet-tofu')).toBeVisible();
+    await page.locator('[data-testid="tofu-cancel"]').click();
+    await expect(page.locator('#sheet-tofu')).toHaveCount(0);
+
+    const runtimes = await bridge.hostsRuntime();
+    const rt = runtimes.find((r) => r.host_id === hostId);
+    // Mock currently mirrors Rust bug (HostKey → error). Desired: disconnected.
+    expect(rt?.connection).toBe('disconnected');
   });
 });

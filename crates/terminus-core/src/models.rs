@@ -15,6 +15,8 @@ pub struct Host {
     pub group_id: Option<String>,
     pub tags: Vec<String>,
     pub notes: String,
+    #[serde(default)]
+    pub os_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -40,6 +42,7 @@ impl Host {
             group_id: None,
             tags: Vec::new(),
             notes: String::new(),
+            os_id: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -469,28 +472,23 @@ pub struct SessionInfo {
 }
 
 /// Runtime aggregate for host connection state and open session count.
-/// This is computed on-demand from hosts and active sessions, not persisted.
+/// This is computed on-demand from hosts, active sessions, and in-flight connects — not persisted.
 ///
 /// # Connection State Semantics
 ///
-/// - `local`: For "This computer" / local sessions (no SSH connection)
-/// - `connected`: SSH host with at least one active authenticated session
-/// - `disconnected`: SSH host with no active sessions (may or may not have network connectivity)
-/// - `connecting`: SSH handshake in progress (not yet implemented - future enhancement)
-/// - `error`: SSH authentication or transport failure (not yet implemented - future enhancement)
+/// - `local`: "This computer" / local PTY sessions
+/// - `connecting`: at least one in-flight SSH shell connect (`begin_ssh_connect`)
+/// - `connected`: authenticated SSH (shell open and/or successful connect / SFTP mark)
+/// - `disconnected`: idle host, or HostKey TOFU/mismatch failure (never sticky-error)
+/// - `error`: sticky auth/transport failure while idle; cleared by a new `connecting` or success
 ///
-/// **Current Implementation Note**: True SSH connection state tracking (connecting/error states)
-/// is not yet implemented. The current approximation uses session presence:
-/// - If `open_count > 0` for an SSH host → `connected`
-/// - If `open_count == 0` for an SSH host → `disconnected`
-/// This is sufficient for initial UI/E2E mocking. Full connection state tracking will be
-/// added in a future iteration when we implement background connection monitoring.
+/// Aggregation priority: inflight → live shells → sticky tracked state (`error` / `connected`).
+/// Closing the last shell clears sticky `connected`/`connecting` via `clear_connection_if_idle`
+/// but preserves sticky `error`.
 ///
 /// # Open Count
 ///
 /// `open_count` is the number of active sessions where `session.host_id == host_id`.
-/// Closing the last shell (open_count → 0) MUST NOT change the `connection` state from
-/// its current value; the connection state reflects SSH transport status, not session lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostRuntime {
     pub host_id: String,

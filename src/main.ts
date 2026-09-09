@@ -1,5 +1,6 @@
+import "./assets/font-logos/font-logos.css";
 import "./styles.css";
-import { icons, sftpKindIcon } from "./icons";
+import { icons, sftpKindIcon, hostOsIcon } from "./icons";
 import { applyChrome, type Theme } from "./theme";
 import { resolveMonoFont } from "./fonts";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,6 +46,7 @@ type Host = {
   group_id?: string | null;
   tags: string[];
   notes: string;
+  os_id?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
@@ -125,6 +127,8 @@ type Pane = {
   session?: SessionInfo;
   pending?: { title: string; kind: string; hostId?: string };
   exited?: boolean;
+  /** Set when the tab is closed while a connect is still in flight. */
+  aborted?: boolean;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   el: HTMLDivElement;
@@ -166,8 +170,10 @@ const state = {
   localSelected: new Set<string>(),
   sftpSelected: new Set<string>(),
   transfer: null as TransferJob | null,
+  sftpConn: "disconnected" as string,
   customCss: document.createElement("style"),
   expandedGroups: new Set<string>(JSON.parse(localStorage.getItem("terminus-expanded-groups") || "[]")),
+  localOsId: null as string | null,
 };
 
 document.head.appendChild(state.customCss);
@@ -187,14 +193,16 @@ function b64encode(data: string | Uint8Array): string {
 async function boot() {
   bindUi();
   toggleSidebar(true);
-  const [themes, appearance, keybindings] = await Promise.all([
+  const [themes, appearance, keybindings, localOsId] = await Promise.all([
     invoke<Theme[]>("themes_list"),
     invoke<Appearance>("appearance_get"),
     invoke<Record<string, string>>("keybindings_get"),
+    invoke<string>("local_os_id").catch(() => "linux"),
   ]);
   state.themes = themes;
   state.appearance = appearance;
   state.keybindings = keybindings;
+  state.localOsId = localOsId || "linux";
   if (state.appearance) {
     if (state.appearance.renderer === "webgl" || state.appearance.renderer === "canvas") {
       state.appearance.renderer = "auto";
@@ -223,6 +231,12 @@ async function boot() {
   });
   await listen<{ id: string }>("session://exit", (ev) => {
     markExited(ev.payload.id);
+  });
+  await listen("hosts://changed", () => {
+    void refreshSide();
+  });
+  await listen<HostRuntime>("hosts://runtime", (ev) => {
+    applyHostRuntime(ev.payload);
   });
   requestAnimationFrame(() => {
     void openLocal();
@@ -475,6 +489,23 @@ async function refreshSide() {
   renderHosts();
   renderSnippets();
   renderHistory();
+  renderTabs();
+}
+
+function applyHostRuntime(rt: HostRuntime) {
+  const idx = state.hostsRuntime.findIndex((r) => r.host_id === rt.host_id);
+  if (idx >= 0) state.hostsRuntime[idx] = rt;
+  else state.hostsRuntime.push(rt);
+  renderHosts();
+}
+
+async function refreshHostsRuntime() {
+  try {
+    state.hostsRuntime = await invoke<HostRuntime[]>("hosts_runtime");
+    renderHosts();
+  } catch {
+    /* ignore — sidebar stays on last known runtime */
+  }
 }
 
 async function refreshSync() {
@@ -532,6 +563,27 @@ function hostPanes(hostId?: string | null) {
   return state.panes.filter((p) => (hostId ? p.session?.host_id === hostId || p.pending?.hostId === hostId : p.session?.kind === "local" || p.pending?.kind === "local"));
 }
 
+async function closeBackendSession(sessionId: string) {
+  await invoke("session_close", { id: sessionId }).catch(() => undefined);
+}
+
+/** Kill backend sessions that no longer belong to any open tab. */
+async function closeOrphanSessions(kind: "local" | "ssh", hostId?: string) {
+  const live = await invoke<SessionInfo[]>("session_list").catch(() => [] as SessionInfo[]);
+  const kept = new Set(
+    state.panes.flatMap((p) => (p.session?.id && !p.aborted ? [p.session.id] : [])),
+  );
+  await Promise.all(
+    live
+      .filter((s) => {
+        if (kept.has(s.id)) return false;
+        if (kind === "local") return s.kind === "local" || !s.host_id;
+        return !!hostId && s.host_id === hostId;
+      })
+      .map((s) => closeBackendSession(s.id)),
+  );
+}
+
 function renderHosts() {
   const q = $input("host-filter").value.toLowerCase();
   const active = activePane();
@@ -573,6 +625,7 @@ function renderHosts() {
   const childGroups = new Map<string, Group[]>();
   
   for (const group of state.groups) {
+    if (group.deleted_at) continue;
     if (!group.parent_id) {
       rootGroups.push(group);
     } else {
@@ -588,7 +641,7 @@ function renderHosts() {
     const connection = runtime?.connection ?? "disconnected";
     const openCount = Math.max(
       runtime?.open_count ?? 0,
-      hostPanes(h.id).filter((p) => p.session).length,
+      hostPanes(h.id).filter((p) => p.session && !p.exited).length,
     );
     const isActive = hostPanes(h.id).some((p) => p.id === state.activePane);
     
@@ -596,7 +649,7 @@ function renderHosts() {
       const colors: Record<string, string> = {
         local: "var(--blue)",
         connected: "var(--green)",
-        disconnected: "rgba(235, 235, 245, 0.3)",
+        disconnected: "var(--tertiary)",
         connecting: "var(--yellow)",
         error: "var(--red)",
       };
@@ -606,11 +659,11 @@ function renderHosts() {
     
     const userAtHost = `${h.username}@${h.hostname}${h.port !== 22 ? `:${h.port}` : ""}`;
     return `<div class="item ${openCount > 0 ? "open" : ""} ${isActive ? "active-host" : ""}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}">
-        <span class="leading">${icons.server}</span>
+        ${hostLeading(h)}
         <div class="body"><strong>${escapeHtml(h.name || h.hostname)}</strong><small>${escapeHtml(userAtHost)}</small></div>
         <span class="trail">
           ${connectionDot(connection)}
-          ${openCount > 0 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count-pill">${openCount}</span>` : ""}
+          ${openCount > 1 ? `<span class="sess-count" data-focus="${h.id}" data-testid="open-count-pill" title="${openCount} sessions">×${openCount}</span>` : ""}
           <button type="button" class="quick" data-new="${h.id}" title="New session">${icons.plus}</button>
           ${h.identity_id ? `<span class="trail-identity" data-testid="host-identity-icon" title="Identity">${icons.key}</span>` : ""}
         </span>
@@ -632,7 +685,6 @@ function renderHosts() {
       <span class="leading">${icons.folder}</span>
       <div class="body">
         <strong>${escapeHtml(group.name)}</strong>
-        ${totalHosts > 0 ? `<small>${totalHosts}</small>` : ""}
       </div>
     </div>`;
     
@@ -655,40 +707,22 @@ function renderHosts() {
   // Build the panel HTML
   const localConnectionDot = `<span class="connection-dot" style="background: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent);" data-testid="connection-dot" data-state="local"></span>`;
   let panelHtml = `<div class="item pinned ${localOpen ? "open" : ""} ${active?.session?.kind === "local" || active?.pending?.kind === "local" ? "active-host" : ""}" data-local="1" data-testid="host-local">
-      <span class="leading">${icons.laptop}</span>
+      ${localLeading()}
       <div class="body"><strong>This computer</strong><small>${localOpen ? `${localOpen} open shell${localOpen > 1 ? "s" : ""}` : "Local shell"}</small></div>
       <span class="trail">
         ${localConnectionDot}
-        ${localOpen ? `<span class="sess-count" data-testid="open-count-pill">${localOpen}</span>` : ""}
+        ${localOpen > 1 ? `<span class="sess-count" data-testid="open-count-pill" title="${localOpen} sessions">×${localOpen}</span>` : ""}
         <button type="button" class="quick" data-new-local="1" title="New session">${icons.plus}</button>
       </span>
     </div>`;
   
-  // Render root groups
+  const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
+  for (const host of ungrouped) {
+    panelHtml += hostRow(host);
+  }
+
   for (const group of rootGroups) {
     panelHtml += renderGroup(group);
-  }
-  
-  // Render ungrouped hosts (formula: !deleted_at && !group_id)
-  const ungroupedAll = state.hosts.filter((h) => !h.deleted_at && !h.group_id);
-  const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
-  if (true) /* always show Ungrouped for count badge (incl. 0) */ {
-    const ungroupedExpanded = true; // keep Ungrouped hosts visible (E2E + default UX)
-    panelHtml += `<div class="group-row ${ungroupedExpanded ? "expanded" : ""}" data-group="__ungrouped__" data-testid="group-ungrouped">
-      <span class="chevron">${icons.chevronRight}</span>
-      <span class="leading">${icons.server}</span>
-      <div class="body">
-        <strong data-testid="group-label">Ungrouped<span class="group-badge" data-testid="group-count">${ungroupedAll.length}</span></strong>
-      </div>
-    </div>`;
-    
-    if (ungroupedExpanded) {
-      panelHtml += `<div class="group-children">`;
-      for (const host of ungrouped) {
-        panelHtml += hostRow(host);
-      }
-      panelHtml += `</div>`;
-    }
   }
   
   $("panel-hosts").innerHTML = panelHtml;
@@ -749,7 +783,7 @@ function renderHosts() {
       showMenu(ev.clientX, ev.clientY, [
         { label: "Connect", run: () => void openSsh(host.id) },
         { label: "Focus session", run: () => focusHost(host.id), hidden: !hostPanes(host.id).length },
-        { label: "Browse files", run: () => openSftpFor(host.id) },
+        { label: "SFTP", run: () => openSftpFor(host.id) },
         { label: "Edit", run: () => editHost(host) },
         { danger: true, label: "Delete", run: () => void deleteHost(host) },
       ]);
@@ -832,6 +866,20 @@ function renderHistory() {
   });
 }
 
+function hostLeading(h: Host): string {
+  const { icon, os } = hostOsIcon(h.os_id);
+  const data = os ? ` data-os="${escapeHtml(os)}"` : "";
+  const title = os ? ` title="${escapeHtml(os)}"` : "";
+  return `<span class="leading"${data}${title}>${icon}</span>`;
+}
+
+function localLeading(): string {
+  const { icon, os } = hostOsIcon(state.localOsId);
+  const data = os ? ` data-os="${escapeHtml(os)}"` : "";
+  const title = os ? ` title="${escapeHtml(os)}"` : ' title="This computer"';
+  return `<span class="leading"${data}${title}>${icon}</span>`;
+}
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
@@ -851,7 +899,7 @@ function bindUi() {
     hosts: ["Hosts", "Search hosts..."],
     snippets: ["Snips", "Search snippets..."],
     history: ["History", "Search history..."],
-    sftp: ["Files", "Search files..."],
+    sftp: ["SFTP", "Search files..."],
   };
   const navIcons: Record<string, string> = {
     hosts: icons.server,
@@ -1065,6 +1113,7 @@ function focusHost(hostId: string) {
 }
 
 async function openLocal(reuse?: Pane) {
+  if (!reuse) await closeOrphanSessions("local");
   const pane = reuse ?? createPendingPane("This computer", "local");
   try {
     const size = paneSize(pane);
@@ -1073,9 +1122,13 @@ async function openLocal(reuse?: Pane) {
       rows: size.rows,
       scale: displayScale(),
     });
+    if (pane.aborted || !state.panes.some((p) => p.id === pane.id)) {
+      await closeBackendSession(info.id);
+      return;
+    }
     attachSession(info, pane);
   } catch (err) {
-    failPane(pane, "Couldn't open a local shell", String(err));
+    if (!pane.aborted) failPane(pane, "Couldn't open a local shell", String(err));
   }
 }
 
@@ -1299,6 +1352,7 @@ async function showTofuSheet(
 
 async function openSsh(hostId: string, reuse?: Pane, afterTrust = false): Promise<boolean> {
   const host = state.hosts.find((h) => h.id === hostId);
+  if (!reuse) await closeOrphanSessions("ssh", hostId);
   const pane = reuse ?? createPendingPane(host?.name || host?.hostname || "SSH", "ssh", hostId);
   try {
     const size = paneSize(pane);
@@ -1308,6 +1362,10 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false): Promis
       rows: size.rows,
       scale: displayScale(),
     });
+    if (pane.aborted || !state.panes.some((p) => p.id === pane.id)) {
+      await closeBackendSession(info.id);
+      return false;
+    }
     attachSession(info, pane);
     return true;
   } catch (err) {
@@ -1353,10 +1411,16 @@ async function openSsh(hostId: string, reuse?: Pane, afterTrust = false): Promis
     openSheet(`<h2>SSH failed</h2><p class="form-error">${escapeHtml(ipcErrorText(err))}</p><div class="row"><button class="primary" id="ssh-fail-ok">Close</button></div>`);
     $("ssh-fail-ok").onclick = () => $("modal").classList.add("hidden");
     return false;
+  } finally {
+    await refreshHostsRuntime();
   }
 }
 
 function attachSession(info: SessionInfo, pane = createPane()) {
+  if (pane.aborted || !state.panes.some((p) => p.id === pane.id)) {
+    void closeBackendSession(info.id);
+    return;
+  }
   pane.session = info;
   pane.pending = undefined;
   pane.exited = false;
@@ -1421,7 +1485,7 @@ function encodeTermKey(ev: KeyboardEvent): string | null {
   }
 }
 
-function createPane(): Pane {
+function createPane(pending?: Pane["pending"]): Pane {
   const el = document.createElement("div");
   el.className = "pane";
   const canvas = document.createElement("canvas");
@@ -1450,6 +1514,7 @@ function createPane(): Pane {
     selFocus: null,
     selLayer,
   };
+  if (pending) pane.pending = pending;
   state.panes.push(pane);
   clearPaneSurface(pane);
   el.onclick = () => {
@@ -1483,8 +1548,7 @@ function createPane(): Pane {
 }
 
 function createPendingPane(title: string, kind: string, hostId?: string): Pane {
-  const pane = createPane();
-  pane.pending = { title, kind, hostId };
+  const pane = createPane({ title, kind, hostId });
   showBanner(pane, kind === "ssh" ? `Connecting to ${title}…` : "Opening local shell…");
   selectPane(pane.id);
   renderHosts();
@@ -1694,6 +1758,15 @@ function paneTitle(pane?: Pane | null) {
   return `${base} · ${same.indexOf(pane) + 1}`;
 }
 
+function paneTabIcon(pane: Pane): { icon: string; os: string } {
+  const kind = pane.session?.kind ?? pane.pending?.kind;
+  if (kind === "local") return hostOsIcon(state.localOsId);
+  if (kind !== "ssh") return { icon: icons.laptop, os: "" };
+  const hostId = pane.session?.host_id ?? pane.pending?.hostId;
+  const host = hostId ? state.hosts.find((h) => h.id === hostId) : undefined;
+  return host ? hostOsIcon(host.os_id) : { icon: icons.server, os: "" };
+}
+
 function renderTabs() {
   const root = $("tabs");
   const ids = state.panes.map((p) => p.id);
@@ -1702,8 +1775,9 @@ function renderTabs() {
   if (!sameOrder) {
     root.innerHTML = state.panes
       .map((p) => {
-        const ssh = p.session?.kind === "ssh" || p.pending?.kind === "ssh";
-        return `<button type="button" role="tab" data-tab="${p.id}"><span class="tab-ico">${ssh ? icons.server : icons.laptop}</span><span class="live-dot"></span><span class="label"></span><span class="x" data-close="${p.id}">${icons.close}</span></button>`;
+        const osIco = paneTabIcon(p);
+        const osAttr = osIco.os ? ` data-os="${escapeHtml(osIco.os)}"` : "";
+        return `<button type="button" role="tab" data-tab="${p.id}"><span class="tab-ico"${osAttr}>${osIco.icon}</span><span class="live-dot"></span><span class="label"></span><span class="x" data-close="${p.id}">${icons.close}</span></button>`;
       })
       .join("");
     root.querySelectorAll<HTMLElement>("[data-tab]").forEach((el) => {
@@ -1712,7 +1786,7 @@ function renderTabs() {
         const close = (ev.target as HTMLElement).closest("[data-close]") as HTMLElement | null;
         if (close) {
           ev.stopPropagation();
-          closePane(close.dataset.close!);
+          void closePane(close.dataset.close!);
         } else {
           selectPane(el.dataset.tab!);
         }
@@ -1720,7 +1794,7 @@ function renderTabs() {
       el.onauxclick = (ev) => {
         if (ev.button !== 1) return;
         ev.preventDefault();
-        closePane(el.dataset.tab!);
+        void closePane(el.dataset.tab!);
       };
       el.ondragstart = (ev) => {
         ev.dataTransfer?.setData("text/plain", el.dataset.tab ?? "");
@@ -1744,7 +1818,7 @@ function renderTabs() {
         const pane = state.panes.find((p) => p.id === el.dataset.tab);
         if (!pane) return;
         showMenu(ev.clientX, ev.clientY, [
-          { label: "Close", run: () => closePane(pane.id) },
+          { label: "Close", run: () => void closePane(pane.id) },
           { label: "Close others", run: () => closeOtherPanes(pane.id), hidden: state.panes.length < 2 },
           { label: "Close all", run: () => closeAllPanes(), hidden: !state.panes.length },
           { label: pane.exited ? "Reconnect" : "New session", run: () => duplicatePane(pane) },
@@ -1758,6 +1832,13 @@ function renderTabs() {
     btn.classList.toggle("active", pane.id === state.activePane);
     btn.classList.toggle("pending", !!pane.pending && !pane.session);
     btn.classList.toggle("exited", !!pane.exited);
+    const { icon, os } = paneTabIcon(pane);
+    const icoEl = btn.querySelector(".tab-ico");
+    if (icoEl) {
+      if (icoEl.innerHTML !== icon) icoEl.innerHTML = icon;
+      if (os) icoEl.setAttribute("data-os", os);
+      else icoEl.removeAttribute("data-os");
+    }
     const label = btn.querySelector(".label");
     if (label) label.textContent = paneTitle(pane);
     btn.title = paneTitle(pane);
@@ -1804,7 +1885,14 @@ function updateTabOverflow() {
 async function closePane(id: string) {
   const pane = state.panes.find((p) => p.id === id);
   if (!pane) return;
-  if (pane.session) await invoke("session_close", { id: pane.session.id }).catch(() => undefined);
+  pane.aborted = true;
+  const sessionId = pane.session?.id;
+  const hostId = pane.session?.host_id ?? pane.pending?.hostId;
+  const local = (pane.session?.kind ?? pane.pending?.kind) === "local";
+  if (sessionId) {
+    pane.session = undefined;
+    await closeBackendSession(sessionId);
+  }
   pane.el.remove();
   const idx = state.panes.findIndex((p) => p.id === id);
   state.panes = state.panes.filter((p) => p.id !== id);
@@ -1813,6 +1901,8 @@ async function closePane(id: string) {
     state.activePane = next?.id ?? null;
     if (next) selectPane(next.id);
   }
+  if (local) await closeOrphanSessions("local");
+  else if (hostId) await closeOrphanSessions("ssh", hostId);
   renderTabs();
   await refreshSide();
   scheduleLayout();
@@ -1839,7 +1929,7 @@ function duplicatePane(pane: Pane) {
 }
 
 function closeActive() {
-  if (state.activePane) closePane(state.activePane);
+  if (state.activePane) void closePane(state.activePane);
 }
 
 function showBanner(pane: Pane, title: string, action?: { label: string; run: () => void }, detail?: string) {
@@ -1880,9 +1970,10 @@ function markExited(sessionId: string) {
 async function reconnectPane(pane: Pane) {
   const hostId = pane.session?.host_id ?? pane.pending?.hostId;
   const local = (pane.session?.kind ?? pane.pending?.kind) === "local";
-  if (pane.session) await invoke("session_close", { id: pane.session.id }).catch(() => undefined);
+  if (pane.session) await closeBackendSession(pane.session.id);
   pane.session = undefined;
   pane.exited = false;
+  pane.aborted = false;
   pane.cols = 0;
   pane.rows = 0;
   pane.pending = {
@@ -2013,6 +2104,7 @@ async function editHost(existing?: Host) {
     group_id: null,
     tags: [],
     notes: "",
+    os_id: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -2091,6 +2183,8 @@ async function editHost(existing?: Host) {
   });
   syncAuth();
   $("f-save").onclick = async () => {
+    const prevHostname = host.hostname;
+    const prevPort = host.port;
     host.name = ($("f-name") as HTMLInputElement).value;
     host.hostname = ($("f-host") as HTMLInputElement).value;
     host.port = Number(($("f-port") as HTMLInputElement).value);
@@ -2100,6 +2194,7 @@ async function editHost(existing?: Host) {
     host.notes = ($("f-notes") as HTMLTextAreaElement).value;
     host.group_id = ($("f-group") as HTMLSelectElement).value || null;
     host.updated_at = new Date().toISOString();
+    if (existing && (host.hostname !== prevHostname || host.port !== prevPort)) host.os_id = null;
     if (host.auth_method === "key") {
       const selected = ($("f-ident") as HTMLSelectElement).value;
       const path = ($("f-keypath") as HTMLInputElement).value.trim();
@@ -2861,6 +2956,34 @@ function sftpConnectionLabel(conn: string): string {
   }
 }
 
+function sftpConnColor(conn: string): string {
+  if (conn === "connected" || conn === "local") return "var(--green)";
+  if (conn === "connecting") return "var(--yellow)";
+  if (conn === "error") return "var(--red)";
+  return "var(--tertiary)";
+}
+
+function sftpSidebarConn(hostId: string | null): string {
+  if (!hostId) return "disconnected";
+  if (state.sftpHostId === hostId) return state.sftpConn;
+  return "disconnected";
+}
+
+function setSftpConn(status: string) {
+  state.sftpConn = status;
+  if (status !== "connected") return;
+  const id = state.sftpHostId;
+  if (!id) return;
+  const rt = state.hostsRuntime.find((r) => r.host_id === id);
+  if (rt) {
+    if (rt.connection === "disconnected" || rt.connection === "connecting" || rt.connection === "error") {
+      rt.connection = "connected";
+    }
+  } else {
+    state.hostsRuntime.push({ host_id: id, connection: "connected", open_count: 0 });
+  }
+}
+
 function sftpHostOptions(hostId: string | null): string {
   return state.hosts
     .map(
@@ -2878,21 +3001,12 @@ function renderSftpSidebar(hostId: string | null) {
     return;
   }
   const id = hostId ?? state.hosts[0]?.id ?? null;
-  const runtime = id ? state.hostsRuntime.find((r) => r.host_id === id) : undefined;
-  const conn = runtime?.connection ?? "disconnected";
+  const conn = sftpSidebarConn(id);
   $("panel-sftp").innerHTML = `<div class="sftp-side" data-testid="sftp-side">
     <label class="sftp-side-label" for="sftp-side-host">Host</label>
     <select id="sftp-side-host" class="sftp-side-host" title="Host" data-testid="sftp-side-host">${sftpHostOptions(id)}</select>
     <div class="sftp-side-status" data-testid="sftp-side-status" data-state="${escapeHtml(conn)}">
-      <span class="connection-dot" style="background: ${
-        conn === "connected"
-          ? "var(--green)"
-          : conn === "connecting"
-            ? "var(--yellow)"
-            : conn === "error"
-              ? "var(--red)"
-              : "rgba(235, 235, 245, 0.3)"
-      };"></span>
+      <span class="connection-dot" style="background: ${sftpConnColor(conn)};"></span>
       <span>${escapeHtml(sftpConnectionLabel(conn))}</span>
     </div>
   </div>`;
@@ -2916,6 +3030,7 @@ function renderSftpWorkspace(hostId: string, path: string, bodyHtml: string) {
 }
 
 function renderSftpEmpty() {
+  state.sftpConn = "disconnected";
   enterSftpMode();
   ensureSftpView().classList.add("active");
   renderSftpSidebar(null);
@@ -2958,7 +3073,6 @@ function sftpToolbarHtml(hostId: string, path: string): string {
   const atRoot = parentSftpPath(path) == null;
   const pathIcon = atRoot ? icons.home : icons.folder;
   return `<div class="sftp-toolbar" data-testid="sftp-toolbar">
-    <select id="sftp-host" class="sftp-host" title="Host" data-testid="sftp-host">${sftpHostOptions(hostId)}</select>
     <button type="button" id="sftp-up" class="sftp-icon-btn" title="Up" aria-label="Up" data-testid="sftp-up" ${atRoot ? "disabled" : ""}>${icons.arrowUp}</button>
     <label class="sftp-path-wrap">
       <span class="sftp-path-ico" aria-hidden="true">${pathIcon}</span>
@@ -2992,6 +3106,7 @@ function bindSftpToolbar(hostId: string, path: string) {
 
 function renderSftpError(hostId: string, path: string, err: unknown) {
   const typed = parseSftpError(err);
+  if (state.sftpConn === "connecting") setSftpConn("error");
   renderSftpWorkspace(
     hostId,
     path,
@@ -3082,13 +3197,20 @@ function refreshRemoteSelection(): void {
     });
 }
 
+let sftpLoadSeq = 0;
+
 async function loadSftp(hostId: string, path: string) {
+  const seq = ++sftpLoadSeq;
   state.sftpHostId = hostId;
+  setSftpConn("connecting");
   if (!state.hosts.length) {
+    setSftpConn("disconnected");
     renderSftpEmpty();
     return;
   }
+  renderSftpSidebar(hostId);
   await ensureSftpCwd(hostId);
+  if (seq !== sftpLoadSeq) return;
   let safePath: string;
   try {
     const raw = path && path.trim() ? path : ".";
@@ -3116,6 +3238,8 @@ async function loadSftp(hostId: string, path: string) {
       path: safePath,
       root: state.sftpRoot,
     });
+    if (seq !== sftpLoadSeq) return;
+    setSftpConn("connected");
     if (!entries.length) {
       renderSftpWorkspace(
         hostId,
@@ -3155,6 +3279,7 @@ async function loadSftp(hostId: string, path: string) {
     bindSftpRows(hostId, remotePaneEl());
     updateArrowsEnabled();
   } catch (err) {
+    if (seq !== sftpLoadSeq) return;
     renderSftpError(hostId, safePath, err);
   }
 }

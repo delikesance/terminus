@@ -35,6 +35,7 @@
         linuxNative = with pkgs; [
           pkg-config
           wrapGAppsHook4
+          xdg-utils
         ];
 
         linuxLibs = with pkgs; [
