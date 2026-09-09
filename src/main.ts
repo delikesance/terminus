@@ -5024,10 +5024,17 @@ function bindLocalRows(): void {
         };
     showMenu(ev.clientX, ev.clientY, fileContextMenuItems(target));
   };
-  root.addEventListener("contextmenu", (ev) => {
-    const row = (ev.target as HTMLElement).closest(".local-row") as HTMLElement | null;
-    openLocalMenu(ev, row && root.contains(row) ? row : null);
-  });
+  const body =
+    pane.classList.contains("sftp-pane-body")
+      ? pane
+      : ((pane.closest(".sftp-pane-body") as HTMLElement | null) ?? root);
+  if (body.dataset.boundLocalCtx !== "1") {
+    body.dataset.boundLocalCtx = "1";
+    body.addEventListener("contextmenu", (ev) => {
+      const row = (ev.target as HTMLElement).closest(".local-row") as HTMLElement | null;
+      openLocalMenu(ev, row && body.contains(row) ? row : null);
+    });
+  }
   root.addEventListener("click", (ev) => {
     const more = (ev.target as HTMLElement).closest(".local-more") as HTMLButtonElement | null;
     if (!more) return;
