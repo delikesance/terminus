@@ -245,6 +245,15 @@ const state = {
   sftpEntries: [] as SftpEntry[],
   localSelected: new Set<string>(),
   sftpSelected: new Set<string>(),
+  /** Last focused SFTP side (for Paste / keyboard shortcuts). */
+  sftpFocusSide: "remote" as "local" | "remote",
+  /** In-app file clipboard for Copy/Cut/Paste across panes. */
+  fileClipboard: null as null | {
+    side: "local" | "remote";
+    hostId: string | null;
+    items: { path: string; name: string; is_dir: boolean }[];
+    mode: "copy" | "cut";
+  },
   transfer: null as TransferJob | null,
   sftpConn: "disconnected" as string,
   sftpShowHidden: localStorage.getItem("terminus-sftp-show-hidden") === "1",
@@ -1502,6 +1511,36 @@ function onGlobalKey(ev: KeyboardEvent) {
     rerenderSftpListings();
     return;
   }
+  if (
+    state.sftpMode &&
+    navState.active === "sftp" &&
+    (ev.metaKey || ev.ctrlKey) &&
+    !ev.altKey &&
+    !ev.shiftKey
+  ) {
+    const tag = (ev.target as HTMLElement | null)?.tagName;
+    if (tag !== "INPUT" && tag !== "TEXTAREA") {
+      const key = ev.key.toLowerCase();
+      if (key === "c") {
+        ev.preventDefault();
+        fileClipboardCopyFromSelection();
+        return;
+      }
+      if (key === "x") {
+        ev.preventDefault();
+        fileClipboardCutFromSelection();
+        return;
+      }
+      if (key === "v") {
+        const dest = fileClipboardTargetFromFocus();
+        if (dest && state.fileClipboard?.items.length) {
+          ev.preventDefault();
+          void fileClipboardPaste(dest);
+          return;
+        }
+      }
+    }
+  }
   if (ev.key === "Escape") {
     closeOverlays();
     hideMenu();
@@ -2486,22 +2525,40 @@ async function reconnectPane(pane: Pane) {
   else if (hostId) await openSsh(hostId, pane);
 }
 
-type MenuItem = { label: string; run: () => void; danger?: boolean; hidden?: boolean };
+type MenuItem = {
+  label?: string;
+  run?: () => void;
+  danger?: boolean;
+  hidden?: boolean;
+  disabled?: boolean;
+  sep?: boolean;
+};
 
 function showMenu(x: number, y: number, items: MenuItem[]) {
   const menu = $("ctx-menu");
   const visible = items.filter((i) => !i.hidden);
   if (!visible.length) return;
-  menu.innerHTML = visible
-    .map((item, idx) => `<button type="button" data-i="${idx}" class="${item.danger ? "danger" : ""}">${escapeHtml(item.label)}</button>`)
-    .join("");
-  menu.querySelectorAll<HTMLButtonElement>("button").forEach((btn) => {
-    btn.onclick = (ev) => {
-      ev.stopPropagation();
-      hideMenu();
-      visible[Number(btn.dataset.i)]?.run();
-    };
-  });
+  menu.innerHTML = "";
+  for (const item of visible) {
+    if (item.sep) {
+      menu.appendChild(document.createElement("hr"));
+      continue;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = item.label ?? "";
+    if (item.danger) btn.classList.add("danger");
+    if (item.disabled) btn.disabled = true;
+    if (!item.disabled && item.run) {
+      const run = item.run;
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        hideMenu();
+        run();
+      };
+    }
+    menu.appendChild(btn);
+  }
   menu.classList.remove("hidden");
   const pad = 8;
   const left = Math.min(x, window.innerWidth - menu.offsetWidth - pad);
@@ -3829,7 +3886,9 @@ function buildLocalRowHtml(e: LocalEntry): string {
           <strong class="sftp-name col-name">${escapeHtml(e.name)}</strong>
           <span class="sftp-size col-size">${escapeHtml(formatSftpSize(e.size, e.is_dir))}</span>
           <span class="sftp-mtime col-mtime">${escapeHtml(formatLocalMtime(e.modified))}</span>
-          <span class="col-actions"></span>
+          <span class="trail col-actions">
+            <button type="button" class="quick local-more" data-testid="local-more" title="Actions" aria-label="Actions">${icons.more}</button>
+          </span>
         </div>`;
 }
 
@@ -4093,7 +4152,12 @@ function bindSftpRows(_hostId: string, root: ParentNode) {
   if (el.dataset.boundSftp === "1") return;
   el.dataset.boundSftp = "1";
   const host = () => state.sftpHostId || _hostId;
+  const focusRemote = () => {
+    state.sftpFocusSide = "remote";
+  };
+  el.addEventListener("pointerdown", focusRemote);
   el.addEventListener("click", (ev) => {
+    focusRemote();
     const t = ev.target as HTMLElement;
     const row = t.closest(".sftp-row") as HTMLElement | null;
     if (!row || !el.contains(row)) return;
@@ -4118,38 +4182,385 @@ function bindSftpRows(_hostId: string, root: ParentNode) {
         : [{ path, name: row.dataset.name || "", is_dir: row.dataset.dir === "true" }];
     setDragPayload(ev, "remote", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
   });
+  const openRemoteMenu = (ev: MouseEvent, row: HTMLElement | null) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    focusRemote();
+    const hid = host();
+    if (!hid) return;
+    const target = row
+      ? {
+          side: "remote" as const,
+          hostId: hid,
+          path: row.dataset.sftp!,
+          name: row.dataset.name || "",
+          isDir: row.dataset.dir === "true",
+          cwd: state.sftpPath || ".",
+        }
+      : {
+          side: "remote" as const,
+          hostId: hid,
+          path: state.sftpPath || ".",
+          name: "",
+          isDir: true,
+          cwd: state.sftpPath || ".",
+          empty: true,
+        };
+    showMenu(ev.clientX, ev.clientY, fileContextMenuItems(target));
+  };
+  const body =
+    (root as HTMLElement).classList?.contains("sftp-pane-body")
+      ? (root as HTMLElement)
+      : (((root as HTMLElement).closest?.(".sftp-pane-body") as HTMLElement | null) ?? el);
+  if (body.dataset.boundSftpCtx !== "1") {
+    body.dataset.boundSftpCtx = "1";
+    body.addEventListener("contextmenu", (ev) => {
+      const row = (ev.target as HTMLElement).closest(".sftp-row") as HTMLElement | null;
+      openRemoteMenu(ev, row && body.contains(row) ? row : null);
+    });
+  }
   el.addEventListener("click", (ev) => {
     const more = (ev.target as HTMLElement).closest(".sftp-more") as HTMLButtonElement | null;
     if (!more) return;
-    ev.stopPropagation();
     const row = more.closest(".sftp-row") as HTMLElement | null;
     if (!row) return;
-    const hid = host();
-    if (!hid) return;
-    const entryPath = row.dataset.sftp!;
-    const isDir = row.dataset.dir === "true";
-    const name = row.dataset.name || "";
-    showMenu(ev.clientX, ev.clientY, [
+    openRemoteMenu(ev, row);
+  });
+}
+
+type FileCtxTarget = {
+  side: "local" | "remote";
+  hostId?: string;
+  path: string;
+  name: string;
+  isDir: boolean;
+  cwd: string;
+  empty?: boolean;
+};
+
+function fileClipboardItemsForTarget(target: FileCtxTarget): { path: string; name: string; is_dir: boolean }[] {
+  if (target.empty) return [];
+  if (target.side === "remote") {
+    if (state.sftpSelected.has(target.path) && state.sftpSelected.size > 0) {
+      return state.sftpEntries
+        .filter((e) => state.sftpSelected.has(e.path))
+        .map((e) => ({ path: e.path, name: e.name, is_dir: e.is_dir }));
+    }
+    return [{ path: target.path, name: target.name, is_dir: target.isDir }];
+  }
+  if (state.localSelected.has(target.path) && state.localSelected.size > 0) {
+    return state.localEntries
+      .filter((e) => state.localSelected.has(e.path))
+      .map((e) => ({ path: e.path, name: e.name, is_dir: e.is_dir }));
+  }
+  return [{ path: target.path, name: target.name, is_dir: target.isDir }];
+}
+
+function setFileClipboard(
+  side: "local" | "remote",
+  items: { path: string; name: string; is_dir: boolean }[],
+  mode: "copy" | "cut",
+  hostId?: string,
+) {
+  if (!items.length) return;
+  state.fileClipboard = {
+    side,
+    hostId: hostId ?? (side === "remote" ? state.sftpHostId : null),
+    items,
+    mode,
+  };
+}
+
+function fileContextMenuItems(target: FileCtxTarget): MenuItem[] {
+  const clip = state.fileClipboard;
+  const canPaste = Boolean(clip?.items.length);
+  const items = fileClipboardItemsForTarget(target);
+  const hasTarget = !target.empty && Boolean(target.path);
+  const remoteHost = target.hostId || state.sftpHostId || undefined;
+
+  if (target.empty) {
+    return [
       {
-        label: "Open",
+        label: "Paste",
+        disabled: !canPaste,
+        run: () => void fileClipboardPaste(target),
+      },
+      { sep: true },
+      {
+        label: "New folder",
         run: () => {
-          if (isDir) void loadSftp(hid, entryPath);
-          else void sftpOpen(hid, entryPath, name, row);
+          if (target.side === "local") localMkdirSheet();
+          else if (remoteHost) sftpMkdirSheet(remoteHost, target.cwd);
         },
       },
       {
-        label: "Download",
-        hidden: isDir,
-        run: () => void sftpDownload(hid, entryPath, name),
+        label: "Upload…",
+        hidden: target.side !== "remote" || !remoteHost,
+        run: () => {
+          if (remoteHost) void sftpUpload(remoteHost, target.cwd);
+        },
       },
-      { label: "Rename", run: () => sftpRenameSheet(hid, entryPath, name, isDir) },
-      {
-        label: "Delete",
-        danger: true,
-        run: () => sftpDeleteConfirm(hid, entryPath, name, isDir),
+    ];
+  }
+
+  const openItem: MenuItem = {
+    label: "Open",
+    run: () => {
+      if (target.side === "remote" && remoteHost) {
+        if (target.isDir) void loadSftp(remoteHost, target.path);
+        else void sftpOpen(remoteHost, target.path, target.name);
+      } else if (target.side === "local" && target.isDir) {
+        state.localCwd = target.path;
+        void loadLocal();
+      }
+    },
+    hidden: target.side === "local" && !target.isDir,
+  };
+
+  return [
+    openItem,
+    {
+      label: "Download",
+      hidden: target.side !== "remote" || target.isDir,
+      run: () => {
+        if (remoteHost) void sftpDownload(remoteHost, target.path, target.name);
       },
-    ]);
-  });
+    },
+    { sep: true },
+    {
+      label: "Copy",
+      disabled: !hasTarget,
+      run: () => setFileClipboard(target.side, items, "copy", remoteHost),
+    },
+    {
+      label: "Cut",
+      disabled: !hasTarget,
+      run: () => setFileClipboard(target.side, items, "cut", remoteHost),
+    },
+    {
+      label: "Paste",
+      disabled: !canPaste,
+      run: () => void fileClipboardPaste(target),
+    },
+    { sep: true },
+    {
+      label: "Rename",
+      run: () => {
+        if (target.side === "remote" && remoteHost) {
+          sftpRenameSheet(remoteHost, target.path, target.name, target.isDir);
+        } else {
+          localRenameSheet(target.path, target.name, target.isDir);
+        }
+      },
+    },
+    {
+      label: "New folder",
+      run: () => {
+        if (target.side === "local") localMkdirSheet();
+        else if (remoteHost) sftpMkdirSheet(remoteHost, target.cwd);
+      },
+    },
+    { sep: true },
+    {
+      label: "Delete",
+      danger: true,
+      run: () => {
+        if (target.side === "remote" && remoteHost) {
+          sftpDeleteConfirm(remoteHost, target.path, target.name, target.isDir);
+        } else {
+          localDeleteConfirm(target.path, target.name, target.isDir);
+        }
+      },
+    },
+  ];
+}
+
+function pasteDestinationDir(target: FileCtxTarget): string {
+  if (target.empty || target.isDir) return target.path || target.cwd;
+  if (target.side === "local") return parentLocalPath(target.path) ?? target.cwd;
+  return parentSftpPath(target.path) ?? target.cwd;
+}
+
+async function fileClipboardPaste(target: FileCtxTarget): Promise<void> {
+  const clip = state.fileClipboard;
+  if (!clip?.items.length) return;
+  const destDir = pasteDestinationDir(target);
+  const intoSide = target.side;
+
+  if (clip.side === "local" && intoSide === "remote") {
+    const hostId = target.hostId || state.sftpHostId;
+    if (!hostId) return;
+    const files: FileRef[] = [];
+    await collectLocalTree(clip.items, files);
+    await transferFiles({
+      direction: "upload",
+      hostId,
+      remoteTargetDir: destDir,
+      localTargetDir: state.localCwd,
+      files,
+    });
+  } else if (clip.side === "remote" && intoSide === "local") {
+    const hostId = clip.hostId || state.sftpHostId;
+    if (!hostId) return;
+    const files: FileRef[] = [];
+    await collectRemoteTree(hostId, clip.items, files);
+    await transferFiles({
+      direction: "download",
+      hostId,
+      remoteTargetDir: state.sftpPath,
+      localTargetDir: destDir,
+      files,
+    });
+  } else if (clip.side === intoSide && clip.mode === "cut") {
+    await moveClipboardItems(clip, destDir, intoSide, target.hostId);
+    if (intoSide === "local") await loadLocal();
+    else if (state.sftpHostId) await loadSftp(state.sftpHostId, state.sftpPath || ".");
+  } else if (clip.side === intoSide && clip.mode === "copy") {
+    await copyClipboardItems(clip, destDir, intoSide, target.hostId);
+    if (intoSide === "local") await loadLocal();
+    else if (state.sftpHostId) await loadSftp(state.sftpHostId, state.sftpPath || ".");
+  }
+
+  if (clip.mode === "cut") state.fileClipboard = null;
+}
+
+async function moveClipboardItems(
+  clip: NonNullable<typeof state.fileClipboard>,
+  destDir: string,
+  side: "local" | "remote",
+  hostId?: string,
+): Promise<void> {
+  for (const it of clip.items) {
+    const parent = side === "local" ? parentLocalPath(it.path) : parentSftpPath(it.path);
+    if (parent === destDir || it.path === destDir) continue;
+    if (side === "local") {
+      const to = joinLocalPath(destDir, it.name);
+      await invoke("local_rename", { from: it.path, to });
+      state.localSelected.delete(it.path);
+    } else {
+      const hid = hostId || clip.hostId || state.sftpHostId;
+      if (!hid) continue;
+      const to =
+        destDir === "/" ? `/${it.name}` : destDir === "." ? it.name : `${destDir.replace(/\/+$/, "")}/${it.name}`;
+      await invoke("sftp_rename", {
+        hostId: hid,
+        from: resolveUnderRoot(state.sftpRoot, it.path),
+        to: resolveUnderRoot(state.sftpRoot, to),
+        root: state.sftpRoot,
+      });
+      state.sftpSelected.delete(it.path);
+    }
+  }
+}
+
+async function copyClipboardItems(
+  clip: NonNullable<typeof state.fileClipboard>,
+  destDir: string,
+  side: "local" | "remote",
+  hostId?: string,
+): Promise<void> {
+  if (side === "local") {
+    const files: FileRef[] = [];
+    await collectLocalTree(clip.items, files);
+    const created = new Set<string>();
+    for (const f of files) {
+      const relDir = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : "";
+      if (relDir && !created.has(relDir)) {
+        created.add(relDir);
+        await invoke("local_mkdir", { path: joinLocalPath(destDir, relToSep(relDir)) }).catch(() => undefined);
+      }
+      const data = await invoke<number[] | Uint8Array>("local_read", { path: f.src });
+      await invoke("local_write", {
+        path: joinLocalPath(destDir, relToSep(f.rel)),
+        data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
+      });
+    }
+    return;
+  }
+  const hid = hostId || clip.hostId || state.sftpHostId;
+  if (!hid) return;
+  const files: FileRef[] = [];
+  await collectRemoteTree(hid, clip.items, files);
+  const created = new Set<string>();
+  for (const f of files) {
+    const relDir = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : "";
+    if (relDir && !created.has(relDir)) {
+      created.add(relDir);
+      await invoke("sftp_mkdir", {
+        hostId: hid,
+        path: resolveUnderRoot(state.sftpRoot, joinRemote(destDir, relDir)),
+        root: state.sftpRoot,
+      }).catch(() => undefined);
+    }
+    const data = await invoke<number[] | Uint8Array>("sftp_read", {
+      hostId: hid,
+      path: f.src,
+      root: state.sftpRoot,
+    });
+    await invoke("sftp_write", {
+      hostId: hid,
+      path: resolveUnderRoot(state.sftpRoot, joinRemote(destDir, f.rel)),
+      data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
+      root: state.sftpRoot,
+    });
+  }
+}
+
+function fileClipboardTargetFromFocus(): FileCtxTarget | null {
+  if (state.sftpFocusSide === "local" && state.localCwd) {
+    return {
+      side: "local",
+      path: state.localCwd,
+      name: "",
+      isDir: true,
+      cwd: state.localCwd,
+      empty: true,
+    };
+  }
+  if (state.sftpHostId) {
+    return {
+      side: "remote",
+      hostId: state.sftpHostId,
+      path: state.sftpPath || ".",
+      name: "",
+      isDir: true,
+      cwd: state.sftpPath || ".",
+      empty: true,
+    };
+  }
+  return null;
+}
+
+function fileClipboardCopyFromSelection(): void {
+  if (state.sftpFocusSide === "local" && state.localSelected.size) {
+    const items = state.localEntries
+      .filter((e) => state.localSelected.has(e.path))
+      .map((e) => ({ path: e.path, name: e.name, is_dir: e.is_dir }));
+    setFileClipboard("local", items, "copy");
+    return;
+  }
+  if (state.sftpSelected.size && state.sftpHostId) {
+    const items = state.sftpEntries
+      .filter((e) => state.sftpSelected.has(e.path))
+      .map((e) => ({ path: e.path, name: e.name, is_dir: e.is_dir }));
+    setFileClipboard("remote", items, "copy", state.sftpHostId);
+  }
+}
+
+function fileClipboardCutFromSelection(): void {
+  if (state.sftpFocusSide === "local" && state.localSelected.size) {
+    const items = state.localEntries
+      .filter((e) => state.localSelected.has(e.path))
+      .map((e) => ({ path: e.path, name: e.name, is_dir: e.is_dir }));
+    setFileClipboard("local", items, "cut");
+    return;
+  }
+  if (state.sftpSelected.size && state.sftpHostId) {
+    const items = state.sftpEntries
+      .filter((e) => state.sftpSelected.has(e.path))
+      .map((e) => ({ path: e.path, name: e.name, is_dir: e.is_dir }));
+    setFileClipboard("remote", items, "cut", state.sftpHostId);
+  }
 }
 
 function toggleRemoteSelection(path: string, currentlySelected: boolean): void {
@@ -4561,10 +4972,16 @@ function bindLocalRows(): void {
   const root = (pane.querySelector(".sftp-virtual-viewport") as HTMLElement | null) ?? pane;
   if (root.dataset.boundLocal === "1") return;
   root.dataset.boundLocal = "1";
+  const focusLocal = () => {
+    state.sftpFocusSide = "local";
+  };
+  root.addEventListener("pointerdown", focusLocal);
   root.addEventListener("click", (ev) => {
+    focusLocal();
     const t = ev.target as HTMLElement;
     const row = t.closest(".local-row") as HTMLElement | null;
     if (!row || !root.contains(row)) return;
+    if (t.closest(".local-more")) return;
     if (t.closest(".cell-sel")) {
       ev.stopPropagation();
       toggleLocalSelection(row.dataset.path!, row.dataset.selected === "true");
@@ -4584,6 +5001,39 @@ function bindLocalRows(): void {
         ? state.localEntries.filter((x) => state.localSelected.has(x.path))
         : [{ path, name: row.dataset.name || "", is_dir: row.dataset.dir === "true" }];
     setDragPayload(ev, "local", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
+  });
+  const openLocalMenu = (ev: MouseEvent, row: HTMLElement | null) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    focusLocal();
+    const target = row
+      ? {
+          side: "local" as const,
+          path: row.dataset.path!,
+          name: row.dataset.name || "",
+          isDir: row.dataset.dir === "true",
+          cwd: state.localCwd,
+        }
+      : {
+          side: "local" as const,
+          path: state.localCwd,
+          name: "",
+          isDir: true,
+          cwd: state.localCwd,
+          empty: true,
+        };
+    showMenu(ev.clientX, ev.clientY, fileContextMenuItems(target));
+  };
+  root.addEventListener("contextmenu", (ev) => {
+    const row = (ev.target as HTMLElement).closest(".local-row") as HTMLElement | null;
+    openLocalMenu(ev, row && root.contains(row) ? row : null);
+  });
+  root.addEventListener("click", (ev) => {
+    const more = (ev.target as HTMLElement).closest(".local-more") as HTMLButtonElement | null;
+    if (!more) return;
+    const row = more.closest(".local-row") as HTMLElement | null;
+    if (!row) return;
+    openLocalMenu(ev, row);
   });
 }
 
@@ -4638,6 +5088,54 @@ function localMkdirSheet(): void {
       await loadLocal();
     } catch (err) {
       console.error("local_mkdir failed", err);
+    }
+  };
+}
+
+function localRenameSheet(path: string, name: string, _isDir: boolean): void {
+  openSheet(`
+    <h2>Rename</h2>
+    <p class="lead">${escapeHtml(name)}</p>
+    <label class="field">New name<input id="local-rename-input" data-testid="local-rename-input" value="${escapeHtml(name)}" spellcheck="false" /></label>
+    <div class="row">
+      <button type="button" id="local-rename-cancel">Cancel</button>
+      <button type="button" class="primary" id="local-rename-ok" data-testid="local-rename-ok">Rename</button>
+    </div>`);
+  $("local-rename-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("local-rename-ok").onclick = async () => {
+    const nextName = ($input("local-rename-input") as HTMLInputElement).value.trim();
+    $("modal").classList.add("hidden");
+    if (!nextName || nextName.includes("/") || nextName.includes("\\")) return;
+    try {
+      const parent = parentLocalPath(path) ?? state.localCwd;
+      await invoke("local_rename", { from: path, to: joinLocalPath(parent, nextName) });
+      state.localSelected.delete(path);
+      await loadLocal();
+    } catch (err) {
+      console.error("local_rename failed", err);
+    }
+  };
+}
+
+function localDeleteConfirm(path: string, name: string, isDir: boolean): void {
+  openSheet(`
+    <h2>Delete ${isDir ? "folder" : "file"}?</h2>
+    <p class="lead">This cannot be undone.</p>
+    <p class="form-error">${escapeHtml(name)}</p>
+    <div class="row">
+      <button type="button" id="local-del-cancel" data-testid="local-del-cancel">Cancel</button>
+      <button type="button" class="danger" id="local-del-ok" data-testid="local-del-confirm">Delete</button>
+    </div>`);
+  $("local-del-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("local-del-ok").onclick = async () => {
+    try {
+      await invoke("local_remove", { path, isDir });
+      state.localSelected.delete(path);
+      $("modal").classList.add("hidden");
+      await loadLocal();
+    } catch (err) {
+      $("modal").classList.add("hidden");
+      console.error("local_remove failed", err);
     }
   };
 }
