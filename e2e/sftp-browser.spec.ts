@@ -379,7 +379,7 @@ test.describe("C9: SFTP browser v1", () => {
     const batch = page.locator('[data-testid="sftp-batch-bar"]');
     await expect(batch).not.toHaveClass(/hidden/);
     await expect(page.locator('[data-testid="sftp-batch-count"]')).toContainText("1 selected");
-    await expect(page.locator('[data-testid="sftp-batch-download"]')).toBeDisabled();
+    await expect(page.locator('[data-testid="sftp-batch-download"]')).toBeEnabled();
     await expect(page.locator('[data-testid="sftp-batch-upload"]')).toBeDisabled();
     await page.locator('[data-testid="sftp-batch-clear"]').click();
     await expect(batch).toHaveClass(/hidden/);
