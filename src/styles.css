@@ -1439,6 +1439,94 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   font-size: 12.5px;
   line-height: 1.4;
 }
+.sftp-side-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 0;
+  background: var(--fill);
+  color: var(--secondary);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.sftp-side-toggle svg { width: 16px; height: 16px; flex: none; }
+.sftp-side-toggle:hover { color: var(--text); }
+
+.sftp-view.compact-rows .sftp-row,
+.sftp-view.compact-rows .local-row {
+  min-height: 28px;
+  padding: 4px 10px;
+}
+.sftp-table-head,
+.sftp-file-row {
+  display: grid;
+  grid-template-columns: 28px 22px minmax(0, 1fr) 72px 120px 32px;
+  align-items: center;
+  gap: 8px;
+}
+.sftp-table-head {
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--line);
+}
+.sftp-file-row .body { display: none; }
+.sftp-file-row .sftp-meta-inline { display: none; }
+.sftp-file-row .col-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.sftp-file-row .col-size,
+.sftp-file-row .col-mtime {
+  font-size: 12px;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+}
+.sftp-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  margin: 0 10px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--blue) 12%, var(--elevated));
+  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--line));
+}
+.sftp-batch-bar.hidden { display: none; }
+.sftp-batch-count { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.sftp-batch-actions { display: flex; align-items: center; gap: 8px; }
+.sftp-batch-actions .primary,
+.sftp-batch-actions .ghost {
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.sftp-batch-actions .primary {
+  background: var(--blue);
+  color: var(--on-accent, #fff);
+  border: 0;
+}
+.sftp-batch-actions .ghost {
+  border: 0;
+  background: transparent;
+  color: var(--secondary);
+}
+.sftp-batch-actions .ghost:hover { color: var(--text); background: var(--fill); }
+.sftp-batch-actions button:disabled { opacity: 0.4; cursor: default; }
+
 .sftp-toolbar {
   display: flex;
   align-items: center;
@@ -1665,13 +1753,14 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 }
 .sftp-arrows {
   flex: none;
-  width: 44px;
+  width: 28px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 6px;
   background: var(--bg);
+  opacity: 0.55;
 }
 .sftp-arrow-btn {
   width: 32px;

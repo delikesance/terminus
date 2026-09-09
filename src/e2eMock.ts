@@ -363,6 +363,7 @@ function ensureSftpRoot(db: Db, hostId: string): SftpNode {
     userDir.children.set("docs", makeDir("docs"));
     userDir.children.get("docs")!.children.set("readme.txt", makeFile("readme.txt", "hello sftp"));
     userDir.children.set("notes.txt", makeFile("notes.txt", "notes"));
+    userDir.children.set(".cache", makeDir(".cache"));
     userDir.children.set("remote-only.txt", makeFile("remote-only.txt", "from remote"));
     home.children.set(user, userDir);
     root.children.set("home", home);
@@ -501,6 +502,7 @@ function ensureLocalRoot(db: Db): SftpNode {
     root.children.set("subdir", makeDir("subdir"));
     root.children.get("subdir")!.children.set("deep.txt", makeFile("deep.txt", "deep"));
     root.children.set("local-upload.txt", makeFile("local-upload.txt", "from local"));
+    root.children.set(".cache", makeDir(".cache"));
     db.local = root;
     db.localHome = "/home/local";
   }

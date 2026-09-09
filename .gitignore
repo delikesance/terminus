@@ -24,6 +24,7 @@ src/forwardPanel.js
 src/hostCard.js
 src/updateNotify.js
 src/sftpLayout.js
+src/sftpUx.js
 test-results/
 
 # Hermes plan artifacts

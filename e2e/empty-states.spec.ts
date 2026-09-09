@@ -43,8 +43,11 @@ test.describe("C7: empty states smoke", () => {
     await expect(page.locator('[data-testid="empty-history"]')).toContainText("No history yet");
 
     await page.locator('#activity-bar button[data-activity="sftp"]').click();
-    await expect(page.locator('[data-testid="empty-sftp"]')).toBeVisible();
-    await expect(page.locator('[data-testid="empty-sftp"]')).toContainText("No host to browse");
+    // #41/#43: with no SSH hosts, Files opens a local single pane (not empty-sftp).
+    await expect(page.locator('[data-testid="empty-sftp"]')).toHaveCount(0);
+    await expect(page.locator("#workspace .sftp-view.active")).toBeVisible();
+    await expect(page.locator('[data-testid="local-toolbar"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-table"]')).toBeVisible();
   });
 
   test("Add host CTA opens host sheet", async ({ page }) => {
