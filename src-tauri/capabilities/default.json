@@ -15,6 +15,7 @@
     "core:webview:allow-set-webview-background-color",
     "shell:allow-open",
     "updater:default",
-    "process:default"
+    "process:default",
+    "dialog:default"
   ]
 }

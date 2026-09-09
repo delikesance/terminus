@@ -5,13 +5,16 @@ import { resolveMonoFont } from "./fonts";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
+import { joinLocalPath, parentLocalPath, fileNameOfPath } from "./localPath";
 import {
   resolveUnderRoot,
+  normalizeSftpPath,
   parentSftpPath,
   parseSftpError,
   sftpDisplayPath,
@@ -98,6 +101,24 @@ type SftpEntry = {
   size: number;
   mtime?: number | null;
 };
+type LocalEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number;
+  modified?: number | null;
+};
+
+type TransferJob = {
+  /** "upload" = local→remote, "download" = remote→local. */
+  direction: "upload" | "download";
+  total: number;
+  done: number;
+  failed: number;
+  label: string;
+  active: boolean;
+  cancel: boolean;
+};
 
 type Pane = {
   id: string;
@@ -114,6 +135,10 @@ type Pane = {
   cols: number;
   rows: number;
   paintGen: number;
+  selAnchor: { row: number; col: number } | null;
+  selFocus: { row: number; col: number } | null;
+  selLayer: HTMLDivElement;
+  _selecting?: boolean;
 };
 
 const state = {
@@ -129,11 +154,18 @@ const state = {
   panes: [] as Pane[],
   activePane: null as string | null,
   sftpHostId: null as string | null,
-  sftpRoot: "." as string,
+  sftpRoot: "/" as string,
   sftpPath: "." as string,
   sftpCwd: "" as string,
   sftpCwdHostId: null as string | null,
   sftpMode: false,
+  localCwd: "" as string,
+  localRoot: null as string | null,
+  localEntries: [] as LocalEntry[],
+  sftpEntries: [] as SftpEntry[],
+  localSelected: new Set<string>(),
+  sftpSelected: new Set<string>(),
+  transfer: null as TransferJob | null,
   customCss: document.createElement("style"),
   expandedGroups: new Set<string>(JSON.parse(localStorage.getItem("terminus-expanded-groups") || "[]")),
 };
@@ -355,7 +387,9 @@ async function paintFrame(sessionId: string, force = false) {
   if (!pane || pane.exited) return;
   const raw = toBytes(await invoke("session_frame", { id: sessionId, force }).catch(() => new Uint8Array()));
   if (raw.byteLength < 16) {
-    clearPaneSurface(pane);
+    // No new screen state (e.g. a cursor-move/OSC escape that left the screen
+    // unchanged). Keep the last frame — clearing the canvas here is what made
+    // the terminal flash/blink during normal output.
     return;
   }
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -1330,6 +1364,7 @@ function attachSession(info: SessionInfo, pane = createPane()) {
   hideBanner(pane);
   pane.el.onkeydown = (ev) => {
     if (!$("modal").classList.contains("hidden") || !$("palette").classList.contains("hidden")) return;
+    if (handleTerminalCopy(ev, pane)) return;
     const bytes = encodeTermKey(ev);
     if (!bytes) return;
     ev.preventDefault();
@@ -1391,9 +1426,12 @@ function createPane(): Pane {
   el.className = "pane";
   const canvas = document.createElement("canvas");
   canvas.className = "term-canvas";
+  const selLayer = document.createElement("div");
+  selLayer.className = "term-selection";
+  selLayer.style.display = "none";
   const banner = document.createElement("div");
   banner.className = "pane-banner hidden";
-  el.append(canvas, banner);
+  el.append(canvas, selLayer, banner);
   $("workspace").appendChild(el);
   const ctx = canvas.getContext("2d", { alpha: false })!;
   const pane: Pane = {
@@ -1408,6 +1446,9 @@ function createPane(): Pane {
     cols: 0,
     rows: 0,
     paintGen: 0,
+    selAnchor: null,
+    selFocus: null,
+    selLayer,
   };
   state.panes.push(pane);
   clearPaneSurface(pane);
@@ -1415,6 +1456,28 @@ function createPane(): Pane {
     selectPane(pane.id);
     el.focus();
   };
+  el.onmousedown = (ev) => {
+    if (ev.button !== 0) return;
+    selectPane(pane.id);
+    el.focus();
+    const cell = selCellFromEvent(pane, ev);
+    if (!cell) return;
+    pane.selAnchor = cell;
+    pane.selFocus = cell;
+    renderSelection(pane);
+    pane._selecting = true;
+    ev.preventDefault();
+  };
+  window.addEventListener("mousemove", (ev) => {
+    if (!pane._selecting) return;
+    const cell = selCellFromEvent(pane, ev);
+    if (!cell) return;
+    pane.selFocus = cell;
+    renderSelection(pane);
+  });
+  window.addEventListener("mouseup", () => {
+    pane._selecting = false;
+  });
   renderTabs();
   return pane;
 }
@@ -1456,6 +1519,93 @@ function cycleTab(delta: number) {
   const idx = state.panes.findIndex((p) => p.id === state.activePane);
   const next = state.panes[(idx + delta + state.panes.length) % state.panes.length];
   if (next) selectPane(next.id);
+}
+
+function selCellFromEvent(pane: Pane, ev: MouseEvent): { row: number; col: number } | null {
+  const rect = pane.canvas.getBoundingClientRect();
+  const cw = pane.cellW / pane.rasterScale;
+  const ch = pane.cellH / pane.rasterScale;
+  if (cw <= 0 || ch <= 0 || !pane.cols || !pane.rows) return null;
+  const col = Math.max(0, Math.min(pane.cols - 1, Math.floor((ev.clientX - rect.left) / cw)));
+  const row = Math.max(0, Math.min(pane.rows - 1, Math.floor((ev.clientY - rect.top) / ch)));
+  return { row, col };
+}
+
+function selectionRect(pane: Pane): { r0: number; c0: number; r1: number; c1: number } | null {
+  if (!pane.selAnchor || !pane.selFocus) return null;
+  return {
+    r0: Math.min(pane.selAnchor.row, pane.selFocus.row),
+    c0: Math.min(pane.selAnchor.col, pane.selFocus.col),
+    r1: Math.max(pane.selAnchor.row, pane.selFocus.row),
+    c1: Math.max(pane.selAnchor.col, pane.selFocus.col),
+  };
+}
+
+function renderSelection(pane: Pane): void {
+  const s = selectionRect(pane);
+  const layer = pane.selLayer;
+  if (!s) {
+    layer.style.display = "none";
+    return;
+  }
+  const cw = pane.cellW / pane.rasterScale;
+  const ch = pane.cellH / pane.rasterScale;
+  layer.style.left = `${s.c0 * cw}px`;
+  layer.style.top = `${s.r0 * ch}px`;
+  layer.style.width = `${(s.c1 - s.c0 + 1) * cw}px`;
+  layer.style.height = `${(s.r1 - s.r0 + 1) * ch}px`;
+  layer.style.display = "block";
+}
+
+function clearSelection(pane: Pane): void {
+  pane.selAnchor = null;
+  pane.selFocus = null;
+  renderSelection(pane);
+}
+
+async function copyTerminalSelection(pane: Pane, s: { r0: number; c0: number; r1: number; c1: number }) {
+  try {
+    const text = await invoke<string>("session_selection_text", {
+      id: pane.session!.id,
+      r0: s.r0,
+      c0: s.c0,
+      r1: s.r1,
+      c1: s.c1,
+    });
+    await writeClipboard(text);
+    if (import.meta.env.VITE_E2E === "1") (window as any).__copyLast = text;
+    clearSelection(pane);
+  } catch (err) {
+    console.error("copy failed", err);
+  }
+}
+
+function handleTerminalCopy(ev: KeyboardEvent, pane: Pane): boolean {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "c") return false;
+  const s = selectionRect(pane);
+  if (!s) return false; // no selection → let encodeTermKey send Ctrl+C (SIGINT)
+  ev.preventDefault();
+  void copyTerminalSelection(pane, s);
+  return true;
+}
+
+async function writeClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fall through to the textarea fallback
+    }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
 }
 
 function displayScale() {
@@ -2627,8 +2777,10 @@ async function ensureSftpCwd(hostId: string) {
 
 function openSftpFor(hostId: string) {
   state.sftpHostId = hostId;
-  state.sftpRoot = ".";
+  state.sftpRoot = "/";
   state.sftpPath = ".";
+  state.localSelected.clear();
+  state.sftpSelected.clear();
   resetSftpCwd();
   document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
   document.querySelector<HTMLButtonElement>('[data-panel="sftp"]')?.classList.add("active");
@@ -2637,6 +2789,8 @@ function openSftpFor(hostId: string) {
   ($("host-filter") as HTMLInputElement).placeholder = "Search files...";
   toggleSidebar(true);
   enterSftpMode();
+  ensureDualSftpView(hostId);
+  void initLocalPane();
   void loadSftp(hostId, ".");
 }
 
@@ -2647,6 +2801,32 @@ function ensureSftpView(): HTMLElement {
     view.className = "sftp-view";
     view.dataset.testid = "sftp-view";
     $("workspace").appendChild(view);
+  }
+  return view;
+}
+
+/** Remote-pane container inside the dual view. */
+function remotePaneEl(): HTMLElement {
+  return ensureSftpView().querySelector<HTMLElement>('[data-testid="sftp-pane-remote"]')!;
+}
+
+/** Build the dual-pane shell (local | arrows | remote + transfer bar) once. */
+function ensureDualSftpView(hostId: string): HTMLElement {
+  const view = ensureSftpView();
+  if (!view.querySelector(".sftp-dual")) {
+    view.innerHTML = `
+      <div class="sftp-transfer" data-testid="sftp-transfer"></div>
+      <div class="sftp-dual">
+        <section class="sftp-pane sftp-pane-local" data-testid="sftp-pane-local"></section>
+        <div class="sftp-arrows" data-testid="sftp-arrows">
+          <button type="button" id="sftp-tx-up" class="sftp-arrow-btn" title="Upload selection (→ remote)" aria-label="Upload" data-testid="sftp-tx-up">${icons.upload}</button>
+          <button type="button" id="sftp-tx-down" class="sftp-arrow-btn" title="Download selection (→ local)" aria-label="Download" data-testid="sftp-tx-down">${icons.download}</button>
+        </div>
+        <section class="sftp-pane sftp-pane-remote" data-testid="sftp-pane-remote"></section>
+      </div>`;
+    bindTransferArrowButtons();
+    void initLocalPane();
+    renderDndTargets();
   }
   return view;
 }
@@ -2719,7 +2899,7 @@ function renderSftpSidebar(hostId: string | null) {
   const sideHost = document.getElementById("sftp-side-host") as HTMLSelectElement | null;
   if (sideHost) {
     sideHost.onchange = () => {
-      state.sftpRoot = ".";
+      state.sftpRoot = "/";
       resetSftpCwd();
       void loadSftp(sideHost.value, ".");
     };
@@ -2728,14 +2908,16 @@ function renderSftpSidebar(hostId: string | null) {
 
 function renderSftpWorkspace(hostId: string, path: string, bodyHtml: string) {
   enterSftpMode();
+  ensureDualSftpView(hostId);
   renderSftpSidebar(hostId);
-  const view = ensureSftpView();
-  view.innerHTML = `${sftpToolbarHtml(hostId, path)}${bodyHtml}`;
+  const remote = remotePaneEl();
+  remote.innerHTML = `${sftpToolbarHtml(hostId, path)}${bodyHtml}`;
   bindSftpToolbar(hostId, path);
 }
 
 function renderSftpEmpty() {
   enterSftpMode();
+  ensureSftpView().classList.add("active");
   renderSftpSidebar(null);
   const view = ensureSftpView();
   view.innerHTML = `<div class="empty" data-testid="empty-sftp">
@@ -2789,7 +2971,7 @@ function sftpToolbarHtml(hostId: string, path: string): string {
 
 function bindSftpToolbar(hostId: string, path: string) {
   $("sftp-host").onchange = () => {
-    state.sftpRoot = ".";
+    state.sftpRoot = "/";
     resetSftpCwd();
     void loadSftp(($("sftp-host") as HTMLSelectElement).value, ".");
   };
@@ -2833,9 +3015,23 @@ function bindSftpRows(hostId: string, root: ParentNode) {
   root.querySelectorAll<HTMLElement>(".sftp-row").forEach((el) => {
     el.onclick = (ev) => {
       if ((ev.target as HTMLElement).closest(".sftp-more")) return;
+      if ((ev.target as HTMLElement).closest(".cell-sel")) return;
       if (el.dataset.dir === "true") void loadSftp(hostId, el.dataset.sftp!);
       else void sftpOpen(hostId, el.dataset.sftp!, el.dataset.name || "", el);
     };
+    const selCell = el.querySelector<HTMLElement>(".cell-sel");
+    selCell?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      toggleRemoteSelection(el.dataset.sftp!, el.dataset.selected === "true");
+    });
+    el.addEventListener("dragstart", (ev) => {
+      const path = el.dataset.sftp!;
+      const items =
+        state.sftpSelected.size > 0
+          ? state.sftpEntries.filter((x) => state.sftpSelected.has(x.path))
+          : [{ path, name: el.dataset.name || "", is_dir: el.dataset.dir === "true" }];
+      setDragPayload(ev, "remote", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
+    });
     el.querySelector<HTMLButtonElement>(".sftp-more")!.onclick = (ev) => {
       ev.stopPropagation();
       const entryPath = el.dataset.sftp!;
@@ -2865,6 +3061,27 @@ function bindSftpRows(hostId: string, root: ParentNode) {
   });
 }
 
+function toggleRemoteSelection(path: string, currentlySelected: boolean): void {
+  if (currentlySelected) state.sftpSelected.delete(path);
+  else state.sftpSelected.add(path);
+  refreshRemoteSelection();
+  updateArrowsEnabled();
+}
+
+function refreshRemoteSelection(): void {
+  remotePaneEl()
+    .querySelectorAll<HTMLElement>(".sftp-row")
+    .forEach((el) => {
+      const sel = state.sftpSelected.has(el.dataset.sftp!);
+      el.dataset.selected = String(sel);
+      const cell = el.querySelector<HTMLElement>(".cell-sel");
+      if (cell) {
+        cell.setAttribute("aria-checked", String(sel));
+        cell.innerHTML = sel ? icons.check : "";
+      }
+    });
+}
+
 async function loadSftp(hostId: string, path: string) {
   state.sftpHostId = hostId;
   if (!state.hosts.length) {
@@ -2874,7 +3091,14 @@ async function loadSftp(hostId: string, path: string) {
   await ensureSftpCwd(hostId);
   let safePath: string;
   try {
-    safePath = resolveUnderRoot(state.sftpRoot, path);
+    const raw = path && path.trim() ? path : ".";
+    // Full-FS mode: anchor relative/"." onto the session home; absolute passes.
+    const anchored = raw.startsWith("/")
+      ? raw
+      : state.sftpCwd
+        ? normalizeSftpPath(`${state.sftpCwd}/${raw}`)
+        : raw;
+    safePath = resolveUnderRoot(state.sftpRoot, anchored);
   } catch (err) {
     renderSftpError(hostId, state.sftpPath, err);
     return;
@@ -2907,7 +3131,9 @@ async function loadSftp(hostId: string, path: string) {
       .map((e) => {
         const meta = `${formatSftpSize(e.size, e.is_dir)} · ${formatSftpMtime(e.mtime)}`;
         const glyph = sftpKindIcon(e.name, e.is_dir);
-        return `<div class="sftp-row item" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-kind="${glyph.kind}" data-name="${escapeHtml(e.name)}" data-testid="sftp-row" title="${e.is_dir ? "Open folder" : "Open with default app"}">
+        const sel = state.sftpSelected.has(e.path);
+        return `<div class="sftp-row item" draggable="true" data-sftp="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-kind="${glyph.kind}" data-name="${escapeHtml(e.name)}" data-selected="${sel}" data-testid="sftp-row" title="${e.is_dir ? "Open folder" : "Open with default app"}">
+          <span class="cell-sel" data-testid="sftp-select" role="checkbox" aria-checked="${sel}" title="Select">${sel ? icons.check : ""}</span>
           <span class="leading">${glyph.icon}</span>
           <div class="body">
             <strong class="sftp-name">${escapeHtml(e.name)}</strong>
@@ -2920,12 +3146,14 @@ async function loadSftp(hostId: string, path: string) {
         </div>`;
       })
       .join("");
+    state.sftpEntries = entries;
     renderSftpWorkspace(
       hostId,
       safePath,
       `<div class="sftp-table" data-testid="sftp-table">${rows}</div>`,
     );
-    bindSftpRows(hostId, ensureSftpView());
+    bindSftpRows(hostId, remotePaneEl());
+    updateArrowsEnabled();
   } catch (err) {
     renderSftpError(hostId, safePath, err);
   }
@@ -2996,28 +3224,46 @@ async function saveLocalFile(name: string, data: Uint8Array) {
 async function sftpUpload(hostId: string, dirPath: string) {
   const input = document.createElement("input");
   input.type = "file";
-  input.multiple = false;
+  input.multiple = true;
   input.dataset.testid = "sftp-file-picker";
   input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
+    const job: TransferJob = {
+      direction: "upload",
+      total: files.length,
+      done: 0,
+      failed: 0,
+      label: "Uploading",
+      active: true,
+      cancel: false,
+    };
+    setTransfer(job);
     try {
-      const joined =
-        dirPath === "/"
-          ? resolveUnderRoot(state.sftpRoot, `/${file.name}`)
-          : dirPath === "."
-            ? resolveUnderRoot(state.sftpRoot, file.name)
-            : resolveUnderRoot(state.sftpRoot, `${dirPath}/${file.name}`);
-      const buf = new Uint8Array(await file.arrayBuffer());
-      await invoke("sftp_write", {
-        hostId,
-        path: joined,
-        data: Array.from(buf),
-        root: state.sftpRoot,
-      });
+      for (const file of files) {
+        if (job.cancel) break;
+        try {
+          const joined = resolveUnderRoot(
+            state.sftpRoot,
+            `${dirPath === "/" ? "" : dirPath}/${file.name}`.replace(/\/+/g, "/"),
+          );
+          const buf = new Uint8Array(await file.arrayBuffer());
+          await invoke("sftp_write", {
+            hostId,
+            path: joined,
+            data: Array.from(buf),
+            root: state.sftpRoot,
+          });
+          job.done += 1;
+        } catch {
+          job.failed += 1;
+        }
+        renderTransfer();
+      }
+    } finally {
+      job.active = false;
+      renderTransfer();
       await loadSftp(hostId, dirPath);
-    } catch (err) {
-      renderSftpError(hostId, dirPath, err);
     }
   };
   input.click();
@@ -3082,12 +3328,12 @@ function sftpDeleteConfirm(hostId: string, path: string, name: string, isDir: bo
   $("sftp-del-ok").onclick = async () => {
     try {
       const safe = resolveUnderRoot(state.sftpRoot, path);
-      await invoke("sftp_remove", {
-        hostId,
-        path: safe,
-        isDir,
-        root: state.sftpRoot,
-      });
+      state.sftpSelected.delete(path);
+      if (isDir) {
+        await invoke("sftp_rmtree", { hostId, path: safe, root: state.sftpRoot });
+      } else {
+        await invoke("sftp_remove", { hostId, path: safe, isDir, root: state.sftpRoot });
+      }
       $("modal").classList.add("hidden");
       await loadSftp(hostId, state.sftpPath);
     } catch (err) {
@@ -3095,6 +3341,479 @@ function sftpDeleteConfirm(hostId: string, path: string, name: string, isDir: bo
       renderSftpError(hostId, state.sftpPath, err);
     }
   };
+}
+
+// ─── Local pane ─────────────────────────────────────────────────────────────
+const IS_WIN = /^Win/.test(navigator.platform || "");
+
+type DragItem = { path: string; name: string; is_dir: boolean };
+type FileRef = { src: string; rel: string; name: string };
+const DRAG_MIME = "application/x-terminus-files";
+
+function localPaneEl(): HTMLElement {
+  return ensureSftpView().querySelector<HTMLElement>('[data-testid="sftp-pane-local"]')!;
+}
+
+async function initLocalPane(): Promise<void> {
+  if (!state.localCwd) {
+    try {
+      state.localCwd = await invoke<string>("local_home");
+      state.localRoot = state.localCwd;
+    } catch {
+      state.localCwd = "";
+    }
+  }
+  await loadLocal();
+}
+
+async function loadLocal(): Promise<void> {
+  const pane = localPaneEl();
+  if (!pane) return;
+  if (!state.localCwd) {
+    pane.innerHTML = `<div class="sftp-pane-empty" data-testid="local-pane-empty">
+      <span>No folder chosen</span>
+      <button type="button" class="primary" id="local-pick-empty" data-testid="local-pick-folder">${icons.folder} Choose folder</button>
+    </div>`;
+    $("local-pick-empty").onclick = () => void pickLocalFolder();
+    updateArrowsEnabled();
+    return;
+  }
+  pane.innerHTML = `${localToolbarHtml(state.localCwd)}<div class="local-loading" data-testid="local-loading">Loading ${escapeHtml(state.localCwd)}…</div>`;
+  bindLocalToolbar();
+  try {
+    const entries = await invoke<LocalEntry[]>("local_list", { path: state.localCwd });
+    state.localEntries = entries;
+    const rows = entries
+      .map((e) => {
+        const glyph = sftpKindIcon(e.name, e.is_dir);
+        const sel = state.localSelected.has(e.path);
+        const meta = `${formatSftpSize(e.size, e.is_dir)} · ${formatLocalMtime(e.modified)}`;
+        return `<div class="local-row item" draggable="true" data-path="${escapeHtml(e.path)}" data-dir="${e.is_dir}" data-name="${escapeHtml(e.name)}" data-selected="${sel}" data-testid="local-row" title="${e.is_dir ? "Open folder" : "File"}">
+          <span class="cell-sel" data-testid="local-select" role="checkbox" aria-checked="${sel}" title="Select">${sel ? icons.check : ""}</span>
+          <span class="leading">${glyph.icon}</span>
+          <div class="body"><strong class="sftp-name">${escapeHtml(e.name)}</strong><small class="sftp-meta"><span class="sftp-size">${escapeHtml(formatSftpSize(e.size, e.is_dir))}</span></small></div>
+          <span class="sftp-meta-inline" aria-hidden="true">${escapeHtml(meta)}</span>
+        </div>`;
+      })
+      .join("");
+    pane.innerHTML =
+      `${localToolbarHtml(state.localCwd)}` +
+      `<div class="sftp-table" data-testid="local-table">${rows || `<div class="sftp-empty" data-testid="local-empty"><span>This folder is empty</span></div>`}</div>`;
+    bindLocalToolbar();
+    bindLocalRows();
+  } catch (err) {
+    pane.innerHTML = `${localToolbarHtml(state.localCwd)}<div class="sftp-error" data-testid="sftp-error"><strong>Local</strong><span>${escapeHtml(String(err))}</span></div>`;
+    bindLocalToolbar();
+  }
+  updateArrowsEnabled();
+}
+
+function formatLocalMtime(modified?: number | null): string {
+  if (!modified) return "—";
+  try {
+    return new Date(modified).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function localToolbarHtml(cwd: string): string {
+  const atRoot = parentLocalPath(cwd) == null;
+  return `<div class="sftp-toolbar" data-testid="local-toolbar">
+    <button type="button" id="local-pick" class="sftp-icon-btn" title="Choose folder" aria-label="Choose folder" data-testid="local-pick">${icons.folder}</button>
+    <button type="button" id="local-up" class="sftp-icon-btn" title="Up" aria-label="Up" data-testid="local-up" ${atRoot ? "disabled" : ""}>${icons.arrowUp}</button>
+    <label class="sftp-path-wrap">
+      <span class="sftp-path-ico" aria-hidden="true">${icons.home}</span>
+      <input id="local-path" class="sftp-path" type="text" spellcheck="false" value="${escapeHtml(cwd)}" data-testid="local-path" aria-label="Local path" />
+    </label>
+    <button type="button" id="local-refresh" class="sftp-icon-btn" title="Refresh" aria-label="Refresh" data-testid="local-refresh">${icons.reconnect}</button>
+    <button type="button" id="local-mkdir" class="sftp-icon-btn" title="New folder" aria-label="New folder" data-testid="local-mkdir">${icons.plus}</button>
+  </div>`;
+}
+
+function bindLocalToolbar(): void {
+  $("local-pick").onclick = () => void pickLocalFolder();
+  const up = $("local-up");
+  if (up)
+    up.onclick = () => {
+      const p = parentLocalPath(state.localCwd);
+      if (p != null) {
+        state.localCwd = p;
+        void loadLocal();
+      }
+    };
+  $("local-refresh").onclick = () => void loadLocal();
+  $("local-mkdir").onclick = () => localMkdirSheet();
+  const pathInput = $input("local-path") as HTMLInputElement;
+  pathInput.onkeydown = (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      const v = pathInput.value.trim();
+      if (v) {
+        state.localCwd = v;
+        void loadLocal();
+      }
+    }
+  };
+}
+
+function bindLocalRows(): void {
+  const pane = localPaneEl();
+  pane.querySelectorAll<HTMLElement>(".local-row").forEach((el) => {
+    const selCell = el.querySelector<HTMLElement>(".cell-sel");
+    selCell?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      toggleLocalSelection(el.dataset.path!, el.dataset.selected === "true");
+    });
+    el.onclick = (ev) => {
+      if ((ev.target as HTMLElement).closest(".cell-sel")) return;
+      if (el.dataset.dir === "true") {
+        state.localCwd = el.dataset.path!;
+        void loadLocal();
+      }
+    };
+    el.addEventListener("dragstart", (ev) => {
+      const path = el.dataset.path!;
+      const items =
+        state.localSelected.size > 0
+          ? state.localEntries.filter((x) => state.localSelected.has(x.path))
+          : [{ path, name: el.dataset.name || "", is_dir: el.dataset.dir === "true" }];
+      setDragPayload(ev, "local", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
+    });
+  });
+}
+
+function toggleLocalSelection(path: string, currentlySelected: boolean): void {
+  if (currentlySelected) state.localSelected.delete(path);
+  else state.localSelected.add(path);
+  refreshLocalSelection();
+  updateArrowsEnabled();
+}
+
+function refreshLocalSelection(): void {
+  localPaneEl()
+    .querySelectorAll<HTMLElement>(".local-row")
+    .forEach((el) => {
+      const sel = state.localSelected.has(el.dataset.path!);
+      el.dataset.selected = String(sel);
+      const cell = el.querySelector<HTMLElement>(".cell-sel");
+      if (cell) {
+        cell.setAttribute("aria-checked", String(sel));
+        cell.innerHTML = sel ? icons.check : "";
+      }
+    });
+}
+
+async function pickLocalFolder(): Promise<void> {
+  try {
+    const dir = await open({ directory: true, multiple: false });
+    if (typeof dir === "string" && dir) {
+      state.localCwd = dir;
+      state.localRoot = dir;
+      await loadLocal();
+    }
+  } catch {
+    /* user cancelled */
+  }
+}
+
+function localMkdirSheet(): void {
+  openSheet(`<h2>New folder</h2>
+    <label class="field">Name<input id="local-mkdir-input" data-testid="local-mkdir-input" value="" spellcheck="false" /></label>
+    <div class="row">
+      <button type="button" id="local-mkdir-cancel">Cancel</button>
+      <button type="button" class="primary" id="local-mkdir-ok" data-testid="local-mkdir-ok">Create</button>
+    </div>`);
+  $("local-mkdir-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("local-mkdir-ok").onclick = async () => {
+    const name = ($input("local-mkdir-input") as HTMLInputElement).value.trim();
+    $("modal").classList.add("hidden");
+    if (!name || name.includes("/") || name.includes("\\")) return;
+    try {
+      await invoke("local_mkdir", { path: joinLocalPath(state.localCwd, name) });
+      await loadLocal();
+    } catch (err) {
+      console.error("local_mkdir failed", err);
+    }
+  };
+}
+
+// ─── Transfer engine ────────────────────────────────────────────────────────
+function setTransfer(job: TransferJob | null): void {
+  state.transfer = job;
+  renderTransfer();
+  updateArrowsEnabled();
+}
+
+function renderTransfer(): void {
+  const bar = ensureSftpView().querySelector<HTMLElement>('[data-testid="sftp-transfer"]');
+  if (!bar) return;
+  const job = state.transfer;
+  if (!job || job.total === 0) {
+    bar.innerHTML = "";
+    return;
+  }
+  const pct = Math.min(100, Math.round((job.done / job.total) * 100));
+  const failed = job.failed ? ` · ${job.failed} failed` : "";
+  bar.innerHTML = `<div class="sftp-transfer-inner" data-testid="sftp-transfer-bar">
+    <span class="sftp-transfer-label">${escapeHtml(job.label)} ${job.done}/${job.total}${failed}</span>
+    <span class="sftp-transfer-track"><span class="sftp-transfer-fill" style="width:${pct}%"></span></span>
+    ${job.active ? `<button type="button" id="sftp-tx-cancel" data-testid="sftp-tx-cancel" title="Cancel">${icons.close}</button>` : ""}
+  </div>`;
+  const cancel = $("sftp-tx-cancel");
+  if (cancel) cancel.onclick = () => {
+    if (state.transfer) state.transfer.cancel = true;
+  };
+}
+
+function updateArrowsEnabled(): void {
+  const up = $("sftp-tx-up") as HTMLButtonElement | null;
+  const down = $("sftp-tx-down") as HTMLButtonElement | null;
+  if (up) up.disabled = state.localSelected.size === 0;
+  if (down) down.disabled = state.sftpSelected.size === 0;
+}
+
+function bindTransferArrowButtons(): void {
+  const up = $("sftp-tx-up");
+  const down = $("sftp-tx-down");
+  if (up) up.onclick = () => void transferSelected("upload");
+  if (down) down.onclick = () => void transferSelected("download");
+  updateArrowsEnabled();
+}
+
+async function transferSelected(direction: "upload" | "download"): Promise<void> {
+  const hostId = state.sftpHostId;
+  if (!hostId) return;
+  if (direction === "upload") {
+    const items = state.localEntries.filter((e) => state.localSelected.has(e.path));
+    if (!items.length) return;
+    const files: FileRef[] = [];
+    await collectLocalTree(items, files);
+    await transferFiles({
+      direction: "upload",
+      hostId,
+      remoteTargetDir: state.sftpPath,
+      localTargetDir: state.localCwd,
+      files,
+    });
+  } else {
+    const items = state.sftpEntries.filter((e) => state.sftpSelected.has(e.path));
+    if (!items.length) return;
+    const files: FileRef[] = [];
+    await collectRemoteTree(hostId, items, files);
+    await transferFiles({
+      direction: "download",
+      hostId,
+      remoteTargetDir: state.sftpPath,
+      localTargetDir: state.localCwd,
+      files,
+    });
+  }
+}
+
+async function collectLocalTree(
+  items: { path: string; name: string; is_dir: boolean }[],
+  acc: FileRef[],
+): Promise<void> {
+  for (const it of items) {
+    if (it.is_dir) await collectLocalDir(it.path, it.name, acc);
+    else acc.push({ src: it.path, rel: it.name, name: it.name });
+  }
+}
+
+async function collectLocalDir(dirPath: string, relDir: string, acc: FileRef[]): Promise<void> {
+  const entries = await invoke<LocalEntry[]>("local_list", { path: dirPath });
+  for (const e of entries) {
+    const rel = relDir ? `${relDir}/${e.name}` : e.name;
+    if (e.is_dir) await collectLocalDir(e.path, rel, acc);
+    else acc.push({ src: e.path, rel, name: e.name });
+  }
+}
+
+async function collectRemoteTree(
+  hostId: string,
+  items: { path: string; name: string; is_dir: boolean }[],
+  acc: FileRef[],
+): Promise<void> {
+  for (const it of items) {
+    if (it.is_dir) await collectRemoteDir(hostId, it.path, it.name, acc);
+    else acc.push({ src: it.path, rel: it.name, name: it.name });
+  }
+}
+
+async function collectRemoteDir(
+  hostId: string,
+  remotePath: string,
+  relDir: string,
+  acc: FileRef[],
+): Promise<void> {
+  const entries = await invoke<SftpEntry[]>("sftp_list", {
+    hostId,
+    path: remotePath,
+    root: state.sftpRoot,
+  });
+  for (const e of entries) {
+    const rel = relDir ? `${relDir}/${e.name}` : e.name;
+    if (e.is_dir) await collectRemoteDir(hostId, e.path, rel, acc);
+    else acc.push({ src: e.path, rel, name: e.name });
+  }
+}
+
+async function transferFiles(p: {
+  direction: "upload" | "download";
+  hostId: string;
+  remoteTargetDir: string;
+  localTargetDir: string;
+  files: FileRef[];
+}): Promise<void> {
+  if (p.files.length === 0) return;
+  const job: TransferJob = {
+    direction: p.direction,
+    total: p.files.length,
+    done: 0,
+    failed: 0,
+    label: p.direction === "upload" ? "Uploading" : "Downloading",
+    active: true,
+    cancel: false,
+  };
+  setTransfer(job);
+  const created = new Set<string>();
+  for (const f of p.files) {
+    if (job.cancel) break;
+    const relDir = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : "";
+    try {
+      if (relDir && !created.has(relDir)) {
+        created.add(relDir);
+        if (p.direction === "upload") {
+          await invoke("sftp_mkdir", {
+            hostId: p.hostId,
+            path: joinRemote(p.remoteTargetDir, relDir),
+            root: state.sftpRoot,
+          }).catch(() => undefined);
+        } else {
+          await invoke("local_mkdir", { path: joinLocalPath(p.localTargetDir, relToSep(relDir)) });
+        }
+      }
+      if (p.direction === "upload") {
+        const data = await invoke<number[] | Uint8Array>("local_read", { path: f.src });
+        await invoke("sftp_write", {
+          hostId: p.hostId,
+          path: joinRemote(p.remoteTargetDir, f.rel),
+          data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
+          root: state.sftpRoot,
+        });
+      } else {
+        const data = await invoke<number[] | Uint8Array>("sftp_read", {
+          hostId: p.hostId,
+          path: f.src,
+          root: state.sftpRoot,
+        });
+        await invoke("local_write", {
+          path: joinLocalPath(p.localTargetDir, relToSep(f.rel)),
+          data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
+        });
+      }
+      job.done += 1;
+    } catch {
+      job.failed += 1;
+    }
+    renderTransfer();
+  }
+  job.active = false;
+  renderTransfer();
+  state.localSelected.clear();
+  state.sftpSelected.clear();
+  if (p.direction === "upload") await loadSftp(p.hostId, state.sftpPath);
+  else await loadLocal();
+  refreshLocalSelection();
+  refreshRemoteSelection();
+  updateArrowsEnabled();
+}
+
+function joinRemote(dir: string, rel: string): string {
+  const d = dir === "/" ? "/" : dir.replace(/\/*$/, "");
+  if (!d || d === ".") return rel;
+  return d === "/" ? `/${rel}` : `${d}/${rel}`;
+}
+
+function relToSep(rel: string): string {
+  return IS_WIN ? rel.split("/").join("\\") : rel;
+}
+
+// ─── Drag & drop between panes ──────────────────────────────────────────────
+function setDragPayload(ev: DragEvent, side: "local" | "remote", items: DragItem[]): void {
+  if (!ev.dataTransfer) return;
+  ev.dataTransfer.setData(DRAG_MIME, JSON.stringify({ side, items }));
+  ev.dataTransfer.effectAllowed = "copy";
+}
+
+function readDragPayload(ev: DragEvent): { side: "local" | "remote"; items: DragItem[] } | null {
+  const raw = ev.dataTransfer?.getData(DRAG_MIME);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { side: "local" | "remote"; items: DragItem[] };
+    if (parsed && Array.isArray(parsed.items)) return parsed;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function renderDndTargets(): void {
+  const view = ensureSftpView();
+  const local = view.querySelector<HTMLElement>('[data-testid="sftp-pane-local"]');
+  const remote = view.querySelector<HTMLElement>('[data-testid="sftp-pane-remote"]');
+  if (local) wireDrop(local, "local");
+  if (remote) wireDrop(remote, "remote");
+}
+
+function wireDrop(pane: HTMLElement, side: "local" | "remote"): void {
+  pane.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
+    pane.classList.add("drop-target");
+  });
+  pane.addEventListener("dragleave", () => pane.classList.remove("drop-target"));
+  pane.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    pane.classList.remove("drop-target");
+    const payload = readDragPayload(ev);
+    if (payload) void handleDrop(payload, side);
+  });
+}
+
+async function handleDrop(
+  payload: { side: "local" | "remote"; items: DragItem[] },
+  targetSide: "local" | "remote",
+): Promise<void> {
+  const hostId = state.sftpHostId;
+  if (!hostId || !payload.items.length) return;
+  if (targetSide === "remote" && payload.side === "local") {
+    const files: FileRef[] = [];
+    await collectLocalTree(payload.items, files);
+    await transferFiles({
+      direction: "upload",
+      hostId,
+      remoteTargetDir: state.sftpPath,
+      localTargetDir: state.localCwd,
+      files,
+    });
+  } else if (targetSide === "local" && payload.side === "remote") {
+    const files: FileRef[] = [];
+    await collectRemoteTree(hostId, payload.items, files);
+    await transferFiles({
+      direction: "download",
+      hostId,
+      remoteTargetDir: state.sftpPath,
+      localTargetDir: state.localCwd,
+      files,
+    });
+  }
 }
 
 document.querySelector('[data-panel="sftp"]')?.addEventListener("click", () => {

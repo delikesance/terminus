@@ -26,6 +26,10 @@ interface TerminusTestBridge {
   sftpForceError(kind: string, message: string): Promise<void>;
   sftpReset(hostId?: string): Promise<void>;
   lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null>;
+  /** C9b: reset + seed the virtual local FS (local pane), optional new home path. */
+  seedLocalDir(path?: string): Promise<string>;
+  /** C9b: poll transfer op counters (uploads = local→remote, downloads = remote→local). */
+  transferOps(): Promise<{ uploads: number; downloads: number }>;
   seedTofuHost(hostId?: string): Promise<string>;
 }
 
@@ -200,6 +204,16 @@ export function initTestBridge(): void {
 
     async lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null> {
       return invoke("test_sftp_last_open");
+    },
+
+    async seedLocalDir(path?: string): Promise<string> {
+      const home = await invoke<string>("test_local_reset", { path: path ?? "" });
+      await refreshUi();
+      return home;
+    },
+
+    async transferOps(): Promise<{ uploads: number; downloads: number }> {
+      return invoke("test_transfer_ops");
     },
 
     async seedTofuHost(hostId = `tofu-host-${Date.now()}`): Promise<string> {

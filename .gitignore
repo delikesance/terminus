@@ -20,3 +20,6 @@ src/knownHostsParse.js
 src/identityKind.js
 src/sftpPath.js
 test-results/
+
+# Hermes plan artifacts
+/.hermes
