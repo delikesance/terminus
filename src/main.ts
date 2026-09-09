@@ -1588,6 +1588,19 @@ function onGlobalKey(ev: KeyboardEvent) {
     toggleSidebar();
     return;
   }
+  // Host switcher (overrides saved tab.next/prev defaults on this chord).
+  // Linux/X11 often reports Shift+Tab as "ISO_Left_Tab"; prefer `code` when present.
+  if (
+    (ev.ctrlKey || ev.metaKey) &&
+    !ev.altKey &&
+    (ev.key === "Tab" || ev.key === "ISO_Left_Tab" || ev.code === "Tab")
+  ) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const backward = ev.shiftKey || ev.key === "ISO_Left_Tab";
+    cycleHost(backward ? -1 : 1);
+    return;
+  }
   const combo = [
     ev.metaKey ? "cmd" : ev.ctrlKey ? "ctrl" : "",
     ev.shiftKey ? "shift" : "",
@@ -1626,6 +1639,12 @@ function runAction(action: string) {
       break;
     case "tab.prev":
       cycleTab(-1);
+      break;
+    case "host.next":
+      cycleHost(1);
+      break;
+    case "host.prev":
+      cycleHost(-1);
       break;
     case "palette.toggle":
     case "command.palette":
@@ -2217,6 +2236,54 @@ function cycleTab(delta: number) {
   const idx = state.panes.findIndex((p) => p.id === state.activePane);
   const next = state.panes[(idx + delta + state.panes.length) % state.panes.length];
   if (next) selectPane(next.id);
+}
+
+/** Open hosts in sidebar order (local first), for Ctrl+Tab switching. */
+function openHostKeys(): string[] {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  const add = (key: string) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    keys.push(key);
+  };
+  if (hostPanes().length) add("local");
+  for (const h of state.hosts) {
+    if (h.deleted_at) continue;
+    if (hostPanes(h.id).length) add(h.id);
+  }
+  for (const p of state.panes) {
+    if (p.session?.kind === "local" || p.pending?.kind === "local") add("local");
+    else {
+      const id = p.session?.host_id ?? p.pending?.hostId;
+      if (id) add(id);
+    }
+  }
+  return keys;
+}
+
+function currentHostKey(): string | null {
+  const pane = activePane();
+  if (!pane) return null;
+  if (pane.session?.kind === "local" || pane.pending?.kind === "local") return "local";
+  return pane.session?.host_id ?? pane.pending?.hostId ?? null;
+}
+
+function cycleHost(delta: number) {
+  const keys = openHostKeys();
+  if (!keys.length) return;
+  if (keys.length === 1) {
+    const only = keys[0]!;
+    if (only === "local") focusOrOpenLocal();
+    else focusOrOpenSsh(only);
+    return;
+  }
+  const cur = currentHostKey();
+  let idx = cur ? keys.indexOf(cur) : -1;
+  if (idx < 0) idx = 0;
+  const next = keys[(idx + delta + keys.length) % keys.length]!;
+  if (next === "local") focusOrOpenLocal();
+  else focusOrOpenSsh(next);
 }
 
 function selCellFromEvent(pane: Pane, ev: MouseEvent): { row: number; col: number } | null {
@@ -2899,10 +2966,26 @@ function renderPalette(query: string) {
 $input("palette-input").addEventListener("input", () => renderPalette($input("palette-input").value));
 $input("palette-input").addEventListener("keydown", (ev: Event) => {
   const key = (ev as KeyboardEvent).key;
-  if (key === "Escape") concealOverlay($("palette"));
+  const items = [...$("palette-results").querySelectorAll<HTMLElement>("li")];
+  const activeIdx = items.findIndex((li) => li.classList.contains("active"));
+  if (key === "Escape") {
+    concealOverlay($("palette"));
+    return;
+  }
+  if (key === "ArrowDown" || key === "ArrowUp") {
+    (ev as KeyboardEvent).preventDefault();
+    if (!items.length) return;
+    const cur = activeIdx < 0 ? 0 : activeIdx;
+    const next =
+      key === "ArrowDown" ? (cur + 1) % items.length : (cur - 1 + items.length) % items.length;
+    items.forEach((li, i) => li.classList.toggle("active", i === next));
+    items[next]?.scrollIntoView({ block: "nearest" });
+    return;
+  }
   if (key === "Enter") {
-    const first = $("palette-results").querySelector("li") as HTMLElement | null;
-    first?.click();
+    (ev as KeyboardEvent).preventDefault();
+    const target = (activeIdx >= 0 ? items[activeIdx] : items[0]) ?? null;
+    target?.click();
   }
 });
 
