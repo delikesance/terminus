@@ -1167,7 +1167,13 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   flex: none;
 }
 .group-row .leading svg { width: 13px; height: 13px; }
-.group-row .body { min-width: 0; flex: 1; }
+.group-row .body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
 .group-row strong {
   display: block;
   font-weight: 500;
@@ -1177,11 +1183,27 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
-.group-row small {
-  color: var(--secondary);
+.group-row .group-meta {
+  color: var(--tertiary);
   font-size: 11px;
-  margin-left: 6px;
+  flex: none;
+  margin: 0;
+}
+.group-row.drop-target,
+.group-children.drop-target {
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 35%, transparent);
+  border-radius: 8px;
+}
+.group-empty {
+  padding: 8px 12px 10px 42px;
+  color: var(--tertiary);
+  font-size: 12px;
+}
+[data-host].is-dragging {
+  opacity: 0.45;
 }
 .group-badge {
   display: inline-flex;
