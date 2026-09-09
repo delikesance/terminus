@@ -34,13 +34,25 @@ export const PERF_THRESHOLDS = {
   /** Canvas paint loop (see e2e) wall time. */
   canvasStressMs: 20_000,
   /** Max JS heap growth during an e2e stress (Chrome performance.memory). */
-  heapGrowthMb: 200,
+  heapGrowthMb: 50,
   /** Min rAF samples over a 1s window after stress (sanity, not hard FPS SLA). */
   minFpsSamples: 20,
+  /** Native-comparable: sustained FPS under multi-pane paint stress (#47). */
+  nativeMinFps: 55,
   /** Multi-pane open count for crash test. */
   paneCount: 6,
   /** Synthetic SFTP listing size. */
   sftpBulkCount: 800,
+  /** Virtual list should not mount the full bulk set. */
+  maxVirtualDomRows: 120,
+} as const;
+
+/** Epic #47 definition-of-done gates (preview + native). */
+export const NATIVE_COMPARABLE_GATES = {
+  minFps: 55,
+  paintP95Ms: 16,
+  sftpFilterVisibleMs: 50,
+  heapGrowthMb: 50,
 } as const;
 
 export function makeEntries(n: number): FileListEntry[] {

@@ -43,11 +43,12 @@ test.describe("#45: perf crash/load", () => {
     expect(stress.paints).toBeGreaterThan(0);
     expect(stress.ms).toBeLessThan(20_000);
     expect(fps.frames).toBeGreaterThanOrEqual(20);
+    expect(fps.fps).toBeGreaterThanOrEqual(55);
     expect(page.isClosed()).toBe(false);
 
     if (before.heap && after.heap) {
       const growth = after.heap.usedMb - before.heap.usedMb;
-      expect(growth, `heap grew ${growth}MB`).toBeLessThan(200);
+      expect(growth, `heap grew ${growth}MB`).toBeLessThan(50);
     }
 
     fs.mkdirSync(ARTIFACTS, { recursive: true });
@@ -106,7 +107,7 @@ test.describe("#45: perf crash/load", () => {
     expect(page.isClosed()).toBe(false);
 
     if (before.heap && after.heap) {
-      expect(after.heap.usedMb - before.heap.usedMb).toBeLessThan(200);
+      expect(after.heap.usedMb - before.heap.usedMb).toBeLessThan(50);
     }
 
     fs.mkdirSync(ARTIFACTS, { recursive: true });

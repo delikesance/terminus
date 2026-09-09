@@ -12,8 +12,8 @@ import os from "node:os";
 
 async function openFilesPanel(page: import("@playwright/test").Page) {
   await page.locator('#activity-bar button[data-activity="sftp"]').click();
-  await expect(page.locator('[data-testid="sftp-toolbar"]')).toBeVisible();
-  await expect(page.locator("#workspace .sftp-view.active")).toBeVisible();
+  await expect(page.locator('[data-testid="sftp-toolbar"]')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator("#workspace .sftp-view.active")).toBeVisible({ timeout: 5000 });
 }
 
 test.describe("C9: SFTP browser v1", () => {
@@ -29,25 +29,25 @@ test.describe("C9: SFTP browser v1", () => {
   test("lists files in workspace with toolbar + table (name · size · mtime · ⋯)", async ({ page }) => {
     await openFilesPanel(page);
     const table = page.locator("#workspace [data-testid='sftp-table']");
-    await expect(table).toBeVisible();
+    await expect(table).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab");
     await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(3); // .cache hidden by default
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "remote-only.txt" })).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-more"]').first()).toBeVisible();
-    await expect(page.locator(".sftp-size").first()).toBeVisible();
-    await expect(page.locator(".sftp-mtime").first()).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-side"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "remote-only.txt" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-more"]').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".sftp-size").first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".sftp-mtime").first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-side"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-side-host"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="sftp-toggle-hidden"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-toggle-hidden"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-side-status"]')).toHaveAttribute("data-state", "connected");
     await expect(page.locator('[data-testid="sftp-side-status"]')).toContainText("Connected");
   });
 
   test("P0b: listing lives in #workspace at ≥60% of stage width", async ({ page }) => {
     await openFilesPanel(page);
-    await expect(page.locator("#workspace [data-testid='sftp-table']")).toBeVisible();
+    await expect(page.locator("#workspace [data-testid='sftp-table']")).toBeVisible({ timeout: 5000 });
     const metrics = await page.evaluate(() => {
       const stage = document.getElementById("stage")!;
       const workspace = document.getElementById("workspace")!;
@@ -73,14 +73,14 @@ test.describe("C9: SFTP browser v1", () => {
     await page.locator('#activity-bar button[data-activity="hosts"]').click();
     await expect(page.locator(".sftp-view.active")).toHaveCount(0);
     await expect(page.locator("#workspace.sftp-mode")).toHaveCount(0);
-    await expect(page.locator(".pane.active")).toBeVisible();
+    await expect(page.locator(".pane.active")).toBeVisible({ timeout: 5000 });
   });
 
   test("navigate into dir, Up returns, refresh keeps path", async ({ page }) => {
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible({ timeout: 5000 });
 
     await page.locator('[data-testid="sftp-up"]').click();
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab");
@@ -88,7 +88,7 @@ test.describe("C9: SFTP browser v1", () => {
     await page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
     await page.locator('[data-testid="sftp-refresh"]').click();
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible({ timeout: 5000 });
   });
 
   test("clicking a file opens it with the default app", async ({ page }) => {
@@ -105,7 +105,7 @@ test.describe("C9: SFTP browser v1", () => {
     await page.locator('[data-testid="sftp-path"]').fill("/home/lab/docs");
     await page.locator('[data-testid="sftp-path"]').press("Enter");
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible({ timeout: 5000 });
 
     // Delete readme → empty
     await page
@@ -114,9 +114,9 @@ test.describe("C9: SFTP browser v1", () => {
       .locator('[data-testid="sftp-more"]')
       .click();
     await page.locator("#ctx-menu button.danger").click();
-    await expect(page.locator('[data-testid="sftp-del-confirm"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-del-confirm"]')).toBeVisible({ timeout: 5000 });
     await page.locator('[data-testid="sftp-del-confirm"]').click();
-    await expect(page.locator('[data-testid="sftp-empty"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-empty"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-empty"]')).toContainText("empty");
   });
 
@@ -126,11 +126,11 @@ test.describe("C9: SFTP browser v1", () => {
     await page.locator('[data-testid="sftp-path"]').fill("/home");
     await page.locator('[data-testid="sftp-path"]').press("Enter");
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "lab" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "lab" })).toBeVisible({ timeout: 5000 });
     // drill back into home
     await page.locator('[data-testid="sftp-row"]').filter({ hasText: "lab" }).click();
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible({ timeout: 5000 });
     // `..` steps up one dir
     await page.locator('[data-testid="sftp-path"]').fill("..");
     await page.locator('[data-testid="sftp-path"]').press("Enter");
@@ -143,7 +143,7 @@ test.describe("C9: SFTP browser v1", () => {
     await bridge.sftpForceError("SftpNetwork", "connection reset by peer");
     await page.locator('[data-testid="sftp-refresh"]').click();
     const err = page.locator('[data-testid="sftp-error"]');
-    await expect(err).toBeVisible();
+    await expect(err).toBeVisible({ timeout: 5000 });
     await expect(err).toHaveAttribute("data-kind", "SftpNetwork");
     await expect(err).toContainText(/connection reset/i);
   });
@@ -158,12 +158,12 @@ test.describe("C9: SFTP browser v1", () => {
     await page.locator("#ctx-menu button.danger").click();
     await expect(page.locator("#modal")).not.toHaveClass(/hidden/);
     const danger = page.locator('[data-testid="sftp-del-confirm"]');
-    await expect(danger).toBeVisible();
+    await expect(danger).toBeVisible({ timeout: 5000 });
     await expect(danger).toHaveClass(/danger/);
     // Cancel keeps file
     await page.locator('[data-testid="sftp-del-cancel"]').click();
     await expect(page.locator("#modal")).toHaveClass(/hidden/);
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible({ timeout: 5000 });
     // Confirm deletes
     await page
       .locator('[data-testid="sftp-row"]')
@@ -183,10 +183,10 @@ test.describe("C9: SFTP browser v1", () => {
       .locator('[data-testid="sftp-more"]')
       .click();
     await page.locator("#ctx-menu button", { hasText: "Rename" }).click();
-    await expect(page.locator('[data-testid="sftp-rename-input"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-rename-input"]')).toBeVisible({ timeout: 5000 });
     await page.locator('[data-testid="sftp-rename-input"]').fill("renamed.txt");
     await page.locator('[data-testid="sftp-rename-ok"]').click();
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "renamed.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "renamed.txt" })).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toHaveCount(0);
   });
 
@@ -226,40 +226,43 @@ test.describe("C9: SFTP browser v1", () => {
 
   test("C9b / #41: single pane by default; Split reveals Host A/B + arrows", async ({ page }) => {
     await openFilesPanel(page);
-    await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="sftp-arrows"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="sftp-split-btn"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-split-btn"]')).toBeVisible({ timeout: 5000 });
 
     await page.locator('[data-testid="sftp-split-btn"]').click();
-    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-arrows"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-pane-a-host"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-arrows"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-pane-a-host"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toBeVisible({ timeout: 5000 });
     // Default companion for remote A is This computer
     await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toHaveValue("__local__");
-    await expect(page.locator('[data-testid="local-toolbar"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-toolbar"]')).toBeVisible({ timeout: 5000 });
   });
 
   test("C9b: after Split, local pane lists home with selection cells + stays after nav", async ({ page }) => {
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-split-btn"]').click();
     const localTable = page.locator('[data-testid="local-table"]');
-    await expect(localTable).toBeVisible();
-    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible();
-    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "docs" })).toBeVisible();
-    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "subdir" })).toBeVisible();
-    await expect(page.locator('[data-testid="local-select"]').first()).toBeVisible();
+    await expect(localTable).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "docs" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "subdir" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-select"]').first()).toBeVisible({ timeout: 5000 });
     // navigate a remote dir → local pane persists
     await page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
     await expect(page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
-    await expect(page.locator('[data-testid="local-table"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-table"]')).toBeVisible({ timeout: 5000 });
   });
 
   test("C9b: upload selected local file → appears in remote pane + transfers", async ({ page }) => {
     const bridge = getTestBridge(page);
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-split-btn"]').click();
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible({
+      timeout: 5000,
+    });
     await page
       .locator('[data-testid="local-row"]')
       .filter({ hasText: "local-upload.txt" })
@@ -314,11 +317,11 @@ test.describe("C9: SFTP browser v1", () => {
   test("#41: Close split returns to single pane", async ({ page }) => {
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-split-btn"]').click();
-    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible({ timeout: 5000 });
     await page.locator('[data-testid="sftp-close-split-btn"]').click();
     await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="sftp-arrows"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible({ timeout: 5000 });
   });
 
   test("#43 AC3: host-filter filters active remote pane listing", async ({ page }) => {
@@ -326,7 +329,7 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator("#host-filter")).toHaveAttribute("placeholder", /Filter pane A/i);
     await page.locator("#host-filter").fill("notes");
     await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(1, { timeout: 3000 });
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "notes.txt" })).toBeVisible({ timeout: 5000 });
     await page.locator("#host-filter").fill("");
     await expect(page.locator('[data-testid="sftp-row"]')).toHaveCount(3, { timeout: 3000 });
   });
@@ -335,7 +338,7 @@ test.describe("C9: SFTP browser v1", () => {
     await openFilesPanel(page);
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: ".cache" })).toHaveCount(0);
     await page.locator('[data-testid="sftp-toggle-hidden"]').click();
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: ".cache" })).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: ".cache" })).toBeVisible({ timeout: 5000 });
     await page.locator('[data-testid="sftp-toggle-hidden"]').click();
     await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: ".cache" })).toHaveCount(0);
   });
@@ -368,13 +371,13 @@ test.describe("C9: SFTP browser v1", () => {
 
   test("#43 AC6: remote and local toolbars share Up, Refresh, New folder", async ({ page }) => {
     await openFilesPanel(page);
-    await expect(page.locator('[data-testid="sftp-mkdir"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-mkdir"]')).toBeVisible({ timeout: 5000 });
     await page.locator('[data-testid="sftp-split-btn"]').click();
-    await expect(page.locator('[data-testid="local-mkdir"]')).toBeVisible();
-    await expect(page.locator('[data-testid="local-up"]')).toBeVisible();
-    await expect(page.locator('[data-testid="local-refresh"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-up"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-refresh"]')).toBeVisible();
+    await expect(page.locator('[data-testid="local-mkdir"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-up"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-refresh"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-up"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-refresh"]')).toBeVisible({ timeout: 5000 });
   });
 
   test("#43 AC1: compact rows default to ≤30px min-height", async ({ page }) => {
@@ -388,17 +391,17 @@ test.describe("C9: SFTP browser v1", () => {
   test("#49 soft-restore: leave Hosts and return keeps split local pane", async ({ page }) => {
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-split-btn"]').click();
-    await expect(page.locator('[data-testid="local-table"]')).toBeVisible();
-    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible();
+    await expect(page.locator('[data-testid="local-table"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible({ timeout: 5000 });
 
     await page.locator('#activity-bar button[data-activity="hosts"]').click();
     await expect(page.locator(".sftp-view.active")).toHaveCount(0);
 
     await page.locator('#activity-bar button[data-activity="sftp"]').click();
-    await expect(page.locator("#workspace .sftp-view.active")).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible();
-    await expect(page.locator('[data-testid="local-table"]')).toBeVisible();
-    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').first()).toBeVisible();
+    await expect(page.locator("#workspace .sftp-view.active")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-table"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').first()).toBeVisible({ timeout: 5000 });
   });
 });
