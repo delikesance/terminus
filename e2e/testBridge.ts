@@ -58,5 +58,11 @@ export function getTestBridge(page: Page) {
       page.evaluate(() => (window as any).__terminusTest.lastSftpOpen()),
     seedTofuHost: (hostId?: string) =>
       page.evaluate((id) => (window as any).__terminusTest.seedTofuHost(id), hostId),
+
+    // C9b: bidirectional SFTP (local pane + transfer)
+    seedLocalDir: (path?: string) =>
+      page.evaluate((p) => (window as any).__terminusTest.seedLocalDir(p), path),
+    transferOps: () =>
+      page.evaluate(() => (window as any).__terminusTest.transferOps()),
   };
 }

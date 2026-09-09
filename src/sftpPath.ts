@@ -1,6 +1,7 @@
 /**
- * Safe SFTP path helpers — block `..` escape outside the session root.
- * Mirrors crates/terminus-core/src/sftp_path.rs (fail closed).
+ * Full-FS SFTP path helpers — the remote filesystem is browsed as an absolute
+ * path tree (like Termius). `..` and `/` are allowed; the only remaining guard
+ * is that a path cannot step above `/`. No session-root sandbox.
  */
 
 export type SftpPathError = {
@@ -10,7 +11,7 @@ export type SftpPathError = {
 };
 
 export function normalizeSftpPath(path: string): string {
-  if (!path) return ".";
+  if (!path) return "/";
   const absolute = path.startsWith("/");
   const stack: string[] = [];
   for (const part of path.split("/")) {
@@ -33,71 +34,41 @@ export function normalizeSftpPath(path: string): string {
   return stack.length ? stack.join("/") : ".";
 }
 
-export function resolveUnderRoot(root: string, path: string): string {
-  const rootN = normalizeSftpPath(root);
-  let candidate: string;
-  if (path.startsWith("/")) {
-    candidate = normalizeSftpPath(path);
-  } else if (rootN === ".") {
-    candidate = normalizeSftpPath(path);
-  } else if (rootN === "/") {
-    candidate = normalizeSftpPath(`/${path}`);
-  } else {
-    candidate = normalizeSftpPath(`${rootN.replace(/\/$/, "")}/${path.replace(/^\//, "")}`);
-  }
-  if (!isUnderRoot(rootN, candidate)) {
-    const err: SftpPathError = {
-      kind: "SftpPathTraversal",
-      message: `path traversal blocked: ${path}`,
-      path,
-    };
-    throw err;
-  }
-  return candidate;
+/** Resolve any path to an absolute one. Relative input is anchored to `/`. */
+export function resolveUnderRoot(_root: string, path: string): string {
+  const p = (path && path.trim()) || ".";
+  return normalizeSftpPath(p.startsWith("/") ? p : `/${p}`);
 }
 
-/** Show the remote folder as an absolute path when the session cwd is known. */
+/** Show the remote path (absolute). Relative input is joined onto cwd. */
 export function sftpDisplayPath(cwd: string | null | undefined, logical: string): string {
   let norm: string;
   try {
-    norm = normalizeSftpPath(logical || ".");
+    norm = normalizeSftpPath(logical || "/");
   } catch {
-    norm = logical || ".";
+    norm = logical || "/";
   }
+  if (norm.startsWith("/")) return norm === "/" ? "/" : norm.replace(/\/+$/, "");
   const home = tidyAbs(cwd);
-  if (!home) return norm;
-  if (norm === "." || norm === "") return home;
-  if (norm.startsWith("/")) return norm;
-  return home === "/" ? `/${norm}` : `${home}/${norm}`;
+  if (home) return home === "/" ? `/${norm}` : `${home}/${norm}`;
+  return norm === "." ? "/" : `/${norm}`;
 }
 
 /**
- * Map a path-bar value (absolute under cwd, or relative) back to a logical
- * session path that `resolveUnderRoot` can send over IPC.
+ * Map a path-bar value back to an absolute remote path. Absolute values pass
+ * through (`/`, `/etc`, `..`, …). Relative values are anchored onto cwd.
  */
 export function logicalFromDisplayPath(
   cwd: string | null | undefined,
-  root: string,
+  _root: string,
   typed: string,
 ): string {
   const raw = typed.trim() || ".";
+  if (raw.startsWith("/")) return normalizeSftpPath(raw);
   const home = tidyAbs(cwd);
-  if (home) {
-    if (raw === home || raw === `${home}/`) return resolveUnderRoot(root, ".");
-    const prefix = home === "/" ? "/" : `${home}/`;
-    if (raw.startsWith(prefix)) {
-      return resolveUnderRoot(root, raw.slice(prefix.length) || ".");
-    }
-    if (raw.startsWith("/")) {
-      const err: SftpPathError = {
-        kind: "SftpPathTraversal",
-        message: `path traversal blocked: ${raw}`,
-        path: raw,
-      };
-      throw err;
-    }
-  }
-  return resolveUnderRoot(root, raw);
+  if (home && home !== "/") return normalizeSftpPath(`${home}/${raw}`.replace(/\/+/g, "/"));
+  const joined = home === "/" ? `/${raw}` : `/${raw}`.replace(/\/+/g, "/");
+  return normalizeSftpPath(joined);
 }
 
 function tidyAbs(path: string | null | undefined): string {
@@ -118,12 +89,6 @@ export function parentSftpPath(path: string): string | null {
   if (idx === 0) return "/";
   if (idx < 0) return ".";
   return norm.slice(0, idx);
-}
-
-function isUnderRoot(root: string, path: string): boolean {
-  if (root === "/") return path.startsWith("/");
-  if (root === ".") return !path.startsWith("/");
-  return path === root || path.startsWith(`${root}/`);
 }
 
 /** Parse typed SFTP IPC errors (`{"kind":"Sftp…","message":…}`). */

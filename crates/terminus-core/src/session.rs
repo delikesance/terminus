@@ -315,6 +315,14 @@ impl SessionManager {
         Ok(packed)
     }
 
+    pub fn extract_text(&self, session_id: &str, r0: u16, c0: u16, r1: u16, c1: u16) -> Result<String> {
+        let Some(session) = self.sessions.get(session_id) else {
+            return Err(Error::SessionNotFound(session_id.into()));
+        };
+        let text = session.emulator.lock().extract_text(r0, c0, r1, c1);
+        Ok(text)
+    }
+
     pub fn cell_size(&self, session_id: &str) -> Result<(u32, u32)> {
         let Some(session) = self.sessions.get(session_id) else {
             return Err(Error::SessionNotFound(session_id.into()));

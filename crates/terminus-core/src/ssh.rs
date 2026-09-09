@@ -699,6 +699,64 @@ pub async fn sftp_remove(
     .await
 }
 
+/// Create a remote directory (SSH_FXP_MKDIR).
+pub async fn sftp_mkdir(
+    host: &Host,
+    identity: Option<&Identity>,
+    root: &str,
+    path: &str,
+) -> Result<()> {
+    let safe = resolve_under_root(root, path)?;
+    with_sftp(host, identity, move |sftp| async move {
+        sftp.create_dir(&safe).await.map_err(|e| map_sftp_io("mkdir", e))?;
+        Ok(())
+    })
+    .await
+}
+
+/// Recursively delete a remote directory (and its contents). `remove_dir` in
+/// russh-sftp only removes empty directories, so dirs are walked depth-first.
+pub async fn sftp_rmtree(
+    host: &Host,
+    identity: Option<&Identity>,
+    root: &str,
+    path: &str,
+) -> Result<()> {
+    let safe = resolve_under_root(root, path)?;
+    with_sftp(host, identity, move |sftp| async move { remove_sftp_tree(&sftp, &safe).await })
+        .await
+}
+
+async fn remove_sftp_tree(sftp: &SftpSession, dir: &str) -> Result<()> {
+    let entries = sftp
+        .read_dir(dir)
+        .await
+        .map_err(|e| map_sftp_io("list", e))?;
+    for entry in entries {
+        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let child = if dir == "/" {
+            format!("/{name}")
+        } else {
+            format!("{}/{}", dir.trim_end_matches('/'), name)
+        };
+        if entry.metadata().is_dir() {
+            Box::pin(remove_sftp_tree(sftp, &child)).await?;
+        } else {
+            sftp
+                .remove_file(&child)
+                .await
+                .map_err(|e| map_sftp_io("remove", e))?;
+        }
+    }
+    sftp.remove_dir(dir)
+        .await
+        .map_err(|e| map_sftp_io("remove_dir", e))?;
+    Ok(())
+}
+
 /// Resolve a remote path to an absolute one (`SSH_FXP_REALPATH`).
 pub async fn sftp_realpath(
     host: &Host,
