@@ -44,15 +44,22 @@ function runTests() {
 
   checks.push(
     check(
-      "shouldShowBatchBar split+selection",
-      shouldShowBatchBar({ split: true, canTransfer: true, localSelected: 1, remoteSelected: 0 }),
+      "shouldShowBatchBar with selection",
+      shouldShowBatchBar({ localSelected: 1, remoteSelected: 0 }),
       "",
     ),
   );
   checks.push(
     check(
-      "shouldShowBatchBar hidden when not split",
-      !shouldShowBatchBar({ split: false, canTransfer: true, localSelected: 1, remoteSelected: 0 }),
+      "shouldShowBatchBar empty selection",
+      !shouldShowBatchBar({ localSelected: 0, remoteSelected: 0 }),
+      "",
+    ),
+  );
+  checks.push(
+    check(
+      "shouldShowBatchBar single-pane remote selection",
+      shouldShowBatchBar({ localSelected: 0, remoteSelected: 2 }),
       "",
     ),
   );
