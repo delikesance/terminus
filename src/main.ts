@@ -755,18 +755,19 @@ function renderHosts() {
     }
   };
   
-  // If a host matches, expand its group and all ancestor groups
+  // If searching, expand ancestors of matching hosts/groups so hits stay visible.
   const expandedBySearch = new Set<string>();
-  for (const host of filteredHosts) {
-    if (host.group_id) {
-      expandedBySearch.add(host.group_id);
-      expandAncestors(host.group_id);
+  const searching = Boolean(q.trim());
+  if (searching) {
+    for (const host of filteredHosts) {
+      if (host.group_id) {
+        expandedBySearch.add(host.group_id);
+        expandAncestors(host.group_id);
+      }
     }
-  }
-  
-  // If a group matches, expand its ancestors
-  for (const groupId of matchingGroupIds) {
-    expandAncestors(groupId);
+    for (const groupId of matchingGroupIds) {
+      expandAncestors(groupId);
+    }
   }
   
   // Build group hierarchy
@@ -826,10 +827,11 @@ function renderHosts() {
     const groupHosts = filteredHosts.filter((h) => h.group_id === group.id);
     const children = childGroups.get(group.id) ?? [];
     const isExpanded =
-      state.expandedGroups.has(group.id) || expandedBySearch.has(group.id) || matchingGroupIds.has(group.id);
+      state.expandedGroups.has(group.id) ||
+      (searching && (expandedBySearch.has(group.id) || matchingGroupIds.has(group.id)));
     const totalHosts = groupHosts.length;
 
-    let html = `<div class="group-row ${isExpanded ? "expanded" : ""}" data-group="${group.id}" data-testid="group-${group.id}" title="Drop hosts here">
+    let html = `<div class="group-row ${isExpanded ? "expanded" : ""}" data-group="${group.id}" data-testid="group-${group.id}" title="Drop hosts here" role="button" aria-expanded="${isExpanded}">
       <span class="chevron">${icons.chevronRight}</span>
       <span class="leading">${icons.folder}</span>
       <div class="body">
