@@ -76,6 +76,42 @@ test.describe("Port Forwarding panel UX (#35 / #37)", () => {
     await expect(page.locator('[data-testid="forward-form"]')).toHaveCount(0);
   });
 
+  test("#39 polish: SSH select width, route ports, actions gap, search padding", async ({ page }) => {
+    const bridge = getTestBridge(page);
+    await bridge.seedForwardHost("fwd-host-long-name");
+    await page.locator('#activity-bar button[data-activity="forwards"]').click();
+    await page.locator('[data-testid="forward-add-btn"]').click();
+
+    const metrics = await page.evaluate(() => {
+      const select = document.querySelector('[data-testid="fwd-ssh-host"]') as HTMLElement;
+      const local = document.querySelector('[data-testid="fwd-local-port"]') as HTMLElement;
+      const remoteHost = document.querySelector('[data-testid="fwd-remote-host"]') as HTMLElement;
+      const remotePort = document.querySelector('[data-testid="fwd-remote-port"]') as HTMLElement;
+      const actions = document.querySelector(".forward-form-actions") as HTMLElement;
+      const search = document.querySelector(".sidebar-toolbar .search") as HTMLElement;
+      const cs = (el: HTMLElement) => getComputedStyle(el);
+      return {
+        sshMin: parseFloat(cs(select).minWidth),
+        sshAppearance: cs(select).appearance || (cs(select) as CSSStyleDeclaration & { webkitAppearance?: string }).webkitAppearance,
+        localMin: parseFloat(cs(local).minWidth),
+        remotePortMin: parseFloat(cs(remotePort).minWidth),
+        remoteHostFlex: cs(remoteHost).flexGrow,
+        actionsGap: parseFloat(cs(actions).gap || cs(actions).columnGap),
+        searchPadRight: parseFloat(cs(search).paddingRight),
+        viaLabel: !!document.querySelector('[data-testid="fwd-via-label"]'),
+      };
+    });
+
+    expect(metrics.sshMin).toBeGreaterThanOrEqual(140);
+    expect(String(metrics.sshAppearance)).toMatch(/none/i);
+    expect(metrics.localMin).toBeGreaterThanOrEqual(60);
+    expect(metrics.remotePortMin).toBeGreaterThanOrEqual(60);
+    expect(Number(metrics.remoteHostFlex)).toBeGreaterThanOrEqual(1);
+    expect(metrics.actionsGap).toBe(8);
+    expect(metrics.searchPadRight).toBeGreaterThanOrEqual(16);
+    expect(metrics.viaLabel).toBe(true);
+  });
+
   test("AC5: hosts activity shows New host / New group again", async ({ page }) => {
     await page.locator('#activity-bar button[data-activity="forwards"]').click();
     await expect(page.locator("#btn-new-host")).toBeHidden();
