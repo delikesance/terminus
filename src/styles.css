@@ -503,7 +503,7 @@ svg {
 }
 
 .search { 
-  padding: 14px 14px 10px; 
+  padding: 14px 18px 10px 14px; 
   position: relative;
   flex: 1;
   min-width: 0;
@@ -642,8 +642,11 @@ svg {
 .fwd-actions-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
+}
+.fwd-actions-row {
+  justify-content: space-between;
 }
 .fwd-route-arrow,
 .fwd-route-sep {
@@ -665,19 +668,60 @@ svg {
   font: inherit;
   font-size: 12.5px;
 }
+.fwd-port {
+  flex: 0 0 auto;
+  width: 60px;
+  min-width: 60px;
+  max-width: 72px;
+  text-align: center;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.fwd-host-ip {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.fwd-via {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.fwd-via-label {
+  flex: none;
+  font-size: 11px;
+  color: var(--tertiary);
+  text-transform: lowercase;
+}
+.fwd-ssh-select,
+.fwd-inline-select.fwd-ssh-select {
+  flex: 1 1 auto;
+  min-width: 140px;
+  max-width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding: 0 28px 0 10px;
+  background-color: var(--bg, var(--surface, #1e1e1e));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%99888899' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
 .fwd-inline-input:focus,
 .fwd-inline-select:focus {
   outline: none;
   box-shadow: inset 0 0 0 1px var(--blue), 0 0 0 2px color-mix(in srgb, var(--blue) 35%, transparent);
 }
-.fwd-flex-1 { flex: 1 1 0; }
-.fwd-flex-2 { flex: 2 1 0; }
 .forward-form-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 8px;
   flex: none;
+  margin-left: auto;
 }
 .forward-form-actions .primary {
   background: var(--blue);

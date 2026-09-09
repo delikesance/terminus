@@ -6,6 +6,7 @@ import {
   applyToggleFailure,
   applyToggleSuccess,
   buildForwardRows,
+  compactForwardLayout,
   compactForwardTabOrder,
   createForwardUiState,
   formatForwardSubtitle,
@@ -129,6 +130,17 @@ function runTests() {
         `${add}/${close}`,
       ),
     );
+  }
+
+  // #39 — compact layout tokens for CSS polish
+  {
+    const L = compactForwardLayout;
+    const ok =
+      L.sshSelectMinWidthPx === 140 &&
+      L.portFieldMinWidthPx === 60 &&
+      L.actionsGapPx === 8 &&
+      L.searchPaddingRightPx >= 16;
+    checks.push(check("AC #39 compactForwardLayout tokens", ok, JSON.stringify(L)));
   }
 
   // validate still works

@@ -196,3 +196,11 @@ export function shouldCloseCreateFormOnEscape(key: string, createOpen: boolean):
 export function forwardAddBtnMode(createOpen: boolean): "add" | "close" {
   return createOpen ? "close" : "add";
 }
+
+/** Layout tokens for compact create form polish (#39). CSS must honor these. */
+export const compactForwardLayout = {
+  sshSelectMinWidthPx: 140,
+  portFieldMinWidthPx: 60,
+  actionsGapPx: 8,
+  searchPaddingRightPx: 16,
+} as const;
