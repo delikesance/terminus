@@ -794,7 +794,7 @@ function renderHosts() {
     const keyHtml = h.identity_id
       ? `<span class="host-key-badge" data-testid="host-identity-icon" title="SSH identity">${icons.key}</span>`
       : "";
-    return `<div class="${classes}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}" tabindex="0">
+    return `<div class="${classes}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}" tabindex="0" draggable="true">
         ${hostLeading(h)}
         <div class="body">
           <strong class="host-title">${escapeHtml(h.name || h.hostname)}</strong>
@@ -815,33 +815,33 @@ function renderHosts() {
   const renderGroup = (group: Group, depth = 0): string => {
     const groupHosts = filteredHosts.filter((h) => h.group_id === group.id);
     const children = childGroups.get(group.id) ?? [];
-    const isExpanded = state.expandedGroups.has(group.id) || expandedBySearch.has(group.id) || matchingGroupIds.has(group.id);
+    const isExpanded =
+      state.expandedGroups.has(group.id) || expandedBySearch.has(group.id) || matchingGroupIds.has(group.id);
     const totalHosts = groupHosts.length;
-    
-    // Skip empty groups unless they match search
-    if (!q && totalHosts === 0 && children.length === 0) return "";
-    
-    let html = `<div class="group-row ${isExpanded ? "expanded" : ""}" data-group="${group.id}">
+
+    let html = `<div class="group-row ${isExpanded ? "expanded" : ""}" data-group="${group.id}" data-testid="group-${group.id}" title="Drop hosts here">
       <span class="chevron">${icons.chevronRight}</span>
       <span class="leading">${icons.folder}</span>
       <div class="body">
         <strong>${escapeHtml(group.name)}</strong>
+        <small class="group-meta">${totalHosts} host${totalHosts === 1 ? "" : "s"}</small>
       </div>
     </div>`;
-    
+
     if (isExpanded) {
-      html += `<div class="group-children">`;
-      // Render hosts in this group
+      html += `<div class="group-children" data-group-drop="${group.id}">`;
+      if (!groupHosts.length && !children.length) {
+        html += `<div class="group-empty" data-testid="group-empty">Drop hosts here</div>`;
+      }
       for (const host of groupHosts) {
         html += hostRow(host);
       }
-      // Render child groups
       for (const child of children) {
         html += renderGroup(child, depth + 1);
       }
       html += `</div>`;
     }
-    
+
     return html;
   };
   
@@ -912,7 +912,7 @@ function renderHosts() {
     };
   });
 
-  // Group toggle handlers
+  // Group toggle + context menu + drop targets
   $("panel-hosts").querySelectorAll<HTMLElement>(".group-row").forEach((el) => {
     el.onclick = () => {
       const groupId = el.dataset.group!;
@@ -924,7 +924,18 @@ function renderHosts() {
       localStorage.setItem("terminus-expanded-groups", JSON.stringify([...state.expandedGroups]));
       renderHosts();
     };
+    el.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      const group = state.groups.find((g) => g.id === el.dataset.group);
+      if (!group) return;
+      showMenu(ev.clientX, ev.clientY, [
+        { label: "Edit group", run: () => editGroup(group) },
+        { danger: true, label: "Delete group", run: () => void deleteGroupConfirm(group) },
+      ]);
+    };
   });
+
+  bindHostGroupDragDrop();
 
   // Host handlers
   $("panel-hosts").querySelectorAll<HTMLElement>("[data-host]").forEach((el) => {
@@ -2822,6 +2833,7 @@ function editSnippet() {
 }
 
 function editGroup(existing?: Group) {
+  const isNew = !existing;
   const group = existing ?? {
     id: crypto.randomUUID(),
     name: "",
@@ -2829,64 +2841,155 @@ function editGroup(existing?: Group) {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
-  
-  const parentOpts = [`<option value="">None (top-level)</option>`].concat(
-    state.groups
-      .filter((g) => g.id !== group.id && !g.parent_id)
-      .map((g) => `<option value="${escapeHtml(g.id)}" ${group.parent_id === g.id ? "selected" : ""}>${escapeHtml(g.name)}</option>`)
-  ).join("");
-  
+
+  const parentOpts = [`<option value="">None (top-level)</option>`]
+    .concat(
+      state.groups
+        .filter((g) => g.id !== group.id && !g.parent_id && !g.deleted_at)
+        .map(
+          (g) =>
+            `<option value="${escapeHtml(g.id)}" ${group.parent_id === g.id ? "selected" : ""}>${escapeHtml(g.name)}</option>`,
+        ),
+    )
+    .join("");
+
   openSheet(`
     <h2>${existing ? "Edit group" : "New group"}</h2>
-    <p class="lead">Organize your hosts into collapsible groups in the sidebar.</p>
+    <p class="lead">Organize your hosts into collapsible groups. You can drag hosts into an empty group.</p>
     <div class="group-card">
-      <label class="cell stack"><span>Name</span><input id="g-name" value="${escapeHtml(group.name)}" placeholder="Production servers" /></label>
-      <label class="cell stack"><span>Parent group</span><select id="g-parent">${parentOpts}</select></label>
+      <label class="cell stack"><span>Name</span><input id="g-name" data-testid="group-name" value="${escapeHtml(group.name)}" placeholder="Production servers" /></label>
+      <label class="cell stack"><span>Parent group</span><select id="g-parent" data-testid="group-parent">${parentOpts}</select></label>
+      <p class="form-error hidden" id="g-error" data-testid="group-error">Name is required.</p>
     </div>
     <div class="row">
-      ${existing ? `<button id="g-del" class="danger">Delete</button>` : ""}
-      <button class="primary" id="g-save">Save</button>
+      ${existing ? `<button id="g-del" class="danger" data-testid="group-delete">Delete</button>` : ""}
+      <button class="primary" id="g-save" data-testid="group-save">Save</button>
     </div>`);
-  
+
   $("g-save").onclick = async () => {
     group.name = ($("g-name") as HTMLInputElement).value.trim();
     group.parent_id = ($("g-parent") as HTMLSelectElement).value || null;
     group.updated_at = new Date().toISOString();
-    
-    if (!group.name) return;
-    
+    const err = $("g-error");
+    if (!group.name) {
+      err.classList.remove("hidden");
+      ($("g-name") as HTMLInputElement).focus();
+      return;
+    }
+    err.classList.add("hidden");
+
     await invoke("groups_upsert", { group });
+    if (isNew) {
+      state.expandedGroups.add(group.id);
+      localStorage.setItem("terminus-expanded-groups", JSON.stringify([...state.expandedGroups]));
+    }
     $("modal").classList.add("hidden");
     await refreshSide();
   };
-  
+
   const del = document.getElementById("g-del");
   if (del) {
-    del.onclick = async () => {
-      // Use extracted soft-delete logic
-      const affectedGroupIds = computeAffectedGroups(group.id, state.groups);
-      const now = new Date().toISOString();
-      
-      // Soft-delete the group itself and all descendant groups
-      for (const groupId of affectedGroupIds) {
-        const targetGroup = state.groups.find((g) => g.id === groupId);
-        if (targetGroup) {
-          const deletedGroup = applySoftDelete(targetGroup, now);
-          await invoke("groups_upsert", { group: deletedGroup });
-        }
-      }
-      
-      // Clear group_id on all hosts that belong to affected groups
-      const orphanedHosts = findOrphanedHosts(affectedGroupIds, state.hosts);
-      for (const host of orphanedHosts) {
-        const detachedHostData = detachHost(host, now);
-        await invoke("hosts_upsert", { host: detachedHostData });
-      }
-      
+    del.onclick = () => {
       $("modal").classList.add("hidden");
-      await refreshSide();
+      void deleteGroupConfirm(group);
     };
   }
+}
+
+async function deleteGroupConfirm(group: Group) {
+  openSheet(`
+    <h2>Delete group?</h2>
+    <p class="lead">Hosts in this group become ungrouped. Nested groups are deleted too.</p>
+    <p class="form-error">${escapeHtml(group.name)}</p>
+    <div class="row">
+      <button type="button" id="g-del-cancel">Cancel</button>
+      <button type="button" class="danger" id="g-del-ok" data-testid="group-delete-confirm">Delete</button>
+    </div>`);
+  $("g-del-cancel").onclick = () => $("modal").classList.add("hidden");
+  $("g-del-ok").onclick = async () => {
+    const affectedGroupIds = computeAffectedGroups(group.id, state.groups);
+    const now = new Date().toISOString();
+    for (const groupId of affectedGroupIds) {
+      const targetGroup = state.groups.find((g) => g.id === groupId);
+      if (targetGroup) {
+        const deletedGroup = applySoftDelete(targetGroup, now);
+        await invoke("groups_upsert", { group: deletedGroup });
+      }
+    }
+    const orphanedHosts = findOrphanedHosts(affectedGroupIds, state.hosts);
+    for (const host of orphanedHosts) {
+      const detachedHostData = detachHost(host, now);
+      await invoke("hosts_upsert", { host: detachedHostData });
+    }
+    for (const id of affectedGroupIds) state.expandedGroups.delete(id);
+    localStorage.setItem("terminus-expanded-groups", JSON.stringify([...state.expandedGroups]));
+    $("modal").classList.add("hidden");
+    await refreshSide();
+  };
+}
+
+const HOST_GROUP_MIME = "application/x-terminus-host";
+
+function bindHostGroupDragDrop(): void {
+  const panel = $("panel-hosts");
+  panel.querySelectorAll<HTMLElement>("[data-host]").forEach((el) => {
+    el.addEventListener("dragstart", (ev) => {
+      if (!ev.dataTransfer) return;
+      const id = el.dataset.host || "";
+      ev.dataTransfer.setData(HOST_GROUP_MIME, id);
+      ev.dataTransfer.setData("text/plain", id);
+      ev.dataTransfer.effectAllowed = "move";
+      el.classList.add("is-dragging");
+    });
+    el.addEventListener("dragend", () => {
+      el.classList.remove("is-dragging");
+      panel.querySelectorAll(".group-row.drop-target, .group-children.drop-target").forEach((n) => {
+        n.classList.remove("drop-target");
+      });
+    });
+  });
+
+  const markDrop = (el: HTMLElement | null, on: boolean) => {
+    el?.classList.toggle("drop-target", on);
+  };
+
+  panel.querySelectorAll<HTMLElement>(".group-row, .group-children").forEach((el) => {
+    el.addEventListener("dragover", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      markDrop(el, true);
+    });
+    el.addEventListener("dragleave", (ev) => {
+      if (ev.currentTarget === el && !(el.contains(ev.relatedTarget as Node))) {
+        markDrop(el, false);
+      }
+    });
+    el.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      markDrop(el, false);
+      const hostId =
+        ev.dataTransfer?.getData(HOST_GROUP_MIME) || ev.dataTransfer?.getData("text/plain") || "";
+      const groupId = el.dataset.group || el.dataset.groupDrop || null;
+      if (!hostId || !groupId) return;
+      void assignHostToGroup(hostId, groupId);
+    });
+  });
+}
+
+async function assignHostToGroup(hostId: string, groupId: string | null): Promise<void> {
+  const host = state.hosts.find((h) => h.id === hostId);
+  if (!host) return;
+  if ((host.group_id ?? null) === groupId) return;
+  host.group_id = groupId;
+  host.updated_at = new Date().toISOString();
+  await invoke("hosts_upsert", { host });
+  if (groupId) {
+    state.expandedGroups.add(groupId);
+    localStorage.setItem("terminus-expanded-groups", JSON.stringify([...state.expandedGroups]));
+  }
+  await refreshSide();
 }
 
 async function openVault() {
