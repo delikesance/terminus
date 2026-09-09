@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux && npm run test:group-softdelete && npm run test:known-hosts && npm run test:identity-kind && npm run test:sftp-path && npm run test:activity-bar && npm run test:forward-panel && npm run test:host-card && npm run test:polish-finish",
+    "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux && npm run test:group-softdelete && npm run test:known-hosts && npm run test:identity-kind && npm run test:sftp-path && npm run test:activity-bar && npm run test:forward-panel && npm run test:host-card && npm run test:polish-finish && npm run test:sftp-layout",
     "test:search-ux": "npm run compile:test-groupexpand && node src/groupExpand.test.js",
     "test:group-softdelete": "npm run compile:test-groupsoftdelete && node src/groupSoftDelete.test.js",
     "test:known-hosts": "npm run compile:test-knownhosts && node src/knownHostsParse.test.js",
@@ -30,7 +30,9 @@
     "compile:test-hostcard": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/hostCard.ts",
     "test:host-card": "npm run compile:test-hostcard && node src/hostCard.test.js",
     "compile:test-polishfinish": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/hostCard.ts src/updateNotify.ts",
-    "test:polish-finish": "npm run compile:test-polishfinish && node src/polishFinish.test.js"
+    "test:polish-finish": "npm run compile:test-polishfinish && node src/polishFinish.test.js",
+    "compile:test-sftplayout": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/sftpLayout.ts",
+    "test:sftp-layout": "npm run compile:test-sftplayout && node src/sftpLayout.test.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
