@@ -327,7 +327,7 @@ test.describe("C9: SFTP browser v1", () => {
     await openFilesPanel(page);
     await page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.md" })).toBeVisible({
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible({
       timeout: 5000,
     });
     await page.locator('[data-testid="sftp-split-btn"]').click();
@@ -339,7 +339,7 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="sftp-loading"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.md" })).toBeVisible({
+    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "readme.txt" })).toBeVisible({
       timeout: 5000,
     });
   });
