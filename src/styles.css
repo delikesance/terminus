@@ -503,21 +503,26 @@ svg {
 }
 
 .search { 
-  padding: 14px 18px 10px 14px; 
   position: relative;
-  flex: 1;
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 .sidebar-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-right: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 12px 10px;
 }
 .side-add-btn {
   width: 32px;
   height: 32px;
-  margin-top: 4px;
+  margin-top: 0;
   border: 0;
   border-radius: 8px;
   background: var(--blue);
@@ -540,22 +545,25 @@ svg {
 }
 .search svg {
   position: absolute;
-  left: 24px;
-  top: 21px;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
   color: var(--tertiary);
   width: 14px;
   height: 14px;
   pointer-events: none;
 }
 .search input {
+  display: block;
   width: 100%;
   height: 32px;
   border: 0;
   background: var(--track);
   border-radius: 8px;
-  padding: 0 10px 0 38px;
+  padding: 0 10px 0 32px;
   outline: none;
   font-size: 12.5px;
+  box-sizing: border-box;
 }
 .search input::placeholder { color: var(--placeholder); }
 .search input:focus { background: var(--track-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 28%, transparent); }
