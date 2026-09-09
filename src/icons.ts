@@ -42,6 +42,7 @@ export const icons = {
   chevronLeft: svg(`<path d="M14 6l-6 6 6 6"/>`),
   chevronRight: svg(`<path d="M10 6l6 6-6 6"/>`),
   reconnect: svg(`<path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v6h-6"/>`),
+  check: svg(`<path d="m6 12 4 4 8-8"/>`),
   more: svg(`<circle cx="6.5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="17.5" cy="12" r="1.2"/>`),
   home: svg(
     `<path d="M4.5 11 12 4.5 19.5 11"/><path d="M6.5 10.5V19h11v-8.5"/>`,

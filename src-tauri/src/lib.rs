@@ -1,6 +1,7 @@
 use base64::Engine;
 use serde_json::Value;
 use std::sync::Arc;
+use terminus_core::local_fs;
 use terminus_core::models::*;
 use terminus_core::session::{OutputSink, SessionManager};
 use terminus_core::ssh;
@@ -128,6 +129,21 @@ fn session_frame(
         .map_err(map_err)?
         .unwrap_or_default();
     Ok(Response::new(bytes))
+}
+
+#[tauri::command]
+fn session_selection_text(
+    state: State<'_, AppState>,
+    id: String,
+    r0: u16,
+    c0: u16,
+    r1: u16,
+    c1: u16,
+) -> Result<String, String> {
+    state
+        .sessions
+        .extract_text(&id, r0, c0, r1, c1)
+        .map_err(map_err)
 }
 
 #[tauri::command]
@@ -518,6 +534,67 @@ async fn sftp_remove(
         .map_err(map_err)
 }
 
+#[tauri::command]
+async fn sftp_mkdir(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
+    ssh::sftp_mkdir(&host, identity.as_ref(), &root, &path)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn sftp_rmtree(
+    state: State<'_, AppState>,
+    host_id: String,
+    path: String,
+    root: Option<String>,
+) -> Result<(), String> {
+    let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
+    ssh::sftp_rmtree(&host, identity.as_ref(), &root, &path)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+fn local_home() -> Result<String, String> {
+    local_fs::local_home().map_err(map_err)
+}
+
+#[tauri::command]
+async fn local_list(path: String) -> Result<Vec<LocalEntry>, String> {
+    local_fs::local_list(&path).map_err(map_err)
+}
+
+#[tauri::command]
+async fn local_read(path: String) -> Result<Vec<u8>, String> {
+    local_fs::local_read(&path).await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn local_write(path: String, data: Vec<u8>) -> Result<(), String> {
+    local_fs::local_write(&path, &data).await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn local_mkdir(path: String) -> Result<(), String> {
+    local_fs::local_mkdir(&path).await.map_err(map_err)
+}
+
+#[tauri::command]
+fn local_remove(path: String, is_dir: bool) -> Result<(), String> {
+    local_fs::local_remove(&path, is_dir).map_err(map_err)
+}
+
+#[tauri::command]
+fn local_rename(from: String, to: String) -> Result<(), String> {
+    local_fs::local_rename(&from, &to).map_err(map_err)
+}
+
 async fn sftp_ctx(
     state: &State<'_, AppState>,
     host_id: &str,
@@ -613,6 +690,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -640,6 +718,7 @@ pub fn run() {
             session_resize,
             session_close,
             session_frame,
+            session_selection_text,
             session_list,
             hosts_list,
             hosts_runtime,
@@ -677,6 +756,15 @@ pub fn run() {
             sftp_realpath,
             sftp_open,
             sftp_remove,
+            sftp_mkdir,
+            sftp_rmtree,
+            local_home,
+            local_list,
+            local_read,
+            local_write,
+            local_mkdir,
+            local_remove,
+            local_rename,
             forwards_list,
             forwards_upsert,
             forward_start,

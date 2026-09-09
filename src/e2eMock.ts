@@ -87,6 +87,12 @@ type Db = {
   sync: SyncStatus;
   /** Per-host virtual SFTP trees keyed by host id. */
   sftp: Map<string, SftpNode>;
+  /** Local (user machine) virtual FS root + home for the local pane. */
+  local: SftpNode | null;
+  localHome: string;
+  /** Transfer op counters for E2E assertions. */
+  transferUploads: number;
+  transferDownloads: number;
   /** Force next sftp_* call to fail with typed IPC JSON. */
   sftpForceError: string | null;
   /** Last file opened via sftp_open (E2E). */
@@ -190,6 +196,10 @@ function createDb(): Db {
       sync_secrets: false,
     },
     sftp: new Map(),
+    local: null,
+    localHome: "/home/local",
+    transferUploads: 0,
+    transferDownloads: 0,
     sftpForceError: null,
     sftpLastOpen: null,
     tofuRequired: new Set(),
@@ -293,10 +303,17 @@ function mockRealpath(db: Db, hostId: string, path: string): string {
 function ensureSftpRoot(db: Db, hostId: string): SftpNode {
   let root = db.sftp.get(hostId);
   if (!root) {
-    root = makeDir(".");
-    root.children.set("docs", makeDir("docs"));
-    root.children.get("docs")!.children.set("readme.txt", makeFile("readme.txt", "hello sftp"));
-    root.children.set("notes.txt", makeFile("notes.txt", "notes"));
+    // Full-FS tree rooted at "/" with the host's home at /home/<user>.
+    const user = db.hosts.find((h) => h.id === hostId)?.username || "lab";
+    root = makeDir("/");
+    const home = makeDir("home");
+    const userDir = makeDir(user);
+    userDir.children.set("docs", makeDir("docs"));
+    userDir.children.get("docs")!.children.set("readme.txt", makeFile("readme.txt", "hello sftp"));
+    userDir.children.set("notes.txt", makeFile("notes.txt", "notes"));
+    userDir.children.set("remote-only.txt", makeFile("remote-only.txt", "from remote"));
+    home.children.set(user, userDir);
+    root.children.set("home", home);
     db.sftp.set(hostId, root);
   }
   return root;
@@ -417,6 +434,126 @@ function maybeSftpForce(db: Db): void {
     throw err;
   }
 }
+
+// ─── Local (user machine) virtual FS helpers ────────────────────────────────
+function normLocal(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+/g, "/");
+}
+
+function ensureLocalRoot(db: Db): SftpNode {
+  if (!db.local) {
+    const root = makeDir(".");
+    root.children.set("docs", makeDir("docs"));
+    root.children.get("docs")!.children.set("readme.txt", makeFile("readme.txt", "hello local"));
+    root.children.set("notes.txt", makeFile("notes.txt", "local notes"));
+    root.children.set("subdir", makeDir("subdir"));
+    root.children.get("subdir")!.children.set("deep.txt", makeFile("deep.txt", "deep"));
+    root.children.set("local-upload.txt", makeFile("local-upload.txt", "from local"));
+    db.local = root;
+    db.localHome = "/home/local";
+  }
+  return db.local;
+}
+
+/** Relative segments of `path` under the local home. Throws typed IPC JSON. */
+function localRel(db: Db, path: string): string[] {
+  const home = db.localHome;
+  const n = normLocal(path);
+  if (n === home) return [];
+  if (n.startsWith(home + "/")) return n.slice(home.length + 1).split("/").filter(Boolean);
+  throw JSON.stringify({ kind: "SftpNotFound", message: `local: no such path: ${path}` });
+}
+
+function localNodeAt(db: Db, path: string): SftpNode | null {
+  const root = ensureLocalRoot(db);
+  let cur = root;
+  for (const seg of localRel(db, path)) {
+    const next = cur.children.get(seg);
+    if (!next) return null;
+    cur = next;
+  }
+  return cur;
+}
+
+/** Ensure every directory in the path exists, then return `{ parent, name }`. */
+function localEnsureDirChain(db: Db, path: string): { parent: SftpNode; name: string } {
+  const rel = localRel(db, path);
+  const name = rel.pop()!;
+  let cur = ensureLocalRoot(db);
+  for (const seg of rel) {
+    let next = cur.children.get(seg);
+    if (!next) {
+      next = makeDir(seg);
+      cur.children.set(seg, next);
+    }
+    cur = next;
+  }
+  return { parent: cur, name };
+}
+
+function localListEntries(db: Db, path: string): SftpEntry[] {
+  const node = localNodeAt(db, path);
+  if (!node || !node.is_dir) {
+    throw JSON.stringify({ kind: "SftpNotFound", message: `list: no such dir: ${path}` });
+  }
+  const base = normLocal(path);
+  const home = db.localHome;
+  const out: SftpEntry[] = [];
+  for (const child of node.children.values()) {
+    out.push({
+      name: child.name,
+      path: base === home ? `${home}/${child.name}` : `${base}/${child.name}`,
+      is_dir: child.is_dir,
+      size: child.is_dir ? 0 : child.content.byteLength,
+      mtime: child.mtime,
+    });
+  }
+  out.sort((a, b) => Number(b.is_dir) - Number(a.is_dir) || a.name.localeCompare(b.name));
+  return out;
+}
+
+function localRemoveNode(db: Db, path: string): void {
+  const rel = localRel(db, path);
+  const name = rel.pop()!;
+  let cur = ensureLocalRoot(db);
+  for (const seg of rel) {
+    const next = cur.children.get(seg);
+    if (!next) throw JSON.stringify({ kind: "SftpNotFound", message: `remove: no such path: ${path}` });
+    cur = next;
+  }
+  const node = cur.children.get(name);
+  if (!node) throw JSON.stringify({ kind: "SftpNotFound", message: `remove: no such path: ${path}` });
+  cur.children.delete(name);
+}
+
+/** Recursively delete a remote (SFTP) subtree under its tree root. */
+function sftpRemoveRecursive(root: SftpNode, rel: string[]): void {
+  const name = rel[rel.length - 1];
+  const dirSegs = rel.slice(0, -1);
+  let cur = root;
+  for (const seg of dirSegs) {
+    const next = cur.children.get(seg);
+    if (!next) return;
+    cur = next;
+  }
+  cur.children.delete(name);
+}
+
+function sftpEnsureDirChain(root: SftpNode, rel: string[]): { parent: SftpNode; name: string } {
+  const name = rel[rel.length - 1];
+  const dirSegs = rel.slice(0, -1);
+  let cur = root;
+  for (const seg of dirSegs) {
+    let next = cur.children.get(seg);
+    if (!next) {
+      next = makeDir(seg);
+      cur.children.set(seg, next);
+    }
+    cur = next;
+  }
+  return { parent: cur, name };
+}
+
 
 /** Install mock IPC. No-op outside VITE_E2E or when real Tauri is present. */
 export function installE2eMock(): void {
@@ -549,6 +686,7 @@ export function installE2eMock(): void {
             throw JSON.stringify({ kind: "SftpNotFound", message: `write: no such dir: ${parent}` });
           }
           parentNode.children.set(name, makeFile(name, bytes));
+          db.transferUploads += 1;
           return null;
         }
         case "sftp_rename": {
@@ -617,6 +755,84 @@ export function installE2eMock(): void {
           }
           parentNode.children.delete(name);
           return null;
+        }
+        case "local_home": {
+          ensureLocalRoot(db);
+          return db.localHome;
+        }
+        case "local_list": {
+          const path = String(args.path ?? db.localHome);
+          ensureLocalRoot(db);
+          return localListEntries(db, path);
+        }
+        case "local_read": {
+          const path = String(args.path ?? "");
+          const node = localNodeAt(db, path);
+          if (!node || node.is_dir) {
+            throw JSON.stringify({ kind: "SftpNotFound", message: `read: no such file: ${path}` });
+          }
+          return Array.from(node.content);
+        }
+        case "local_write": {
+          const path = String(args.path ?? "");
+          const data = args.data as number[] | Uint8Array;
+          const bytes = data instanceof Uint8Array ? data : Uint8Array.from(data ?? []);
+          const { parent, name } = localEnsureDirChain(db, path);
+          parent.children.set(name, makeFile(name, bytes));
+          db.transferDownloads += 1;
+          return null;
+        }
+        case "local_mkdir": {
+          const path = String(args.path ?? "");
+          const { parent, name } = localEnsureDirChain(db, path);
+          parent.children.set(name, makeDir(name));
+          return null;
+        }
+        case "local_remove": {
+          localRemoveNode(db, String(args.path ?? ""));
+          return null;
+        }
+        case "local_rename": {
+          const from = String(args.from ?? "");
+          const to = String(args.to ?? "");
+          const src = localNodeAt(db, from);
+          if (!src) throw JSON.stringify({ kind: "SftpNotFound", message: `rename: no such path: ${from}` });
+          const fp = localEnsureDirChain(db, from);
+          fp.parent.children.delete(fp.name);
+          const { parent: tp, name: tn } = localEnsureDirChain(db, to);
+          src.name = tn;
+          tp.children.set(tn, src);
+          return null;
+        }
+        case "sftp_mkdir": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? "");
+          const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
+          const safe = mockResolve(root, path);
+          const rootNode = ensureSftpRoot(db, hostId);
+          const { parent, name } = sftpEnsureDirChain(rootNode, splitRel(safe));
+          parent.children.set(name, makeDir(name));
+          return null;
+        }
+        case "sftp_rmtree": {
+          maybeSftpForce(db);
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const path = String(args.path ?? "");
+          const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
+          const safe = mockResolve(root, path);
+          const rootNode = ensureSftpRoot(db, hostId);
+          if (splitRel(safe).length === 0) return null;
+          sftpRemoveRecursive(rootNode, splitRel(safe));
+          return null;
+        }
+        case "test_transfer_ops":
+          return { uploads: db.transferUploads, downloads: db.transferDownloads };
+        case "test_local_reset": {
+          db.local = null;
+          db.localHome = args.path ? normLocal(String(args.path)) : "/home/local";
+          ensureLocalRoot(db);
+          return db.localHome;
         }
         case "test_sftp_force_error": {
           db.sftpForceError = String(args.error ?? args.message ?? "");
@@ -739,6 +955,12 @@ export function installE2eMock(): void {
           return db.sessions;
         case "session_frame":
           return new Uint8Array();
+        case "session_selection_text": {
+          const { r0, c0, r1, c1 } = args as any;
+          const text = `sel-${r0}-${c0}-${r1}-${c1}`;
+          (window as any).__lastSelCmd = text;
+          return text;
+        }
         case "ssh_host_key_fingerprint":
           return { algo: "ssh-ed25519", sha256: "SHA256:e2e-mock" };
         case "ssh_host_key_trust": {

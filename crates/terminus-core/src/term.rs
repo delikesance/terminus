@@ -167,6 +167,37 @@ impl TerminalEmulator {
         Some(self.raster())
     }
 
+    /// Extract visible screen text for a rectangle [r0..r1] × [c0..c1] (inclusive,
+    /// order-independent corners). Each row is right-trimmed; rows are joined with `\n`.
+    pub fn extract_text(&self, r0: u16, c0: u16, r1: u16, c1: u16) -> String {
+        let screen = self.parser.screen().clone();
+        let (rows, cols) = screen.size();
+        let rows = rows as u32;
+        let cols = cols as u32;
+        let ra = r0.min(r1) as u32;
+        let rb = r0.max(r1) as u32;
+        let ca = c0.min(c1) as u32;
+        let cb = c0.max(c1) as u32;
+        let last_row = rb.min(rows.saturating_sub(1));
+        let last_col = cb.min(cols.saturating_sub(1));
+        let mut out = String::new();
+        for r in ra..=last_row {
+            let mut line = String::new();
+            for c in ca..=last_col {
+                let ch = screen
+                    .cell(r as u16, c as u16)
+                    .and_then(|cell| cell.contents().chars().next())
+                    .unwrap_or(' ');
+                line.push(ch);
+            }
+            out.push_str(line.trim_end());
+            if r < last_row {
+                out.push('\n');
+            }
+        }
+        out
+    }
+
     pub fn raster(&mut self) -> TermFrame {
         let screen = self.parser.screen().clone();
         let rows = screen.size().0 as u32;
