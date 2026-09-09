@@ -1552,18 +1552,30 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   font-variant-numeric: tabular-nums;
 }
 .sftp-batch-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 8;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
-  margin: 0 10px 6px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--blue) 12%, var(--elevated));
-  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--line));
+  gap: 14px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  min-width: min(360px, calc(100% - 32px));
+  margin: 0;
+  padding: 10px 12px 10px 16px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--elevated) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--blue) 30%, var(--line-strong));
+  box-shadow: 0 10px 32px color-mix(in srgb, #000 32%, transparent);
+  backdrop-filter: blur(18px) saturate(150%);
+  transform: translateX(-50%);
+  animation: sftp-batch-in 0.18s ease both;
+  pointer-events: auto;
 }
 .sftp-batch-bar.hidden { display: none; }
-.sftp-batch-count { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.sftp-batch-count { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; }
 .sftp-batch-actions { display: flex; align-items: center; gap: 8px; }
 .sftp-batch-actions .primary,
 .sftp-batch-actions .ghost {
@@ -1584,6 +1596,10 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 }
 .sftp-batch-actions .ghost:hover { color: var(--text); background: var(--fill); }
 .sftp-batch-actions button:disabled { opacity: 0.4; cursor: default; }
+@keyframes sftp-batch-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
 
 .sftp-toolbar {
   display: flex;

@@ -3502,14 +3502,6 @@ function ensureSftpShell(force = false): HTMLElement {
     const b = sftpBrowser.paneB ?? SFTP_LOCAL_ID;
     view.innerHTML = `
       <div class="sftp-transfer" data-testid="sftp-transfer"></div>
-      <div class="sftp-batch-bar hidden" data-testid="sftp-batch-bar">
-        <span class="sftp-batch-count" data-testid="sftp-batch-count">0 selected</span>
-        <div class="sftp-batch-actions">
-          <button type="button" class="ghost" data-testid="sftp-batch-clear">Clear</button>
-          <button type="button" class="primary" data-testid="sftp-batch-upload">Upload</button>
-          <button type="button" class="ghost" data-testid="sftp-batch-download">Download</button>
-        </div>
-      </div>
       <div class="sftp-dual">
         <section class="sftp-pane" data-testid="sftp-pane-a" data-slot="a" data-endpoint="${escapeHtml(sftpBrowser.paneA)}">${paneChrome("a", sftpBrowser.paneA)}</section>
         <div class="sftp-arrows" data-testid="sftp-arrows" aria-hidden="true">
@@ -3517,6 +3509,14 @@ function ensureSftpShell(force = false): HTMLElement {
           <button type="button" id="sftp-tx-down" class="sftp-arrow-btn" title="Download selection" aria-label="Download" data-testid="sftp-tx-down">${icons.download}</button>
         </div>
         <section class="sftp-pane" data-testid="sftp-pane-b" data-slot="b" data-endpoint="${escapeHtml(b)}">${paneChrome("b", b)}</section>
+      </div>
+      <div class="sftp-batch-bar hidden" data-testid="sftp-batch-bar">
+        <span class="sftp-batch-count" data-testid="sftp-batch-count">0 selected</span>
+        <div class="sftp-batch-actions">
+          <button type="button" class="ghost" data-testid="sftp-batch-clear">Clear</button>
+          <button type="button" class="primary" data-testid="sftp-batch-upload">Upload</button>
+          <button type="button" class="ghost" data-testid="sftp-batch-download">Download</button>
+        </div>
       </div>`;
     bindTransferArrowButtons();
     bindBatchBarButtons();
