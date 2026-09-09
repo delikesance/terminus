@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { waitForTestBridge, getTestBridge } from "./testBridge";
 
-test.describe("Port Forwarding panel UX (#35)", () => {
+test.describe("Port Forwarding panel UX (#35 / #37)", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
@@ -23,18 +23,28 @@ test.describe("Port Forwarding panel UX (#35)", () => {
     await expect(page.locator("#btn-new-group")).toBeHidden();
   });
 
-  test("AC2/AC3/AC4: + opens form; create; mapping subtitle; toggle", async ({ page }) => {
+  test("AC2/AC3/AC4: + opens compact card; create; mapping subtitle; toggle", async ({ page }) => {
     const bridge = getTestBridge(page);
     await bridge.seedForwardHost("fwd-host-1");
 
     await page.locator('#activity-bar button[data-activity="forwards"]').click();
-    await page.locator('[data-testid="forward-add-btn"]').click();
-    await expect(page.locator('[data-testid="forward-form"]')).toBeVisible();
+    const addBtn = page.locator('[data-testid="forward-add-btn"]');
+    await addBtn.click();
+    const form = page.locator('[data-testid="forward-form"]');
+    await expect(form).toBeVisible();
+    await expect(form).toHaveClass(/forward-form-card/);
+    await expect(page.locator('[data-testid="fwd-route-row"]')).toBeVisible();
+    await expect(page.locator('[data-testid="fwd-actions-row"]')).toBeVisible();
+    await expect(addBtn).toHaveAttribute("aria-expanded", "true");
+    await expect(addBtn).toHaveAttribute("data-mode", "close");
 
     await page.locator('[data-testid="fwd-local-port"]').fill("15432");
     await expect(page.locator('[data-testid="fwd-remote-host"]')).toHaveValue("127.0.0.1");
     await page.locator('[data-testid="fwd-remote-port"]').fill("5432");
     await page.locator('[data-testid="fwd-form-submit"]').click();
+
+    await expect(form).toHaveCount(0);
+    await expect(addBtn).toHaveAttribute("data-mode", "add");
 
     const row = page.locator(".forward-item").first();
     await expect(row).toBeVisible();
@@ -48,6 +58,22 @@ test.describe("Port Forwarding panel UX (#35)", () => {
     await expect(row.locator(".forward-state")).toHaveAttribute("data-state", "running");
     await toggle.uncheck();
     await expect(row.locator(".forward-state")).toHaveAttribute("data-state", "stopped");
+  });
+
+  test("#37 Escape and Cancel close compact form", async ({ page }) => {
+    const bridge = getTestBridge(page);
+    await bridge.seedForwardHost("fwd-host-1");
+    await page.locator('#activity-bar button[data-activity="forwards"]').click();
+    const addBtn = page.locator('[data-testid="forward-add-btn"]');
+    await addBtn.click();
+    await expect(page.locator('[data-testid="forward-form"]')).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[data-testid="forward-form"]')).toHaveCount(0);
+    await expect(addBtn).toHaveAttribute("data-mode", "add");
+
+    await addBtn.click();
+    await page.locator('[data-testid="fwd-form-cancel"]').click();
+    await expect(page.locator('[data-testid="forward-form"]')).toHaveCount(0);
   });
 
   test("AC5: hosts activity shows New host / New group again", async ({ page }) => {

@@ -166,3 +166,33 @@ export function formatForwardSubtitle(opts: {
 export function shouldShowHostFooterActions(activity: string): boolean {
   return activity === "hosts";
 }
+
+/** DOM order for compact create form (#37) — natural tab sequence. */
+export type CompactForwardFieldId =
+  | "fwd-local-port"
+  | "fwd-remote-host"
+  | "fwd-remote-port"
+  | "fwd-host"
+  | "fwd-form-cancel"
+  | "fwd-form-submit";
+
+export function compactForwardTabOrder(): CompactForwardFieldId[] {
+  return [
+    "fwd-local-port",
+    "fwd-remote-host",
+    "fwd-remote-port",
+    "fwd-host",
+    "fwd-form-cancel",
+    "fwd-form-submit",
+  ];
+}
+
+/** Escape closes the create form only when it is open. */
+export function shouldCloseCreateFormOnEscape(key: string, createOpen: boolean): boolean {
+  return key === "Escape" && createOpen === true;
+}
+
+/** Visual mode for the toolbar + button. */
+export function forwardAddBtnMode(createOpen: boolean): "add" | "close" {
+  return createOpen ? "close" : "add";
+}
