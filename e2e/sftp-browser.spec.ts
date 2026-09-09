@@ -223,18 +223,26 @@ test.describe("C9: SFTP browser v1", () => {
     }
   });
 
-  test("C9b: dual-pane shell renders local + remote + transfer arrows", async ({ page }) => {
+  test("C9b / #41: single pane by default; Split reveals Host A/B + arrows", async ({ page }) => {
     await openFilesPanel(page);
-    await expect(page.locator('[data-testid="sftp-pane-local"]')).toBeVisible();
-    await expect(page.locator('[data-testid="local-toolbar"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-pane-remote"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-arrows"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-split-btn"]')).toBeVisible();
+
+    await page.locator('[data-testid="sftp-split-btn"]').click();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible();
     await expect(page.locator('[data-testid="sftp-arrows"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-tx-up"]')).toBeVisible();
-    await expect(page.locator('[data-testid="sftp-tx-down"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-a-host"]')).toBeVisible();
+    await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toBeVisible();
+    // Default companion for remote A is This computer
+    await expect(page.locator('[data-testid="sftp-pane-b-host"]')).toHaveValue("__local__");
+    await expect(page.locator('[data-testid="local-toolbar"]')).toBeVisible();
   });
 
-  test("C9b: local pane lists home with selection cells + stays after nav", async ({ page }) => {
+  test("C9b: after Split, local pane lists home with selection cells + stays after nav", async ({ page }) => {
     await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-split-btn"]').click();
     const localTable = page.locator('[data-testid="local-table"]');
     await expect(localTable).toBeVisible();
     await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "local-upload.txt" })).toBeVisible();
@@ -242,14 +250,15 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator('[data-testid="local-row"]').filter({ hasText: "subdir" })).toBeVisible();
     await expect(page.locator('[data-testid="local-select"]').first()).toBeVisible();
     // navigate a remote dir → local pane persists
-    await page.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
-    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
+    await page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').filter({ hasText: "docs" }).click();
+    await expect(page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-path"]')).toHaveValue("/home/lab/docs");
     await expect(page.locator('[data-testid="local-table"]')).toBeVisible();
   });
 
   test("C9b: upload selected local file → appears in remote pane + transfers", async ({ page }) => {
     const bridge = getTestBridge(page);
     await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-split-btn"]').click();
     await page
       .locator('[data-testid="local-row"]')
       .filter({ hasText: "local-upload.txt" })
@@ -257,7 +266,9 @@ test.describe("C9: SFTP browser v1", () => {
       .click();
     await expect(page.locator('[data-testid="sftp-tx-up"]')).toBeEnabled();
     await page.locator('[data-testid="sftp-tx-up"]').click();
-    const remoteRow = page.locator('[data-testid="sftp-row"]').filter({ hasText: "local-upload.txt" });
+    const remoteRow = page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').filter({
+      hasText: "local-upload.txt",
+    });
     await expect(remoteRow).toBeVisible({ timeout: 10000 });
     await expect.poll(async () => (await bridge.transferOps()).uploads).toBeGreaterThanOrEqual(1);
     await expect(page.locator('[data-testid="sftp-error"]')).toHaveCount(0);
@@ -266,9 +277,10 @@ test.describe("C9: SFTP browser v1", () => {
   test("C9b: download selected remote file → appears in local pane + transfers", async ({ page }) => {
     const bridge = getTestBridge(page);
     await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-split-btn"]').click();
     await page.locator("[data-testid='sftp-view']").waitFor();
     await page
-      .locator('[data-testid="sftp-row"]')
+      .locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]')
       .filter({ hasText: "remote-only.txt" })
       .locator('[data-testid="sftp-select"]')
       .click();
@@ -282,14 +294,29 @@ test.describe("C9: SFTP browser v1", () => {
 
   test("C9b: upload a whole folder recursively (subdir → remote)", async ({ page }) => {
     await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-split-btn"]').click();
     await page
       .locator('[data-testid="local-row"]')
       .filter({ hasText: "subdir" })
       .locator('[data-testid="local-select"]')
       .click();
     await page.locator('[data-testid="sftp-tx-up"]').click();
-    await page.locator('[data-testid="sftp-row"]').filter({ hasText: "subdir" }).click();
-    await expect(page.locator('[data-testid="sftp-path"]')).toHaveValue("/home/lab/subdir");
-    await expect(page.locator('[data-testid="sftp-row"]').filter({ hasText: "deep.txt" })).toBeVisible({ timeout: 10000 });
+    await page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').filter({ hasText: "subdir" }).click();
+    await expect(page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-path"]')).toHaveValue(
+      "/home/lab/subdir",
+    );
+    await expect(
+      page.locator('[data-testid="sftp-pane-a"] [data-testid="sftp-row"]').filter({ hasText: "deep.txt" }),
+    ).toBeVisible({ timeout: 10000 });
+  });
+
+  test("#41: Close split returns to single pane", async ({ page }) => {
+    await openFilesPanel(page);
+    await page.locator('[data-testid="sftp-split-btn"]').click();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toBeVisible();
+    await page.locator('[data-testid="sftp-close-split-btn"]').click();
+    await expect(page.locator('[data-testid="sftp-pane-b"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-arrows"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="sftp-pane-a"]')).toBeVisible();
   });
 });

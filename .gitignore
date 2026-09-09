@@ -23,6 +23,7 @@ src/activityBar.js
 src/forwardPanel.js
 src/hostCard.js
 src/updateNotify.js
+src/sftpLayout.js
 test-results/
 
 # Hermes plan artifacts
