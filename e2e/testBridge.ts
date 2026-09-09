@@ -86,6 +86,16 @@ export function getTestBridge(page: Page) {
       page.evaluate((p) => (window as any).__terminusTest.seedLocalDir(p), path),
     transferOps: () =>
       page.evaluate(() => (window as any).__terminusTest.transferOps()),
+    seedSftpBulk: (hostId: string, count: number) =>
+      page.evaluate(
+        ({ id, n }) => (window as any).__terminusTest.seedSftpBulk(id, n),
+        { id: hostId, n: count },
+      ),
+    perfSnapshot: () => page.evaluate(() => (window as any).__terminusTest.perfSnapshot()),
+    stressCanvases: (opts: { iterations: number; width: number; height: number }) =>
+      page.evaluate((o) => (window as any).__terminusTest.stressCanvases(o), opts),
+    measureFps: (durationMs: number) =>
+      page.evaluate((ms) => (window as any).__terminusTest.measureFps(ms), durationMs),
     setUpdateAvailable: (version: string) =>
       page.evaluate((v) => (window as any).__terminusTest.setUpdateAvailable(v), version),
   };
