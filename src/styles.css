@@ -1205,6 +1205,10 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 [data-host].is-dragging {
   opacity: 0.45;
 }
+#panel-hosts.drop-ungroup {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 28%, transparent);
+  border-radius: 10px;
+}
 .group-badge {
   display: inline-flex;
   align-items: center;
