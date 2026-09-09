@@ -3723,7 +3723,7 @@ function syncSftpSearchScopeHint() {
 
 function sftpTableHeadHtml(): string {
   return `<div class="sftp-table-head" data-testid="sftp-table-head">
-    <span class="col-sel"></span><span class="col-name">Name</span><span class="col-size">Size</span><span class="col-mtime">Modified</span><span class="col-actions"></span>
+    <span class="col-sel"></span><span class="col-ico" aria-hidden="true"></span><span class="col-name">Name</span><span class="col-size">Size</span><span class="col-mtime">Modified</span><span class="col-actions"></span>
   </div>`;
 }
 

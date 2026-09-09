@@ -1652,7 +1652,7 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 8px 10px 14px;
+  padding: 8px 0 14px;
 }
 .sftp-virtual-table {
   overflow: hidden;
@@ -1663,7 +1663,7 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px 10px 14px;
+  padding: 8px 0 14px;
 }
 .sftp-virtual-spacer {
   position: relative;
