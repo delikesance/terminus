@@ -26,29 +26,35 @@
         <div class="title-actions">
           <button type="button" id="btn-new-local" class="tb-btn" title="New tab" aria-label="New tab"></button>
           <button type="button" id="btn-palette" class="tb-btn" title="Search" aria-label="Search"></button>
-          <button type="button" id="btn-settings" class="tb-btn" title="Settings" aria-label="Settings"></button>
         </div>
       </header>
       <div id="stage">
-        <aside id="sidebar">
+        <nav id="activity-bar" aria-label="Activities" data-testid="activity-bar">
+          <div class="activity-bar-top" data-testid="activity-bar-top">
+            <button type="button" data-activity="hosts" title="Hosts" aria-label="Hosts"></button>
+            <button type="button" data-activity="snippets" title="Snippets" aria-label="Snippets"></button>
+            <button type="button" data-activity="history" title="History" aria-label="History"></button>
+            <button type="button" data-activity="forwards" title="Port forwards" aria-label="Port forwards"></button>
+            <button type="button" data-activity="sftp" title="SFTP" aria-label="SFTP"></button>
+          </div>
+          <div class="activity-bar-footer" data-testid="activity-bar-footer">
+            <button type="button" id="btn-settings" class="tb-btn" title="Settings" aria-label="Settings"></button>
+            <span id="status-sync" class="sync-pill"></span>
+          </div>
+        </nav>
+        <aside id="sidebar" data-testid="sidebar">
           <label class="search">
             <span id="search-ico"></span>
             <input id="host-filter" placeholder="Search hosts..." spellcheck="false" />
           </label>
-          <nav class="side-nav">
-            <button data-panel="hosts" class="active" title="Hosts"></button>
-            <button data-panel="snippets" title="Snippets"></button>
-            <button data-panel="history" title="History"></button>
-            <button data-panel="sftp" title="SFTP"></button>
-          </nav>
           <section id="panel-hosts" class="side-panel"></section>
           <section id="panel-snippets" class="side-panel hidden"></section>
           <section id="panel-history" class="side-panel hidden"></section>
+          <section id="panel-forwards" class="side-panel hidden"></section>
           <section id="panel-sftp" class="side-panel hidden"></section>
           <div class="side-actions">
             <button id="btn-new-host" type="button"></button>
             <button id="btn-new-group" type="button"></button>
-            <span id="status-sync" class="sync-pill"></span>
             <span id="status-theme" class="hidden">graphite</span>
             <span id="status-session" class="hidden">~</span>
           </div>
