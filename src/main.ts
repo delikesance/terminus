@@ -3471,6 +3471,17 @@ function paneChrome(slot: SftpPaneSlot, endpoint: SftpEndpointId): string {
     <div class="sftp-pane-body"></div>`;
 }
 
+function sftpBatchBarHtml(): string {
+  return `<div class="sftp-batch-bar hidden" data-testid="sftp-batch-bar">
+        <span class="sftp-batch-count" data-testid="sftp-batch-count">0 selected</span>
+        <div class="sftp-batch-actions">
+          <button type="button" class="ghost" data-testid="sftp-batch-clear">Clear</button>
+          <button type="button" class="primary" data-testid="sftp-batch-upload" title="Upload selection">Upload</button>
+          <button type="button" class="ghost" data-testid="sftp-batch-download" title="Download selection">Download</button>
+        </div>
+      </div>`;
+}
+
 /** Build single or split shell from sftpBrowser state. */
 function sftpShellMatchesBrowser(view: HTMLElement): boolean {
   if (view.dataset.layoutMode !== sftpBrowser.mode) return false;
@@ -3497,7 +3508,9 @@ function ensureSftpShell(force = false): HTMLElement {
   if (mode === "single") {
     view.innerHTML = `<div class="sftp-single" data-testid="sftp-single">
       <section class="sftp-pane" data-testid="sftp-pane-a" data-slot="a" data-endpoint="${escapeHtml(sftpBrowser.paneA)}">${paneChrome("a", sftpBrowser.paneA)}</section>
-    </div>`;
+    </div>
+    ${sftpBatchBarHtml()}`;
+    bindBatchBarButtons();
   } else {
     const b = sftpBrowser.paneB ?? SFTP_LOCAL_ID;
     view.innerHTML = `
@@ -3510,14 +3523,7 @@ function ensureSftpShell(force = false): HTMLElement {
         </div>
         <section class="sftp-pane" data-testid="sftp-pane-b" data-slot="b" data-endpoint="${escapeHtml(b)}">${paneChrome("b", b)}</section>
       </div>
-      <div class="sftp-batch-bar hidden" data-testid="sftp-batch-bar">
-        <span class="sftp-batch-count" data-testid="sftp-batch-count">0 selected</span>
-        <div class="sftp-batch-actions">
-          <button type="button" class="ghost" data-testid="sftp-batch-clear">Clear</button>
-          <button type="button" class="primary" data-testid="sftp-batch-upload">Upload</button>
-          <button type="button" class="ghost" data-testid="sftp-batch-download">Download</button>
-        </div>
-      </div>`;
+      ${sftpBatchBarHtml()}`;
     bindTransferArrowButtons();
     bindBatchBarButtons();
     renderDndTargets();
@@ -4622,8 +4628,6 @@ function updateTransferUi(): void {
 
   const batch = document.querySelector<HTMLElement>('[data-testid="sftp-batch-bar"]');
   const showBatch = shouldShowBatchBar({
-    split: sftpBrowser.mode === "split",
-    canTransfer: canTx,
     localSelected: localN,
     remoteSelected: remoteN,
   });
@@ -4633,8 +4637,20 @@ function updateTransferUi(): void {
     if (count) count.textContent = `${localN + remoteN} selected`;
     const upload = batch.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-upload"]');
     const download = batch.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-download"]');
-    if (upload) upload.disabled = !batchUploadEnabled(localN);
-    if (download) download.disabled = !batchDownloadEnabled(remoteN);
+    const canUpload = canTx && batchUploadEnabled(localN);
+    const canDownload = canTx && batchDownloadEnabled(remoteN);
+    if (upload) {
+      upload.disabled = !canUpload;
+      upload.title = canTx
+        ? "Upload selection"
+        : "Open Split view to upload";
+    }
+    if (download) {
+      download.disabled = !canDownload;
+      download.title = canTx
+        ? "Download selection"
+        : "Open Split view to download";
+    }
   }
 }
 
