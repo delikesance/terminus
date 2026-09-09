@@ -2932,6 +2932,13 @@ const HOST_GROUP_MIME = "application/x-terminus-host";
 
 function bindHostGroupDragDrop(): void {
   const panel = $("panel-hosts");
+  const clearDropMarks = () => {
+    panel.classList.remove("drop-ungroup");
+    panel.querySelectorAll(".group-row.drop-target, .group-children.drop-target").forEach((n) => {
+      n.classList.remove("drop-target");
+    });
+  };
+
   panel.querySelectorAll<HTMLElement>("[data-host]").forEach((el) => {
     el.addEventListener("dragstart", (ev) => {
       if (!ev.dataTransfer) return;
@@ -2943,9 +2950,7 @@ function bindHostGroupDragDrop(): void {
     });
     el.addEventListener("dragend", () => {
       el.classList.remove("is-dragging");
-      panel.querySelectorAll(".group-row.drop-target, .group-children.drop-target").forEach((n) => {
-        n.classList.remove("drop-target");
-      });
+      clearDropMarks();
     });
   });
 
@@ -2953,10 +2958,39 @@ function bindHostGroupDragDrop(): void {
     el?.classList.toggle("drop-target", on);
   };
 
+  const isGroupDropZone = (node: EventTarget | null): HTMLElement | null => {
+    const el = node as HTMLElement | null;
+    return el?.closest?.(".group-row, .group-children") as HTMLElement | null;
+  };
+
+  // Dropping outside any group ungroups the host.
+  panel.addEventListener("dragover", (ev) => {
+    if (isGroupDropZone(ev.target)) {
+      panel.classList.remove("drop-ungroup");
+      return;
+    }
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    panel.classList.add("drop-ungroup");
+  });
+  panel.addEventListener("dragleave", (ev) => {
+    if (!panel.contains(ev.relatedTarget as Node)) panel.classList.remove("drop-ungroup");
+  });
+  panel.addEventListener("drop", (ev) => {
+    if (isGroupDropZone(ev.target)) return;
+    ev.preventDefault();
+    panel.classList.remove("drop-ungroup");
+    const hostId =
+      ev.dataTransfer?.getData(HOST_GROUP_MIME) || ev.dataTransfer?.getData("text/plain") || "";
+    if (!hostId) return;
+    void assignHostToGroup(hostId, null);
+  });
+
   panel.querySelectorAll<HTMLElement>(".group-row, .group-children").forEach((el) => {
     el.addEventListener("dragover", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
+      panel.classList.remove("drop-ungroup");
       if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
       markDrop(el, true);
     });
@@ -2969,6 +3003,7 @@ function bindHostGroupDragDrop(): void {
       ev.preventDefault();
       ev.stopPropagation();
       markDrop(el, false);
+      panel.classList.remove("drop-ungroup");
       const hostId =
         ev.dataTransfer?.getData(HOST_GROUP_MIME) || ev.dataTransfer?.getData("text/plain") || "";
       const groupId = el.dataset.group || el.dataset.groupDrop || null;
