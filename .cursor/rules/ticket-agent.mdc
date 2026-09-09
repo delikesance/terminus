@@ -1,5 +1,5 @@
 ---
-description: Format and document feature requests or major bug fixes into structured engineering tickets
+description: Format engineering tickets, publish GitHub issues, and create the feature branch
 alwaysApply: false
 ---
 
@@ -53,13 +53,14 @@ Write a structured Markdown ticket in the conversation (or `docs/tickets/<slug>.
 
 - Be concrete and testable; avoid vague ACs.
 - Flag open questions; do not invent product decisions.
-- **Stop and ask for confirmation.** Do **not** create a GitHub issue until the user validates the draft (or explicitly says to publish / create the issue).
+- **Stop and ask for confirmation.** Do **not** create a GitHub issue or branch until the user validates the draft (or explicitly says to publish / create the issue / `/goal` autonomy).
 
-## Phase B — Publish on GitHub (after validation only)
+## Phase B — Publish issue + create branch (after validation only)
 
-Once the user confirms the ticket (e.g. "ok", "validé", "crée l'issue", "go"):
+Once the user confirms the ticket:
 
-1. Create the issue with the GitHub CLI against the current repo remote:
+1. Ensure `main` is up to date (`git fetch origin` + checkout `main` + pull if clean/safe).
+2. Create the issue with `gh`:
 
 ```bash
 gh issue create --title "<concise title>" --body "$(cat <<'EOF'
@@ -79,13 +80,21 @@ EOF
 )" --label "enhancement"
 ```
 
-2. Label defaults: `enhancement` for features, `bug` for major fixes (use existing repo labels only; create a label only if the user asks).
-3. Include the full validated sections in the body (ACs + edge cases). Drop unresolved open questions or move them under a `## Open questions` section if the user left them open on purpose.
-4. Return the **issue URL** (and number) in chat.
-5. Only then hand off to the **Architect Agent**, referencing that issue.
+3. Label defaults: `enhancement` for features, `bug` for major fixes (existing labels only).
+4. From the new issue number `N`, create and check out the feature branch:
+
+```bash
+git checkout -b "feat/#N-<short-slug>"
+```
+
+Slug: lowercase kebab-case, ≤40 chars, from the title. Example: `feat/#29-port-forward-switch`.
+
+5. Return in chat: **issue URL**, **issue number**, **branch name**.
+6. Only then hand off to the **Architect Agent**, referencing that issue and branch.
 
 ### Publish rules
 
-- Never `gh issue create` on an unvalidated draft.
-- Never open a PR or write code in this role.
-- If `gh` fails (auth/network), report the error and keep the approved Markdown as source of truth until retry succeeds.
+- Never `gh issue create` or branch on an unvalidated draft.
+- Never open a PR, merge, or write feature code in this role.
+- Never commit on `main` for complex work — the branch is mandatory.
+- If `gh` / git fails, report the error and keep the approved Markdown until retry succeeds.

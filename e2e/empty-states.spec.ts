@@ -34,15 +34,15 @@ test.describe("C7: empty states smoke", () => {
   });
 
   test("snippets / history / sftp dedicated empties", async ({ page }) => {
-    await page.locator('.side-nav button[data-panel="snippets"]').click();
+    await page.locator('#activity-bar button[data-activity="snippets"]').click();
     await expect(page.locator('[data-testid="empty-snippets"]')).toBeVisible();
     await expect(page.locator('[data-testid="empty-snippets"]')).toContainText("No snippets yet");
 
-    await page.locator('.side-nav button[data-panel="history"]').click();
+    await page.locator('#activity-bar button[data-activity="history"]').click();
     await expect(page.locator('[data-testid="empty-history"]')).toBeVisible();
     await expect(page.locator('[data-testid="empty-history"]')).toContainText("No history yet");
 
-    await page.locator('.side-nav button[data-panel="sftp"]').click();
+    await page.locator('#activity-bar button[data-activity="sftp"]').click();
     await expect(page.locator('[data-testid="empty-sftp"]')).toBeVisible();
     await expect(page.locator('[data-testid="empty-sftp"]')).toContainText("No host to browse");
   });

@@ -11,7 +11,7 @@ import os from "node:os";
  */
 
 async function openFilesPanel(page: import("@playwright/test").Page) {
-  await page.locator('.side-nav button[data-panel="sftp"]').click();
+  await page.locator('#activity-bar button[data-activity="sftp"]').click();
   await expect(page.locator('[data-testid="sftp-toolbar"]')).toBeVisible();
   await expect(page.locator("#workspace .sftp-view.active")).toBeVisible();
 }
@@ -69,7 +69,7 @@ test.describe("C9: SFTP browser v1", () => {
     await expect(page.locator(".pane.active")).toBeVisible({ timeout: 10000 });
     await openFilesPanel(page);
     await expect(page.locator("#workspace.sftp-mode")).toHaveCount(1);
-    await page.locator('.side-nav button[data-panel="hosts"]').click();
+    await page.locator('#activity-bar button[data-activity="hosts"]').click();
     await expect(page.locator(".sftp-view.active")).toHaveCount(0);
     await expect(page.locator("#workspace.sftp-mode")).toHaveCount(0);
     await expect(page.locator(".pane.active")).toBeVisible();

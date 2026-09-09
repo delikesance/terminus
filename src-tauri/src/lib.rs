@@ -1,6 +1,7 @@
 use base64::Engine;
 use serde_json::Value;
 use std::sync::Arc;
+use terminus_core::forward_runtime::ForwardRuntime;
 use terminus_core::local_fs;
 use terminus_core::models::*;
 use terminus_core::session::{OutputSink, SessionManager};
@@ -19,6 +20,7 @@ struct AppState {
     store: Store,
     sessions: Arc<SessionManager>,
     sync: Arc<SyncEngine>,
+    forwards: Arc<ForwardRuntime>,
 }
 
 struct TauriSink {
@@ -715,12 +717,39 @@ async fn forwards_upsert(
     state: State<'_, AppState>,
     forward: PortForward,
 ) -> Result<PortForward, String> {
+    // AC8: editing a running forward auto-stops first.
+    state.forwards.stop_if_running(&forward.id);
     state.store.upsert_forward(&forward).await.map_err(map_err)?;
     Ok(forward)
 }
 
 #[tauri::command]
+async fn forwards_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let mut fwd = state
+        .store
+        .list_forwards()
+        .await
+        .map_err(map_err)?
+        .into_iter()
+        .find(|f| f.id == id)
+        .ok_or_else(|| "forward not found".to_string())?;
+    state.forwards.stop_if_running(&id);
+    fwd.deleted_at = Some(chrono::Utc::now());
+    fwd.updated_at = chrono::Utc::now();
+    state.store.upsert_forward(&fwd).await.map_err(map_err)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn forwards_running(state: State<'_, AppState>) -> Vec<String> {
+    state.forwards.running_ids().into_iter().collect()
+}
+
+#[tauri::command]
 async fn forward_start(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    if state.forwards.is_running(&id) {
+        return Err(format!("forward {id} is already running"));
+    }
     let fwd = state
         .store
         .list_forwards()
@@ -735,13 +764,18 @@ async fn forward_start(state: State<'_, AppState>, id: String) -> Result<(), Str
         .await
         .map_err(map_err)?
         .ok_or_else(|| "host not found".to_string())?;
+    if host.deleted_at.is_some() {
+        return Err("host was deleted".to_string());
+    }
     let identity = match &host.identity_id {
         Some(iid) => state.store.get_identity(iid).await.map_err(map_err)?,
         None => None,
     };
     let dest_host = fwd.dest_host.clone().unwrap_or_else(|| "127.0.0.1".into());
-    let dest_port = fwd.dest_port.unwrap_or(22);
-    ssh::start_local_forward(
+    let dest_port = fwd
+        .dest_port
+        .ok_or_else(|| "destination port is required".to_string())?;
+    let handle = ssh::start_local_forward(
         &host,
         identity.as_ref(),
         &fwd.bind_host,
@@ -751,7 +785,17 @@ async fn forward_start(state: State<'_, AppState>, id: String) -> Result<(), Str
     )
     .await
     .map_err(map_err)?;
+    state.forwards.insert(id, handle)?;
     Ok(())
+}
+
+#[tauri::command]
+fn forward_stop(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    if state.forwards.stop(&id) {
+        Ok(())
+    } else {
+        Err("forward is not running".to_string())
+    }
 }
 
 /// Playwright / E2E-only: set a host's connection state without a real SSH dial.
@@ -790,6 +834,7 @@ pub fn run() {
                     store,
                     sessions,
                     sync,
+                    forwards: Arc::new(ForwardRuntime::new()),
                 });
                 Ok::<(), terminus_core::Error>(())
             })?;
@@ -852,7 +897,10 @@ pub fn run() {
             local_rename,
             forwards_list,
             forwards_upsert,
+            forwards_delete,
+            forwards_running,
             forward_start,
+            forward_stop,
             #[cfg(terminus_e2e)]
             test_set_host_connection
         ])

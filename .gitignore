@@ -19,6 +19,8 @@ src/groupExpand.js
 src/knownHostsParse.js
 src/identityKind.js
 src/sftpPath.js
+src/activityBar.js
+src/forwardPanel.js
 test-results/
 
 # Hermes plan artifacts

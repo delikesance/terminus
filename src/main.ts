@@ -28,6 +28,24 @@ import {
   parseIdentityKeyError,
   type IdentityKind,
 } from "./identityKind";
+import {
+  ACTIVITIES,
+  clickActivity,
+  createNavState,
+  isPanelVisible,
+  toggleSidebarOpen,
+  TERMINAL_PANE_PADDING_X_PX,
+  TERMINAL_PANE_PADDING_Y_PX,
+  type ActivityId,
+  type NavState,
+} from "./activityBar";
+import {
+  applyToggleFailure,
+  applyToggleSuccess,
+  buildForwardRows,
+  toggleActionFromChecked,
+  validateForwardForm,
+} from "./forwardPanel";
 
 const ONBOARD_KEY = "terminus.onboarded";
 
@@ -71,6 +89,19 @@ type Identity = {
 };
 type Snippet = { id: string; title: string; content: string; tags: string[]; shortcut?: string | null };
 type HistoryEntry = { id: string; command: string; cwd?: string | null; session_kind: string; created_at: string };
+type PortForward = {
+  id: string;
+  host_id: string;
+  kind: string;
+  name: string;
+  bind_host: string;
+  bind_port: number;
+  dest_host?: string | null;
+  dest_port?: number | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+};
 type SessionInfo = { id: string; title: string; kind: string; host_id?: string | null };
 type Group = { id: string; name: string; parent_id?: string | null; created_at: string; updated_at: string; deleted_at?: string | null };
 type Appearance = {
@@ -152,6 +183,8 @@ const state = {
   identities: [] as Identity[],
   snippets: [] as Snippet[],
   history: [] as HistoryEntry[],
+  forwards: [] as PortForward[],
+  forwardsRunning: new Set<string>(),
   themes: [] as Theme[],
   appearance: null as Appearance | null,
   keybindings: {} as Record<string, string>,
@@ -175,6 +208,9 @@ const state = {
   expandedGroups: new Set<string>(JSON.parse(localStorage.getItem("terminus-expanded-groups") || "[]")),
   localOsId: null as string | null,
 };
+
+/** Activity Bar + contextual sidebar navigation (#27). */
+let navState: NavState = createNavState();
 
 document.head.appendChild(state.customCss);
 
@@ -472,23 +508,29 @@ function applyAppearance() {
 }
 
 async function refreshSide() {
-  const [hosts, hostsRuntime, groups, identities, snippets, history] = await Promise.all([
-    invoke<Host[]>("hosts_list"),
-    invoke<HostRuntime[]>("hosts_runtime").catch(() => [] as HostRuntime[]),
-    invoke<Group[]>("groups_list").catch(() => [] as Group[]),
-    invoke<Identity[]>("identities_list"),
-    invoke<Snippet[]>("snippets_list"),
-    invoke<HistoryEntry[]>("history_search", { query: "", limit: 80 }),
-  ]);
+  const [hosts, hostsRuntime, groups, identities, snippets, history, forwards, running] =
+    await Promise.all([
+      invoke<Host[]>("hosts_list"),
+      invoke<HostRuntime[]>("hosts_runtime").catch(() => [] as HostRuntime[]),
+      invoke<Group[]>("groups_list").catch(() => [] as Group[]),
+      invoke<Identity[]>("identities_list"),
+      invoke<Snippet[]>("snippets_list"),
+      invoke<HistoryEntry[]>("history_search", { query: "", limit: 80 }),
+      invoke<PortForward[]>("forwards_list").catch(() => [] as PortForward[]),
+      invoke<string[]>("forwards_running").catch(() => [] as string[]),
+    ]);
   state.hosts = hosts;
   state.hostsRuntime = hostsRuntime;
   state.groups = groups;
   state.identities = identities;
   state.snippets = snippets;
   state.history = history;
+  state.forwards = forwards;
+  state.forwardsRunning = new Set(running);
   renderHosts();
   renderSnippets();
   renderHistory();
+  renderForwards();
   renderTabs();
 }
 
@@ -522,7 +564,7 @@ async function refreshSync() {
 
   const config = stateConfig[syncState] ?? stateConfig.idle;
   const el = $("status-sync");
-  el.innerHTML = `<span style="color: ${config.color};">${config.icon}</span><span>${config.label}</span>`;
+  el.innerHTML = `<span class="sync-icon" style="color: ${config.color};">${config.icon}</span><span class="sync-label">${config.label}</span>`;
   el.setAttribute("data-testid", "sync-badge");
   el.setAttribute("data-state", syncState);
   el.setAttribute("role", "button");
@@ -866,6 +908,237 @@ function renderHistory() {
   });
 }
 
+function forwardFormHtml(): string {
+  if (!state.hosts.length) return "";
+  const hostOpts = state.hosts
+    .map((h) => `<option value="${escapeHtml(h.id)}">${escapeHtml(h.name || h.hostname)}</option>`)
+    .join("");
+  return `<form class="forward-form" data-testid="forward-form" id="forward-form" autocomplete="off">
+    <div class="forward-form-fields">
+      <label class="cell stack"><span>SSH host</span><select id="fwd-host" data-testid="fwd-ssh-host">${hostOpts}</select></label>
+      <label class="cell stack"><span>Local port</span><input id="fwd-local-port" data-testid="fwd-local-port" type="number" min="1" max="65535" placeholder="8080" required /></label>
+      <label class="cell stack"><span>Remote host</span><input id="fwd-remote-host" data-testid="fwd-remote-host" value="127.0.0.1" required /></label>
+      <label class="cell stack"><span>Remote port</span><input id="fwd-remote-port" data-testid="fwd-remote-port" type="number" min="1" max="65535" placeholder="80" required /></label>
+    </div>
+    <p class="form-error hidden" id="fwd-form-error" data-testid="fwd-form-error"></p>
+    <div class="row">
+      <button type="submit" class="primary" data-testid="fwd-form-submit">Add forward</button>
+    </div>
+  </form>`;
+}
+
+function bindForwardForm() {
+  const form = document.getElementById("forward-form") as HTMLFormElement | null;
+  if (!form) return;
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const result = validateForwardForm({
+      hostId: ($("fwd-host") as HTMLSelectElement).value,
+      localPort: ($("fwd-local-port") as HTMLInputElement).value,
+      remoteHost: ($("fwd-remote-host") as HTMLInputElement).value,
+      remotePort: ($("fwd-remote-port") as HTMLInputElement).value,
+    });
+    const errEl = $("fwd-form-error");
+    if (!result.ok) {
+      errEl.textContent = result.error;
+      errEl.classList.remove("hidden");
+      return;
+    }
+    errEl.classList.add("hidden");
+    const now = new Date().toISOString();
+    const payload: PortForward = {
+      id: crypto.randomUUID(),
+      host_id: result.hostId,
+      kind: "local",
+      name: result.name,
+      bind_host: result.bindHost,
+      bind_port: result.bindPort,
+      dest_host: result.destHost,
+      dest_port: result.destPort,
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    };
+    await invoke("forwards_upsert", { forward: payload });
+    await refreshSide();
+  };
+}
+
+function renderForwards() {
+  const panel = $("panel-forwards");
+  if (!state.forwards.length && !state.hosts.length) {
+    panel.innerHTML = `<div class="empty" data-testid="empty-forwards">
+      ${icons.tunnel}
+      <span class="empty-title">No port forwards yet</span>
+      <span class="empty-hint">Tunnel a local port through an SSH host to a remote destination.</span>
+      <div class="empty-actions">
+        <button type="button" class="primary" id="new-forward" data-testid="empty-add-forward">New forward</button>
+      </div>
+    </div>`;
+    $("new-forward").onclick = () => editForward();
+    return;
+  }
+
+  const rows = buildForwardRows(state.forwards, state.forwardsRunning);
+  const listHtml = rows.length
+    ? rows
+        .map((row) => {
+          const host = state.hosts.find((h) => h.id === row.hostId);
+          const hostLabel = host ? host.name || host.hostname : "missing host";
+          const dest = `${row.destHost}:${row.destPort ?? "?"}`;
+          return `<div class="item forward-item" data-forward="${escapeHtml(row.id)}" data-testid="forward-${escapeHtml(row.id)}">
+          <span class="leading">${icons.tunnel}</span>
+          <div class="body">
+            <strong>${escapeHtml(row.name)}</strong>
+            <small>${escapeHtml(row.bindHost)}:${row.bindPort} → ${escapeHtml(hostLabel)} → ${escapeHtml(dest)}</small>
+          </div>
+          <span class="forward-state" data-testid="forward-state-${escapeHtml(row.id)}" data-state="${row.state}">${row.state}</span>
+          <label class="forward-switch" title="${row.active ? "Stop" : "Start"}">
+            <input type="checkbox" role="switch" data-action="toggle" data-id="${escapeHtml(row.id)}" data-testid="forward-toggle-${escapeHtml(row.id)}" ${row.active ? "checked" : ""} />
+            <span class="forward-switch-ui" aria-hidden="true"></span>
+          </label>
+          <button type="button" class="ghost" data-action="edit" data-id="${escapeHtml(row.id)}" data-testid="forward-edit-${escapeHtml(row.id)}">Edit</button>
+        </div>`;
+        })
+        .join("")
+    : `<div class="empty compact" data-testid="empty-forwards-list">
+        <span class="empty-hint">No forwards yet — use the form above.</span>
+      </div>`;
+
+  panel.innerHTML = forwardFormHtml() + `<div class="forward-list">${listHtml}</div>`;
+  bindForwardForm();
+  panel.querySelectorAll<HTMLInputElement>('input[data-action="toggle"]').forEach((input) => {
+    input.onchange = () => {
+      const id = input.dataset.id ?? "";
+      const action = toggleActionFromChecked(input.checked);
+      if (action === "start") void startForward(id);
+      else void stopForward(id);
+    };
+  });
+  panel.querySelectorAll<HTMLButtonElement>('button[data-action="edit"]').forEach((btn) => {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.id ?? "";
+      const fwd = state.forwards.find((f) => f.id === id);
+      if (fwd) editForward(fwd);
+    };
+  });
+}
+
+async function startForward(id: string) {
+  try {
+    await invoke("forward_start", { id });
+    state.forwardsRunning = applyToggleSuccess(state.forwardsRunning, id, "start");
+    renderForwards();
+  } catch (err) {
+    state.forwardsRunning = applyToggleFailure(state.forwardsRunning, id, "start");
+    openSheet(
+      `<h2>Forward failed</h2><p class="form-error">${escapeHtml(ipcErrorText(err))}</p><div class="row"><button class="primary" id="fwd-err-ok">Close</button></div>`,
+    );
+    $("fwd-err-ok").onclick = () => {
+      $("modal").classList.add("hidden");
+      void refreshSide();
+    };
+  }
+}
+
+async function stopForward(id: string) {
+  try {
+    await invoke("forward_stop", { id });
+  } catch {
+    /* already stopped */
+  }
+  state.forwardsRunning = applyToggleSuccess(state.forwardsRunning, id, "stop");
+  renderForwards();
+}
+
+function editForward(existing?: PortForward) {
+  if (!state.hosts.length) {
+    openSheet(
+      `<h2>No hosts</h2><p class="lead">Add an SSH host before creating a port forward.</p><div class="row"><button class="primary" id="fwd-nohost-ok">Close</button></div>`,
+    );
+    $("fwd-nohost-ok").onclick = () => $("modal").classList.add("hidden");
+    return;
+  }
+  const fwd = existing ?? {
+    id: crypto.randomUUID(),
+    host_id: state.hosts[0]!.id,
+    kind: "local",
+    name: "",
+    bind_host: "127.0.0.1",
+    bind_port: 8080,
+    dest_host: "127.0.0.1",
+    dest_port: 80,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    deleted_at: null,
+  };
+  const hostOpts = state.hosts
+    .map(
+      (h) =>
+        `<option value="${escapeHtml(h.id)}" ${h.id === fwd.host_id ? "selected" : ""}>${escapeHtml(h.name || h.hostname)}</option>`,
+    )
+    .join("");
+  openSheet(`
+    <h2>${existing ? "Edit forward" : "New forward"}</h2>
+    <p class="lead">Local bind → SSH host → remote destination (local forward only).</p>
+    <div class="group-card">
+      <label class="cell stack"><span>Name</span><input id="f-name" value="${escapeHtml(fwd.name)}" placeholder="Postgres tunnel" /></label>
+      <label class="cell stack"><span>SSH host</span><select id="f-host">${hostOpts}</select></label>
+      <label class="cell stack"><span>Bind host</span><input id="f-bind-host" value="${escapeHtml(fwd.bind_host)}" /></label>
+      <label class="cell stack"><span>Bind port</span><input id="f-bind-port" type="number" min="1" max="65535" value="${fwd.bind_port}" /></label>
+      <label class="cell stack"><span>Destination host</span><input id="f-dest-host" value="${escapeHtml(fwd.dest_host || "127.0.0.1")}" /></label>
+      <label class="cell stack"><span>Destination port</span><input id="f-dest-port" type="number" min="1" max="65535" value="${fwd.dest_port ?? 80}" /></label>
+    </div>
+    <p class="form-error hidden" id="f-error"></p>
+    <div class="row">
+      ${existing ? `<button id="f-del" class="danger" data-testid="forward-delete">Delete</button>` : ""}
+      <button class="primary" id="f-save" data-testid="forward-save">Save</button>
+    </div>`);
+  const showErr = (msg: string) => {
+    const el = $("f-error");
+    el.textContent = msg;
+    el.classList.toggle("hidden", !msg);
+  };
+  $("f-save").onclick = async () => {
+    const name = ($("f-name") as HTMLInputElement).value.trim();
+    const bindHost = ($("f-bind-host") as HTMLInputElement).value.trim() || "127.0.0.1";
+    const bindPort = Number(($("f-bind-port") as HTMLInputElement).value);
+    const destHost = ($("f-dest-host") as HTMLInputElement).value.trim() || "127.0.0.1";
+    const destPort = Number(($("f-dest-port") as HTMLInputElement).value);
+    const hostId = ($("f-host") as HTMLSelectElement).value;
+    if (!name) return showErr("Name is required.");
+    if (!Number.isInteger(bindPort) || bindPort < 1 || bindPort > 65535) {
+      return showErr("Bind port must be 1–65535.");
+    }
+    if (!Number.isInteger(destPort) || destPort < 1 || destPort > 65535) {
+      return showErr("Destination port must be 1–65535.");
+    }
+    const payload: PortForward = {
+      ...fwd,
+      name,
+      host_id: hostId,
+      kind: "local",
+      bind_host: bindHost,
+      bind_port: bindPort,
+      dest_host: destHost,
+      dest_port: destPort,
+      updated_at: new Date().toISOString(),
+      deleted_at: null,
+    };
+    await invoke("forwards_upsert", { forward: payload });
+    $("modal").classList.add("hidden");
+    await refreshSide();
+  };
+  if (existing) {
+    $("f-del").onclick = async () => {
+      await invoke("forwards_delete", { id: existing.id });
+      $("modal").classList.add("hidden");
+      await refreshSide();
+    };
+  }
+}
+
 function hostLeading(h: Host): string {
   const { icon, os } = hostOsIcon(h.os_id);
   const data = os ? ` data-os="${escapeHtml(os)}"` : "";
@@ -884,6 +1157,35 @@ function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+function applyNavState() {
+  const open = navState.sidebarOpen;
+  $("app").classList.toggle("sidebar-open", open);
+  $("btn-sidebar").setAttribute("aria-expanded", open ? "true" : "false");
+  for (const id of ACTIVITIES) {
+    const btn = document.querySelector<HTMLButtonElement>(`[data-activity="${id}"]`);
+    if (btn) {
+      btn.classList.toggle("active", navState.active === id);
+      btn.setAttribute("aria-pressed", navState.active === id ? "true" : "false");
+    }
+    const panel = document.getElementById(`panel-${id}`);
+    if (panel) panel.classList.toggle("hidden", !isPanelVisible(navState, id));
+  }
+  const placeholders: Record<ActivityId, string> = {
+    hosts: "Search hosts...",
+    snippets: "Search snippets...",
+    history: "Search history...",
+    forwards: "Search forwards...",
+    sftp: "Search files...",
+  };
+  ($("host-filter") as HTMLInputElement).placeholder = placeholders[navState.active] ?? "Search...";
+  scheduleLayout();
+}
+
+function setActivity(id: ActivityId) {
+  navState = { active: id, sidebarOpen: true };
+  applyNavState();
+}
+
 function bindUi() {
   $("btn-sidebar").innerHTML = icons.sidebar;
   $("btn-new-local").innerHTML = icons.plus;
@@ -895,35 +1197,25 @@ function bindUi() {
   $("btn-new-group").innerHTML = `${icons.folder}<span>New group</span>`;
   $("tabs-prev").innerHTML = icons.chevronLeft;
   $("tabs-next").innerHTML = icons.chevronRight;
-  const navLabels: Record<string, [string, string]> = {
-    hosts: ["Hosts", "Search hosts..."],
-    snippets: ["Snips", "Search snippets..."],
-    history: ["History", "Search history..."],
-    sftp: ["SFTP", "Search files..."],
-  };
-  const navIcons: Record<string, string> = {
+  const activityIcons: Record<ActivityId, string> = {
     hosts: icons.server,
     snippets: icons.snippet,
     history: icons.clock,
+    forwards: icons.tunnel,
     sftp: icons.folder,
   };
-  document.querySelectorAll<HTMLButtonElement>(".side-nav button").forEach((btn) => {
-    const panel = btn.dataset.panel ?? "";
-    const [label] = navLabels[panel] ?? [panel, "Search..."];
-    const icon = navIcons[panel] ?? "";
-    btn.innerHTML = `${icon}<span>${label}</span>`;
-    btn.setAttribute("aria-label", label);
+  document.querySelectorAll<HTMLButtonElement>("#activity-bar [data-activity]").forEach((btn) => {
+    const id = (btn.dataset.activity ?? "") as ActivityId;
+    btn.innerHTML = activityIcons[id] ?? "";
     btn.onclick = () => {
-      document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      document.querySelectorAll(".side-panel").forEach((p) => p.classList.add("hidden"));
-      $(`panel-${btn.dataset.panel}`).classList.remove("hidden");
-      const hint = navLabels[btn.dataset.panel ?? ""]?.[1];
-      if (hint) ($("host-filter") as HTMLInputElement).placeholder = hint;
-      if (btn.dataset.panel === "sftp") enterSftpMode();
-      else exitSftpMode();
+      const prev = navState.active;
+      navState = clickActivity(navState, id);
+      applyNavState();
+      if (navState.active === "sftp" && navState.sidebarOpen) enterSftpMode();
+      else if (prev === "sftp" || navState.active !== "sftp") exitSftpMode();
     };
   });
+  applyNavState();
   $("host-filter").oninput = () => renderHosts();
   $("btn-new-host").onclick = () => editHost();
   $("btn-new-group").onclick = () => editGroup();
@@ -931,7 +1223,7 @@ function bindUi() {
   $("btn-settings").onclick = () => openSettings();
   $("btn-palette").onclick = () => togglePalette();
   $("btn-sidebar").onclick = () => toggleSidebar();
-  $("btn-sidebar").setAttribute("aria-expanded", "false");
+  $("btn-sidebar").setAttribute("aria-expanded", "true");
   $("sidebar").addEventListener("transitionend", (ev) => {
     if (ev.propertyName === "width" || ev.propertyName === "flex-basis") fitWorkspace();
   });
@@ -987,11 +1279,8 @@ function closeOverlays() {
 }
 
 function toggleSidebar(force?: boolean) {
-  if (force === true) $("app").classList.add("sidebar-open");
-  else if (force === false) $("app").classList.remove("sidebar-open");
-  else $("app").classList.toggle("sidebar-open");
-  $("btn-sidebar").setAttribute("aria-expanded", $("app").classList.contains("sidebar-open") ? "true" : "false");
-  scheduleLayout();
+  navState = toggleSidebarOpen(navState, force);
+  applyNavState();
 }
 
 function fitWorkspace() {
@@ -1558,11 +1847,7 @@ function createPendingPane(title: string, kind: string, hostId?: string): Pane {
 function selectPane(id: string) {
   if (state.sftpMode) {
     exitSftpMode();
-    document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
-    document.querySelector<HTMLButtonElement>('[data-panel="hosts"]')?.classList.add("active");
-    document.querySelectorAll(".side-panel").forEach((p) => p.classList.add("hidden"));
-    $("panel-hosts").classList.remove("hidden");
-    ($("host-filter") as HTMLInputElement).placeholder = "Search hosts...";
+    setActivity("hosts");
   }
   state.activePane = id;
   for (const pane of state.panes) pane.el.classList.toggle("active", pane.id === id);
@@ -1686,12 +1971,13 @@ function logicalCell(pane: Pane) {
 }
 
 function paneSize(pane: Pane) {
-  const pad = state.appearance?.padding ?? 8;
+  const padX = TERMINAL_PANE_PADDING_X_PX;
+  const padY = TERMINAL_PANE_PADDING_Y_PX;
   const workspace = $("workspace");
   const width = pane.el.clientWidth || workspace.clientWidth;
   const height = pane.el.clientHeight || workspace.clientHeight;
-  const innerW = Math.max(0, width - pad * 2);
-  const innerH = Math.max(0, height - pad * 2);
+  const innerW = Math.max(0, width - padX * 2);
+  const innerH = Math.max(0, height - padY * 2);
   const cell = logicalCell(pane);
   return {
     cols: Math.max(20, Math.floor(innerW / cell.w)),
@@ -1713,8 +1999,7 @@ function layoutPanes() {
 }
 
 function layoutPane(pane: Pane) {
-  const pad = state.appearance?.padding ?? 8;
-  pane.el.style.padding = `${pad}px`;
+  pane.el.style.padding = `${TERMINAL_PANE_PADDING_Y_PX}px ${TERMINAL_PANE_PADDING_X_PX}px`;
   pane.el.style.opacity = String(state.appearance?.opacity ?? 1);
   if (!pane.session || pane.exited) {
     clearPaneSurface(pane);
@@ -2877,12 +3162,7 @@ function openSftpFor(hostId: string) {
   state.localSelected.clear();
   state.sftpSelected.clear();
   resetSftpCwd();
-  document.querySelectorAll(".side-nav button").forEach((b) => b.classList.remove("active"));
-  document.querySelector<HTMLButtonElement>('[data-panel="sftp"]')?.classList.add("active");
-  document.querySelectorAll(".side-panel").forEach((p) => p.classList.add("hidden"));
-  $("panel-sftp").classList.remove("hidden");
-  ($("host-filter") as HTMLInputElement).placeholder = "Search files...";
-  toggleSidebar(true);
+  setActivity("sftp");
   enterSftpMode();
   ensureDualSftpView(hostId);
   void initLocalPane();
@@ -3941,7 +4221,7 @@ async function handleDrop(
   }
 }
 
-document.querySelector('[data-panel="sftp"]')?.addEventListener("click", () => {
+document.querySelector('[data-activity="sftp"]')?.addEventListener("click", () => {
   const activeHost = activePane()?.session?.host_id ?? activePane()?.pending?.hostId;
   const hostId = state.sftpHostId ?? activeHost ?? state.hosts[0]?.id;
   if (hostId) void loadSftp(hostId, state.sftpPath || ".");

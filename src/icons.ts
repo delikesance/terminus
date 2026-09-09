@@ -39,6 +39,9 @@ export const icons = {
   terminal: svg(
     `<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="m8 10 3 2-3 2M13 14h4"/>`,
   ),
+  tunnel: svg(
+    `<path d="M4 12h6M14 12h6"/><circle cx="12" cy="12" r="2.2"/><path d="M7 8v8M17 8v8"/>`,
+  ),
   chevronLeft: svg(`<path d="M14 6l-6 6 6 6"/>`),
   chevronRight: svg(`<path d="M10 6l6 6-6 6"/>`),
   reconnect: svg(`<path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v6h-6"/>`),
