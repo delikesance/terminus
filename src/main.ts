@@ -219,6 +219,7 @@ type Pane = {
   selFocus: { row: number; col: number } | null;
   selLayer: HTMLDivElement;
   _selecting?: boolean;
+  _selStart?: { row: number; col: number } | null;
 };
 
 const state = {
@@ -1466,6 +1467,7 @@ function bindUi() {
   );
   window.addEventListener("click", () => hideMenu());
   window.addEventListener("blur", () => hideMenu());
+  installContextMenuGuard();
   new ResizeObserver(() => scheduleLayout()).observe($("workspace"));
   try {
     const win = getCurrentWindow();
@@ -1994,16 +1996,18 @@ function attachSession(info: SessionInfo, pane = createPane()) {
   pane.el.onkeydown = (ev) => {
     if (!$("modal").classList.contains("hidden") || !$("palette").classList.contains("hidden")) return;
     if (handleTerminalCopy(ev, pane)) return;
+    if (handleTerminalCut(ev, pane)) return;
+    if (handleTerminalPaste(ev, pane)) return;
     const bytes = encodeTermKey(ev);
     if (!bytes) return;
     ev.preventDefault();
-    sendText(bytes);
+    sendText(bytes, pane);
   };
   pane.el.onpaste = (ev) => {
     const text = ev.clipboardData?.getData("text") ?? "";
     if (!text) return;
     ev.preventDefault();
-    sendText(text);
+    sendText(text, pane);
   };
   selectPane(pane.id);
   layoutPane(pane);
@@ -2096,22 +2100,31 @@ function createPane(pending?: Pane["pending"]): Pane {
     el.focus();
     const cell = selCellFromEvent(pane, ev);
     if (!cell) return;
-    pane.selAnchor = cell;
-    pane.selFocus = cell;
-    renderSelection(pane);
+    // Click without drag clears selection; drag creates a new one.
+    clearSelection(pane);
+    pane._selStart = cell;
     pane._selecting = true;
     ev.preventDefault();
   };
   window.addEventListener("mousemove", (ev) => {
-    if (!pane._selecting) return;
+    if (!pane._selecting || !pane._selStart) return;
     const cell = selCellFromEvent(pane, ev);
     if (!cell) return;
+    pane.selAnchor = pane._selStart;
     pane.selFocus = cell;
     renderSelection(pane);
   });
   window.addEventListener("mouseup", () => {
     pane._selecting = false;
+    pane._selStart = null;
   });
+  el.oncontextmenu = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    selectPane(pane.id);
+    el.focus();
+    showMenu(ev.clientX, ev.clientY, terminalContextMenuItems(pane));
+  };
   renderTabs();
   return pane;
 }
@@ -2218,6 +2231,79 @@ function handleTerminalCopy(ev: KeyboardEvent, pane: Pane): boolean {
   return true;
 }
 
+function handleTerminalCut(ev: KeyboardEvent, pane: Pane): boolean {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "x") return false;
+  const s = selectionRect(pane);
+  if (!s) return false;
+  ev.preventDefault();
+  void copyTerminalSelection(pane, s);
+  return true;
+}
+
+function handleTerminalPaste(ev: KeyboardEvent, pane: Pane): boolean {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "v" || ev.shiftKey) return false;
+  ev.preventDefault();
+  void pasteIntoPane(pane);
+  return true;
+}
+
+function selectAllTerminal(pane: Pane): void {
+  if (pane.cols < 1 || pane.rows < 1) return;
+  pane.selAnchor = { row: 0, col: 0 };
+  pane.selFocus = { row: pane.rows - 1, col: pane.cols - 1 };
+  renderSelection(pane);
+}
+
+function terminalContextMenuItems(pane: Pane): MenuItem[] {
+  const hasSel = Boolean(selectionRect(pane));
+  const live = Boolean(pane.session && !pane.exited);
+  return [
+    {
+      label: "Copy",
+      disabled: !hasSel,
+      run: () => {
+        const s = selectionRect(pane);
+        if (s) void copyTerminalSelection(pane, s);
+      },
+    },
+    {
+      label: "Cut",
+      disabled: !hasSel,
+      run: () => {
+        const s = selectionRect(pane);
+        if (s) void copyTerminalSelection(pane, s);
+      },
+    },
+    {
+      label: "Paste",
+      disabled: !live,
+      run: () => void pasteIntoPane(pane),
+    },
+    { sep: true },
+    {
+      label: "Select all",
+      disabled: pane.cols < 1 || pane.rows < 1,
+      run: () => selectAllTerminal(pane),
+    },
+    {
+      label: "Clear selection",
+      disabled: !hasSel,
+      run: () => clearSelection(pane),
+    },
+  ];
+}
+
+async function pasteIntoPane(pane: Pane): Promise<void> {
+  if (!pane.session || pane.exited) return;
+  const text = await readClipboard();
+  if (!text) return;
+  if (import.meta.env.VITE_E2E === "1") {
+    (window as any).__pasteIntoPaneCalls = ((window as any).__pasteIntoPaneCalls ?? 0) + 1;
+    (window as any).__pasteIntoPaneLast = text;
+  }
+  sendText(text, pane);
+}
+
 async function writeClipboard(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {
@@ -2235,6 +2321,17 @@ async function writeClipboard(text: string): Promise<void> {
   ta.select();
   document.execCommand("copy");
   document.body.removeChild(ta);
+}
+
+async function readClipboard(): Promise<string> {
+  if (navigator.clipboard?.readText) {
+    try {
+      return await navigator.clipboard.readText();
+    } catch {
+      /* fall through */
+    }
+  }
+  return "";
 }
 
 function displayScale() {
@@ -2599,13 +2696,81 @@ function hideMenu() {
   $("ctx-menu").innerHTML = "";
 }
 
+/** Always block the Tauri/browser native context menu; scoped handlers show `#ctx-menu`. */
+function installContextMenuGuard() {
+  document.addEventListener(
+    "contextmenu",
+    (ev) => {
+      ev.preventDefault();
+    },
+    true,
+  );
+  document.addEventListener("contextmenu", (ev) => {
+    const t = ev.target as HTMLElement | null;
+    if (!t || t.closest("#ctx-menu")) return;
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
+      if (t.disabled || t.readOnly) return;
+      showMenu(ev.clientX, ev.clientY, textFieldContextMenuItems(t));
+    }
+  });
+}
+
+function textFieldContextMenuItems(el: HTMLInputElement | HTMLTextAreaElement): MenuItem[] {
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  const hasSel = start !== end;
+  const canEdit = !el.disabled && !el.readOnly;
+  return [
+    {
+      label: "Cut",
+      disabled: !canEdit || !hasSel,
+      run: () => {
+        el.focus();
+        document.execCommand("cut");
+      },
+    },
+    {
+      label: "Copy",
+      disabled: !hasSel,
+      run: () => {
+        el.focus();
+        document.execCommand("copy");
+      },
+    },
+    {
+      label: "Paste",
+      disabled: !canEdit,
+      run: () => {
+        el.focus();
+        void (async () => {
+          const text = await readClipboard();
+          if (!text) return;
+          const s = el.selectionStart ?? el.value.length;
+          const e = el.selectionEnd ?? el.value.length;
+          el.setRangeText(text, s, e, "end");
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        })();
+      },
+    },
+    { sep: true },
+    {
+      label: "Select all",
+      disabled: !el.value.length,
+      run: () => {
+        el.focus();
+        el.select();
+      },
+    },
+  ];
+}
+
 async function deleteHost(host: Host) {
   await invoke("hosts_delete", { id: host.id });
   await refreshSide();
 }
 
-function sendText(text: string) {
-  const pane = activePane();
+function sendText(text: string, target?: Pane) {
+  const pane = target ?? activePane();
   if (!pane?.session) return;
   invoke("session_write", { id: pane.session.id, data: b64encode(text) });
 }
