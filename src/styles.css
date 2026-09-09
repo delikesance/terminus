@@ -1752,6 +1752,98 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   height: 22px;
   opacity: 0.7;
 }
+.sftp-list-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  color: var(--secondary);
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--elevated) 55%, transparent);
+  animation: sftp-pulse-soft 1.4s ease-in-out infinite;
+}
+.sftp-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--secondary) 28%, transparent);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: tofu-spin 0.7s linear infinite;
+  flex: none;
+}
+.sftp-skeleton {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 8px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.sftp-skeleton-row {
+  min-height: 36px;
+  padding: 8px 10px;
+  opacity: 0.9;
+  animation: sftp-skel-in 0.35s ease both;
+  animation-delay: var(--sk-delay, 0ms);
+}
+.sftp-view.compact-rows .sftp-skeleton-row {
+  min-height: 28px;
+  padding: 4px 10px;
+}
+.sftp-skeleton-row .sk {
+  display: block;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--fill) 70%, transparent) 0%,
+    color-mix(in srgb, var(--fill-strong) 90%, transparent) 45%,
+    color-mix(in srgb, var(--fill) 70%, transparent) 90%
+  );
+  background-size: 220% 100%;
+  animation: sftp-shimmer 1.25s ease-in-out infinite;
+}
+.sftp-skeleton-row .sk-check { width: 14px; height: 14px; border-radius: 4px; justify-self: center; }
+.sftp-skeleton-row .sk-ico { width: 18px; height: 18px; border-radius: 5px; }
+.sftp-skeleton-row .sk-name { width: var(--sk-name, 60%); height: 12px; }
+.sftp-skeleton-row .sk-size { width: 70%; height: 10px; justify-self: end; }
+.sftp-skeleton-row .sk-mtime { width: 78%; height: 10px; }
+.sftp-skeleton-row .sk-action { width: 14px; height: 14px; border-radius: 4px; justify-self: center; }
+.sftp-content-enter {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: sftp-fade-in 0.2s ease both;
+}
+.sftp-content-enter > .sftp-table,
+.sftp-content-enter > .sftp-empty {
+  flex: 1;
+  min-height: 0;
+}
+.sftp-pane-body.is-listing-loading .sftp-icon-btn.is-loading svg {
+  animation: tofu-spin 0.75s linear infinite;
+}
+.sftp-icon-btn.is-loading {
+  color: var(--text);
+}
+@keyframes sftp-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+@keyframes sftp-skel-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 0.9; transform: none; }
+}
+@keyframes sftp-fade-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes sftp-pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.72; }
+}
 .sftp-error {
   color: var(--red);
   background: color-mix(in srgb, var(--red) 8%, transparent);
@@ -1866,8 +1958,7 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 .sftp-arrow-btn:disabled { opacity: 0.35; cursor: default; }
 .sftp-arrow-btn svg { width: 16px; height: 16px; }
 
-.sftp-pane-empty,
-.local-loading {
+.sftp-pane-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1878,7 +1969,6 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   font-size: 13px;
   padding: 20px;
 }
-.local-loading { align-items: flex-start; color: var(--secondary); }
 
 .sftp-view .local-row {
   cursor: pointer;
