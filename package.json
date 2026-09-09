@@ -41,7 +41,8 @@
     "test:perf-timing": "npm run compile:test-perftiming && node src/perfTiming.test.js",
     "compile:test-sftpvirtuallist": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/sftpUx.ts src/sftpVirtualList.ts",
     "test:sftp-virtual-list": "npm run compile:test-sftpvirtuallist && node src/sftpVirtualList.test.js",
-    "test:e2e:perf": "playwright test e2e/perf-load.spec.ts"
+    "test:e2e:perf": "playwright test e2e/perf-load.spec.ts",
+    "test:perf-native": "bash scripts/perf-native.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

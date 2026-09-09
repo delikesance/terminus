@@ -43,6 +43,7 @@ import {
   type SftpListFilter,
 } from "./sftpUx";
 import { mountVirtualList, type VirtualListHandle } from "./sftpVirtualList";
+import { filterFileEntriesAsync } from "./sftpFilterAsync";
 import { pickRenderer } from "./perf";
 import { createTrailingDebounce, FRAME_MIN_MS, SFTP_FILTER_DEBOUNCE_MS } from "./perfTiming";
 import { parseKnownHosts } from "./knownHostsParse";
@@ -3547,16 +3548,28 @@ async function activateSplit() {
   );
   ensureSftpShell(true);
   renderSftpSidebar(state.sftpHostId);
+  // Prioritize remote (or local-as-A) first; defer companion local pane (#55).
   if (!isLocalEndpoint(sftpBrowser.paneA)) {
     await loadSftp(sftpBrowser.paneA, state.sftpPath || ".");
   } else {
     await initLocalPane();
   }
   if (sftpBrowser.paneB && isLocalEndpoint(sftpBrowser.paneB)) {
-    await initLocalPane();
+    scheduleLocalPaneInit();
   } else if (sftpBrowser.paneB) {
     await loadSftp(sftpBrowser.paneB, ".");
   }
+}
+
+/** Defer local FS listing so remote TTI stays snappy (#55). */
+function scheduleLocalPaneInit(): void {
+  const run = () => {
+    void initLocalPane();
+  };
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
+    .requestIdleCallback;
+  if (typeof ric === "function") ric(run, { timeout: 400 });
+  else window.setTimeout(run, 0);
 }
 
 function deactivateSplit() {
@@ -3740,39 +3753,43 @@ function mountRemoteVirtualList(entries: SftpEntry[]) {
 function renderLocalTableBody() {
   const pane = localPaneEl();
   if (!pane || !state.localCwd) return;
-  const filtered = filterFileEntries(state.localEntries, sftpListFilter());
-  const vp = pane.querySelector<HTMLElement>('[data-testid="local-virtual-viewport"]');
-  if (vp && localVirtual && filtered.length) {
-    localVirtual.setItems(filtered);
-    return;
-  }
-  const toolbar = pane.querySelector('[data-testid="local-toolbar"]');
-  const after = toolbar ? toolbar.outerHTML : "";
-  localVirtual?.destroy();
-  localVirtual = null;
-  pane.innerHTML = `${after}${localTableHtml(state.localEntries)}`;
-  bindLocalToolbar();
-  mountLocalVirtualList(state.localEntries);
-  bindLocalRows();
+  void (async () => {
+    const filtered = await filterFileEntriesAsync(state.localEntries, sftpListFilter());
+    const vp = pane.querySelector<HTMLElement>('[data-testid="local-virtual-viewport"]');
+    if (vp && localVirtual && filtered.length) {
+      localVirtual.setItems(filtered);
+      return;
+    }
+    const toolbar = pane.querySelector('[data-testid="local-toolbar"]');
+    const after = toolbar ? toolbar.outerHTML : "";
+    localVirtual?.destroy();
+    localVirtual = null;
+    pane.innerHTML = `${after}${localTableHtml(state.localEntries)}`;
+    bindLocalToolbar();
+    mountLocalVirtualList(state.localEntries);
+    bindLocalRows();
+  })();
 }
 
 function renderRemoteTableBody(hostId: string) {
   const pane = remotePaneEl();
   if (!pane) return;
-  const filtered = filterFileEntries(state.sftpEntries, sftpListFilter());
-  const vp = pane.querySelector<HTMLElement>('[data-testid="sftp-virtual-viewport"]');
-  if (vp && remoteVirtual && filtered.length) {
-    remoteVirtual.setItems(filtered);
-    return;
-  }
-  const toolbar = pane.querySelector('[data-testid="sftp-toolbar"]');
-  const after = toolbar ? toolbar.outerHTML : "";
-  remoteVirtual?.destroy();
-  remoteVirtual = null;
-  pane.innerHTML = `${after}${remoteTableHtml(state.sftpEntries)}`;
-  bindSftpToolbar(hostId, state.sftpPath);
-  mountRemoteVirtualList(state.sftpEntries);
-  bindSftpRows(hostId, pane);
+  void (async () => {
+    const filtered = await filterFileEntriesAsync(state.sftpEntries, sftpListFilter());
+    const vp = pane.querySelector<HTMLElement>('[data-testid="sftp-virtual-viewport"]');
+    if (vp && remoteVirtual && filtered.length) {
+      remoteVirtual.setItems(filtered);
+      return;
+    }
+    const toolbar = pane.querySelector('[data-testid="sftp-toolbar"]');
+    const after = toolbar ? toolbar.outerHTML : "";
+    remoteVirtual?.destroy();
+    remoteVirtual = null;
+    pane.innerHTML = `${after}${remoteTableHtml(state.sftpEntries)}`;
+    bindSftpToolbar(hostId, state.sftpPath);
+    mountRemoteVirtualList(state.sftpEntries);
+    bindSftpRows(hostId, pane);
+  })();
 }
 
 function rerenderSftpListings() {
@@ -4849,7 +4866,11 @@ async function reopenSftpBrowser(): Promise<void> {
 
   const loads: Promise<void>[] = [];
   if (!remoteReady || !soft) loads.push(loadSftp(hostId, state.sftpPath || "."));
-  if (needsLocal && (!localReady || !soft)) loads.push(initLocalPane());
+  if (needsLocal && (!localReady || !soft)) {
+    // Soft path with empty local: schedule so remote paint isn't blocked (#55).
+    if (soft && remoteReady) scheduleLocalPaneInit();
+    else loads.push(initLocalPane());
+  }
   if (loads.length) await Promise.all(loads);
 }
 
