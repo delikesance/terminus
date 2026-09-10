@@ -9,6 +9,8 @@ assert.deepEqual(parseIdentityKind("key"), { ok: true, kind: "key" });
 assert.deepEqual(parseIdentityKind("PASSWORD"), { ok: true, kind: "password" });
 assert.deepEqual(parseIdentityKind("agent"), { ok: true, kind: "agent" });
 assert.equal(parseIdentityKind("ssh").ok, false);
+assert.equal(parseIdentityKind("gssapi").ok, false);
+assert.equal(parseIdentityKind("kerberos").ok, false);
 assert.equal(parseIdentityKind(null).error, "unknown_kind");
 
 assert.equal(inferIdentityKind({ kind: "agent" }), "agent");

@@ -338,6 +338,7 @@ pub(crate) async fn connect_handle(
     let mut session =
         client::connect(config, (host.hostname.as_str(), host.port), handler).await?;
     let ok = match host.auth_method.as_str() {
+        "gssapi" => crate::gssapi::authenticate(&mut session, host).await?,
         "key" => authenticate_key(&mut session, host, identity).await?,
         "agent" | "auto" => {
             if authenticate_key(&mut session, host, identity).await.unwrap_or(false) {

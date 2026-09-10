@@ -35,5 +35,8 @@ vt100.workspace = true
 fontdue.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libgssapi = "0.11"
+
 [dev-dependencies]
 tempfile.workspace = true

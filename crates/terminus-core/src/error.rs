@@ -54,6 +54,12 @@ pub enum Error {
     InvalidPassphrase,
     #[error("vault is not configured")]
     VaultNotConfigured,
+    /// No TGT / expired ccache for GSSAPI (Unix). Exact UI copy.
+    #[error("No Kerberos ticket found. Run kinit, then try again.")]
+    GssapiNoTicket,
+    /// GSSAPI not implemented on this OS (Windows v1). Exact UI copy.
+    #[error("Kerberos (GSSAPI) is not supported on Windows.")]
+    GssapiUnsupported,
     /// SFTP path escaped the session root via `..` or absolute jump.
     #[error("SFTP path traversal blocked: {path}")]
     SftpPathTraversal { path: String },
@@ -76,6 +82,12 @@ pub enum Error {
     Ssh(#[from] russh::Error),
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
+}
+
+impl From<russh::SendError> for Error {
+    fn from(_: russh::SendError) -> Self {
+        Error::Ssh(russh::Error::SendError)
+    }
 }
 
 impl Error {

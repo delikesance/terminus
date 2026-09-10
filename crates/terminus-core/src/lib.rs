@@ -1,5 +1,6 @@
 pub mod error;
 pub mod forward_runtime;
+pub mod gssapi;
 pub mod local_fs;
 pub mod models;
 pub mod os_detect;
