@@ -101,6 +101,8 @@ jobs:
         run: nix develop --command python3 scripts/gen-icons.py
       - name: Build Tauri
         run: nix develop --command npm run tauri -- build --bundles deb
+      - name: Prefer host Kerberos in AppImage
+        run: nix develop --command node scripts/strip-appimage-krb5.mjs
       - name: Assert bundled native libs
         run: nix develop --command node scripts/assert-portable-libs.mjs
 

@@ -133,6 +133,10 @@ jobs:
           prerelease: false
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+      - name: Prefer host Kerberos in AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: node scripts/strip-appimage-krb5.mjs
       - name: Assert bundled native libs
         shell: bash
         run: node scripts/assert-portable-libs.mjs

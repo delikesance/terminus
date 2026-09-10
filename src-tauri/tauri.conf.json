@@ -7,8 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "beforeBundleCommand": "node scripts/stage-gssapi-libs.mjs"
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "withGlobalTauri": true,
@@ -45,14 +44,9 @@
     ],
     "linux": {
       "deb": {
-        "files": {
-          "/usr/lib/terminus": "native-libs/gssapi"
-        }
-      },
-      "appimage": {
-        "files": {
-          "/usr/lib/terminus": "native-libs/gssapi"
-        }
+        "depends": [
+          "libgssapi-krb5-2"
+        ]
       }
     },
     "windows": {
