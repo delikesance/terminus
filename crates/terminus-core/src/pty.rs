@@ -21,14 +21,27 @@ impl LocalPty {
         Self::spawn_program(None, &[], cols, rows, output)
     }
 
-    /// Spawn a specific program in a PTY (e.g. `wsl.exe -d Distro`).
+    /// Spawn a specific program in a PTY (e.g. `wsl.exe -d Distro --cd ~`).
     /// When `program` is `None`, uses the platform default shell.
+    /// When `cwd` is `None`, the child inherits the parent's working directory
+    /// (preferred for WSL so we do not force a Windows home path).
     pub fn spawn_program(
         program: Option<&str>,
         args: &[&str],
         cols: u16,
         rows: u16,
         output: mpsc::UnboundedSender<Result<Vec<u8>>>,
+    ) -> Result<Arc<Self>> {
+        Self::spawn_program_with_cwd(program, args, cols, rows, output, dirs::home_dir())
+    }
+
+    pub fn spawn_program_with_cwd(
+        program: Option<&str>,
+        args: &[&str],
+        cols: u16,
+        rows: u16,
+        output: mpsc::UnboundedSender<Result<Vec<u8>>>,
+        cwd: Option<std::path::PathBuf>,
     ) -> Result<Arc<Self>> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
@@ -48,7 +61,7 @@ impl LocalPty {
         };
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = cwd {
             cmd.cwd(home);
         }
         let child = pair.slave.spawn_command(cmd)?;

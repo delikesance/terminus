@@ -83,8 +83,8 @@ async fn session_open_local(
 }
 
 #[tauri::command]
-fn wsl_list_distros() -> Result<Vec<terminus_core::wsl::WslDistro>, String> {
-    terminus_core::wsl::list_distros().map_err(map_err)
+fn wsl_list_distros(force: Option<bool>) -> Result<Vec<terminus_core::wsl::WslDistro>, String> {
+    terminus_core::wsl::list_distros_cached(force.unwrap_or(false)).map_err(map_err)
 }
 
 #[tauri::command]
