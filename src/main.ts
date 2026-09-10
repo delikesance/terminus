@@ -22,6 +22,12 @@ import {
   prefersReducedMotion,
 } from "./motion";
 import {
+  destroyHostDragGhost,
+  scheduleGhostFrame,
+  spawnHostDragGhost,
+  type GhostState,
+} from "./hostDragGhost";
+import {
   resolveUnderRoot,
   normalizeSftpPath,
   parentSftpPath,
@@ -3487,12 +3493,25 @@ const HOST_GROUP_MIME = "application/x-terminus-host";
 let hostGroupDnDAbort: AbortController | null = null;
 /** Id of the host currently being rearranged (pointer or HTML5 path) (#90). */
 let hostGroupDragHostId: string | null = null;
+/** Active pointer-path drag ghost (#92). */
+let hostDragGhost: GhostState | null = null;
 
 function bindHostGroupDragDrop(): void {
   const panel = $("panel-hosts");
   hostGroupDnDAbort?.abort();
   hostGroupDnDAbort = new AbortController();
   const { signal } = hostGroupDnDAbort;
+
+  let ptrHostEl: HTMLElement | null = null;
+  let ptrStartX = 0;
+  let ptrStartY = 0;
+  let ptrDragging = false;
+  let ptrId: number | null = null;
+  let suppressHostClick = false;
+  const DRAG_THRESH_PX = 8;
+
+  destroyHostDragGhost(hostDragGhost);
+  hostDragGhost = null;
 
   const clearDropMarks = () => {
     panel.classList.remove("drop-ungroup");
@@ -3508,20 +3527,13 @@ function bindHostGroupDragDrop(): void {
   };
 
   const endHostDrag = () => {
+    destroyHostDragGhost(hostDragGhost);
+    hostDragGhost = null;
     hostGroupDragActive = false;
     hostGroupDragHostId = null;
     panel.querySelectorAll("[data-host].is-dragging").forEach((n) => n.classList.remove("is-dragging"));
     clearDropMarks();
   };
-
-  // ── Pointer DnD (primary on Windows WebView2 — HTML5 getData is unreliable) ──
-  let ptrHostEl: HTMLElement | null = null;
-  let ptrStartX = 0;
-  let ptrStartY = 0;
-  let ptrDragging = false;
-  let ptrId: number | null = null;
-  let suppressHostClick = false;
-  const DRAG_THRESH_PX = 8;
 
   const markUnderPoint = (clientX: number, clientY: number) => {
     const under = document.elementFromPoint(clientX, clientY);
@@ -3570,6 +3582,16 @@ function bindHostGroupDragDrop(): void {
   };
 
   panel.addEventListener(
+    "selectstart",
+    (ev) => {
+      if ((ev.target as HTMLElement | null)?.closest?.("[data-host], .group-row, .group-children")) {
+        ev.preventDefault();
+      }
+    },
+    { signal },
+  );
+
+  panel.addEventListener(
     "pointerdown",
     (ev) => {
       if (ev.button !== 0) return;
@@ -3583,6 +3605,7 @@ function bindHostGroupDragDrop(): void {
       ptrStartY = ev.clientY;
       ptrDragging = false;
       ptrId = ev.pointerId;
+      window.getSelection()?.removeAllRanges();
     },
     { signal },
   );
@@ -3599,11 +3622,19 @@ function bindHostGroupDragDrop(): void {
         hostGroupDragActive = true;
         hostGroupDragHostId = ptrHostEl.dataset.host || null;
         ptrHostEl.classList.add("is-dragging");
+        window.getSelection()?.removeAllRanges();
+        destroyHostDragGhost(hostDragGhost);
+        hostDragGhost = spawnHostDragGhost(ptrHostEl, ev.clientX, ev.clientY);
+        scheduleGhostFrame(hostDragGhost);
         try {
           ptrHostEl.setPointerCapture(ev.pointerId);
         } catch {
           /* ignore */
         }
+      }
+      if (hostDragGhost) {
+        hostDragGhost.pointerX = ev.clientX;
+        hostDragGhost.pointerY = ev.clientY;
       }
       markUnderPoint(ev.clientX, ev.clientY);
     },

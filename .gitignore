@@ -30,6 +30,7 @@ src/perfTiming.js
 src/perf.js
 src/sftpVirtualList.js
 src/motion.js
+src/hostDragGhost.js
 test-results/
 
 # Perf / load reports (#45)
