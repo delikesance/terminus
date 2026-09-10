@@ -7,7 +7,8 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build",
+    "beforeBundleCommand": "node scripts/stage-gssapi-libs.mjs"
   },
   "app": {
     "withGlobalTauri": true,
@@ -42,6 +43,18 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/terminus": "native-libs/gssapi"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/lib/terminus": "native-libs/gssapi"
+        }
+      }
+    },
     "windows": {
       "digestAlgorithm": "sha256",
       "timestampUrl": "http://timestamp.digicert.com",
