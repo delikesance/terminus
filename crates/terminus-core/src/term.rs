@@ -284,6 +284,35 @@ impl TerminalEmulator {
         self.term.grid().display_offset()
     }
 
+    /// `(display_offset, history_lines)`. Both zero on the alternate screen.
+    pub fn scroll_state(&self) -> (u32, u32) {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return (0, 0);
+        }
+        let offset = self.term.grid().display_offset() as u32;
+        let max = self
+            .term
+            .total_lines()
+            .saturating_sub(self.term.screen_lines()) as u32;
+        (offset, max)
+    }
+
+    /// Jump to an absolute display offset (clamped). False on alt screen.
+    pub fn scroll_to(&mut self, offset: u32) -> bool {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        let (_, max) = self.scroll_state();
+        let target = (offset.min(max)) as usize;
+        let cur = self.term.grid().display_offset();
+        let delta = target as i32 - cur as i32;
+        if delta != 0 {
+            self.term.scroll_display(Scroll::Delta(delta));
+            self.dirty = true;
+        }
+        true
+    }
+
     pub fn take_frame(&mut self) -> Option<TermFrame> {
         self.capture_frame(false)
     }
@@ -1110,13 +1139,22 @@ fn blend(bg: [u8; 4], fg: [u8; 4]) -> [u8; 4] {
     ]
 }
 
-pub fn pack_frame(frame: &TermFrame, cell_w: u32, cell_h: u32, mode_flags: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(20 + frame.rgba.len());
+pub fn pack_frame(
+    frame: &TermFrame,
+    cell_w: u32,
+    cell_h: u32,
+    mode_flags: u32,
+    scroll_offset: u32,
+    scroll_max: u32,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(28 + frame.rgba.len());
     out.extend_from_slice(&frame.width.to_le_bytes());
     out.extend_from_slice(&frame.height.to_le_bytes());
     out.extend_from_slice(&cell_w.to_le_bytes());
     out.extend_from_slice(&cell_h.to_le_bytes());
     out.extend_from_slice(&mode_flags.to_le_bytes());
+    out.extend_from_slice(&scroll_offset.to_le_bytes());
+    out.extend_from_slice(&scroll_max.to_le_bytes());
     out.extend_from_slice(&frame.rgba);
     out
 }
@@ -1544,8 +1582,8 @@ mod tests {
         assert_eq!(term.mode_flags() & 0b0001, 0b0001, "DECCKM should set APP_CURSOR");
         let (cw, ch) = term.cell_size();
         let frame = term.capture_frame(true).expect("frame");
-        let packed = pack_frame(&frame, cw, ch, term.mode_flags());
-        assert!(packed.len() >= 20 + frame.rgba.len());
+        let packed = pack_frame(&frame, cw, ch, term.mode_flags(), 0, 0);
+        assert!(packed.len() >= 28 + frame.rgba.len());
         let flags = u32::from_le_bytes(packed[16..20].try_into().unwrap());
         assert_eq!(flags & 0b0001, 0b0001);
         term.feed(b"\x1b[?1l");
@@ -1581,5 +1619,63 @@ mod tests {
         let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
         assert!(term.scroll_delta(0));
         assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn ac1_scroll_state_reports_offset_and_max() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        let (offset, max) = term.scroll_state();
+        assert_eq!(offset, 0);
+        assert!(max >= 10, "expected history above viewport, max={max}");
+        assert!(term.scroll_delta(4));
+        let (offset2, max2) = term.scroll_state();
+        assert_eq!(offset2, 4);
+        assert_eq!(max2, max);
+    }
+
+    #[test]
+    fn ac2_scroll_to_sets_absolute_offset() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        let (_, max) = term.scroll_state();
+        assert!(term.scroll_to(max.saturating_sub(2)));
+        assert_eq!(term.display_offset(), max.saturating_sub(2) as usize);
+        assert!(term.scroll_to(0));
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn ac3_scroll_state_zero_on_alt_screen() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        term.feed(b"\x1b[?1049h");
+        assert_eq!(term.scroll_state(), (0, 0));
+        assert!(!term.scroll_to(3));
+    }
+
+    #[test]
+    fn pack_frame_includes_scroll_metrics() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        term.scroll_delta(5);
+        let (cw, ch) = term.cell_size();
+        let (off, max) = term.scroll_state();
+        let frame = term.capture_frame(true).expect("frame");
+        let packed = pack_frame(&frame, cw, ch, term.mode_flags(), off, max);
+        assert_eq!(packed.len(), 28 + frame.rgba.len());
+        let got_off = u32::from_le_bytes(packed[20..24].try_into().unwrap());
+        let got_max = u32::from_le_bytes(packed[24..28].try_into().unwrap());
+        assert_eq!(got_off, off);
+        assert_eq!(got_max, max);
+        assert!(got_max > 0);
     }
 }
