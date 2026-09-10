@@ -141,6 +141,7 @@ export function tauriConfUsesSystemKerberos(conf: unknown): boolean {
     bundle?: {
       linux?: {
         deb?: { files?: Record<string, string>; depends?: string[] };
+        rpm?: { depends?: string[] };
         appimage?: { files?: Record<string, string> };
       };
     };
@@ -150,24 +151,24 @@ export function tauriConfUsesSystemKerberos(conf: unknown): boolean {
   const debFiles = c.bundle?.linux?.deb?.files?.["/usr/lib/terminus"];
   const appFiles = c.bundle?.linux?.appimage?.files?.["/usr/lib/terminus"];
   if (debFiles || appFiles) return false;
-  const depends = c.bundle?.linux?.deb?.depends ?? [];
-  return depends.some((d) => /libgssapi-krb5/.test(d));
-}
-
-/** @deprecated inverted — use tauriConfUsesSystemKerberos */
-export function tauriConfVendorsLinuxGssapi(conf: unknown): boolean {
-  return !tauriConfUsesSystemKerberos(conf);
+  return tauriConfDependsOnDistroGssapi(conf);
 }
 
 export function tauriConfDependsOnDistroGssapi(conf: unknown): boolean {
-  const c = conf as { bundle?: { linux?: { deb?: { depends?: string[] } } } };
-  const depends = c.bundle?.linux?.deb?.depends ?? [];
-  return depends.some((d) => /libgssapi-krb5/.test(d));
+  const c = conf as {
+    bundle?: { linux?: { deb?: { depends?: string[] }; rpm?: { depends?: string[] } } };
+  };
+  const deb = c.bundle?.linux?.deb?.depends ?? [];
+  const rpm = c.bundle?.linux?.rpm?.depends ?? [];
+  const debOk = deb.some((d) => /libgssapi-krb5/.test(d));
+  const rpmOk = rpm.some((d) => /krb5-libs|^krb5$/.test(d));
+  return debOk && rpmOk;
 }
 
-/** @deprecated */
-export function tauriConfDoesNotDependOnDistroGssapi(conf: unknown): boolean {
-  return !tauriConfDependsOnDistroGssapi(conf);
+export function releaseYamlBuildsRpm(yaml: string): boolean {
+  return /--bundles[^\n]*\brpm\b/.test(yaml) && /\brpm\b/.test(
+    [...yaml.replace(/\\\n/g, " ").matchAll(/apt-get install[^\n]*/g)].map((m) => m[0]).join(" "),
+  );
 }
 
 export function macosJobsForceAppleGssOnMacOnly(yaml: string): boolean {

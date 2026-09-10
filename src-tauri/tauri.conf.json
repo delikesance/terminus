@@ -47,6 +47,11 @@
         "depends": [
           "libgssapi-krb5-2"
         ]
+      },
+      "rpm": {
+        "depends": [
+          "krb5-libs"
+        ]
       }
     },
     "windows": {
