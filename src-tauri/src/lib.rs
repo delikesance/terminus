@@ -83,6 +83,36 @@ async fn session_open_local(
 }
 
 #[tauri::command]
+fn wsl_list_distros() -> Result<Vec<terminus_core::wsl::WslDistro>, String> {
+    terminus_core::wsl::list_distros().map_err(map_err)
+}
+
+#[tauri::command]
+async fn session_open_wsl(
+    state: State<'_, AppState>,
+    distro: String,
+    cols: u16,
+    rows: u16,
+    scale: Option<f32>,
+) -> Result<SessionInfo, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (state, distro, cols, rows, scale);
+        return Err("WSL sessions are only available on Windows".into());
+    }
+    #[cfg(windows)]
+    {
+        let info = state
+            .sessions
+            .open_wsl(&distro, cols, rows, scale.unwrap_or(1.0))
+            .await
+            .map_err(map_err)?;
+        apply_session_theme(&state, &info.id).await;
+        Ok(info)
+    }
+}
+
+#[tauri::command]
 async fn session_open_ssh(
     state: State<'_, AppState>,
     host_id: String,
@@ -843,6 +873,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             local_os_id,
             session_open_local,
+            wsl_list_distros,
+            session_open_wsl,
             session_open_ssh,
             session_write,
             session_resize,

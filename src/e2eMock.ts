@@ -267,32 +267,43 @@ function ensureHost(db: Db, hostId: string): Host {
 
 function runtimes(db: Db) {
   const counts = new Map<string, number>();
+  let localCount = 0;
   for (const s of db.sessions) {
-    if (!s.host_id) continue;
+    if (!s.host_id) {
+      if (s.kind === "local") localCount += 1;
+      continue;
+    }
     counts.set(s.host_id, (counts.get(s.host_id) ?? 0) + 1);
   }
-  return db.hosts
-    .filter((h) => !h.deleted_at)
-    .map((h) => {
-      const open_count = counts.get(h.id) ?? 0;
-      const inflight = db.inflight.get(h.id) ?? 0;
-      const tracked = db.connections.get(h.id) ?? "disconnected";
-      let connection: string;
-      if (inflight > 0) {
-        connection = "connecting";
-      } else if (open_count > 0) {
-        connection = "connected";
-      } else if (tracked === "error") {
-        connection = "error";
-      } else if (tracked === "connecting") {
-        connection = "connecting";
-      } else if (tracked === "connected") {
-        connection = "connected";
-      } else {
-        connection = "disconnected";
-      }
-      return { host_id: h.id, connection, open_count };
-    });
+  const out: { host_id: string; connection: string; open_count: number }[] = [];
+  if (localCount > 0) {
+    out.push({ host_id: "local", connection: "local", open_count: localCount });
+  }
+  for (const h of db.hosts.filter((x) => !x.deleted_at)) {
+    const open_count = counts.get(h.id) ?? 0;
+    const inflight = db.inflight.get(h.id) ?? 0;
+    const tracked = db.connections.get(h.id) ?? "disconnected";
+    let connection: string;
+    if (inflight > 0) {
+      connection = "connecting";
+    } else if (open_count > 0) {
+      connection = "connected";
+    } else if (tracked === "error") {
+      connection = "error";
+    } else if (tracked === "connecting") {
+      connection = "connecting";
+    } else if (tracked === "connected") {
+      connection = "connected";
+    } else {
+      connection = "disconnected";
+    }
+    out.push({ host_id: h.id, connection, open_count });
+  }
+  for (const [host_id, open_count] of counts) {
+    if (!host_id.startsWith("wsl:")) continue;
+    out.push({ host_id, connection: "local", open_count });
+  }
+  return out;
 }
 
 async function emitHostRuntime(db: Db, hostId: string) {
@@ -1050,6 +1061,22 @@ export function installE2eMock(): void {
             title: "local",
             kind: "local",
             host_id: null,
+          };
+          db.sessions.push(info);
+          return info;
+        }
+        case "wsl_list_distros":
+          return [
+            { name: "Ubuntu", state: "Running", version: 2, is_default: true },
+            { name: "Debian", state: "Stopped", version: 2, is_default: false },
+          ];
+        case "session_open_wsl": {
+          const distro = String(args.distro ?? "Ubuntu");
+          const info: SessionInfo = {
+            id: `wsl-${crypto.randomUUID()}`,
+            title: distro,
+            kind: "wsl",
+            host_id: `wsl:${distro}`,
           };
           db.sessions.push(info);
           return info;

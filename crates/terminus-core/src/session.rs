@@ -231,6 +231,18 @@ impl SessionManager {
             });
         }
 
+        // WSL sessions use synthetic `wsl:<distro>` host ids (not SQLite hosts).
+        for (host_id, open_count) in open_counts {
+            if !crate::wsl::is_wsl_host_id(&host_id) {
+                continue;
+            }
+            runtimes.push(HostRuntime {
+                host_id,
+                connection: "local".to_string(),
+                open_count,
+            });
+        }
+
         Ok(runtimes)
     }
 
@@ -251,6 +263,48 @@ impl SessionManager {
             title: "local".into(),
             kind: "local".into(),
             host_id: None,
+        };
+        self.sessions.insert(
+            id.clone(),
+            LiveSession {
+                info: info.clone(),
+                backend: Backend::Local(pty),
+                input_buf: parking_lot::Mutex::new(String::new()),
+                emulator,
+            },
+        );
+        self.spawn_reader(id, rx);
+        Ok(info)
+    }
+
+    /// Open a WSL distro shell via `wsl.exe -d <distro>` on a local PTY (#82).
+    pub async fn open_wsl(
+        self: &Arc<Self>,
+        distro: &str,
+        cols: u16,
+        rows: u16,
+        scale: f32,
+    ) -> Result<SessionInfo> {
+        let distro = distro.trim();
+        if distro.is_empty()
+            || distro.contains('\0')
+            || distro.contains('\n')
+            || distro.contains('\r')
+        {
+            return Err(Error::msg("invalid WSL distro name"));
+        }
+        let host_id = crate::wsl::wsl_host_id(distro);
+        let id = Uuid::new_v4().to_string();
+        let (tx, rx) = mpsc::unbounded_channel::<Result<Vec<u8>>>();
+        let pty = LocalPty::spawn_program(Some("wsl.exe"), &["-d", distro], cols, rows, tx)?;
+        let emulator = Arc::new(parking_lot::Mutex::new(
+            self.open_emulator(cols, rows, scale).await?,
+        ));
+        let info = SessionInfo {
+            id: id.clone(),
+            title: distro.to_string(),
+            kind: "wsl".into(),
+            host_id: Some(host_id),
         };
         self.sessions.insert(
             id.clone(),
@@ -511,6 +565,16 @@ impl SessionManager {
                     .insert(host_id.to_string(), "disconnected".to_string());
                 self.emit_runtime_now(host_id);
             }
+        }
+    }
+
+    /// Test helper: retag an open local session as a WSL session (no `wsl.exe` required).
+    #[cfg(test)]
+    pub fn test_retag_as_wsl(&self, session_id: &str, distro: &str) {
+        if let Some(mut session) = self.sessions.get_mut(session_id) {
+            session.info.kind = "wsl".into();
+            session.info.title = distro.to_string();
+            session.info.host_id = Some(crate::wsl::wsl_host_id(distro));
         }
     }
 
@@ -776,6 +840,36 @@ mod tests {
             let (manager, _sink, _store, _tmp) = test_manager().await;
             let info = manager.open_local(80, 24, 1.0).await.expect("open local");
             manager.close(&info.id).expect("close should propagate kill Result");
+        });
+    }
+
+    #[test]
+    fn hosts_runtime_includes_wsl_open_sessions() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, _sink, _store, _tmp) = test_manager().await;
+            let info = manager.open_local(80, 24, 1.0).await.expect("open local");
+            manager.test_retag_as_wsl(&info.id, "Ubuntu");
+            let runtime = manager.hosts_runtime().await.unwrap();
+            let wsl = runtime.iter().find(|r| r.host_id == "wsl:Ubuntu");
+            assert!(wsl.is_some(), "expected wsl:Ubuntu runtime, got {runtime:?}");
+            let wsl = wsl.unwrap();
+            assert_eq!(wsl.connection, "local");
+            assert_eq!(wsl.open_count, 1);
+            // True local must not count the retagged WSL session.
+            assert!(
+                !runtime.iter().any(|r| r.host_id == "local" && r.open_count > 0),
+                "local aggregate should exclude WSL host_id sessions"
+            );
+            manager.close(&info.id).ok();
+        });
+    }
+
+    #[test]
+    fn open_wsl_rejects_empty_distro() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (manager, _sink, _store, _tmp) = test_manager().await;
+            let err = manager.open_wsl("", 80, 24, 1.0).await.unwrap_err();
+            assert!(err.to_string().contains("invalid"));
         });
     }
 
