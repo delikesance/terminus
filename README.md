@@ -27,7 +27,7 @@ Stack: **Rust**, **Tauri 2**, **xterm.js (WebGL)**, **SQLite** locally, **Postgr
 - Themes, fonts, renderer, padding, opacity, custom CSS, keybindings
 - Settings → database URL for PostgreSQL sync (hosts, history, snippets, forwards)
 - Secrets stay local unless you enable **encrypted vault sync** (Argon2id + XChaCha20-Poly1305). The database never sees plaintext SSH keys or passwords.
-- Kerberos / GSSAPI (`gssapi-with-mic`) on Linux and macOS using the ticket cache from `kinit` — no Kerberos password stored in Terminus. Linux uses the **distro** MIT Kerberos stack (`libgssapi-krb5-2`, declared on the `.deb`) so `KCM:` caches work like `klist`.
+- Kerberos / GSSAPI (`gssapi-with-mic`) on Linux and macOS using the ticket cache from `kinit` — no Kerberos password stored in Terminus. Linux uses the **distro** MIT Kerberos stack (`libgssapi-krb5-2` on `.deb`, `krb5-libs` on `.rpm`) so `KCM:` caches work like `klist`.
 
 ## Contributing
 

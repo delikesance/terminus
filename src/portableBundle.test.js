@@ -13,6 +13,7 @@ import {
   parseLddMapping,
   parseOtoolL,
   parseReadelfDynamic,
+  releaseYamlBuildsRpm,
   releaseYamlInstallsKrb5Toolchain,
   tauriConfDependsOnDistroGssapi,
   tauriConfUsesSystemKerberos,
@@ -105,6 +106,7 @@ assert.equal(
     bundle: {
       linux: {
         deb: { depends: ["libgssapi-krb5-2"], files: {} },
+        rpm: { depends: ["krb5-libs"] },
         appimage: { files: {} },
       },
     },
@@ -126,9 +128,20 @@ assert.equal(
 
 assert.equal(
   tauriConfDependsOnDistroGssapi({
-    bundle: { linux: { deb: { depends: ["libgssapi-krb5-2"] } } },
+    bundle: {
+      linux: {
+        deb: { depends: ["libgssapi-krb5-2"] },
+        rpm: { depends: ["krb5-libs"] },
+      },
+    },
   }),
   true,
+);
+assert.equal(
+  tauriConfDependsOnDistroGssapi({
+    bundle: { linux: { deb: { depends: ["libgssapi-krb5-2"] } } },
+  }),
+  false,
 );
 
 assert.equal(
@@ -181,7 +194,8 @@ assert.equal(releaseYamlInstallsKrb5Toolchain(releaseYml), true, "release still 
 assert.equal(macosJobsForceAppleGssOnMacOnly(ciYml), true);
 assert.equal(macosJobsForceAppleGssOnMacOnly(releaseYml), true);
 assert.equal(tauriConfUsesSystemKerberos(tauriConf), true, "must use system Kerberos (no vendor)");
-assert.equal(tauriConfDependsOnDistroGssapi(tauriConf), true, "deb must Depends on libgssapi-krb5-2");
+assert.equal(tauriConfDependsOnDistroGssapi(tauriConf), true, "deb+rpm must declare Kerberos runtime deps");
+assert.equal(releaseYamlBuildsRpm(releaseYml), true, "release must build rpm and install rpm tooling");
 assert.equal(buildRsAvoidsVendoredGssapiRpath(buildRs), true, "must not rpath to lib/terminus");
 assert.equal(cargoTomlGssapiUnixOnly(coreToml), true);
 assert.equal(workflowsRunPortableLibChecker(ciYml), true);

@@ -31,7 +31,7 @@ jobs:
             args: --config src-tauri/tauri.release.conf.json --target x86_64-apple-darwin --bundles app,dmg
           - platform: ubuntu-22.04
             cache: linux
-            args: --config src-tauri/tauri.release.conf.json --bundles appimage,deb
+            args: --config src-tauri/tauri.release.conf.json --bundles appimage,deb,rpm
           - platform: windows-latest
             cache: windows
             args: --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.windows-sign.conf.json --bundles nsis
@@ -56,7 +56,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2 \
-            libkrb5-dev clang libclang-dev llvm-dev pkg-config
+            libkrb5-dev clang libclang-dev llvm-dev pkg-config rpm
           echo "LIBCLANG_PATH=$(llvm-config-14 --libdir 2>/dev/null || llvm-config --libdir)" >> "$GITHUB_ENV"
       - name: Force Apple GSS
         if: runner.os == 'macOS'
@@ -123,7 +123,7 @@ jobs:
             - Windows: `Terminus_*_x64-setup.exe`
             - macOS Apple Silicon: `Terminus_*_aarch64.dmg`
             - macOS Intel: `Terminus_*_x64.dmg`
-            - Linux: `Terminus_*_amd64.deb` or the `.AppImage`
+            - Linux: `Terminus_*_amd64.deb`, `Terminus_*.rpm`, or the `.AppImage`
 
             If Windows SmartScreen says the installer is unrecognized: More info → Run anyway.
             That warning goes away only after the NSIS `.exe` is Authenticode-signed (not the updater key).
