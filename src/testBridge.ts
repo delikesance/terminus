@@ -26,6 +26,8 @@ interface TerminusTestBridge {
   /** C9: force next sftp_* IPC to fail with typed JSON error string */
   sftpForceError(kind: string, message: string): Promise<void>;
   sftpReset(hostId?: string): Promise<void>;
+  /** #107: delay the next sftp_list for hostId (ms). */
+  sftpSlowList(hostId: string, ms?: number): Promise<void>;
   lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null>;
   /** C9b: reset + seed the virtual local FS (local pane), optional new home path. */
   seedLocalDir(path?: string): Promise<string>;
@@ -241,6 +243,10 @@ export function initTestBridge(): void {
 
     async sftpReset(hostId?: string): Promise<void> {
       await invoke("test_sftp_reset", { hostId: hostId ?? "" });
+    },
+
+    async sftpSlowList(hostId: string, ms = 800): Promise<void> {
+      await invoke("test_sftp_slow_list", { hostId, ms });
     },
 
     async lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null> {

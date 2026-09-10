@@ -105,6 +105,8 @@ type Db = {
   tofuTrusted: Set<string>;
   /** Artificial handshake delay (ms) before session_open_ssh resolves. */
   slowConnectMs: Map<string, number>;
+  /** Artificial delay (ms) before the next sftp_list for a host (#107). */
+  slowSftpListMs: Map<string, number>;
   /** Host ids whose next session_open_ssh fails with a transport/auth error. */
   authFail: Set<string>;
   /** In-flight SSH connect attempts per host (Architect aggregation). */
@@ -231,6 +233,7 @@ function createDb(): Db {
     tofuRequired: new Set(),
     tofuTrusted: new Set(),
     slowConnectMs: new Map(),
+    slowSftpListMs: new Map(),
     authFail: new Set(),
     inflight: new Map(),
     forwards: [],
@@ -783,6 +786,11 @@ export function installE2eMock(): void {
           const path = String(args.path ?? ".");
           const root = String(args.root ?? (path.startsWith("/") ? "/" : "."));
           const safe = mockResolve(root, path);
+          const slowList = db.slowSftpListMs.get(hostId) ?? 0;
+          if (slowList > 0) {
+            db.slowSftpListMs.delete(hostId);
+            await new Promise((r) => setTimeout(r, slowList));
+          }
           ensureHost(db, hostId);
           if (!db.connections.has(hostId) || db.connections.get(hostId) === "disconnected") {
             db.connections.set(hostId, "connected");
@@ -1005,6 +1013,12 @@ export function installE2eMock(): void {
           const hostId = String(args.hostId ?? args.host_id ?? "");
           const ms = Number(args.ms ?? args.delayMs ?? 400);
           if (hostId) db.slowConnectMs.set(hostId, ms);
+          return null;
+        }
+        case "test_sftp_slow_list": {
+          const hostId = String(args.hostId ?? args.host_id ?? "");
+          const ms = Number(args.ms ?? args.delayMs ?? 800);
+          if (hostId) db.slowSftpListMs.set(hostId, ms);
           return null;
         }
         case "test_auth_fail": {
