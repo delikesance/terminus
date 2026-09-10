@@ -128,7 +128,7 @@ fn parse_wsl_list_text(text: &str) -> Result<Vec<WslDistro>> {
     Ok(out)
 }
 
-struct ListCache {
+pub(crate) struct ListCache {
     at: Instant,
     list: Vec<WslDistro>,
 }
