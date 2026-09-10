@@ -1251,6 +1251,8 @@ export function installE2eMock(): void {
           return db.sessions;
         case "session_frame":
           return new Uint8Array();
+        case "session_scroll":
+          return true;
         case "session_selection_text": {
           const { r0, c0, r1, c1 } = args as any;
           const text = `sel-${r0}-${c0}-${r1}-${c1}`;

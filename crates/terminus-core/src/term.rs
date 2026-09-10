@@ -3,6 +3,7 @@ use crate::gpu_frame::{AtlasGlyph, GpuCell, GpuFrame};
 use crate::models::ColorTheme;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Column, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
@@ -263,6 +264,24 @@ impl TerminalEmulator {
             flags |= 0b1000;
         }
         flags
+    }
+
+    /// Scroll the primary screen history. Returns false on the alternate screen
+    /// (caller should send arrow/wheel sequences to the PTY instead).
+    pub fn scroll_delta(&mut self, lines: i32) -> bool {
+        if lines == 0 {
+            return true;
+        }
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        self.term.scroll_display(Scroll::Delta(lines));
+        self.dirty = true;
+        true
+    }
+
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
     }
 
     pub fn take_frame(&mut self) -> Option<TermFrame> {
@@ -1531,5 +1550,36 @@ mod tests {
         assert_eq!(flags & 0b0001, 0b0001);
         term.feed(b"\x1b[?1l");
         assert_eq!(term.mode_flags() & 0b0001, 0, "DECCKM reset clears APP_CURSOR");
+    }
+
+    #[test]
+    fn ac1_scroll_delta_moves_into_history() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        assert_eq!(term.display_offset(), 0);
+        assert!(term.scroll_delta(3));
+        assert!(
+            term.display_offset() >= 3,
+            "wheel-up should reveal history (offset={})",
+            term.display_offset()
+        );
+    }
+
+    #[test]
+    fn ac2_scroll_delta_false_on_alt_screen() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        term.feed(b"\x1b[?1049h");
+        assert_eq!(term.mode_flags() & 0b0100, 0b0100);
+        assert!(!term.scroll_delta(2));
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn scroll_delta_zero_is_noop() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        assert!(term.scroll_delta(0));
+        assert_eq!(term.display_offset(), 0);
     }
 }
