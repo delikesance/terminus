@@ -13,6 +13,7 @@ import {
   readText as tauriClipboardReadText,
   writeText as tauriClipboardWriteText,
 } from "@tauri-apps/plugin-clipboard-manager";
+import { decideDomPasteAction, nextPasteSuppressUntil } from "./termPaste";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
@@ -284,6 +285,8 @@ type Pane = {
   selLayer: HTMLDivElement;
   _selecting?: boolean;
   _selStart?: { row: number; col: number } | null;
+  /** Ignore DOM paste until this timestamp (keydown Ctrl+V already inserted). */
+  _pasteSuppressUntil?: number;
 };
 
 const state = {
@@ -2495,10 +2498,19 @@ function attachSession(info: SessionInfo, pane = createPane()) {
     void handleTermWheel(ev, pane);
   };
   pane.el.onpaste = (ev) => {
-    const text = ev.clipboardData?.getData("text") ?? "";
-    if (!text) return;
     ev.preventDefault();
-    sendText(text, pane);
+    if (!pane.session || pane.exited) return;
+    const clipboardText = ev.clipboardData?.getData("text") ?? "";
+    const action = decideDomPasteAction({
+      suppressUntil: pane._pasteSuppressUntil ?? 0,
+      clipboardText,
+    });
+    if (action === "ignore") return;
+    if (action === "fallback") {
+      void pasteIntoPane(pane);
+      return;
+    }
+    sendText(action.send, pane);
   };
   selectPane(pane.id);
   layoutPane(pane);
@@ -2937,6 +2949,8 @@ function handleTerminalPaste(ev: KeyboardEvent, pane: Pane): boolean {
   // Ctrl+V and Ctrl+Shift+V (Linux terminal convention) both paste.
   if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "v") return false;
   ev.preventDefault();
+  // WebView2/WebKit still emit `paste` after keydown — suppress the twin insert.
+  pane._pasteSuppressUntil = nextPasteSuppressUntil();
   void pasteIntoPane(pane);
   return true;
 }
