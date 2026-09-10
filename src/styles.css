@@ -535,7 +535,7 @@ svg {
   flex: 1 1 auto;
   width: 100%;
   min-width: 0;
-  padding: 0;
+  padding: 0 16px 0 0;
   box-sizing: border-box;
 }
 .sidebar-toolbar {

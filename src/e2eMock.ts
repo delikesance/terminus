@@ -643,7 +643,21 @@ export function installE2eMock(): void {
           db.appearance = { ...db.appearance, ...(args.appearance as object) };
           return null;
         case "keybindings_get":
-          return {};
+          return {
+            "ctrl+shift+t": "tab.new",
+            "ctrl+shift+w": "tab.close",
+            "ctrl+tab": "host.next",
+            "ctrl+shift+tab": "host.prev",
+            "cmd+tab": "host.next",
+            "cmd+shift+tab": "host.prev",
+            "ctrl+k": "palette.toggle",
+            "ctrl+,": "settings.toggle",
+            "ctrl+l": "terminal.clear",
+            "ctrl+shift+c": "terminal.copy",
+            "ctrl+shift+v": "terminal.paste",
+            "ctrl+b": "sidebar.toggle",
+            "cmd+b": "sidebar.toggle",
+          };
         case "hosts_list":
           return db.hosts.filter((h) => !h.deleted_at);
         case "hosts_runtime":

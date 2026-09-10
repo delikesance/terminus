@@ -1777,7 +1777,13 @@ function onGlobalKey(ev: KeyboardEvent) {
   }
   const action =
     state.keybindings[combo] ??
-    (combo === "ctrl+b" || combo === "cmd+b" ? "sidebar.toggle" : "");
+    (combo === "ctrl+b" || combo === "cmd+b"
+      ? "sidebar.toggle"
+      : combo === "ctrl+shift+c" || combo === "cmd+shift+c"
+        ? "terminal.copy"
+        : combo === "ctrl+shift+v" || combo === "cmd+shift+v"
+          ? "terminal.paste"
+          : "");
   if (!action) return;
   ev.preventDefault();
   runAction(action);
@@ -3603,90 +3609,92 @@ function bindHostGroupDragDrop(): void {
     { signal },
   );
 
-  panel.addEventListener(
-    "pointerdown",
-    (ev) => {
-      if (ev.button !== 0) return;
-      if ((ev.target as HTMLElement | null)?.closest?.("button, a, input, textarea")) return;
-      const hostEl = (ev.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-host]");
-      if (!hostEl || !panel.contains(hostEl)) return;
-      const id = hostEl.dataset.host || "";
-      if (!id) return;
-      ptrHostEl = hostEl;
-      ptrStartX = ev.clientX;
-      ptrStartY = ev.clientY;
-      ptrDragging = false;
-      ptrId = ev.pointerId;
-      window.getSelection()?.removeAllRanges();
-    },
-    { signal },
-  );
-
-  panel.addEventListener(
-    "pointermove",
-    (ev) => {
-      if (!ptrHostEl || ptrId !== ev.pointerId) return;
-      const dx = ev.clientX - ptrStartX;
-      const dy = ev.clientY - ptrStartY;
-      if (!ptrDragging) {
-        if (dx * dx + dy * dy < DRAG_THRESH_PX * DRAG_THRESH_PX) return;
-        ptrDragging = true;
-        hostGroupDragActive = true;
-        hostGroupDragHostId = ptrHostEl.dataset.host || null;
-        ptrHostEl.classList.add("is-dragging");
+  // Pointer DnD is Windows/WebView2 only — on Linux/Playwright it races HTML5 dragTo (#97).
+  if (IS_WIN) {
+    panel.addEventListener(
+      "pointerdown",
+      (ev) => {
+        if (ev.button !== 0) return;
+        if ((ev.target as HTMLElement | null)?.closest?.("button, a, input, textarea")) return;
+        const hostEl = (ev.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-host]");
+        if (!hostEl || !panel.contains(hostEl)) return;
+        const id = hostEl.dataset.host || "";
+        if (!id) return;
+        ptrHostEl = hostEl;
+        ptrStartX = ev.clientX;
+        ptrStartY = ev.clientY;
+        ptrDragging = false;
+        ptrId = ev.pointerId;
         window.getSelection()?.removeAllRanges();
-        destroyHostDragGhost(hostDragGhost);
-        hostDragGhost = spawnHostDragGhost(ptrHostEl, ev.clientX, ev.clientY);
-        scheduleGhostFrame(hostDragGhost);
+      },
+      { signal },
+    );
+
+    panel.addEventListener(
+      "pointermove",
+      (ev) => {
+        if (!ptrHostEl || ptrId !== ev.pointerId) return;
+        const dx = ev.clientX - ptrStartX;
+        const dy = ev.clientY - ptrStartY;
+        if (!ptrDragging) {
+          if (dx * dx + dy * dy < DRAG_THRESH_PX * DRAG_THRESH_PX) return;
+          ptrDragging = true;
+          hostGroupDragActive = true;
+          hostGroupDragHostId = ptrHostEl.dataset.host || null;
+          ptrHostEl.classList.add("is-dragging");
+          window.getSelection()?.removeAllRanges();
+          destroyHostDragGhost(hostDragGhost);
+          hostDragGhost = spawnHostDragGhost(ptrHostEl, ev.clientX, ev.clientY);
+          scheduleGhostFrame(hostDragGhost);
+          try {
+            ptrHostEl.setPointerCapture(ev.pointerId);
+          } catch {
+            /* ignore */
+          }
+        }
+        if (hostDragGhost) {
+          hostDragGhost.pointerX = ev.clientX;
+          hostDragGhost.pointerY = ev.clientY;
+        }
+        markUnderPoint(ev.clientX, ev.clientY);
+      },
+      { signal },
+    );
+
+    const onPointerEnd = (ev: PointerEvent) => {
+      if (ptrId !== ev.pointerId) return;
+      if (ptrDragging) {
         try {
-          ptrHostEl.setPointerCapture(ev.pointerId);
+          ptrHostEl?.releasePointerCapture(ev.pointerId);
         } catch {
           /* ignore */
         }
+        finishPointerDrag(ev.clientX, ev.clientY);
+        return;
       }
-      if (hostDragGhost) {
-        hostDragGhost.pointerX = ev.clientX;
-        hostDragGhost.pointerY = ev.clientY;
-      }
-      markUnderPoint(ev.clientX, ev.clientY);
-    },
-    { signal },
-  );
+      ptrHostEl = null;
+      ptrId = null;
+    };
 
-  const onPointerEnd = (ev: PointerEvent) => {
-    if (ptrId !== ev.pointerId) return;
-    if (ptrDragging) {
-      try {
-        ptrHostEl?.releasePointerCapture(ev.pointerId);
-      } catch {
-        /* ignore */
-      }
-      finishPointerDrag(ev.clientX, ev.clientY);
-      return;
-    }
-    ptrHostEl = null;
-    ptrId = null;
-  };
+    panel.addEventListener("pointerup", onPointerEnd, { signal });
+    panel.addEventListener("pointercancel", onPointerEnd, { signal });
 
-  panel.addEventListener("pointerup", onPointerEnd, { signal });
-  panel.addEventListener("pointercancel", onPointerEnd, { signal });
+    // Suppress the click that would open SSH after a successful rearrange.
+    panel.addEventListener(
+      "click",
+      (ev) => {
+        if (!suppressHostClick) return;
+        if ((ev.target as HTMLElement | null)?.closest?.("[data-host]")) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+      },
+      { capture: true, signal },
+    );
+    return;
+  }
 
-  // Suppress the click that would open SSH after a successful rearrange.
-  panel.addEventListener(
-    "click",
-    (ev) => {
-      if (!suppressHostClick) return;
-      if ((ev.target as HTMLElement | null)?.closest?.("[data-host]")) {
-        ev.preventDefault();
-        ev.stopPropagation();
-      }
-    },
-    { capture: true, signal },
-  );
-
-  // HTML5 fallback for non-Windows (Playwright / Linux). WebView2 uses pointer path above.
-  if (IS_WIN) return;
-
+  // HTML5 path for non-Windows (Playwright / Linux).
   panel.addEventListener(
     "dragstart",
     (ev) => {
@@ -4396,7 +4404,7 @@ function remotePaneEl(): HTMLElement {
   );
 }
 
-function localPaneEl(): HTMLElement {
+function localPaneEl(): HTMLElement | null {
   const view = ensureSftpView();
   const match = view.querySelector<HTMLElement>(
     `[data-endpoint="${SFTP_LOCAL_ID}"] .sftp-pane-body`,
@@ -4404,7 +4412,7 @@ function localPaneEl(): HTMLElement {
   if (match) return match;
   return (
     view.querySelector<HTMLElement>('[data-testid="sftp-pane-b"] .sftp-pane-body') ??
-    view.querySelector<HTMLElement>('[data-testid="sftp-pane-b"]')!
+    view.querySelector<HTMLElement>('[data-testid="sftp-pane-b"]')
   );
 }
 
@@ -4864,7 +4872,6 @@ function mountLocalVirtualList(entries: LocalEntry[]) {
   const filtered = filterFileEntries(entries, sftpListFilter());
   const vp = localPaneEl()?.querySelector<HTMLElement>('[data-testid="local-virtual-viewport"]');
   if (!vp || !filtered.length) return;
-  delete vp.dataset.boundLocal;
   localVirtual = mountVirtualList({
     viewport: vp,
     items: filtered,
@@ -4878,7 +4885,6 @@ function mountRemoteVirtualList(entries: SftpEntry[]) {
   const filtered = filterFileEntries(entries, sftpListFilter());
   const vp = remotePaneEl()?.querySelector<HTMLElement>('[data-testid="sftp-virtual-viewport"]');
   if (!vp || !filtered.length) return;
-  delete vp.dataset.boundSftp;
   remoteVirtual = mountVirtualList({
     viewport: vp,
     items: filtered,
@@ -5504,17 +5510,17 @@ function toggleRemoteSelection(path: string, currentlySelected: boolean): void {
 }
 
 function refreshRemoteSelection(): void {
-  remotePaneEl()
-    .querySelectorAll<HTMLElement>(".sftp-row")
-    .forEach((el) => {
-      const sel = state.sftpSelected.has(el.dataset.sftp!);
-      el.dataset.selected = String(sel);
-      const cell = el.querySelector<HTMLElement>(".cell-sel");
-      if (cell) {
-        cell.setAttribute("aria-checked", String(sel));
-        cell.innerHTML = sel ? icons.check : "";
-      }
-    });
+  const root = remotePaneEl();
+  if (!root) return;
+  root.querySelectorAll<HTMLElement>(".sftp-row").forEach((el) => {
+    const sel = state.sftpSelected.has(el.dataset.sftp!);
+    el.dataset.selected = String(sel);
+    const cell = el.querySelector<HTMLElement>(".cell-sel");
+    if (cell) {
+      cell.setAttribute("aria-checked", String(sel));
+      cell.innerHTML = sel ? icons.check : "";
+    }
+  });
 }
 
 let sftpLoadSeq = 0;
@@ -5904,6 +5910,7 @@ function bindLocalToolbar(): void {
 
 function bindLocalRows(): void {
   const pane = localPaneEl();
+  if (!pane) return;
   const root = (pane.querySelector(".sftp-virtual-viewport") as HTMLElement | null) ?? pane;
   if (root.dataset.boundLocal === "1") return;
   root.dataset.boundLocal = "1";
@@ -5987,17 +5994,17 @@ function toggleLocalSelection(path: string, currentlySelected: boolean): void {
 }
 
 function refreshLocalSelection(): void {
-  localPaneEl()
-    .querySelectorAll<HTMLElement>(".local-row")
-    .forEach((el) => {
-      const sel = state.localSelected.has(el.dataset.path!);
-      el.dataset.selected = String(sel);
-      const cell = el.querySelector<HTMLElement>(".cell-sel");
-      if (cell) {
-        cell.setAttribute("aria-checked", String(sel));
-        cell.innerHTML = sel ? icons.check : "";
-      }
-    });
+  const root = localPaneEl();
+  if (!root) return;
+  root.querySelectorAll<HTMLElement>(".local-row").forEach((el) => {
+    const sel = state.localSelected.has(el.dataset.path!);
+    el.dataset.selected = String(sel);
+    const cell = el.querySelector<HTMLElement>(".cell-sel");
+    if (cell) {
+      cell.setAttribute("aria-checked", String(sel));
+      cell.innerHTML = sel ? icons.check : "";
+    }
+  });
 }
 
 async function pickLocalFolder(): Promise<void> {
@@ -6148,19 +6155,48 @@ function updateTransferUi(): void {
 }
 
 function bindBatchBarButtons(): void {
-  const upload = document.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-upload"]');
-  const download = document.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-download"]');
-  const clear = document.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-clear"]');
+  const view = ensureSftpView();
+  const clearSelection = () => {
+    state.localSelected.clear();
+    state.sftpSelected.clear();
+    refreshLocalSelection();
+    refreshRemoteSelection();
+    for (const bar of document.querySelectorAll<HTMLElement>('[data-testid="sftp-batch-bar"]')) {
+      bar.classList.add("hidden");
+    }
+    updateTransferUi();
+  };
+  // Always (re)bind current buttons — shell rebuilds replace nodes.
+  const clear = view.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-clear"]');
+  const upload = view.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-upload"]');
+  const download = view.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-download"]');
+  if (clear) clear.onclick = () => clearSelection();
   if (upload) upload.onclick = () => void transferSelected("upload");
   if (download) download.onclick = () => void transferSelected("download");
-  if (clear) {
-    clear.onclick = () => {
-      state.localSelected.clear();
-      state.sftpSelected.clear();
-      refreshLocalSelection();
-      refreshRemoteSelection();
-      updateTransferUi();
-    };
+
+  if (view.dataset.boundBatchBar !== "1") {
+    view.dataset.boundBatchBar = "1";
+    view.addEventListener(
+      "click",
+      (ev) => {
+        const t = ev.target as HTMLElement;
+        if (t.closest('[data-testid="sftp-batch-clear"]')) {
+          ev.preventDefault();
+          clearSelection();
+          return;
+        }
+        if (t.closest('[data-testid="sftp-batch-upload"]')) {
+          ev.preventDefault();
+          void transferSelected("upload");
+          return;
+        }
+        if (t.closest('[data-testid="sftp-batch-download"]')) {
+          ev.preventDefault();
+          void transferSelected("download");
+        }
+      },
+      true,
+    );
   }
   updateTransferUi();
 }
