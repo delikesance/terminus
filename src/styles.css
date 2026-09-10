@@ -1238,6 +1238,25 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   opacity: 0.45;
   cursor: grabbing;
 }
+.host-drag-ghost {
+  pointer-events: none !important;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  margin: 0;
+  opacity: 0.92;
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 28%, transparent);
+  transform-origin: center center;
+  will-change: transform;
+  cursor: grabbing;
+}
+#panel-hosts [data-host],
+#panel-hosts .group-row,
+#panel-hosts .group-children {
+  user-select: none;
+  -webkit-user-select: none;
+}
 #panel-hosts [data-host] {
   touch-action: none;
   cursor: grab;
