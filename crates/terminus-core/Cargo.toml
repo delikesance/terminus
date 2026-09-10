@@ -11,14 +11,17 @@ path = "src/bin/selftest.rs"
 
 [dependencies]
 anyhow.workspace = true
+argon2.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+chacha20poly1305.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
 dirs.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 portable-pty.workspace = true
+rand.workspace = true
 russh.workspace = true
 russh-sftp.workspace = true
 serde.workspace = true
@@ -30,6 +33,7 @@ tracing.workspace = true
 uuid.workspace = true
 vt100.workspace = true
 fontdue.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

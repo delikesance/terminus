@@ -1,6 +1,10 @@
 use crate::error::{Error, Result};
-use crate::models::{SyncConfig, SyncStatus};
+use crate::models::{Credential, Host, Identity, SyncConfig, SyncStatus};
 use crate::store::Store;
+use crate::vault::{
+    apply_secret_credentials, collect_secret_credentials, KdfParams, UnlockedVault, VaultHeader,
+    VaultStatus,
+};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -15,6 +19,7 @@ pub struct SyncEngine {
     last_sync: Mutex<Option<DateTime<Utc>>>,
     last_error: Mutex<Option<String>>,
     state: Mutex<String>, // "unconfigured" | "idle" | "syncing" | "offline" | "error"
+    vault: Mutex<Option<UnlockedVault>>,
 }
 
 impl SyncEngine {
@@ -26,6 +31,7 @@ impl SyncEngine {
             last_sync: Mutex::new(None),
             last_error: Mutex::new(None),
             state: Mutex::new("unconfigured".to_string()),
+            vault: Mutex::new(None),
         }
     }
 
@@ -50,6 +56,9 @@ impl SyncEngine {
     }
 
     pub async fn configure(&self, config: SyncConfig) -> Result<()> {
+        if config.sync_secrets {
+            self.require_vault_for_secrets().await?;
+        }
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .connect(&config.url)
@@ -75,6 +84,7 @@ impl SyncEngine {
             self.state.lock().await.clone()
         };
         let sync_secrets = self.sync_secrets_pref().await;
+        let vault_status = self.vault_status().await;
 
         SyncStatus {
             configured,
@@ -83,11 +93,84 @@ impl SyncEngine {
             last_error: self.last_error.lock().await.clone(),
             state,
             sync_secrets,
+            vault_configured: vault_status.configured,
+            vault_unlocked: vault_status.unlocked,
         }
     }
 
-    /// Persist whether secrets may sync. Default remains off (secrets stay local).
+    pub async fn vault_status(&self) -> VaultStatus {
+        let header = self.store.vault_header().await.ok().flatten();
+        VaultStatus {
+            configured: header.is_some(),
+            unlocked: self.vault.lock().await.is_some(),
+            key_id: header.map(|h| h.key_id),
+        }
+    }
+
+    pub async fn vault_create(&self, passphrase: &str) -> Result<VaultStatus> {
+        let (header, unlocked) = UnlockedVault::create(passphrase, KdfParams::production())?;
+        self.store.set_vault_header(&header).await?;
+        *self.vault.lock().await = Some(unlocked);
+        Ok(self.vault_status().await)
+    }
+
+    pub async fn vault_unlock(&self, passphrase: &str) -> Result<VaultStatus> {
+        let header = self
+            .store
+            .vault_header()
+            .await?
+            .ok_or(Error::VaultNotConfigured)?;
+        let unlocked = UnlockedVault::unlock(&header, passphrase)?;
+        self.apply_unlocked_credentials(&unlocked).await?;
+        *self.vault.lock().await = Some(unlocked);
+        Ok(self.vault_status().await)
+    }
+
+    pub async fn vault_lock(&self) {
+        *self.vault.lock().await = None;
+    }
+
+    pub async fn vault_change_passphrase(&self, new_passphrase: &str) -> Result<VaultStatus> {
+        let header = {
+            let guard = self.vault.lock().await;
+            let unlocked = guard.as_ref().ok_or(Error::VaultLocked)?;
+            unlocked.rewrap(new_passphrase)?
+        };
+        self.store.set_vault_header(&header).await?;
+        let relocked = UnlockedVault::unlock(&header, new_passphrase)?;
+        *self.vault.lock().await = Some(relocked);
+        Ok(self.vault_status().await)
+    }
+
+    async fn apply_unlocked_credentials(&self, vault: &UnlockedVault) -> Result<()> {
+        let creds = self.store.list_credentials().await?;
+        if creds.is_empty() {
+            return Ok(());
+        }
+        let mut hosts = self.store.list_hosts().await?;
+        let mut identities = self.store.list_identities().await?;
+        apply_secret_credentials(&mut hosts, &mut identities, &creds, vault)?;
+        for host in &hosts {
+            self.store.upsert_host(host).await?;
+        }
+        for identity in &identities {
+            self.store.upsert_identity(identity).await?;
+        }
+        Ok(())
+    }
+
+    async fn require_vault_for_secrets(&self) -> Result<()> {
+        if self.store.vault_header().await?.is_none() {
+            return Err(Error::VaultRequired);
+        }
+        Ok(())
+    }
+
+    /// Persist whether secrets may sync. Requires a vault; never enables plaintext export.
     pub async fn set_sync_secrets(&self, sync_secrets: bool) -> Result<()> {
+        if sync_secrets {
+            self.require_vault_for_secrets().await?;
+        }
         let mut guard = self.config.lock().await;
         if let Some(cfg) = guard.as_mut() {
             cfg.sync_secrets = sync_secrets;
@@ -142,13 +225,14 @@ impl SyncEngine {
             .as_ref()
             .map(|c| c.sync_secrets)
             .unwrap_or(false);
+        let vault_unlocked = self.vault.lock().await.is_some();
 
         // Transition to syncing state
         *self.state.lock().await = "syncing".to_string();
 
         let result = async {
-            let pushed = self.push_all(&pool, sync_secrets).await?;
-            let pulled = self.pull_all(&pool, sync_secrets).await?;
+            let pushed = self.push_all(&pool, sync_secrets, vault_unlocked).await?;
+            let pulled = self.pull_all(&pool, sync_secrets, vault_unlocked).await?;
             Ok::<_, Error>(json!({ "pushed": pushed, "pulled": pulled }))
         }
         .await;
@@ -183,14 +267,19 @@ impl SyncEngine {
         }
     }
 
-    async fn push_all(&self, pool: &PgPool, sync_secrets: bool) -> Result<usize> {
+    async fn push_all(&self, pool: &PgPool, sync_secrets: bool, vault_unlocked: bool) -> Result<usize> {
         let mut count = 0;
-        count += push_rows(pool, "hosts", &filter_hosts(self.store.dump_table_json("hosts").await?, sync_secrets)).await?;
+        count += push_rows(
+            pool,
+            "hosts",
+            &filter_hosts(self.store.dump_table_json("hosts").await?, false),
+        )
+        .await?;
         count += push_rows(pool, "groups", &self.store.dump_table_json("groups").await?).await?;
         count += push_rows(
             pool,
             "identities",
-            &filter_identities(self.store.dump_table_json("identities").await?, sync_secrets),
+            &filter_identities(self.store.dump_table_json("identities").await?, false),
         )
         .await?;
         count += push_rows(pool, "snippets", &self.store.dump_table_json("snippets").await?).await?;
@@ -201,21 +290,114 @@ impl SyncEngine {
             &self.store.dump_table_json("port_forwards").await?,
         )
         .await?;
+        self.push_vault_meta(pool).await?;
+        if sync_secrets {
+            count += self.push_credentials(pool, vault_unlocked).await?;
+        }
         Ok(count)
     }
 
-    async fn pull_all(&self, pool: &PgPool, sync_secrets: bool) -> Result<usize> {
+    async fn push_vault_meta(&self, pool: &PgPool) -> Result<()> {
+        let Some(header) = self.store.vault_header().await? else {
+            return Ok(());
+        };
+        let raw = serde_json::to_string(&header)?;
+        sqlx::query(
+            r#"INSERT INTO vault_meta (id, header, updated_at)
+               VALUES ('default', $1, $2)
+               ON CONFLICT (id) DO UPDATE SET header=EXCLUDED.header, updated_at=EXCLUDED.updated_at"#,
+        )
+        .bind(&raw)
+        .bind(Utc::now().to_rfc3339())
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn push_credentials(&self, pool: &PgPool, vault_unlocked: bool) -> Result<usize> {
+        if vault_unlocked {
+            if let Some(vault) = self.vault.lock().await.as_ref() {
+                let hosts = self.store.list_hosts().await?;
+                let identities = self.store.list_identities().await?;
+                let creds = collect_secret_credentials(&hosts, &identities, vault)?;
+                for cred in &creds {
+                    self.store.upsert_credential(cred).await?;
+                }
+            }
+        }
+        let rows = self.store.dump_table_json("credentials").await?;
+        push_rows(pool, "credentials", &rows).await
+    }
+
+    async fn pull_all(&self, pool: &PgPool, _sync_secrets: bool, vault_unlocked: bool) -> Result<usize> {
         let mut count = 0;
-        count += self.pull_hosts(pool, sync_secrets).await?;
+        count += self.pull_vault_meta(pool).await?;
+        count += self.pull_hosts(pool, vault_unlocked).await?;
         count += self.pull_groups(pool).await?;
-        count += self.pull_identities(pool, sync_secrets).await?;
+        count += self.pull_identities(pool, vault_unlocked).await?;
         count += self.pull_snippets(pool).await?;
         count += self.pull_history(pool).await?;
         count += self.pull_forwards(pool).await?;
+        count += self.pull_credentials(pool, vault_unlocked).await?;
         Ok(count)
     }
 
-    async fn pull_hosts(&self, pool: &PgPool, sync_secrets: bool) -> Result<usize> {
+    async fn pull_vault_meta(&self, pool: &PgPool) -> Result<usize> {
+        let row = sqlx::query("SELECT header FROM vault_meta WHERE id = 'default'")
+            .fetch_optional(pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(0);
+        };
+        let raw: String = row.get("header");
+        let header: VaultHeader = serde_json::from_str(&raw)?;
+        if self.store.vault_header().await?.is_none() {
+            self.store.set_vault_header(&header).await?;
+            return Ok(1);
+        }
+        Ok(0)
+    }
+
+    async fn pull_credentials(&self, pool: &PgPool, vault_unlocked: bool) -> Result<usize> {
+        let rows = sqlx::query("SELECT * FROM credentials").fetch_all(pool).await?;
+        let mut n = 0;
+        for row in rows {
+            let cred = Credential {
+                id: row.get("id"),
+                kind: row.get("kind"),
+                owner_kind: row.get("owner_kind"),
+                owner_id: row.get("owner_id"),
+                envelope: row.get("envelope"),
+                key_id: row.get("key_id"),
+                created_at: parse_pg(row.get("created_at")),
+                updated_at: parse_pg(row.get("updated_at")),
+                deleted_at: row
+                    .get::<Option<String>, _>("deleted_at")
+                    .map(parse_pg),
+            };
+            if let Some(existing) = self
+                .store
+                .list_credentials()
+                .await?
+                .into_iter()
+                .find(|c| c.id == cred.id)
+            {
+                if existing.updated_at > cred.updated_at {
+                    continue;
+                }
+            }
+            self.store.upsert_credential(&cred).await?;
+            n += 1;
+        }
+        if vault_unlocked {
+            if let Some(vault) = self.vault.lock().await.as_ref() {
+                self.apply_unlocked_credentials(vault).await?;
+            }
+        }
+        Ok(n)
+    }
+
+    async fn pull_hosts(&self, pool: &PgPool, vault_unlocked: bool) -> Result<usize> {
         let rows = sqlx::query("SELECT * FROM hosts").fetch_all(pool).await?;
         let mut n = 0;
         for row in rows {
@@ -238,14 +420,10 @@ impl SyncEngine {
                     .get::<Option<String>, _>("deleted_at")
                     .map(parse_pg),
             };
-            if !sync_secrets {
-                if let Some(existing) = self.store.get_host(&host.id).await? {
-                    host.password = existing.password;
-                } else {
-                    host.password = None;
-                }
-            }
-            if let Some(existing) = self.store.get_host(&host.id).await? {
+            host.password = None;
+            let existing = self.store.get_host(&host.id).await?;
+            preserve_local_secrets_if_locked(true, vault_unlocked, &mut host, existing.as_ref());
+            if let Some(existing) = existing {
                 if existing.updated_at > host.updated_at {
                     continue;
                 }
@@ -276,7 +454,7 @@ impl SyncEngine {
         Ok(n)
     }
 
-    async fn pull_identities(&self, pool: &PgPool, sync_secrets: bool) -> Result<usize> {
+    async fn pull_identities(&self, pool: &PgPool, vault_unlocked: bool) -> Result<usize> {
         let rows = sqlx::query("SELECT * FROM identities").fetch_all(pool).await?;
         let mut n = 0;
         for row in rows {
@@ -295,12 +473,15 @@ impl SyncEngine {
                     .get::<Option<String>, _>("deleted_at")
                     .map(parse_pg),
             };
-            // Same pattern as pull_hosts: when secrets are not synced, keep local
-            // private_key/passphrase instead of wiping them with remote nulls.
-            if !sync_secrets {
-                let existing = self.store.get_identity(&identity.id).await?;
-                preserve_identity_secrets(&mut identity, existing.as_ref());
-            }
+            identity.private_key = None;
+            identity.passphrase = None;
+            let existing = self.store.get_identity(&identity.id).await?;
+            preserve_local_identity_secrets_if_locked(
+                true,
+                vault_unlocked,
+                &mut identity,
+                existing.as_ref(),
+            );
             self.store.upsert_identity(&identity).await?;
             n += 1;
         }
@@ -390,27 +571,16 @@ fn parse_pg(raw: String) -> DateTime<Utc> {
         .unwrap_or_else(|_| Utc::now())
 }
 
-fn filter_hosts(mut rows: Vec<Value>, sync_secrets: bool) -> Vec<Value> {
-    if sync_secrets {
-        return rows;
-    }
+fn filter_hosts(mut rows: Vec<Value>, _sync_secrets: bool) -> Vec<Value> {
     for row in &mut rows {
-        if let Some(obj) = row.as_object_mut() {
-            obj.insert("password".into(), Value::Null);
-        }
+        strip_secret_json(row);
     }
     rows
 }
 
-fn filter_identities(mut rows: Vec<Value>, sync_secrets: bool) -> Vec<Value> {
-    if sync_secrets {
-        return rows;
-    }
+fn filter_identities(mut rows: Vec<Value>, _sync_secrets: bool) -> Vec<Value> {
     for row in &mut rows {
-        if let Some(obj) = row.as_object_mut() {
-            obj.insert("private_key".into(), Value::Null);
-            obj.insert("passphrase".into(), Value::Null);
-        }
+        strip_secret_json(row);
     }
     rows
 }
@@ -483,6 +653,22 @@ async fn ensure_remote_schema(pool: &PgPool) -> Result<()> {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           deleted_at TEXT
+        )"#,
+        r#"CREATE TABLE IF NOT EXISTS credentials (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          owner_kind TEXT NOT NULL,
+          owner_id TEXT NOT NULL,
+          envelope TEXT NOT NULL,
+          key_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          deleted_at TEXT
+        )"#,
+        r#"CREATE TABLE IF NOT EXISTS vault_meta (
+          id TEXT PRIMARY KEY,
+          header TEXT NOT NULL,
+          updated_at TEXT NOT NULL
         )"#,
     ];
     for sql in statements {
@@ -623,6 +809,28 @@ async fn push_rows(pool: &PgPool, table: &str, rows: &[Value]) -> Result<usize> 
                 .execute(pool)
                 .await?;
             }
+            "credentials" => {
+                sqlx::query(
+                    r#"INSERT INTO credentials (id,kind,owner_kind,owner_id,envelope,key_id,created_at,updated_at,deleted_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                       ON CONFLICT (id) DO UPDATE SET
+                         kind=EXCLUDED.kind, owner_kind=EXCLUDED.owner_kind, owner_id=EXCLUDED.owner_id,
+                         envelope=EXCLUDED.envelope, key_id=EXCLUDED.key_id,
+                         updated_at=EXCLUDED.updated_at, deleted_at=EXCLUDED.deleted_at
+                         WHERE credentials.updated_at <= EXCLUDED.updated_at"#,
+                )
+                .bind(str_field(obj, "id"))
+                .bind(str_field(obj, "kind"))
+                .bind(str_field(obj, "owner_kind"))
+                .bind(str_field(obj, "owner_id"))
+                .bind(str_field(obj, "envelope"))
+                .bind(str_field(obj, "key_id"))
+                .bind(str_field(obj, "created_at"))
+                .bind(str_field(obj, "updated_at"))
+                .bind(opt_str(obj, "deleted_at"))
+                .execute(pool)
+                .await?;
+            }
             _ => {}
         }
         n += 1;
@@ -674,12 +882,53 @@ fn opt_int(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
     }
 }
 
+/// When the vault is locked (or secret sync is off), remote rows omit secrets.
+/// Keep local material on upsert (mirrors host password preservation).
+pub fn preserve_local_secrets_if_locked(
+    _sync_secrets: bool,
+    unlocked: bool,
+    host: &mut Host,
+    existing: Option<&Host>,
+) {
+    if unlocked {
+        return;
+    }
+    if let Some(existing) = existing {
+        host.password = existing.password.clone();
+    } else {
+        host.password = None;
+    }
+}
+
+pub fn preserve_local_identity_secrets_if_locked(
+    _sync_secrets: bool,
+    unlocked: bool,
+    remote: &mut Identity,
+    existing: Option<&Identity>,
+) {
+    if unlocked {
+        return;
+    }
+    preserve_identity_secrets(remote, existing);
+}
+
+pub fn strip_secret_json(row: &mut Value) {
+    if let Some(obj) = row.as_object_mut() {
+        if obj.contains_key("password") {
+            obj.insert("password".into(), Value::Null);
+        }
+        if obj.contains_key("private_key") {
+            obj.insert("private_key".into(), Value::Null);
+        }
+        if obj.contains_key("passphrase") {
+            obj.insert("passphrase".into(), Value::Null);
+        }
+    }
+}
+
 /// When sync_secrets is off, remote rows omit secrets. Keep local material on upsert
 /// (mirrors host password preservation in `pull_hosts`).
-fn preserve_identity_secrets(
-    remote: &mut crate::models::Identity,
-    existing: Option<&crate::models::Identity>,
-) {
+fn preserve_identity_secrets(remote: &mut Identity, existing: Option<&Identity>) {
     if let Some(existing) = existing {
         remote.private_key = existing.private_key.clone();
         remote.passphrase = existing.passphrase.clone();

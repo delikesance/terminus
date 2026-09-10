@@ -9,6 +9,7 @@ use terminus_core::ssh;
 use terminus_core::store::Store;
 use terminus_core::sync::SyncEngine;
 use terminus_core::Error;
+use terminus_core::VaultStatus;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -402,6 +403,39 @@ async fn sync_set_secrets(state: State<'_, AppState>, sync_secrets: bool) -> Res
     state
         .sync
         .set_sync_secrets(sync_secrets)
+        .await
+        .map_err(map_err)
+}
+
+#[tauri::command]
+async fn vault_create(state: State<'_, AppState>, passphrase: String) -> Result<VaultStatus, String> {
+    state.sync.vault_create(&passphrase).await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn vault_unlock(state: State<'_, AppState>, passphrase: String) -> Result<VaultStatus, String> {
+    state.sync.vault_unlock(&passphrase).await.map_err(map_err)
+}
+
+#[tauri::command]
+async fn vault_lock(state: State<'_, AppState>) -> Result<(), String> {
+    state.sync.vault_lock().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn vault_status(state: State<'_, AppState>) -> Result<VaultStatus, String> {
+    Ok(state.sync.vault_status().await)
+}
+
+#[tauri::command]
+async fn vault_change_passphrase(
+    state: State<'_, AppState>,
+    passphrase: String,
+) -> Result<VaultStatus, String> {
+    state
+        .sync
+        .vault_change_passphrase(&passphrase)
         .await
         .map_err(map_err)
 }
@@ -960,6 +994,11 @@ pub fn run() {
             themes_list,
             sync_configure,
             sync_set_secrets,
+            vault_create,
+            vault_unlock,
+            vault_lock,
+            vault_status,
+            vault_change_passphrase,
             sync_now,
             sync_status,
             sftp_list,

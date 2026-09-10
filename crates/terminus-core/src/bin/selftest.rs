@@ -163,44 +163,56 @@ async fn run() -> Result<Value> {
         "postgres://terminus:terminus@127.0.0.1:54329/terminus".into()
     });
     let engine = SyncEngine::new(store.clone());
-    match engine
-        .configure(SyncConfig {
-            url: pg_url.clone(),
-            sync_secrets: true,
-        })
-        .await
-    {
-        Ok(()) => {
-            checks.push(check("postgres_connect", true, "connected to postgres"));
-            match engine.sync_now().await {
-                Ok(stats) => checks.push(check(
-                    "sql_sync_push",
-                    true,
-                    format!("push/pull {}", stats),
-                )),
-                Err(err) => checks.push(check("sql_sync_push", false, err.to_string())),
-            }
-
-            let store_b = Store::open(tmp.join("replica.db")).await?;
-            let engine_b = SyncEngine::new(store_b.clone());
-            engine_b
+    match engine.vault_create("correct horse battery").await {
+        Ok(_) => {
+            match engine
                 .configure(SyncConfig {
-                    url: pg_url,
+                    url: pg_url.clone(),
                     sync_secrets: true,
                 })
-                .await?;
-            engine_b.sync_now().await?;
-            let replica_hosts = store_b.list_hosts().await?;
-            let replica_snips = store_b.list_snippets().await?;
-            checks.push(check(
-                "sql_sync_pull",
-                replica_hosts.iter().any(|h| h.id == host.id)
-                    && replica_snips.iter().any(|s| s.id == snippet.id),
-                "second client pulled hosts and snippets from postgres",
-            ));
+                .await
+            {
+                Ok(()) => {
+                    checks.push(check("postgres_connect", true, "connected to postgres"));
+                    match engine.sync_now().await {
+                        Ok(stats) => checks.push(check(
+                            "sql_sync_push",
+                            true,
+                            format!("push/pull {}", stats),
+                        )),
+                        Err(err) => checks.push(check("sql_sync_push", false, err.to_string())),
+                    }
+
+                    let store_b = Store::open(tmp.join("replica.db")).await?;
+                    let engine_b = SyncEngine::new(store_b.clone());
+                    engine_b
+                        .configure(SyncConfig {
+                            url: pg_url,
+                            sync_secrets: false,
+                        })
+                        .await?;
+                    engine_b.sync_now().await?;
+                    engine_b.vault_unlock("correct horse battery").await?;
+                    engine_b.set_sync_secrets(true).await?;
+                    engine_b.sync_now().await?;
+                    let replica_hosts = store_b.list_hosts().await?;
+                    let replica_snips = store_b.list_snippets().await?;
+                    checks.push(check(
+                        "sql_sync_pull",
+                        replica_hosts.iter().any(|h| h.id == host.id)
+                            && replica_snips.iter().any(|s| s.id == snippet.id),
+                        "second client pulled hosts and snippets from postgres",
+                    ));
+                }
+                Err(err) => {
+                    checks.push(check("postgres_connect", false, err.to_string()));
+                    checks.push(check("sql_sync_push", false, "skipped"));
+                    checks.push(check("sql_sync_pull", false, "skipped"));
+                }
+            }
         }
         Err(err) => {
-            checks.push(check("postgres_connect", false, err.to_string()));
+            checks.push(check("postgres_connect", false, format!("vault: {err}")));
             checks.push(check("sql_sync_push", false, "skipped"));
             checks.push(check("sql_sync_pull", false, "skipped"));
         }
