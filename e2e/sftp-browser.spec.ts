@@ -441,10 +441,14 @@ test.describe("C9: SFTP browser v1", () => {
 
   test("#43 AC1: compact rows default to ≤30px min-height", async ({ page }) => {
     await openFilesPanel(page);
-    const minH = await page.locator('[data-testid="sftp-row"]').first().evaluate((el) => {
-      return parseFloat(getComputedStyle(el).minHeight);
-    });
-    expect(minH).toBeLessThanOrEqual(30);
+    await expect(page.locator(".sftp-view.compact-rows")).toBeVisible({ timeout: 5000 });
+    const row = page.locator('[data-testid="sftp-row"]').first();
+    await expect(row).toBeVisible({ timeout: 5000 });
+    await expect
+      .poll(async () => {
+        return row.evaluate((el) => parseFloat(getComputedStyle(el).minHeight));
+      })
+      .toBeLessThanOrEqual(30);
   });
 
   test("#49 soft-restore: leave Hosts and return keeps split local pane", async ({ page }) => {
