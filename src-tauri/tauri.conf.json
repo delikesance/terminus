@@ -32,7 +32,7 @@
     "active": true,
     "targets": "all",
     "publisher": "delikesance",
-    "copyright": "Copyright © delikesance",
+    "copyright": "Copyright © Terminus Contributors",
     "category": "DeveloperTool",
     "shortDescription": "SSH and SFTP desktop terminal",
     "icon": [

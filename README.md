@@ -1,6 +1,17 @@
 # Terminus
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
+
 Open-source [Termius](https://termius.com) alternative: a fast, highly customizable terminal emulator with SSH, SFTP, snippets, command history, and optional SQL-backed sync.
+
+**Contributions are welcome** — see [CONTRIBUTING.md](./CONTRIBUTING.md). MIT licensed; you can use, fork, and ship changes freely.
+
+![Terminus preview](./docs/media/hero-preview.png)
+
+<p align="center">
+  <img src="./docs/media/app-main.png" alt="Terminus main window — hosts sidebar and terminal" width="860" />
+</p>
 
 Stack: **Rust**, **Tauri 2**, **xterm.js (WebGL)**, **SQLite** locally, **PostgreSQL** (or any sqlx URL) for cloud sync.
 
@@ -12,6 +23,27 @@ Stack: **Rust**, **Tauri 2**, **xterm.js (WebGL)**, **SQLite** locally, **Postgr
 - Themes, fonts, renderer, padding, opacity, custom CSS, keybindings
 - Settings → database URL for PostgreSQL sync (hosts, history, snippets, forwards)
 - Secrets stay local unless you opt in to secret sync
+
+## Contributing
+
+Anyone can contribute — bug fixes, UX polish, docs, and tests all help.
+
+1. Read [CONTRIBUTING.md](./CONTRIBUTING.md) for setup and PR expectations.
+2. Open an [issue](https://github.com/delikesance/terminus/issues) if you want design feedback first (optional).
+3. Send a pull request against `main`.
+
+By contributing you agree your work is released under the [MIT License](./LICENSE).
+
+### Marketing / Canva preview
+
+Product screenshots live in [`docs/media/`](./docs/media/). To refresh them:
+
+```bash
+VITE_E2E=1 nix develop -c npm run build
+nix develop -c node scripts/capture-preview.mjs
+```
+
+For a social/GitHub hero in Canva, follow [`docs/media/CANVA_BRIEF.md`](./docs/media/CANVA_BRIEF.md) (size, colors, copy, import steps).
 
 ## Development (Nix flake)
 
@@ -76,3 +108,7 @@ ssh terminus@127.0.0.1 -p 2222   # password: terminus
 ```
 
 SSH host keys use fail-closed verification against `~/.ssh/known_hosts` (override with `TERMINUS_KNOWN_HOSTS`). First connect shows a TOFU dialog; Trust appends the presented key atomically via `ssh_host_key_trust`.
+
+## License
+
+[MIT](./LICENSE) © Terminus Contributors
