@@ -45,6 +45,7 @@
     "test:motion": "npm run compile:test-motion && node src/motion.test.js",
     "compile:test-hostdragghost": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/hostDragGhost.ts",
     "test:host-drag-ghost": "npm run compile:test-hostdragghost && node src/hostDragGhost.test.js",
+    "capture:preview": "node scripts/capture-preview.mjs",
     "test:e2e:perf": "playwright test e2e/perf-load.spec.ts",
     "test:perf-native": "bash scripts/perf-native.sh"
   },
