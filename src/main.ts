@@ -2477,6 +2477,9 @@ function attachSession(info: SessionInfo, pane = createPane()) {
     ev.preventDefault();
     sendText(bytes, pane);
   };
+  pane.el.onwheel = (ev) => {
+    void handleTermWheel(ev, pane);
+  };
   pane.el.onpaste = (ev) => {
     const text = ev.clipboardData?.getData("text") ?? "";
     if (!text) return;
@@ -2534,6 +2537,51 @@ function encodeTermKey(ev: KeyboardEvent, pane?: Pane): string | null {
     default:
       return ev.key.length === 1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey ? ev.key : null;
   }
+}
+
+async function handleTermWheel(ev: WheelEvent, pane: Pane) {
+  if (!pane.session || pane.exited) return;
+  // Ignore pinch-zoom / horizontal-only gestures.
+  if (ev.ctrlKey || Math.abs(ev.deltaY) < 0.5) return;
+  ev.preventDefault();
+  const linePx = Math.max(1, pane.cellH / Math.max(1, pane.rasterScale));
+  let lines = 0;
+  if (ev.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    lines = Math.round(-ev.deltaY);
+  } else if (ev.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    lines = Math.round(-ev.deltaY * Math.max(1, pane.rows || 24));
+  } else {
+    lines = Math.round(-ev.deltaY / linePx);
+  }
+  if (!lines) lines = ev.deltaY < 0 ? 1 : -1;
+  const altScreen = Boolean(pane.modeFlags & 0b0100);
+  if (altScreen) {
+    const appCursor = Boolean(pane.modeFlags & 0b0001);
+    const up = appCursor ? "\x1bOA" : "\x1b[A";
+    const down = appCursor ? "\x1bOB" : "\x1b[B";
+    const seq =
+      lines > 0
+        ? up.repeat(Math.min(32, Math.abs(lines)))
+        : down.repeat(Math.min(32, Math.abs(lines)));
+    sendText(seq, pane);
+    return;
+  }
+  const ok = await invoke<boolean>("session_scroll", {
+    id: pane.session.id,
+    lines,
+  }).catch(() => true);
+  if (ok === false) {
+    const appCursor = Boolean(pane.modeFlags & 0b0001);
+    const up = appCursor ? "\x1bOA" : "\x1b[A";
+    const down = appCursor ? "\x1bOB" : "\x1b[B";
+    const seq =
+      lines > 0
+        ? up.repeat(Math.min(32, Math.abs(lines)))
+        : down.repeat(Math.min(32, Math.abs(lines)));
+    sendText(seq, pane);
+    return;
+  }
+  scheduleFrame(pane.session.id, true);
 }
 
 function createPane(pending?: Pane["pending"]): Pane {
