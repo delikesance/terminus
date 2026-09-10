@@ -1236,6 +1236,11 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
 }
 [data-host].is-dragging {
   opacity: 0.45;
+  cursor: grabbing;
+}
+#panel-hosts [data-host] {
+  touch-action: none;
+  cursor: grab;
 }
 #panel-hosts.drop-ungroup {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 28%, transparent);
