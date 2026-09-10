@@ -77,6 +77,7 @@ for (const { soname, path: src } of vendor) {
   }
   const destFile = path.join(dest, soname);
   fs.copyFileSync(src, destFile);
+  fs.chmodSync(destFile, 0o644);
   const patch = spawnSync(
     "patchelf",
     ["--force-rpath", "--set-rpath", "$ORIGIN", destFile],
