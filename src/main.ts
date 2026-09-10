@@ -47,6 +47,7 @@ import {
   openSingle,
   placeAdditionalRemote,
   setPaneEndpoint,
+  transferLane,
   type SftpBrowserState,
   type SftpEndpointId,
   type SftpPaneSlot,
@@ -213,8 +214,8 @@ type LocalEntry = {
 };
 
 type TransferJob = {
-  /** "upload" = local→remote, "download" = remote→local. */
-  direction: "upload" | "download";
+  /** "upload" = local→remote, "download" = remote→local, "remote-copy" = remote→remote (#105). */
+  direction: "upload" | "download" | "remote-copy";
   total: number;
   done: number;
   failed: number;
@@ -4374,6 +4375,35 @@ function snapshotActiveRemote(): void {
   sftpEntryCache.set(hostId, state.sftpEntries.slice());
 }
 
+function remotePathFor(hostId: string): string {
+  if (!hostId) return ".";
+  if (state.sftpHostId === hostId) return state.sftpPath || ".";
+  return sftpSessions.byId[hostId]?.path || ".";
+}
+
+function remoteRootFor(hostId: string): string {
+  if (!hostId) return "/";
+  if (state.sftpHostId === hostId) return state.sftpRoot || "/";
+  return sftpSessions.byId[hostId]?.root || "/";
+}
+
+function remoteEntriesFor(hostId: string): SftpEntry[] {
+  if (!hostId) return [];
+  if (state.sftpHostId === hostId) return state.sftpEntries;
+  return sftpEntryCache.get(hostId)?.slice() ?? [];
+}
+
+function remoteSelectionFor(hostId: string): Set<string> {
+  if (!hostId) return new Set();
+  if (state.sftpHostId === hostId) return state.sftpSelected;
+  return new Set(sftpSessions.byId[hostId]?.selected ?? []);
+}
+
+function remoteSelectedCount(hostId: string | null | undefined): number {
+  if (!hostId || isLocalEndpoint(hostId)) return 0;
+  return remoteSelectionFor(hostId).size;
+}
+
 function applyRemoteSession(hostId: string): boolean {
   const snap = sftpSessions.byId[hostId];
   if (!snap) return false;
@@ -5312,20 +5342,33 @@ function sftpToolbarHtml(hostId: string, path: string): string {
 }
 
 function bindSftpToolbar(hostId: string, path: string) {
-  $("sftp-up").onclick = () => {
-    const parent = parentSftpPath(path);
-    if (parent != null) void loadSftp(hostId, parent);
-  };
-  $("sftp-refresh").onclick = () => void loadSftp(hostId, path);
-  $("sftp-mkdir").onclick = () => sftpMkdirSheet(hostId, path);
-  $("sftp-upload").onclick = () => void sftpUpload(hostId, path);
-  const pathInput = $input("sftp-path") as HTMLInputElement;
-  pathInput.onkeydown = (ev) => {
-    if (ev.key === "Enter") {
-      ev.preventDefault();
-      void navigateSftpPath(hostId, pathInput.value);
-    }
-  };
+  const root =
+    paneBodyForEndpoint(hostId) ??
+    (document.querySelector(`[data-endpoint="${CSS.escape(hostId)}"] .sftp-pane-body`) as HTMLElement | null) ??
+    remotePaneEl();
+  const q = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel);
+  const up = q('[data-testid="sftp-up"]');
+  if (up) {
+    up.onclick = () => {
+      const parent = parentSftpPath(path);
+      if (parent != null) void loadSftp(hostId, parent);
+    };
+  }
+  const refresh = q('[data-testid="sftp-refresh"]');
+  if (refresh) refresh.onclick = () => void loadSftp(hostId, path);
+  const mkdir = q('[data-testid="sftp-mkdir"]');
+  if (mkdir) mkdir.onclick = () => sftpMkdirSheet(hostId, path);
+  const upload = q('[data-testid="sftp-upload"]');
+  if (upload) upload.onclick = () => void sftpUpload(hostId, path);
+  const pathInput = q<HTMLInputElement>('[data-testid="sftp-path"]');
+  if (pathInput) {
+    pathInput.onkeydown = (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        void navigateSftpPath(hostId, pathInput.value);
+      }
+    };
+  }
 }
 
 function renderSftpError(hostId: string, path: string, err: unknown) {
@@ -5343,6 +5386,7 @@ function renderSftpError(hostId: string, path: string, err: unknown) {
 
 async function navigateSftpPath(hostId: string, raw: string) {
   try {
+    if (hostId !== state.sftpHostId) focusRemoteHostState(hostId);
     const next = logicalFromDisplayPath(state.sftpCwd, state.sftpRoot, raw.trim() || ".");
     await loadSftp(hostId, next);
   } catch (err) {
@@ -5389,12 +5433,20 @@ function bindSftpRows(_hostId: string, root: ParentNode) {
   el.addEventListener("dragstart", (ev) => {
     const row = (ev.target as HTMLElement).closest(".sftp-row") as HTMLElement | null;
     if (!row || !el.contains(row)) return;
+    const hid = host();
     const path = row.dataset.sftp!;
+    const entries = remoteEntriesFor(hid || _hostId);
+    const selected = remoteSelectionFor(hid || _hostId);
     const items =
-      state.sftpSelected.size > 0
-        ? state.sftpEntries.filter((x) => state.sftpSelected.has(x.path))
+      selected.size > 0
+        ? entries.filter((x) => selected.has(x.path))
         : [{ path, name: row.dataset.name || "", is_dir: row.dataset.dir === "true" }];
-    setDragPayload(ev, "remote", items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })));
+    setDragPayload(
+      ev,
+      "remote",
+      items.map((x) => ({ path: x.path, name: x.name, is_dir: x.is_dir })),
+      hid || _hostId,
+    );
   });
   const openRemoteMenu = (ev: MouseEvent, row: HTMLElement | null) => {
     ev.preventDefault();
@@ -5402,6 +5454,7 @@ function bindSftpRows(_hostId: string, root: ParentNode) {
     focusRemote();
     const hid = host();
     if (!hid) return;
+    const cwd = remotePathFor(hid);
     const target = row
       ? {
           side: "remote" as const,
@@ -5409,15 +5462,15 @@ function bindSftpRows(_hostId: string, root: ParentNode) {
           path: row.dataset.sftp!,
           name: row.dataset.name || "",
           isDir: row.dataset.dir === "true",
-          cwd: state.sftpPath || ".",
+          cwd,
         }
       : {
           side: "remote" as const,
           hostId: hid,
-          path: state.sftpPath || ".",
+          path: cwd,
           name: "",
           isDir: true,
-          cwd: state.sftpPath || ".",
+          cwd,
           empty: true,
         };
     showMenu(ev.clientX, ev.clientY, fileContextMenuItems(target));
@@ -5633,14 +5686,38 @@ async function fileClipboardPaste(target: FileCtxTarget): Promise<void> {
     const hostId = clip.hostId || state.sftpHostId;
     if (!hostId) return;
     const files: FileRef[] = [];
-    await collectRemoteTree(hostId, clip.items, files);
+    await collectRemoteTree(hostId, clip.items, files, remoteRootFor(hostId));
     await transferFiles({
       direction: "download",
       hostId,
-      remoteTargetDir: state.sftpPath,
+      remoteTargetDir: remotePathFor(hostId),
       localTargetDir: destDir,
       files,
     });
+  } else if (clip.side === "remote" && intoSide === "remote") {
+    const srcHost = clip.hostId || state.sftpHostId;
+    const destHost = target.hostId || state.sftpHostId;
+    if (!srcHost || !destHost) return;
+    if (srcHost !== destHost) {
+      const files: FileRef[] = [];
+      await collectRemoteTree(srcHost, clip.items, files, remoteRootFor(srcHost));
+      await transferFiles({
+        direction: "remote-copy",
+        hostId: srcHost,
+        destHostId: destHost,
+        sourceRoot: remoteRootFor(srcHost),
+        destRoot: remoteRootFor(destHost),
+        remoteTargetDir: destDir,
+        localTargetDir: "",
+        files,
+      });
+    } else if (clip.mode === "cut") {
+      await moveClipboardItems(clip, destDir, intoSide, destHost);
+      if (state.sftpHostId) await loadSftp(state.sftpHostId, state.sftpPath || ".");
+    } else {
+      await copyClipboardItems(clip, destDir, intoSide, destHost);
+      if (state.sftpHostId) await loadSftp(state.sftpHostId, state.sftpPath || ".");
+    }
   } else if (clip.side === intoSide && clip.mode === "cut") {
     await moveClipboardItems(clip, destDir, intoSide, target.hostId);
     if (intoSide === "local") await loadLocal();
@@ -5709,8 +5786,9 @@ async function copyClipboardItems(
   }
   const hid = hostId || clip.hostId || state.sftpHostId;
   if (!hid) return;
+  const root = remoteRootFor(hid);
   const files: FileRef[] = [];
-  await collectRemoteTree(hid, clip.items, files);
+  await collectRemoteTree(hid, clip.items, files, root);
   const created = new Set<string>();
   for (const f of files) {
     const relDir = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : "";
@@ -5718,20 +5796,20 @@ async function copyClipboardItems(
       created.add(relDir);
       await invoke("sftp_mkdir", {
         hostId: hid,
-        path: resolveUnderRoot(state.sftpRoot, joinRemote(destDir, relDir)),
-        root: state.sftpRoot,
+        path: resolveUnderRoot(root, joinRemote(destDir, relDir)),
+        root,
       }).catch(() => undefined);
     }
     const data = await invoke<number[] | Uint8Array>("sftp_read", {
       hostId: hid,
       path: f.src,
-      root: state.sftpRoot,
+      root,
     });
     await invoke("sftp_write", {
       hostId: hid,
-      path: resolveUnderRoot(state.sftpRoot, joinRemote(destDir, f.rel)),
+      path: resolveUnderRoot(root, joinRemote(destDir, f.rel)),
       data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
-      root: state.sftpRoot,
+      root,
     });
   }
 }
@@ -5818,6 +5896,7 @@ let sftpLoadSeq = 0;
 
 async function loadSftp(hostId: string, path: string) {
   const seq = ++sftpLoadSeq;
+  if (state.sftpHostId && state.sftpHostId !== hostId) snapshotActiveRemote();
   state.sftpHostId = hostId;
   sftpSessions = openOrFocusRemote(sftpSessions, hostId);
   if (sftpBrowser.mode === "single") {
@@ -5874,6 +5953,7 @@ async function loadSftp(hostId: string, path: string) {
       renderSftpWorkspace(hostId, safePath, wrapSftpContentEnter(remoteTableHtml([])));
       setPaneListingLoading(remotePaneEl(), false);
       snapshotActiveRemote();
+      paintCompanionRemotes(hostId);
       return;
     }
     state.sftpEntries = entries;
@@ -5883,6 +5963,7 @@ async function loadSftp(hostId: string, path: string) {
     setPaneListingLoading(remotePaneEl(), false);
     updateTransferUi();
     snapshotActiveRemote();
+    paintCompanionRemotes(hostId);
   } catch (err) {
     if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
     setPaneListingLoading(remotePaneEl(), false);
@@ -6414,36 +6495,71 @@ function renderTransfer(): void {
 function updateTransferUi(): void {
   const up = $("sftp-tx-up") as HTMLButtonElement | null;
   const down = $("sftp-tx-down") as HTMLButtonElement | null;
-  const canTx = canTransferBetween(sftpBrowser.paneA, sftpBrowser.paneB);
+  const lane = transferLane(sftpBrowser.paneA, sftpBrowser.paneB);
+  const canTx = lane != null;
   const localN = state.localSelected.size;
   const remoteN = state.sftpSelected.size;
-  if (up) up.disabled = !canTx || localN === 0;
-  if (down) down.disabled = !canTx || remoteN === 0;
+  const paneARemoteN = remoteSelectedCount(
+    sftpBrowser.paneA && !isLocalEndpoint(sftpBrowser.paneA) ? sftpBrowser.paneA : null,
+  );
+  const paneBRemoteN = remoteSelectedCount(
+    sftpBrowser.paneB && !isLocalEndpoint(sftpBrowser.paneB) ? sftpBrowser.paneB : null,
+  );
+
+  if (lane?.kind === "remote-remote") {
+    if (up) {
+      up.disabled = paneARemoteN === 0;
+      up.title = "Copy selection from left remote to right remote";
+    }
+    if (down) {
+      down.disabled = paneBRemoteN === 0;
+      down.title = "Copy selection from right remote to left remote";
+    }
+  } else {
+    if (up) {
+      up.disabled = !canTx || localN === 0;
+      up.title = "Upload selection";
+    }
+    if (down) {
+      down.disabled = !canTx || remoteN === 0;
+      down.title = "Download selection";
+    }
+  }
 
   const batch = document.querySelector<HTMLElement>('[data-testid="sftp-batch-bar"]');
-  const showBatch = shouldShowBatchBar({
-    localSelected: localN,
-    remoteSelected: remoteN,
-  });
+  const selectedTotal =
+    lane?.kind === "remote-remote" ? paneARemoteN + paneBRemoteN + localN : localN + remoteN;
+  const showBatch = selectedTotal > 0;
   if (batch) {
     batch.classList.toggle("hidden", !showBatch);
     const count = batch.querySelector<HTMLElement>('[data-testid="sftp-batch-count"]');
-    if (count) count.textContent = `${localN + remoteN} selected`;
+    if (count) count.textContent = `${selectedTotal} selected`;
     const upload = batch.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-upload"]');
     const download = batch.querySelector<HTMLButtonElement>('[data-testid="sftp-batch-download"]');
-    const canUpload = canTx && batchUploadEnabled(localN);
-    const canDownload = batchDownloadEnabled(remoteN);
-    if (upload) {
-      upload.disabled = !canUpload;
-      upload.title = canTx
-        ? "Upload selection to remote pane"
-        : "Open Split view to upload from This computer";
-    }
-    if (download) {
-      download.disabled = !canDownload;
-      download.title = canTx
-        ? "Download selection to local pane"
-        : "Download selection to your home folder";
+    if (lane?.kind === "remote-remote") {
+      if (upload) {
+        upload.disabled = paneARemoteN === 0;
+        upload.title = "Copy selection from left remote to right remote";
+      }
+      if (download) {
+        download.disabled = paneBRemoteN === 0;
+        download.title = "Copy selection from right remote to left remote";
+      }
+    } else {
+      const canUpload = canTx && batchUploadEnabled(localN);
+      const canDownload = batchDownloadEnabled(remoteN);
+      if (upload) {
+        upload.disabled = !canUpload;
+        upload.title = canTx
+          ? "Upload selection to remote pane"
+          : "Open Split view to upload from This computer";
+      }
+      if (download) {
+        download.disabled = !canDownload;
+        download.title = canTx
+          ? "Download selection to local pane"
+          : "Download selection to your home folder";
+      }
     }
   }
 }
@@ -6504,6 +6620,29 @@ function bindTransferArrowButtons(): void {
 }
 
 async function transferSelected(direction: "upload" | "download"): Promise<void> {
+  const lane = transferLane(sftpBrowser.paneA, sftpBrowser.paneB);
+
+  if (lane?.kind === "remote-remote") {
+    const sourceId = direction === "upload" ? lane.hostA : lane.hostB;
+    const destId = direction === "upload" ? lane.hostB : lane.hostA;
+    const selected = remoteSelectionFor(sourceId);
+    const items = remoteEntriesFor(sourceId).filter((e) => selected.has(e.path));
+    if (!items.length) return;
+    const files: FileRef[] = [];
+    await collectRemoteTree(sourceId, items, files, remoteRootFor(sourceId));
+    await transferFiles({
+      direction: "remote-copy",
+      hostId: sourceId,
+      destHostId: destId,
+      sourceRoot: remoteRootFor(sourceId),
+      destRoot: remoteRootFor(destId),
+      remoteTargetDir: remotePathFor(destId),
+      localTargetDir: "",
+      files,
+    });
+    return;
+  }
+
   const hostId = state.sftpHostId;
   if (!hostId) return;
   if (direction === "upload") {
@@ -6576,9 +6715,10 @@ async function collectRemoteTree(
   hostId: string,
   items: { path: string; name: string; is_dir: boolean }[],
   acc: FileRef[],
+  root: string = remoteRootFor(hostId),
 ): Promise<void> {
   for (const it of items) {
-    if (it.is_dir) await collectRemoteDir(hostId, it.path, it.name, acc);
+    if (it.is_dir) await collectRemoteDir(hostId, it.path, it.name, acc, root);
     else acc.push({ src: it.path, rel: it.name, name: it.name });
   }
 }
@@ -6588,22 +6728,26 @@ async function collectRemoteDir(
   remotePath: string,
   relDir: string,
   acc: FileRef[],
+  root: string = remoteRootFor(hostId),
 ): Promise<void> {
   const entries = await invoke<SftpEntry[]>("sftp_list", {
     hostId,
     path: remotePath,
-    root: state.sftpRoot,
+    root,
   });
   for (const e of entries) {
     const rel = relDir ? `${relDir}/${e.name}` : e.name;
-    if (e.is_dir) await collectRemoteDir(hostId, e.path, rel, acc);
+    if (e.is_dir) await collectRemoteDir(hostId, e.path, rel, acc, root);
     else acc.push({ src: e.path, rel, name: e.name });
   }
 }
 
 async function transferFiles(p: {
-  direction: "upload" | "download";
+  direction: "upload" | "download" | "remote-copy";
   hostId: string;
+  destHostId?: string;
+  sourceRoot?: string;
+  destRoot?: string;
   remoteTargetDir: string;
   localTargetDir: string;
   files: FileRef[];
@@ -6614,12 +6758,19 @@ async function transferFiles(p: {
     total: p.files.length,
     done: 0,
     failed: 0,
-    label: p.direction === "upload" ? "Uploading" : "Downloading",
+    label:
+      p.direction === "upload"
+        ? "Uploading"
+        : p.direction === "download"
+          ? "Downloading"
+          : "Copying",
     active: true,
     cancel: false,
   };
   setTransfer(job);
   const created = new Set<string>();
+  const sourceRoot = p.sourceRoot ?? remoteRootFor(p.hostId);
+  const destRoot = p.destRoot ?? (p.destHostId ? remoteRootFor(p.destHostId) : sourceRoot);
   for (const f of p.files) {
     if (job.cancel) break;
     const relDir = f.rel.includes("/") ? f.rel.slice(0, f.rel.lastIndexOf("/")) : "";
@@ -6630,10 +6781,16 @@ async function transferFiles(p: {
           await invoke("sftp_mkdir", {
             hostId: p.hostId,
             path: joinRemote(p.remoteTargetDir, relDir),
-            root: state.sftpRoot,
+            root: sourceRoot,
           }).catch(() => undefined);
-        } else {
+        } else if (p.direction === "download") {
           await invoke("local_mkdir", { path: joinLocalPath(p.localTargetDir, relToSep(relDir)) });
+        } else if (p.destHostId) {
+          await invoke("sftp_mkdir", {
+            hostId: p.destHostId,
+            path: joinRemote(p.remoteTargetDir, relDir),
+            root: destRoot,
+          }).catch(() => undefined);
         }
       }
       if (p.direction === "upload") {
@@ -6642,17 +6799,29 @@ async function transferFiles(p: {
           hostId: p.hostId,
           path: joinRemote(p.remoteTargetDir, f.rel),
           data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
-          root: state.sftpRoot,
+          root: sourceRoot,
         });
-      } else {
+      } else if (p.direction === "download") {
         const data = await invoke<number[] | Uint8Array>("sftp_read", {
           hostId: p.hostId,
           path: f.src,
-          root: state.sftpRoot,
+          root: sourceRoot,
         });
         await invoke("local_write", {
           path: joinLocalPath(p.localTargetDir, relToSep(f.rel)),
           data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
+        });
+      } else if (p.destHostId) {
+        const data = await invoke<number[] | Uint8Array>("sftp_read", {
+          hostId: p.hostId,
+          path: f.src,
+          root: sourceRoot,
+        });
+        await invoke("sftp_write", {
+          hostId: p.destHostId,
+          path: joinRemote(p.remoteTargetDir, f.rel),
+          data: Array.from(data instanceof Uint8Array ? data : Uint8Array.from(data)),
+          root: destRoot,
         });
       }
       job.done += 1;
@@ -6665,8 +6834,14 @@ async function transferFiles(p: {
   renderTransfer();
   state.localSelected.clear();
   state.sftpSelected.clear();
-  if (p.direction === "upload") await loadSftp(p.hostId, state.sftpPath);
-  else if (sftpBrowser.mode === "split" || document.querySelector('[data-testid="local-toolbar"]')) {
+  snapshotActiveRemote();
+  if (p.direction === "upload") {
+    await loadSftp(p.hostId, state.sftpPath);
+    paintCompanionRemotes(p.hostId);
+  } else if (p.direction === "remote-copy" && p.destHostId) {
+    await loadSftp(p.destHostId, p.remoteTargetDir);
+    paintCompanionRemotes(p.destHostId);
+  } else if (sftpBrowser.mode === "split" || document.querySelector('[data-testid="local-toolbar"]')) {
     await loadLocal();
   }
   refreshLocalSelection();
@@ -6685,17 +6860,28 @@ function relToSep(rel: string): string {
 }
 
 // ─── Drag & drop between panes ──────────────────────────────────────────────
-function setDragPayload(ev: DragEvent, side: "local" | "remote", items: DragItem[]): void {
+function setDragPayload(
+  ev: DragEvent,
+  side: "local" | "remote",
+  items: DragItem[],
+  hostId?: string,
+): void {
   if (!ev.dataTransfer) return;
-  ev.dataTransfer.setData(DRAG_MIME, JSON.stringify({ side, items }));
+  ev.dataTransfer.setData(DRAG_MIME, JSON.stringify({ side, items, hostId: hostId ?? null }));
   ev.dataTransfer.effectAllowed = "copy";
 }
 
-function readDragPayload(ev: DragEvent): { side: "local" | "remote"; items: DragItem[] } | null {
+function readDragPayload(
+  ev: DragEvent,
+): { side: "local" | "remote"; items: DragItem[]; hostId?: string | null } | null {
   const raw = ev.dataTransfer?.getData(DRAG_MIME);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as { side: "local" | "remote"; items: DragItem[] };
+    const parsed = JSON.parse(raw) as {
+      side: "local" | "remote";
+      items: DragItem[];
+      hostId?: string | null;
+    };
     if (parsed && Array.isArray(parsed.items)) return parsed;
   } catch {
     /* ignore */
@@ -6705,15 +6891,17 @@ function readDragPayload(ev: DragEvent): { side: "local" | "remote"; items: Drag
 
 function renderDndTargets(): void {
   const view = ensureSftpView();
-  const local = view.querySelector<HTMLElement>(`[data-endpoint="${SFTP_LOCAL_ID}"]`);
-  const remote = state.sftpHostId
-    ? view.querySelector<HTMLElement>(`[data-endpoint="${state.sftpHostId}"]`)
-    : view.querySelector<HTMLElement>('[data-testid="sftp-pane-a"]');
-  if (local) wireDrop(local, "local");
-  if (remote) wireDrop(remote, "remote");
+  for (const pane of view.querySelectorAll<HTMLElement>(".sftp-pane[data-endpoint]")) {
+    const ep = pane.dataset.endpoint;
+    if (!ep) continue;
+    if (isLocalEndpoint(ep)) wireDrop(pane, "local", ep);
+    else wireDrop(pane, "remote", ep);
+  }
 }
 
-function wireDrop(pane: HTMLElement, side: "local" | "remote"): void {
+function wireDrop(pane: HTMLElement, side: "local" | "remote", endpointId: string): void {
+  if (pane.dataset.boundDrop === "1") return;
+  pane.dataset.boundDrop = "1";
   pane.addEventListener("dragover", (ev) => {
     ev.preventDefault();
     if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
@@ -6724,34 +6912,61 @@ function wireDrop(pane: HTMLElement, side: "local" | "remote"): void {
     ev.preventDefault();
     pane.classList.remove("drop-target");
     const payload = readDragPayload(ev);
-    if (payload) void handleDrop(payload, side);
+    if (payload) void handleDrop(payload, side, endpointId);
   });
 }
 
 async function handleDrop(
-  payload: { side: "local" | "remote"; items: DragItem[] },
+  payload: { side: "local" | "remote"; items: DragItem[]; hostId?: string | null },
   targetSide: "local" | "remote",
+  targetEndpoint: string,
 ): Promise<void> {
-  const hostId = state.sftpHostId;
-  if (!hostId || !payload.items.length) return;
+  if (!payload.items.length) return;
+
   if (targetSide === "remote" && payload.side === "local") {
+    const hostId = isLocalEndpoint(targetEndpoint) ? state.sftpHostId : targetEndpoint;
+    if (!hostId) return;
     const files: FileRef[] = [];
     await collectLocalTree(payload.items, files);
     await transferFiles({
       direction: "upload",
       hostId,
-      remoteTargetDir: state.sftpPath,
+      remoteTargetDir: remotePathFor(hostId),
       localTargetDir: state.localCwd,
       files,
     });
-  } else if (targetSide === "local" && payload.side === "remote") {
+    return;
+  }
+
+  if (targetSide === "local" && payload.side === "remote") {
+    const hostId = payload.hostId || state.sftpHostId;
+    if (!hostId) return;
     const files: FileRef[] = [];
-    await collectRemoteTree(hostId, payload.items, files);
+    await collectRemoteTree(hostId, payload.items, files, remoteRootFor(hostId));
     await transferFiles({
       direction: "download",
       hostId,
-      remoteTargetDir: state.sftpPath,
+      remoteTargetDir: remotePathFor(hostId),
       localTargetDir: state.localCwd,
+      files,
+    });
+    return;
+  }
+
+  if (targetSide === "remote" && payload.side === "remote") {
+    const sourceId = payload.hostId || state.sftpHostId;
+    const destId = targetEndpoint;
+    if (!sourceId || !destId || isLocalEndpoint(destId) || sourceId === destId) return;
+    const files: FileRef[] = [];
+    await collectRemoteTree(sourceId, payload.items, files, remoteRootFor(sourceId));
+    await transferFiles({
+      direction: "remote-copy",
+      hostId: sourceId,
+      destHostId: destId,
+      sourceRoot: remoteRootFor(sourceId),
+      destRoot: remoteRootFor(destId),
+      remoteTargetDir: remotePathFor(destId),
+      localTargetDir: "",
       files,
     });
   }
