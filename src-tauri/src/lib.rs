@@ -423,6 +423,17 @@ async fn sftp_list(
     path: String,
     root: Option<String>,
 ) -> Result<Vec<SftpEntry>, String> {
+    let root = root.unwrap_or_else(|| {
+        if path.starts_with('/') {
+            "/".into()
+        } else {
+            ".".into()
+        }
+    });
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        return terminus_core::wsl_fs::list(distro, &root, &path).map_err(map_err);
+    }
     let host = state
         .store
         .get_host(&host_id)
@@ -433,13 +444,6 @@ async fn sftp_list(
         Some(id) => state.store.get_identity(id).await.map_err(map_err)?,
         None => None,
     };
-    let root = root.unwrap_or_else(|| {
-        if path.starts_with('/') {
-            "/".into()
-        } else {
-            ".".into()
-        }
-    });
     let entries = ssh::sftp_list(&host, identity.as_ref(), &root, &path)
         .await
         .map_err(map_err)?;
@@ -455,6 +459,13 @@ async fn sftp_read(
     path: String,
     root: Option<String>,
 ) -> Result<Vec<u8>, String> {
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        let root = root.unwrap_or_else(|| "/".into());
+        return terminus_core::wsl_fs::read(distro, &root, &path)
+            .await
+            .map_err(map_err);
+    }
     let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
     ssh::sftp_read(&host, identity.as_ref(), &root, &path)
         .await
@@ -469,6 +480,13 @@ async fn sftp_write(
     data: Vec<u8>,
     root: Option<String>,
 ) -> Result<(), String> {
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        let root = root.unwrap_or_else(|| "/".into());
+        return terminus_core::wsl_fs::write(distro, &root, &path, &data)
+            .await
+            .map_err(map_err);
+    }
     let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
     ssh::sftp_write(&host, identity.as_ref(), &root, &path, &data)
         .await
@@ -483,6 +501,11 @@ async fn sftp_rename(
     to: String,
     root: Option<String>,
 ) -> Result<(), String> {
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        let root = root.unwrap_or_else(|| "/".into());
+        return terminus_core::wsl_fs::rename(distro, &root, &from, &to).map_err(map_err);
+    }
     let (host, identity, root) = sftp_ctx(&state, &host_id, &from, root).await?;
     ssh::sftp_rename(&host, identity.as_ref(), &root, &from, &to)
         .await
@@ -496,6 +519,10 @@ async fn sftp_realpath(
     path: Option<String>,
 ) -> Result<String, String> {
     let query = path.unwrap_or_else(|| ".".into());
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        return terminus_core::wsl_fs::realpath(distro, &query).map_err(map_err);
+    }
     let (host, identity, _) = sftp_ctx(&state, &host_id, &query, Some(".".into())).await?;
     let resolved = ssh::sftp_realpath(&host, identity.as_ref(), &query)
         .await
@@ -512,6 +539,13 @@ async fn sftp_open(
     path: String,
     root: Option<String>,
 ) -> Result<String, String> {
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        let root = root.unwrap_or_else(|| "/".into());
+        let os = terminus_core::wsl_fs::open_os_path(distro, &root, &path).map_err(map_err)?;
+        open_path_with_default_app(&os)?;
+        return Ok(os.display().to_string());
+    }
     let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
     let bytes = ssh::sftp_read(&host, identity.as_ref(), &root, &path)
         .await
@@ -644,6 +678,11 @@ async fn sftp_remove(
     is_dir: bool,
     root: Option<String>,
 ) -> Result<(), String> {
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        let root = root.unwrap_or_else(|| "/".into());
+        return terminus_core::wsl_fs::remove(distro, &root, &path, is_dir).map_err(map_err);
+    }
     let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
     ssh::sftp_remove(&host, identity.as_ref(), &root, &path, is_dir)
         .await
@@ -657,6 +696,13 @@ async fn sftp_mkdir(
     path: String,
     root: Option<String>,
 ) -> Result<(), String> {
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        let root = root.unwrap_or_else(|| "/".into());
+        return terminus_core::wsl_fs::mkdir(distro, &root, &path)
+            .await
+            .map_err(map_err);
+    }
     let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
     ssh::sftp_mkdir(&host, identity.as_ref(), &root, &path)
         .await
@@ -670,6 +716,11 @@ async fn sftp_rmtree(
     path: String,
     root: Option<String>,
 ) -> Result<(), String> {
+    if terminus_core::wsl_fs::is_wsl_files_host(&host_id) {
+        let distro = terminus_core::wsl_fs::require_distro(&host_id).map_err(map_err)?;
+        let root = root.unwrap_or_else(|| "/".into());
+        return terminus_core::wsl_fs::rmtree(distro, &root, &path).map_err(map_err);
+    }
     let (host, identity, root) = sftp_ctx(&state, &host_id, &path, root).await?;
     ssh::sftp_rmtree(&host, identity.as_ref(), &root, &path)
         .await

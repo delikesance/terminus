@@ -11,6 +11,7 @@ pub mod store;
 pub mod sync;
 pub mod term;
 pub mod wsl;
+pub mod wsl_fs;
 
 pub use error::{Error, Result};
 pub use forward_runtime::ForwardRuntime;
