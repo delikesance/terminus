@@ -147,7 +147,7 @@ pub fn list_fetch_count() -> usize {
 }
 
 /// Pure cache helper — unit-tested without invoking `wsl.exe`.
-pub fn cache_get_or_fetch<F>(
+pub(crate) fn cache_get_or_fetch<F>(
     cache: &Mutex<Option<ListCache>>,
     force: bool,
     ttl: Duration,
