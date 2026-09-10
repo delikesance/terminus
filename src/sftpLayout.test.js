@@ -9,8 +9,10 @@ import {
   defaultSplitCompanion,
   enterSplit,
   exitSplit,
+  focusRemoteInLayout,
   isLocalEndpoint,
   openSingle,
+  placeAdditionalRemote,
   setPaneEndpoint,
   shouldShowTransferUi,
   transferDirection,
@@ -103,6 +105,83 @@ function runTests() {
         "AC5 exitSplit keeps paneA single",
         s.mode === "single" && s.paneA === "h1" && s.paneB === null,
         JSON.stringify(s),
+      ),
+    );
+  }
+
+  // #103 — opening a second remote must keep the first visible
+  {
+    const s = placeAdditionalRemote(openSingle(createSftpBrowserState(), "host-a"), "host-b");
+    checks.push(
+      check(
+        "AC103 single remote + open B → split A|B (A stays)",
+        s.mode === "split" && s.paneA === "host-a" && s.paneB === "host-b",
+        JSON.stringify(s),
+      ),
+    );
+  }
+
+  {
+    let s = enterSplit(openSingle(createSftpBrowserState(), "host-a"), ["host-a"]);
+    s = placeAdditionalRemote(s, "host-b");
+    checks.push(
+      check(
+        "AC103 split A|local + open B → A|B (local replaced, A stays)",
+        s.mode === "split" && s.paneA === "host-a" && s.paneB === "host-b",
+        JSON.stringify(s),
+      ),
+    );
+  }
+
+  {
+    let s = { mode: "split", paneA: SFTP_LOCAL_ID, paneB: "host-a" };
+    s = placeAdditionalRemote(s, "host-b");
+    checks.push(
+      check(
+        "AC103 split local|A + open B → B|A (local replaced)",
+        s.mode === "split" && s.paneA === "host-b" && s.paneB === "host-a",
+        JSON.stringify(s),
+      ),
+    );
+  }
+
+  {
+    const s0 = { mode: "split", paneA: "host-a", paneB: "host-b" };
+    const s = placeAdditionalRemote(s0, "host-b");
+    checks.push(
+      check(
+        "AC103 open already-visible B is a no-op",
+        s.paneA === "host-a" && s.paneB === "host-b",
+        JSON.stringify(s),
+      ),
+    );
+  }
+
+  {
+    const s0 = { mode: "split", paneA: "host-a", paneB: "host-b" };
+    const s = placeAdditionalRemote(s0, "host-c");
+    checks.push(
+      check(
+        "AC103 A|B + open C replaces B (A stays)",
+        s.paneA === "host-a" && s.paneB === "host-c",
+        JSON.stringify(s),
+      ),
+    );
+  }
+
+  {
+    const s0 = { mode: "split", paneA: "host-a", paneB: "host-b" };
+    const focused = focusRemoteInLayout(s0, "host-b");
+    const added = focusRemoteInLayout(openSingle(createSftpBrowserState(), "host-a"), "host-b");
+    checks.push(
+      check(
+        "AC103 focusRemoteInLayout keeps A|B; adds B beside A when missing",
+        focused.paneA === "host-a" &&
+          focused.paneB === "host-b" &&
+          added.mode === "split" &&
+          added.paneA === "host-a" &&
+          added.paneB === "host-b",
+        JSON.stringify({ focused, added }),
       ),
     );
   }

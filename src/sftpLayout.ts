@@ -73,6 +73,47 @@ export function setPaneEndpoint(
   return { ...state, paneB: endpoint };
 }
 
+/**
+ * Place a newly opened remote so an already-visible remote stays on screen (#103).
+ * - single remote A → split A|B
+ * - split remote|local → replace local with B
+ * - split local|remote → replace local with B
+ * - split A|B + open C → replace B (A stays)
+ * - already visible → no-op
+ */
+export function placeAdditionalRemote(
+  state: SftpBrowserState,
+  newRemote: SftpEndpointId,
+): SftpBrowserState {
+  if (!newRemote || isLocalEndpoint(newRemote)) return state;
+  if (state.paneA === newRemote || state.paneB === newRemote) return state;
+
+  if (state.mode === "single") {
+    if (!isLocalEndpoint(state.paneA)) {
+      return { mode: "split", paneA: state.paneA, paneB: newRemote };
+    }
+    return openSingle(state, newRemote);
+  }
+
+  if (isLocalEndpoint(state.paneA)) {
+    return setPaneEndpoint(state, "a", newRemote);
+  }
+  if (state.paneB != null && isLocalEndpoint(state.paneB)) {
+    return setPaneEndpoint(state, "b", newRemote);
+  }
+  return setPaneEndpoint(state, "b", newRemote);
+}
+
+/** Focus a remote without replacing another visible remote pane (#103). */
+export function focusRemoteInLayout(
+  state: SftpBrowserState,
+  hostId: SftpEndpointId,
+): SftpBrowserState {
+  if (!hostId || isLocalEndpoint(hostId)) return state;
+  if (state.paneA === hostId || state.paneB === hostId) return state;
+  return placeAdditionalRemote(state, hostId);
+}
+
 export function shouldShowTransferUi(state: SftpBrowserState): boolean {
   return state.mode === "split" && state.paneB != null;
 }
