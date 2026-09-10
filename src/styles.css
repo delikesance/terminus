@@ -124,7 +124,7 @@ svg {
   -webkit-app-region: drag;
   app-region: drag;
 }
-#titlebar button, #tabs, .title-actions, .lights, .tab-nav {
+#titlebar button, #tabs, .title-actions, .lights, .window-controls, .tab-nav {
   -webkit-app-region: no-drag;
   app-region: no-drag;
   cursor: default;
@@ -138,7 +138,7 @@ svg {
   app-region: drag;
 }
 
-.lights { display: flex; align-items: center; gap: 8px; padding-right: 4px; }
+.window-controls.lights { display: flex; align-items: center; gap: 8px; padding-right: 4px; }
 .light {
   width: 12px;
   height: 12px;
@@ -172,6 +172,60 @@ svg {
   font: 700 9px/12px var(--font-ui);
   color: rgba(0, 0, 0, 0.62);
   pointer-events: none;
+}
+
+/* Windows / Linux caption buttons — right side, symbolic (#99) */
+html[data-os-chrome="win"] #titlebar {
+  padding: 0 0 0 12px;
+}
+html[data-os-chrome="win"] #window-controls {
+  order: 100;
+  align-self: stretch;
+  gap: 0;
+  padding: 0;
+  margin: 0 0 0 4px;
+  height: 100%;
+}
+html[data-os-chrome="win"] #window-controls .light {
+  width: 46px;
+  height: 100%;
+  min-height: var(--bar);
+  border-radius: 0;
+  background: transparent;
+  opacity: 1;
+  filter: none;
+  color: var(--secondary);
+  font-size: 0;
+}
+html[data-os-chrome="win"] #win-min { order: 1; }
+html[data-os-chrome="win"] #win-max { order: 2; }
+html[data-os-chrome="win"] #win-close { order: 3; }
+html[data-os-chrome="win"] #window-controls .light::after {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 400 12px/1 var(--font-ui);
+  color: inherit;
+  pointer-events: none;
+  transform: none;
+}
+html[data-os-chrome="win"] #win-min::after { content: "─"; font-size: 11px; }
+html[data-os-chrome="win"] #win-max::after { content: "◻"; font-size: 12px; }
+html[data-os-chrome="win"] #win-close::after { content: "×"; font-size: 16px; font-weight: 400; }
+html[data-os-chrome="win"] #window-controls .light:hover {
+  background: var(--hover-strong);
+  color: var(--text);
+  filter: none;
+}
+html[data-os-chrome="win"] #win-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+html[data-os-chrome="win"] #win-close:hover::after { color: #fff; }
+
+html[data-os-chrome="mac"] #window-controls {
+  order: 0;
 }
 
 .tb-btn {
