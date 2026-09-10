@@ -10,7 +10,11 @@ Open-source [Termius](https://termius.com) alternative: a fast, highly customiza
 ![Terminus preview](./docs/media/hero-preview.png)
 
 <p align="center">
-  <img src="./docs/media/app-main.png" alt="Terminus main window — hosts sidebar and terminal" width="860" />
+  <img src="./docs/media/app-main.png" alt="Terminus — SSH session with hosts sidebar and terminal" width="860" />
+</p>
+
+<p align="center">
+  <img src="./docs/media/app-hosts.png" alt="Terminus — dual-pane SFTP between two remotes" width="860" />
 </p>
 
 Stack: **Rust**, **Tauri 2**, **xterm.js (WebGL)**, **SQLite** locally, **PostgreSQL** (or any sqlx URL) for cloud sync.

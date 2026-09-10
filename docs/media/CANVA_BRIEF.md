@@ -47,8 +47,8 @@ French alternate:
 
 | File | Role |
 |------|------|
-| `docs/media/app-main.png` | Primary product screenshot |
-| `docs/media/app-hosts.png` | Optional crop / second slide |
+| `docs/media/app-main.png` | SSH session (hosts + terminal) |
+| `docs/media/app-hosts.png` | Dual-pane SFTP |
 | `docs/media/hero-preview.png` | Ready-made 16:9 hero (use as-is or as reference) |
 | `src-tauri/icons/128x128.png` | App icon |
 
