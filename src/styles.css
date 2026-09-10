@@ -1451,7 +1451,7 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   left: 0;
   top: 0;
   z-index: 1;
-  background: rgba(120, 170, 255, 0.30);
+  background: var(--term-selection, rgba(120, 170, 255, 0.30));
   pointer-events: none;
 }
 .pane-banner {

@@ -299,9 +299,10 @@ impl TerminalEmulator {
                 if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                     continue;
                 }
-                let bold = cell.flags.intersects(Flags::BOLD | Flags::DIM_BOLD);
-                let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold);
-                let mut bg = self.resolve_cell_color(cell.bg, colors, self.bg, false);
+                let bold = cell.flags.contains(Flags::BOLD) && !cell.flags.contains(Flags::DIM);
+                let dim = cell.flags.contains(Flags::DIM);
+                let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold, dim);
+                let mut bg = self.resolve_cell_color(cell.bg, colors, self.bg, false, false);
                 if cell.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -499,9 +500,10 @@ impl TerminalEmulator {
                 if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                     continue;
                 }
-                let bold = cell.flags.intersects(Flags::BOLD | Flags::DIM_BOLD);
-                let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold);
-                let mut bg = self.resolve_cell_color(cell.bg, colors, self.bg, false);
+                let bold = cell.flags.contains(Flags::BOLD) && !cell.flags.contains(Flags::DIM);
+                let dim = cell.flags.contains(Flags::DIM);
+                let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold, dim);
+                let mut bg = self.resolve_cell_color(cell.bg, colors, self.bg, false, false);
                 if cell.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -627,29 +629,33 @@ impl TerminalEmulator {
         dynamic: &alacritty_terminal::term::color::Colors,
         fallback: [u8; 4],
         bold: bool,
+        dim: bool,
     ) -> [u8; 4] {
-        match color {
+        let mut rgba = match color {
             Color::Named(mut named) => {
                 if bold {
                     named = named.to_bright();
+                } else if dim {
+                    named = named.to_dim();
                 }
                 if let Some(rgb) = dynamic[named] {
-                    return [rgb.r, rgb.g, rgb.b, 255];
-                }
-                match named {
-                    NamedColor::Foreground | NamedColor::BrightForeground => self.fg,
-                    NamedColor::Background => self.bg,
-                    NamedColor::Cursor => self.cursor,
-                    NamedColor::DimForeground => dim_rgba(self.fg),
-                    other if (other as usize) < 16 => self.palette[other as usize],
-                    other if (NamedColor::DimBlack as usize
-                        ..=NamedColor::DimWhite as usize)
-                        .contains(&(other as usize)) =>
-                    {
-                        let base = other as usize - NamedColor::DimBlack as usize;
-                        dim_rgba(self.palette[base])
+                    [rgb.r, rgb.g, rgb.b, 255]
+                } else {
+                    match named {
+                        NamedColor::Foreground | NamedColor::BrightForeground => self.fg,
+                        NamedColor::Background => self.bg,
+                        NamedColor::Cursor => self.cursor,
+                        NamedColor::DimForeground => dim_rgba(self.fg),
+                        other if (other as usize) < 16 => self.palette[other as usize],
+                        other if (NamedColor::DimBlack as usize
+                            ..=NamedColor::DimWhite as usize)
+                            .contains(&(other as usize)) =>
+                        {
+                            let base = other as usize - NamedColor::DimBlack as usize;
+                            dim_rgba(self.palette[base])
+                        }
+                        _ => fallback,
                     }
-                    _ => fallback,
                 }
             }
             Color::Spec(rgb) => [rgb.r, rgb.g, rgb.b, 255],
@@ -661,7 +667,13 @@ impl TerminalEmulator {
                     self.palette[idx as usize]
                 }
             }
+        };
+        // Named + dim (without bold) already mapped via to_dim. Everything else dims in RGB.
+        let named_already_dimmed = matches!(color, Color::Named(_)) && dim && !bold;
+        if dim && !named_already_dimmed {
+            rgba = dim_rgba(rgba);
         }
+        rgba
     }
 
     fn blit_glyph(
@@ -1387,6 +1399,99 @@ mod tests {
             "steady frame should drop stamp bytes ({} vs {})",
             packed2.len(),
             packed.len()
+        );
+    }
+
+    fn cell_ink_avg(
+        frame: &TermFrame,
+        cell_w: u32,
+        cell_h: u32,
+        col: u32,
+        row: u32,
+        bg: [u8; 4],
+    ) -> [u32; 3] {
+        let x0 = col * cell_w;
+        let y0 = row * cell_h;
+        let mut sum = [0u32; 3];
+        let mut n = 0u32;
+        for y in 0..cell_h {
+            for x in 0..cell_w {
+                let i = (((y0 + y) * frame.width + x0 + x) * 4) as usize;
+                let px = &frame.rgba[i..i + 4];
+                if px == bg {
+                    continue;
+                }
+                // Skip near-bg anti-alias fringe so attribute color dominates.
+                let dr = px[0].abs_diff(bg[0]) as u32;
+                let dg = px[1].abs_diff(bg[1]) as u32;
+                let db = px[2].abs_diff(bg[2]) as u32;
+                if dr + dg + db < 40 {
+                    continue;
+                }
+                sum[0] += px[0] as u32;
+                sum[1] += px[1] as u32;
+                sum[2] += px[2] as u32;
+                n += 1;
+            }
+        }
+        assert!(n > 5, "expected painted ink in cell, got {n} px");
+        [sum[0] / n, sum[1] / n, sum[2] / n]
+    }
+
+    fn raster_with(sgr: &str) -> ([u32; 3], [u8; 4]) {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        let bg = term.bg;
+        // Hide cursor so it does not tint the sample cell.
+        let mut seq = String::from("\x1b[?25l");
+        seq.push_str(sgr);
+        seq.push('#');
+        term.feed(seq.as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        (cell_ink_avg(&frame, cell_w, cell_h, 0, 0, bg), bg)
+    }
+
+    fn luma(rgb: [u32; 3]) -> u32 {
+        rgb[0] * 30 + rgb[1] * 59 + rgb[2] * 11
+    }
+
+    #[test]
+    fn ac1_dim_ansi_red_is_darker_than_normal() {
+        let (normal, _) = raster_with("\x1b[31m");
+        let (dimmed, _) = raster_with("\x1b[2;31m");
+        assert!(
+            luma(dimmed) + 200 < luma(normal),
+            "DIM must darken ANSI red, not brighten it (dim={dimmed:?} normal={normal:?})"
+        );
+    }
+
+    #[test]
+    fn ac2_bold_ansi_red_is_brighter_than_normal() {
+        let (normal, _) = raster_with("\x1b[31m");
+        let (bold, _) = raster_with("\x1b[1;31m");
+        assert!(
+            luma(bold) > luma(normal) + 80,
+            "BOLD must brighten ANSI red (bold={bold:?} normal={normal:?})"
+        );
+    }
+
+    #[test]
+    fn dim_plus_bold_ansi_red_is_darker_than_bold_alone() {
+        let (bold, _) = raster_with("\x1b[1;31m");
+        let (both, _) = raster_with("\x1b[1;2;31m");
+        assert!(
+            luma(both) + 200 < luma(bold),
+            "DIM+BOLD should not look like pure bright (both={both:?} bold={bold:?})"
+        );
+    }
+
+    #[test]
+    fn dim_truecolor_spec_is_darker_than_undimmed() {
+        let (normal, _) = raster_with("\x1b[38;2;200;80;40m");
+        let (dimmed, _) = raster_with("\x1b[2;38;2;200;80;40m");
+        assert!(
+            luma(dimmed) + 400 < luma(normal),
+            "DIM must darken Color::Spec (dim={dimmed:?} normal={normal:?})"
         );
     }
 }
