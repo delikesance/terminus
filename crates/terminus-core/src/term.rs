@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::gpu_frame::{self, AtlasGlyph, GpuCell, GpuFrame};
 use crate::models::ColorTheme;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 const FONT_TTF: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
 const NERD_TTF: &[u8] = include_bytes!("../fonts/SymbolsNerdFontMono-Regular.ttf");
 const SCROLLBACK: usize = 2000;
+const ATLAS_SIZE: u32 = 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GlyphFit {
@@ -56,6 +58,17 @@ pub struct TerminalEmulator {
     rows: u16,
     fonts: Vec<Font>,
     glyphs: HashMap<char, (Glyph, Vec<u8>)>,
+    atlas_r8: Vec<u8>,
+    atlas_w: u32,
+    atlas_h: u32,
+    atlas_shelf_x: u32,
+    atlas_shelf_y: u32,
+    atlas_shelf_h: u32,
+    atlas_dirty: bool,
+    atlas_next_id: u16,
+    atlas_glyphs: HashMap<char, AtlasGlyph>,
+    atlas_bits: HashMap<u16, Vec<u8>>,
+    atlas_pending: std::collections::HashSet<u16>,
     font_px: f32,
     style_px: f32,
     line_height: f32,
@@ -114,6 +127,17 @@ impl TerminalEmulator {
             rows,
             fonts,
             glyphs: HashMap::new(),
+            atlas_r8: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            atlas_w: ATLAS_SIZE,
+            atlas_h: ATLAS_SIZE,
+            atlas_shelf_x: 0,
+            atlas_shelf_y: 0,
+            atlas_shelf_h: 0,
+            atlas_dirty: true,
+            atlas_next_id: 1,
+            atlas_glyphs: HashMap::new(),
+            atlas_bits: HashMap::new(),
+            atlas_pending: std::collections::HashSet::new(),
             font_px: px,
             style_px: font_px,
             line_height,
@@ -154,7 +178,20 @@ impl TerminalEmulator {
         self.cell_h = cell_h;
         self.baseline = baseline;
         self.glyphs.clear();
+        self.reset_atlas();
         self.dirty = true;
+    }
+
+    fn reset_atlas(&mut self) {
+        self.atlas_r8.fill(0);
+        self.atlas_shelf_x = 0;
+        self.atlas_shelf_y = 0;
+        self.atlas_shelf_h = 0;
+        self.atlas_next_id = 1;
+        self.atlas_glyphs.clear();
+        self.atlas_bits.clear();
+        self.atlas_pending.clear();
+        self.atlas_dirty = true;
     }
 
     pub fn apply_theme(&mut self, theme: &ColorTheme) {
@@ -218,6 +255,189 @@ impl TerminalEmulator {
         }
         self.dirty = false;
         Some(self.raster())
+    }
+
+    /// Compact atlas + cell grid for GPU paint (WebGL / future native surface).
+    pub fn capture_gpu_frame(&mut self, force: bool) -> Option<GpuFrame> {
+        if !force && !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        Some(self.gpu_raster())
+    }
+
+    pub fn gpu_raster(&mut self) -> GpuFrame {
+        let rows = self.term.screen_lines() as u32;
+        let cols = self.term.columns() as u32;
+        let mut cells = vec![
+            GpuCell {
+                glyph_id: 0,
+                fg: self.fg,
+                bg: self.bg,
+            };
+            (rows * cols) as usize
+        ];
+
+        let snapshots = {
+            let content = self.term.renderable_content();
+            let display_offset = content.display_offset;
+            let cursor = content.cursor;
+            let show_cursor = cursor.shape != CursorShape::Hidden;
+            let cursor_vp = point_to_viewport(display_offset, cursor.point);
+            let colors = content.colors;
+            let mut snaps = Vec::with_capacity((rows * cols) as usize);
+            for indexed in content.display_iter {
+                let Some(vp) = point_to_viewport(display_offset, indexed.point) else {
+                    continue;
+                };
+                let row = vp.line as u32;
+                let col = vp.column.0 as u32;
+                if row >= rows || col >= cols {
+                    continue;
+                }
+                let cell = &indexed.cell;
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let bold = cell.flags.intersects(Flags::BOLD | Flags::DIM_BOLD);
+                let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold);
+                let mut bg = self.resolve_cell_color(cell.bg, colors, self.bg, false);
+                if cell.flags.contains(Flags::INVERSE) {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                let ch = if cell.flags.contains(Flags::HIDDEN) || cell.c == '\0' {
+                    ' '
+                } else {
+                    cell.c
+                };
+                if show_cursor {
+                    if let Some(cv) = cursor_vp {
+                        if cv.line == vp.line && cv.column == vp.column {
+                            bg = self.cursor;
+                            fg = self.bg;
+                        }
+                    }
+                }
+                snaps.push((col, row, ch, fg, bg));
+            }
+            snaps
+        };
+
+        for (col, row, ch, fg, bg) in snapshots {
+            let glyph_id = self.ensure_atlas_glyph(ch);
+            cells[(row * cols + col) as usize] = GpuCell { glyph_id, fg, bg };
+        }
+
+        let glyphs: Vec<AtlasGlyph> = self
+            .atlas_glyphs
+            .values()
+            .map(|g| {
+                let mut out = g.clone();
+                if self.atlas_pending.remove(&g.id) {
+                    out.bits = self.atlas_bits.get(&g.id).cloned();
+                } else {
+                    out.bits = None;
+                }
+                out
+            })
+            .collect();
+        self.atlas_dirty = false;
+        GpuFrame {
+            cols: cols as u16,
+            rows: rows as u16,
+            cell_w: self.cell_w,
+            cell_h: self.cell_h,
+            atlas_w: self.atlas_w,
+            atlas_h: self.atlas_h,
+            glyphs,
+            cells,
+        }
+    }
+
+    fn ensure_atlas_glyph(&mut self, ch: char) -> u16 {
+        if ch == ' ' || ch == '\0' {
+            return 0;
+        }
+        if let Some(g) = self.atlas_glyphs.get(&ch) {
+            return g.id;
+        }
+        let (meta, cover) = self.glyph(ch);
+        let (bits, w, h, ox, oy) = if meta.fit == GlyphFit::Cell {
+            let scaled = scale_cover(&cover, meta.w, meta.h, self.cell_w, self.cell_h);
+            let snapped = snap_cell_edges(&scaled, self.cell_w, self.cell_h, cell_attach(ch));
+            (snapped, self.cell_w, self.cell_h, 0i32, 0i32)
+        } else {
+            let mut dw = meta.w;
+            let mut dh = meta.h;
+            let mut xmin = meta.xmin;
+            let mut ymin = meta.ymin;
+            let bits = if dw > self.cell_w && dw > 0 {
+                let s = self.cell_w as f32 / dw as f32;
+                dw = self.cell_w;
+                dh = (dh as f32 * s).round().max(1.0) as u32;
+                xmin = (xmin as f32 * s).round() as i32;
+                ymin = (ymin as f32 * s).round() as i32;
+                scale_cover(&cover, meta.w, meta.h, dw, dh)
+            } else {
+                cover
+            };
+            let dest_y_base = self.baseline - ymin - dh as i32;
+            let oy = if meta.fit == GlyphFit::Icon {
+                let mid = (self.cell_h as i32 - dh as i32) / 2;
+                (dest_y_base + mid) / 2
+            } else {
+                dest_y_base
+            };
+            let ox = xmin.max(0);
+            (bits, dw, dh, ox, oy)
+        };
+        let Some((x, y)) = self.atlas_alloc(w, h) else {
+            // Atlas full — fall back to empty glyph rather than panic.
+            return 0;
+        };
+        for dy in 0..h {
+            for dx in 0..w {
+                let cover_v = bits[(dy * w + dx) as usize];
+                let i = ((y + dy) * self.atlas_w + (x + dx)) as usize;
+                self.atlas_r8[i] = cover_v;
+            }
+        }
+        let id = self.atlas_next_id;
+        self.atlas_next_id = self.atlas_next_id.saturating_add(1);
+        let entry = AtlasGlyph {
+            id,
+            x: x as u16,
+            y: y as u16,
+            w: w as u16,
+            h: h as u16,
+            ox: ox as i16,
+            oy: oy as i16,
+            bits: None,
+        };
+        self.atlas_glyphs.insert(ch, entry);
+        self.atlas_bits.insert(id, bits);
+        self.atlas_pending.insert(id);
+        self.atlas_dirty = true;
+        id
+    }
+
+    fn atlas_alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        if w == 0 || h == 0 || w > self.atlas_w || h > self.atlas_h {
+            return None;
+        }
+        if self.atlas_shelf_x + w > self.atlas_w {
+            self.atlas_shelf_y += self.atlas_shelf_h;
+            self.atlas_shelf_x = 0;
+            self.atlas_shelf_h = 0;
+        }
+        if self.atlas_shelf_y + h > self.atlas_h {
+            return None;
+        }
+        let x = self.atlas_shelf_x;
+        let y = self.atlas_shelf_y;
+        self.atlas_shelf_x += w + 1;
+        self.atlas_shelf_h = self.atlas_shelf_h.max(h);
+        Some((x, y))
     }
 
     /// Extract visible screen text for a rectangle [r0..r1] × [c0..c1] (inclusive,
@@ -1137,5 +1357,36 @@ mod tests {
         assert!(replies.is_empty(), "printable text must not invent PtyWrite bytes");
         let frame = term.capture_frame(true).expect("text should raster");
         assert!(!frame.rgba.is_empty());
+    }
+
+    #[test]
+    fn gpu_frame_hot_path_is_compact_and_magic() {
+        let mut term = TerminalEmulator::new(80, 24, 14.0).unwrap();
+        term.feed(b"hello GPU atlas");
+        let gpu = term.capture_gpu_frame(true).expect("gpu frame");
+        let packed = crate::gpu_frame::pack_gpu_frame(&gpu);
+        assert!(crate::gpu_frame::is_gpu_frame(&packed));
+        let (cw, ch) = term.cell_size();
+        let rgba_size = (80 * cw * 24 * ch * 4) as usize;
+        assert!(
+            packed.len() < rgba_size / 8,
+            "gpu pack {} should beat rgba {}",
+            packed.len(),
+            rgba_size
+        );
+        // Second frame without new glyphs should omit glyph bitmaps.
+        term.feed(b"hello GPU atlas");
+        let gpu2 = term.capture_gpu_frame(true).expect("second gpu frame");
+        assert!(
+            gpu2.glyphs.iter().all(|g| g.bits.is_none()),
+            "repeated glyphs must not resend atlas stamps"
+        );
+        let packed2 = crate::gpu_frame::pack_gpu_frame(&gpu2);
+        assert!(
+            packed2.len() < packed.len(),
+            "steady frame should drop stamp bytes ({} vs {})",
+            packed2.len(),
+            packed.len()
+        );
     }
 }
