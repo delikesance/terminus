@@ -9,6 +9,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import {
+  readText as tauriClipboardReadText,
+  writeText as tauriClipboardWriteText,
+} from "@tauri-apps/plugin-clipboard-manager";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
@@ -2786,7 +2790,8 @@ function handleTerminalCut(ev: KeyboardEvent, pane: Pane): boolean {
 }
 
 function handleTerminalPaste(ev: KeyboardEvent, pane: Pane): boolean {
-  if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "v" || ev.shiftKey) return false;
+  // Ctrl+V and Ctrl+Shift+V (Linux terminal convention) both paste.
+  if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "v") return false;
   ev.preventDefault();
   void pasteIntoPane(pane);
   return true;
@@ -2850,6 +2855,14 @@ async function pasteIntoPane(pane: Pane): Promise<void> {
 }
 
 async function writeClipboard(text: string): Promise<void> {
+  // Prefer the native Tauri clipboard plugin — navigator.clipboard often fails
+  // under WebKitGTK on Linux (Fedora etc.) without a usable paste prompt.
+  try {
+    await tauriClipboardWriteText(text);
+    return;
+  } catch {
+    /* vite preview / missing capability */
+  }
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
@@ -2869,6 +2882,12 @@ async function writeClipboard(text: string): Promise<void> {
 }
 
 async function readClipboard(): Promise<string> {
+  try {
+    const text = await tauriClipboardReadText();
+    if (text) return text;
+  } catch {
+    /* vite preview / e2e without native plugin */
+  }
   if (navigator.clipboard?.readText) {
     try {
       return await navigator.clipboard.readText();
