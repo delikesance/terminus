@@ -493,6 +493,10 @@ pub async fn open_shell(
     channel
         .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
+    for (key, value) in interactive_shell_env() {
+        // Many servers ignore env requests; failure must not block the shell.
+        let _ = channel.set_env(false, *key, *value).await;
+    }
     channel.request_shell(true).await?;
     let (tx, mut rx) = mpsc::unbounded_channel::<SshCommand>();
     tokio::spawn(async move {
@@ -531,6 +535,11 @@ pub async fn open_shell(
         }
     });
     Ok(tx)
+}
+
+/// Environment variables requested for interactive SSH shells (`AcceptEnv` on the server).
+pub fn interactive_shell_env() -> &'static [(&'static str, &'static str)] {
+    &[("COLORTERM", "truecolor")]
 }
 
 pub async fn exec_command(
@@ -930,3 +939,16 @@ pub async fn start_local_forward(
 
 #[allow(dead_code)]
 fn _channel_type(_: &Channel<client::Msg>) {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ac3_interactive_shell_env_includes_colorterm_truecolor() {
+        let envs = super::interactive_shell_env();
+        assert!(
+            envs.iter()
+                .any(|(k, v)| *k == "COLORTERM" && *v == "truecolor"),
+            "SSH interactive shells must request COLORTERM=truecolor, got {envs:?}"
+        );
+    }
+}
