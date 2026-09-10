@@ -4236,7 +4236,7 @@ async function openSettings() {
           )
           .join("")}</div>
       </div>
-      <div class="cell"><span>Renderer<small class="hint">Rust VT + CPU glyph raster, blit to canvas</small></span><span class="meta">native</span></div>
+      <div class="cell"><span>Renderer<small class="hint">Alacritty VT + CPU glyph raster, blit to canvas</small></span><span class="meta">native</span></div>
       <label class="cell"><span>Font</span><input id="a-font" value="${escapeHtml(appearance.font_family)}" /></label>
       <label class="cell"><span>Size</span><input id="a-size" type="number" value="${appearance.font_size}" /></label>
       <label class="cell"><span>Line height</span><input id="a-lh" type="number" step="0.05" value="${appearance.line_height}" /></label>
