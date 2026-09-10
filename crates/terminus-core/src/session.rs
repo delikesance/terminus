@@ -513,6 +513,8 @@ impl SessionManager {
         };
         let packed = {
             let mut emu = session.emulator.lock();
+            // Full RGBA frames: GPU1 atlas path left panes blank when glyph
+            // stamps were missing/incremental (Canvas2D composite stayed empty).
             let (cw, ch) = emu.cell_size();
             emu.capture_frame(force)
                 .map(|frame| pack_frame(&frame, cw, ch))
@@ -633,8 +635,33 @@ impl SessionManager {
                     }
                 }
                 if !buf.is_empty() {
-                    if let Some(session) = sessions.sessions.get(&id) {
-                        session.emulator.lock().feed(&buf);
+                    let replies = if let Some(session) = sessions.sessions.get(&id) {
+                        session.emulator.lock().feed(&buf)
+                    } else {
+                        Vec::new()
+                    };
+                    if !replies.is_empty() {
+                        if let Some(session) = sessions.sessions.get(&id) {
+                            match &session.backend {
+                                Backend::Local(pty) => {
+                                    if let Err(err) = pty.write(&replies) {
+                                        tracing::warn!(
+                                            session_id = %id,
+                                            error = %err,
+                                            "pty write of emulator reply failed"
+                                        );
+                                    }
+                                }
+                                Backend::Ssh(tx) => {
+                                    if tx.send(SshCommand::Data(replies)).is_err() {
+                                        tracing::warn!(
+                                            session_id = %id,
+                                            "ssh write of emulator reply failed"
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                     sink.emit_output(&id, &buf).await;
                 }

@@ -77,6 +77,7 @@ export function applyChrome(theme: Theme) {
   set("--yellow", theme.yellow);
   set("--magenta", theme.magenta);
   set("--cyan", theme.cyan);
+  set("--term-selection", theme.selection_background);
   set("--on-accent", luma(theme.blue || theme.cursor) < 0.62 ? "#ffffff" : theme.foreground);
   set("--elevated", mix(theme.background, theme.foreground, dark ? 0.09 : 0.1));
   set("--grouped", mix(theme.background, theme.foreground, dark ? 0.05 : 0.06));

@@ -1,11 +1,20 @@
 ---
-description: Global TDD workflow orchestrator — Ticket(+branch) → Architect → Red → Green → close issue + merge main
+description: Global TDD workflow — Ticket → Architect → Red → Green → merge into development (not main)
 alwaysApply: true
 ---
 
 # Engineering Orchestrator
 
 You are the **global workflow orchestrator**. Before writing any production code, classify the request and route work through the mandated pipeline.
+
+## Integration branch (dev-only period)
+
+| Branch | Role |
+|--------|------|
+| **`development`** | **Default integration branch.** All feature work lands here. |
+| **`main`** | Stable / release line. **Do not merge into `main`** unless the user explicitly asks. The user opens `development` → `main` MRs when ready. |
+
+Feature branches are created from up-to-date **`development`**. Delivery PRs target **`development`**, not `main`.
 
 ## Step 0 — Classify request size
 
@@ -20,11 +29,11 @@ If unsure, treat as **complex**.
 
 Advance strictly through these roles, one at a time:
 
-1. **Ticket Agent** (`.cursor/rules/ticket-agent.mdc`) — draft + user validation → **GitHub issue + feature branch**.
+1. **Ticket Agent** (`.cursor/rules/ticket-agent.mdc`) — draft + user validation → **GitHub issue + feature branch** (from `development`).
 2. **Architect Agent** (`.cursor/rules/architect-agent.mdc`) — impact, design, atomic plan (on that branch).
 3. **QA/TDD Agent** (`.cursor/rules/tdd-agent.mdc`) — failing tests only (*Red*).
 4. **Implementation Agent** (`.cursor/rules/implementation-agent.mdc`) — minimal production code (*Green*).
-5. **Delivery** (Implementation Agent closes the loop) — commit → PR → **merge into `main`** → **close the GitHub issue**.
+5. **Delivery** (Implementation Agent closes the loop) — commit → PR → **merge into `development`** → **close the GitHub issue**.
 
 Announce the active role at each stage (e.g. `🎭 Role: Ticket Agent`).
 
@@ -32,11 +41,11 @@ Announce the active role at each stage (e.g. `🎭 Role: Ticket Agent`).
 
 | From → To | Unlock condition |
 |-----------|------------------|
-| Ticket → Architect | Draft validated + **`gh issue create`** + **feature branch checked out** from up-to-date `main`; issue URL + branch name shared. |
+| Ticket → Architect | Draft validated + **`gh issue create`** + **feature branch checked out** from up-to-date `development`; issue URL + branch name shared. |
 | Architect → QA/TDD | Architecture plan + interfaces documented. User confirms the plan (or `/goal` autonomy). |
 | QA/TDD → Implementation | Tests written, suite executed, **failures confirmed** (Red). |
 | Implementation → Delivery | Suite executed, **all new/relevant tests green**. Optional refactor only after green. |
-| Delivery → Done | Changes committed on the feature branch, PR opened and **merged into `main`**, GitHub issue **closed** with a short delivery comment. |
+| Delivery → Done | Changes committed on the feature branch, PR opened and **merged into `development`**, GitHub issue **closed** with a short delivery comment. |
 
 **Never** jump ahead. **Never** write production code during Ticket, Architect, or Red phases. **Never** weaken or rewrite tests during Implementation to force green.
 
@@ -45,23 +54,24 @@ Announce the active role at each stage (e.g. `🎭 Role: Ticket Agent`).
 Unless the user explicitly says not to merge / not to close:
 
 1. Commit on the feature branch (follow the repo commit protocol; no `--no-verify`).
-2. Push and open a PR targeting `main` (`gh pr create`), linking `Closes #N`.
-3. Merge the PR into `main` (`gh pr merge`, prefer squash if the repo defaults to it; otherwise merge).
+2. Push and open a PR targeting **`development`** (`gh pr create --base development`), linking `Closes #N`.
+3. Merge the PR into **`development`** (`gh pr merge`, prefer squash if the repo defaults to it; otherwise merge).
 4. Close the issue if still open (`gh issue close N`) with a comment summarizing proof (tests / PR URL).
 5. Report the merged PR URL and closed issue URL in chat.
 
-Do **not** force-push `main`. Do **not** leave the flow “green locally” without merge+close when Delivery is required.
+**Do not** merge into `main`. **Do not** force-push `main` or `development`. Do **not** leave the flow “green locally” without merge into `development` + issue close when Delivery is required.
 
 ## Output discipline
 
 - Keep each phase's deliverable explicit and reviewable before moving on.
 - Prefer asking for confirmation at gates over assuming approval (except when the user launched `/goal` with autonomy).
-- Trivial work: say briefly that the pipeline is skipped and why, then ship the fix.
+- Trivial work: say briefly that the pipeline is skipped and why, then ship the fix (on `development` / a feature branch — never land complex work on `main`).
 ---
 
 ## Anti-patterns (reject)
 
 - Coding the feature first, then adding tests.
 - Mixing test and production edits in the same Red/Green step.
-- Declaring "done" without green tests **and** without merge+issue close on complex work.
-- Working complex features directly on `main` instead of the Ticket-created branch.
+- Declaring "done" without green tests **and** without merge into `development` + issue close on complex work.
+- Working complex features directly on `main` or `development` instead of the Ticket-created feature branch.
+- Opening or merging a PR into `main` during the dev-only period (unless the user explicitly requests a `development` → `main` release MR).

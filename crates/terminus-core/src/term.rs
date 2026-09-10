@@ -1,11 +1,22 @@
 use crate::error::{Error, Result};
+use crate::gpu_frame::{AtlasGlyph, GpuCell, GpuFrame};
 use crate::models::ColorTheme;
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Point};
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::test::TermSize;
+use alacritty_terminal::term::{point_to_viewport, viewport_to_point, Config, Term};
+use alacritty_terminal::vte::ansi::{self, Color, CursorShape, NamedColor};
 use fontdue::{Font, FontSettings};
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use vt100::Color;
+use std::sync::Arc;
 
 const FONT_TTF: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
 const NERD_TTF: &[u8] = include_bytes!("../fonts/SymbolsNerdFontMono-Regular.ttf");
+const SCROLLBACK: usize = 2000;
+const ATLAS_SIZE: u32 = 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GlyphFit {
@@ -23,10 +34,41 @@ struct Glyph {
     fit: GlyphFit,
 }
 
+/// Collects emulator→PTY replies during CSI/OSC handling.
+struct EventCollector {
+    events: Arc<Mutex<Vec<Event>>>,
+}
+
+impl EventListener for EventCollector {
+    fn send_event(&self, event: Event) {
+        match &event {
+            Event::PtyWrite(_) | Event::ColorRequest(_, _) | Event::TextAreaSizeRequest(_) => {
+                self.events.lock().push(event);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub struct TerminalEmulator {
-    parser: vt100::Parser,
+    term: Term<EventCollector>,
+    events: Arc<Mutex<Vec<Event>>>,
+    parser: ansi::Processor,
+    cols: u16,
+    rows: u16,
     fonts: Vec<Font>,
     glyphs: HashMap<char, (Glyph, Vec<u8>)>,
+    atlas_r8: Vec<u8>,
+    atlas_w: u32,
+    atlas_h: u32,
+    atlas_shelf_x: u32,
+    atlas_shelf_y: u32,
+    atlas_shelf_h: u32,
+    atlas_dirty: bool,
+    atlas_next_id: u16,
+    atlas_glyphs: HashMap<char, AtlasGlyph>,
+    atlas_bits: HashMap<u16, Vec<u8>>,
+    atlas_pending: std::collections::HashSet<u16>,
     font_px: f32,
     style_px: f32,
     line_height: f32,
@@ -66,10 +108,36 @@ impl TerminalEmulator {
         let fonts = load_fonts()?;
         let scale = sanitize_scale(scale);
         let (px, cell_w, cell_h, baseline) = metrics_for(&fonts[0], font_px * scale, line_height);
+        let cols = cols.max(2);
+        let rows = rows.max(1);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let collector = EventCollector {
+            events: Arc::clone(&events),
+        };
+        let config = Config {
+            scrolling_history: SCROLLBACK,
+            ..Config::default()
+        };
+        let size = TermSize::new(cols as usize, rows as usize);
         let mut emulator = Self {
-            parser: vt100::Parser::new(rows, cols, 2000),
+            term: Term::new(config, &size, collector),
+            events,
+            parser: ansi::Processor::new(),
+            cols,
+            rows,
             fonts,
             glyphs: HashMap::new(),
+            atlas_r8: vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize],
+            atlas_w: ATLAS_SIZE,
+            atlas_h: ATLAS_SIZE,
+            atlas_shelf_x: 0,
+            atlas_shelf_y: 0,
+            atlas_shelf_h: 0,
+            atlas_dirty: true,
+            atlas_next_id: 1,
+            atlas_glyphs: HashMap::new(),
+            atlas_bits: HashMap::new(),
+            atlas_pending: std::collections::HashSet::new(),
             font_px: px,
             style_px: font_px,
             line_height,
@@ -110,7 +178,20 @@ impl TerminalEmulator {
         self.cell_h = cell_h;
         self.baseline = baseline;
         self.glyphs.clear();
+        self.reset_atlas();
         self.dirty = true;
+    }
+
+    fn reset_atlas(&mut self) {
+        self.atlas_r8.fill(0);
+        self.atlas_shelf_x = 0;
+        self.atlas_shelf_y = 0;
+        self.atlas_shelf_h = 0;
+        self.atlas_next_id = 1;
+        self.atlas_glyphs.clear();
+        self.atlas_bits.clear();
+        self.atlas_pending.clear();
+        self.atlas_dirty = true;
     }
 
     pub fn apply_theme(&mut self, theme: &ColorTheme) {
@@ -141,13 +222,22 @@ impl TerminalEmulator {
         self.dirty = true;
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.process(bytes);
+    /// Feed bytes from the PTY/SSH into the emulator.
+    ///
+    /// Returns protocol replies that must be written back on the same channel
+    /// (CSI DA/DSR, color queries, text-area size, etc.).
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.parser.advance(&mut self.term, bytes);
         self.dirty = true;
+        self.drain_pty_replies()
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.parser.set_size(rows, cols);
+        let cols = cols.max(2);
+        let rows = rows.max(1);
+        self.cols = cols;
+        self.rows = rows;
+        self.term.resize(TermSize::new(cols as usize, rows as usize));
         self.dirty = true;
     }
 
@@ -167,13 +257,196 @@ impl TerminalEmulator {
         Some(self.raster())
     }
 
+    /// Compact atlas + cell grid for GPU paint (WebGL / future native surface).
+    pub fn capture_gpu_frame(&mut self, force: bool) -> Option<GpuFrame> {
+        if !force && !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        Some(self.gpu_raster())
+    }
+
+    pub fn gpu_raster(&mut self) -> GpuFrame {
+        let rows = self.term.screen_lines() as u32;
+        let cols = self.term.columns() as u32;
+        let mut cells = vec![
+            GpuCell {
+                glyph_id: 0,
+                fg: self.fg,
+                bg: self.bg,
+            };
+            (rows * cols) as usize
+        ];
+
+        let snapshots = {
+            let content = self.term.renderable_content();
+            let display_offset = content.display_offset;
+            let cursor = content.cursor;
+            let show_cursor = cursor.shape != CursorShape::Hidden;
+            let cursor_vp = point_to_viewport(display_offset, cursor.point);
+            let colors = content.colors;
+            let mut snaps = Vec::with_capacity((rows * cols) as usize);
+            for indexed in content.display_iter {
+                let Some(vp) = point_to_viewport(display_offset, indexed.point) else {
+                    continue;
+                };
+                let row = vp.line as u32;
+                let col = vp.column.0 as u32;
+                if row >= rows || col >= cols {
+                    continue;
+                }
+                let cell = &indexed.cell;
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let bold = cell.flags.contains(Flags::BOLD) && !cell.flags.contains(Flags::DIM);
+                let dim = cell.flags.contains(Flags::DIM);
+                let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold, dim);
+                let mut bg = self.resolve_cell_color(cell.bg, colors, self.bg, false, false);
+                if cell.flags.contains(Flags::INVERSE) {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                let ch = if cell.flags.contains(Flags::HIDDEN) || cell.c == '\0' {
+                    ' '
+                } else {
+                    cell.c
+                };
+                if show_cursor {
+                    if let Some(cv) = cursor_vp {
+                        if cv.line == vp.line && cv.column == vp.column {
+                            bg = self.cursor;
+                            fg = self.bg;
+                        }
+                    }
+                }
+                snaps.push((col, row, ch, fg, bg));
+            }
+            snaps
+        };
+
+        for (col, row, ch, fg, bg) in snapshots {
+            let glyph_id = self.ensure_atlas_glyph(ch);
+            cells[(row * cols + col) as usize] = GpuCell { glyph_id, fg, bg };
+        }
+
+        let glyphs: Vec<AtlasGlyph> = self
+            .atlas_glyphs
+            .values()
+            .map(|g| {
+                let mut out = g.clone();
+                if self.atlas_pending.remove(&g.id) {
+                    out.bits = self.atlas_bits.get(&g.id).cloned();
+                } else {
+                    out.bits = None;
+                }
+                out
+            })
+            .collect();
+        self.atlas_dirty = false;
+        GpuFrame {
+            cols: cols as u16,
+            rows: rows as u16,
+            cell_w: self.cell_w,
+            cell_h: self.cell_h,
+            atlas_w: self.atlas_w,
+            atlas_h: self.atlas_h,
+            glyphs,
+            cells,
+        }
+    }
+
+    fn ensure_atlas_glyph(&mut self, ch: char) -> u16 {
+        if ch == ' ' || ch == '\0' {
+            return 0;
+        }
+        if let Some(g) = self.atlas_glyphs.get(&ch) {
+            return g.id;
+        }
+        let (meta, cover) = self.glyph(ch);
+        let (bits, w, h, ox, oy) = if meta.fit == GlyphFit::Cell {
+            let scaled = scale_cover(&cover, meta.w, meta.h, self.cell_w, self.cell_h);
+            let snapped = snap_cell_edges(&scaled, self.cell_w, self.cell_h, cell_attach(ch));
+            (snapped, self.cell_w, self.cell_h, 0i32, 0i32)
+        } else {
+            let mut dw = meta.w;
+            let mut dh = meta.h;
+            let mut xmin = meta.xmin;
+            let mut ymin = meta.ymin;
+            let bits = if dw > self.cell_w && dw > 0 {
+                let s = self.cell_w as f32 / dw as f32;
+                dw = self.cell_w;
+                dh = (dh as f32 * s).round().max(1.0) as u32;
+                xmin = (xmin as f32 * s).round() as i32;
+                ymin = (ymin as f32 * s).round() as i32;
+                scale_cover(&cover, meta.w, meta.h, dw, dh)
+            } else {
+                cover
+            };
+            let dest_y_base = self.baseline - ymin - dh as i32;
+            let oy = if meta.fit == GlyphFit::Icon {
+                let mid = (self.cell_h as i32 - dh as i32) / 2;
+                (dest_y_base + mid) / 2
+            } else {
+                dest_y_base
+            };
+            let ox = xmin.max(0);
+            (bits, dw, dh, ox, oy)
+        };
+        let Some((x, y)) = self.atlas_alloc(w, h) else {
+            // Atlas full — fall back to empty glyph rather than panic.
+            return 0;
+        };
+        for dy in 0..h {
+            for dx in 0..w {
+                let cover_v = bits[(dy * w + dx) as usize];
+                let i = ((y + dy) * self.atlas_w + (x + dx)) as usize;
+                self.atlas_r8[i] = cover_v;
+            }
+        }
+        let id = self.atlas_next_id;
+        self.atlas_next_id = self.atlas_next_id.saturating_add(1);
+        let entry = AtlasGlyph {
+            id,
+            x: x as u16,
+            y: y as u16,
+            w: w as u16,
+            h: h as u16,
+            ox: ox as i16,
+            oy: oy as i16,
+            bits: None,
+        };
+        self.atlas_glyphs.insert(ch, entry);
+        self.atlas_bits.insert(id, bits);
+        self.atlas_pending.insert(id);
+        self.atlas_dirty = true;
+        id
+    }
+
+    fn atlas_alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        if w == 0 || h == 0 || w > self.atlas_w || h > self.atlas_h {
+            return None;
+        }
+        if self.atlas_shelf_x + w > self.atlas_w {
+            self.atlas_shelf_y += self.atlas_shelf_h;
+            self.atlas_shelf_x = 0;
+            self.atlas_shelf_h = 0;
+        }
+        if self.atlas_shelf_y + h > self.atlas_h {
+            return None;
+        }
+        let x = self.atlas_shelf_x;
+        let y = self.atlas_shelf_y;
+        self.atlas_shelf_x += w + 1;
+        self.atlas_shelf_h = self.atlas_shelf_h.max(h);
+        Some((x, y))
+    }
+
     /// Extract visible screen text for a rectangle [r0..r1] × [c0..c1] (inclusive,
     /// order-independent corners). Each row is right-trimmed; rows are joined with `\n`.
     pub fn extract_text(&self, r0: u16, c0: u16, r1: u16, c1: u16) -> String {
-        let screen = self.parser.screen().clone();
-        let (rows, cols) = screen.size();
-        let rows = rows as u32;
-        let cols = cols as u32;
+        let rows = self.term.screen_lines() as u32;
+        let cols = self.term.columns() as u32;
+        let display_offset = self.term.grid().display_offset();
         let ra = r0.min(r1) as u32;
         let rb = r0.max(r1) as u32;
         let ca = c0.min(c1) as u32;
@@ -184,11 +457,12 @@ impl TerminalEmulator {
         for r in ra..=last_row {
             let mut line = String::new();
             for c in ca..=last_col {
-                let ch = screen
-                    .cell(r as u16, c as u16)
-                    .and_then(|cell| cell.contents().chars().next())
-                    .unwrap_or(' ');
-                line.push(ch);
+                let point = viewport_to_point(
+                    display_offset,
+                    Point::new(r as usize, Column(c as usize)),
+                );
+                let ch = self.term.grid()[point].c;
+                line.push(if ch == '\0' { ' ' } else { ch });
             }
             out.push_str(line.trim_end());
             if r < last_row {
@@ -199,51 +473,207 @@ impl TerminalEmulator {
     }
 
     pub fn raster(&mut self) -> TermFrame {
-        let screen = self.parser.screen().clone();
-        let rows = screen.size().0 as u32;
-        let cols = screen.size().1 as u32;
+        let rows = self.term.screen_lines() as u32;
+        let cols = self.term.columns() as u32;
         let width = cols * self.cell_w;
         let height = rows * self.cell_h;
         let mut rgba = vec![0u8; (width * height * 4) as usize];
-        let (cur_row, cur_col) = screen.cursor_position();
-        let mut glyphs = Vec::with_capacity((rows * cols) as usize);
-        for row in 0..rows {
-            for col in 0..cols {
-                let cell = screen.cell(row as u16, col as u16);
-                let (mut fg, mut bg, ch) = match cell {
-                    Some(cell) => {
-                        let ch = cell.contents().chars().next().unwrap_or(' ');
-                        let mut fg = self.resolve(cell.fgcolor(), self.fg);
-                        let mut bg = self.resolve(cell.bgcolor(), self.bg);
-                        if cell.inverse() {
-                            std::mem::swap(&mut fg, &mut bg);
-                        }
-                        (fg, bg, ch)
-                    }
-                    None => (self.fg, self.bg, ' '),
+
+        let cells = {
+            let content = self.term.renderable_content();
+            let display_offset = content.display_offset;
+            let cursor = content.cursor;
+            let show_cursor = cursor.shape != CursorShape::Hidden;
+            let cursor_vp = point_to_viewport(display_offset, cursor.point);
+            let colors = content.colors;
+            let mut cells = Vec::with_capacity((rows * cols) as usize);
+            for indexed in content.display_iter {
+                let Some(vp) = point_to_viewport(display_offset, indexed.point) else {
+                    continue;
                 };
-                if row as u16 == cur_row && col as u16 == cur_col && !screen.hide_cursor() {
-                    bg = self.cursor;
-                    fg = self.bg;
+                let row = vp.line as u32;
+                let col = vp.column.0 as u32;
+                if row >= rows || col >= cols {
+                    continue;
                 }
-                fill_cell(&mut rgba, width, col * self.cell_w, row * self.cell_h, self.cell_w, self.cell_h, bg);
-                if ch != ' ' {
-                    glyphs.push((col, row, ch, fg, bg));
+                let cell = &indexed.cell;
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let bold = cell.flags.contains(Flags::BOLD) && !cell.flags.contains(Flags::DIM);
+                let dim = cell.flags.contains(Flags::DIM);
+                let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold, dim);
+                let mut bg = self.resolve_cell_color(cell.bg, colors, self.bg, false, false);
+                if cell.flags.contains(Flags::INVERSE) {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                let ch = if cell.flags.contains(Flags::HIDDEN) || cell.c == '\0' {
+                    ' '
+                } else {
+                    cell.c
+                };
+                if show_cursor {
+                    if let Some(cv) = cursor_vp {
+                        if cv.line == vp.line && cv.column == vp.column {
+                            bg = self.cursor;
+                            fg = self.bg;
+                        }
+                    }
+                }
+                cells.push((col, row, ch, fg, bg));
+            }
+            cells
+        };
+
+        for &(col, row, _, _, bg) in &cells {
+            fill_cell(
+                &mut rgba,
+                width,
+                col * self.cell_w,
+                row * self.cell_h,
+                self.cell_w,
+                self.cell_h,
+                bg,
+            );
+        }
+        // Fill any gaps (spacers / missing) with default bg.
+        if cells.len() < (rows * cols) as usize {
+            let painted: std::collections::HashSet<(u32, u32)> =
+                cells.iter().map(|&(c, r, _, _, _)| (c, r)).collect();
+            for row in 0..rows {
+                for col in 0..cols {
+                    if !painted.contains(&(col, row)) {
+                        fill_cell(
+                            &mut rgba,
+                            width,
+                            col * self.cell_w,
+                            row * self.cell_h,
+                            self.cell_w,
+                            self.cell_h,
+                            self.bg,
+                        );
+                    }
                 }
             }
         }
+        let glyphs: Vec<_> = cells
+            .into_iter()
+            .filter(|(_, _, ch, _, _)| *ch != ' ')
+            .collect();
         for (col, row, ch, fg, bg) in glyphs {
             self.blit_glyph(&mut rgba, width, col, row, ch, fg, bg);
         }
         TermFrame { width, height, rgba }
     }
 
-    fn resolve(&self, color: Color, fallback: [u8; 4]) -> [u8; 4] {
-        match color {
-            Color::Default => fallback,
-            Color::Idx(idx) => self.palette[idx as usize],
-            Color::Rgb(r, g, b) => [r, g, b, 255],
+    fn drain_pty_replies(&mut self) -> Vec<u8> {
+        let pending = std::mem::take(&mut *self.events.lock());
+        if pending.is_empty() {
+            return Vec::new();
         }
+        let mut out = Vec::new();
+        for event in pending {
+            match event {
+                Event::PtyWrite(text) => out.extend_from_slice(text.as_bytes()),
+                Event::ColorRequest(index, formatter) => {
+                    let rgb = self.rgb_for_index(index);
+                    out.extend_from_slice(formatter(rgb).as_bytes());
+                }
+                Event::TextAreaSizeRequest(formatter) => {
+                    let size = WindowSize {
+                        num_lines: self.rows,
+                        num_cols: self.cols,
+                        cell_width: self.cell_w.min(u16::MAX as u32) as u16,
+                        cell_height: self.cell_h.min(u16::MAX as u32) as u16,
+                    };
+                    out.extend_from_slice(formatter(size).as_bytes());
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn rgb_for_index(&self, index: usize) -> ansi::Rgb {
+        if let Some(rgb) = self.term.colors()[index] {
+            return rgb;
+        }
+        let rgba = if index < 256 {
+            self.palette[index]
+        } else if index == NamedColor::Foreground as usize
+            || index == NamedColor::BrightForeground as usize
+        {
+            self.fg
+        } else if index == NamedColor::Background as usize {
+            self.bg
+        } else if index == NamedColor::Cursor as usize {
+            self.cursor
+        } else if index == NamedColor::DimForeground as usize {
+            dim_rgba(self.fg)
+        } else if (NamedColor::DimBlack as usize..=NamedColor::DimWhite as usize).contains(&index) {
+            let base = index - NamedColor::DimBlack as usize;
+            dim_rgba(self.palette[base])
+        } else {
+            self.fg
+        };
+        ansi::Rgb {
+            r: rgba[0],
+            g: rgba[1],
+            b: rgba[2],
+        }
+    }
+
+    fn resolve_cell_color(
+        &self,
+        color: Color,
+        dynamic: &alacritty_terminal::term::color::Colors,
+        fallback: [u8; 4],
+        bold: bool,
+        dim: bool,
+    ) -> [u8; 4] {
+        let mut rgba = match color {
+            Color::Named(mut named) => {
+                if bold {
+                    named = named.to_bright();
+                } else if dim {
+                    named = named.to_dim();
+                }
+                if let Some(rgb) = dynamic[named] {
+                    [rgb.r, rgb.g, rgb.b, 255]
+                } else {
+                    match named {
+                        NamedColor::Foreground | NamedColor::BrightForeground => self.fg,
+                        NamedColor::Background => self.bg,
+                        NamedColor::Cursor => self.cursor,
+                        NamedColor::DimForeground => dim_rgba(self.fg),
+                        other if (other as usize) < 16 => self.palette[other as usize],
+                        other if (NamedColor::DimBlack as usize
+                            ..=NamedColor::DimWhite as usize)
+                            .contains(&(other as usize)) =>
+                        {
+                            let base = other as usize - NamedColor::DimBlack as usize;
+                            dim_rgba(self.palette[base])
+                        }
+                        _ => fallback,
+                    }
+                }
+            }
+            Color::Spec(rgb) => [rgb.r, rgb.g, rgb.b, 255],
+            Color::Indexed(idx) => {
+                let idx = if bold && idx < 8 { idx + 8 } else { idx };
+                if let Some(rgb) = dynamic[idx as usize] {
+                    [rgb.r, rgb.g, rgb.b, 255]
+                } else {
+                    self.palette[idx as usize]
+                }
+            }
+        };
+        // Named + dim (without bold) already mapped via to_dim. Everything else dims in RGB.
+        let named_already_dimmed = matches!(color, Color::Named(_)) && dim && !bold;
+        if dim && !named_already_dimmed {
+            rgba = dim_rgba(rgba);
+        }
+        rgba
     }
 
     fn blit_glyph(
@@ -581,6 +1011,10 @@ fn metrics_for(font: &Font, font_px: f32, line_height: f32) -> (f32, u32, u32, i
     (px, cell_w, cell_h, baseline)
 }
 
+fn dim_rgba(c: [u8; 4]) -> [u8; 4] {
+    [c[0] / 2, c[1] / 2, c[2] / 2, c[3]]
+}
+
 fn fill_cell(rgba: &mut [u8], width: u32, x0: u32, y0: u32, cell_w: u32, cell_h: u32, bg: [u8; 4]) {
     for y in 0..cell_h {
         for x in 0..cell_w {
@@ -906,5 +1340,158 @@ mod tests {
         let forced = term.capture_frame(true).expect("tab switch must still raster");
         assert!(forced.width > 0 && forced.height > 0);
         assert!(!forced.rgba.is_empty());
+    }
+
+    #[test]
+    fn primary_da_query_writes_device_attributes_reply() {
+        let mut term = TerminalEmulator::new(80, 24, 14.0).unwrap();
+        let replies = term.feed(b"\x1b[c");
+        assert_eq!(
+            replies, b"\x1b[?6c",
+            "Primary Device Attributes must be answered for fish ≥ 4.1"
+        );
+    }
+
+    #[test]
+    fn secondary_da_query_writes_reply() {
+        let mut term = TerminalEmulator::new(80, 24, 14.0).unwrap();
+        let replies = term.feed(b"\x1b[>c");
+        assert!(
+            replies.starts_with(b"\x1b[>0;") && replies.ends_with(b"c"),
+            "secondary DA reply expected, got {replies:?}"
+        );
+    }
+
+    #[test]
+    fn plain_text_feed_does_not_emit_pty_replies() {
+        let mut term = TerminalEmulator::new(80, 24, 14.0).unwrap();
+        let replies = term.feed(b"hello");
+        assert!(replies.is_empty(), "printable text must not invent PtyWrite bytes");
+        let frame = term.capture_frame(true).expect("text should raster");
+        assert!(!frame.rgba.is_empty());
+    }
+
+    #[test]
+    fn gpu_frame_hot_path_is_compact_and_magic() {
+        let mut term = TerminalEmulator::new(80, 24, 14.0).unwrap();
+        term.feed(b"hello GPU atlas");
+        let gpu = term.capture_gpu_frame(true).expect("gpu frame");
+        let packed = crate::gpu_frame::pack_gpu_frame(&gpu);
+        assert!(crate::gpu_frame::is_gpu_frame(&packed));
+        let (cw, ch) = term.cell_size();
+        let rgba_size = (80 * cw * 24 * ch * 4) as usize;
+        assert!(
+            packed.len() < rgba_size / 8,
+            "gpu pack {} should beat rgba {}",
+            packed.len(),
+            rgba_size
+        );
+        // Second frame without new glyphs should omit glyph bitmaps.
+        term.feed(b"hello GPU atlas");
+        let gpu2 = term.capture_gpu_frame(true).expect("second gpu frame");
+        assert!(
+            gpu2.glyphs.iter().all(|g| g.bits.is_none()),
+            "repeated glyphs must not resend atlas stamps"
+        );
+        let packed2 = crate::gpu_frame::pack_gpu_frame(&gpu2);
+        assert!(
+            packed2.len() < packed.len(),
+            "steady frame should drop stamp bytes ({} vs {})",
+            packed2.len(),
+            packed.len()
+        );
+    }
+
+    fn cell_ink_avg(
+        frame: &TermFrame,
+        cell_w: u32,
+        cell_h: u32,
+        col: u32,
+        row: u32,
+        bg: [u8; 4],
+    ) -> [u32; 3] {
+        let x0 = col * cell_w;
+        let y0 = row * cell_h;
+        let mut sum = [0u32; 3];
+        let mut n = 0u32;
+        for y in 0..cell_h {
+            for x in 0..cell_w {
+                let i = (((y0 + y) * frame.width + x0 + x) * 4) as usize;
+                let px = &frame.rgba[i..i + 4];
+                if px == bg {
+                    continue;
+                }
+                // Skip near-bg anti-alias fringe so attribute color dominates.
+                let dr = px[0].abs_diff(bg[0]) as u32;
+                let dg = px[1].abs_diff(bg[1]) as u32;
+                let db = px[2].abs_diff(bg[2]) as u32;
+                if dr + dg + db < 40 {
+                    continue;
+                }
+                sum[0] += px[0] as u32;
+                sum[1] += px[1] as u32;
+                sum[2] += px[2] as u32;
+                n += 1;
+            }
+        }
+        assert!(n > 5, "expected painted ink in cell, got {n} px");
+        [sum[0] / n, sum[1] / n, sum[2] / n]
+    }
+
+    fn raster_with(sgr: &str) -> ([u32; 3], [u8; 4]) {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        let bg = term.bg;
+        // Hide cursor so it does not tint the sample cell.
+        let mut seq = String::from("\x1b[?25l");
+        seq.push_str(sgr);
+        seq.push('#');
+        term.feed(seq.as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        (cell_ink_avg(&frame, cell_w, cell_h, 0, 0, bg), bg)
+    }
+
+    fn luma(rgb: [u32; 3]) -> u32 {
+        rgb[0] * 30 + rgb[1] * 59 + rgb[2] * 11
+    }
+
+    #[test]
+    fn ac1_dim_ansi_red_is_darker_than_normal() {
+        let (normal, _) = raster_with("\x1b[31m");
+        let (dimmed, _) = raster_with("\x1b[2;31m");
+        assert!(
+            luma(dimmed) + 200 < luma(normal),
+            "DIM must darken ANSI red, not brighten it (dim={dimmed:?} normal={normal:?})"
+        );
+    }
+
+    #[test]
+    fn ac2_bold_ansi_red_is_brighter_than_normal() {
+        let (normal, _) = raster_with("\x1b[31m");
+        let (bold, _) = raster_with("\x1b[1;31m");
+        assert!(
+            luma(bold) > luma(normal) + 80,
+            "BOLD must brighten ANSI red (bold={bold:?} normal={normal:?})"
+        );
+    }
+
+    #[test]
+    fn dim_plus_bold_ansi_red_is_darker_than_bold_alone() {
+        let (bold, _) = raster_with("\x1b[1;31m");
+        let (both, _) = raster_with("\x1b[1;2;31m");
+        assert!(
+            luma(both) + 200 < luma(bold),
+            "DIM+BOLD should not look like pure bright (both={both:?} bold={bold:?})"
+        );
+    }
+
+    #[test]
+    fn dim_truecolor_spec_is_darker_than_undimmed() {
+        let (normal, _) = raster_with("\x1b[38;2;200;80;40m");
+        let (dimmed, _) = raster_with("\x1b[2;38;2;200;80;40m");
+        assert!(
+            luma(dimmed) + 400 < luma(normal),
+            "DIM must darken Color::Spec (dim={dimmed:?} normal={normal:?})"
+        );
     }
 }
