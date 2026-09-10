@@ -806,6 +806,11 @@ async function closeOrphanSessions(kind: "local" | "ssh" | "wsl", hostId?: strin
 }
 
 function renderHosts() {
+  // Replacing the hosts DOM mid-drag cancels the HTML5 drag (#88).
+  if (hostGroupDragActive) {
+    syncHostHighlights();
+    return;
+  }
   const q = $input("host-filter").value.toLowerCase();
   const active = activePane();
   const localOpen = hostPanes().length;
