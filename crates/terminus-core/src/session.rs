@@ -633,8 +633,33 @@ impl SessionManager {
                     }
                 }
                 if !buf.is_empty() {
-                    if let Some(session) = sessions.sessions.get(&id) {
-                        session.emulator.lock().feed(&buf);
+                    let replies = if let Some(session) = sessions.sessions.get(&id) {
+                        session.emulator.lock().feed(&buf)
+                    } else {
+                        Vec::new()
+                    };
+                    if !replies.is_empty() {
+                        if let Some(session) = sessions.sessions.get(&id) {
+                            match &session.backend {
+                                Backend::Local(pty) => {
+                                    if let Err(err) = pty.write(&replies) {
+                                        tracing::warn!(
+                                            session_id = %id,
+                                            error = %err,
+                                            "pty write of emulator reply failed"
+                                        );
+                                    }
+                                }
+                                Backend::Ssh(tx) => {
+                                    if tx.send(SshCommand::Data(replies)).is_err() {
+                                        tracing::warn!(
+                                            session_id = %id,
+                                            "ssh write of emulator reply failed"
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                     sink.emit_output(&id, &buf).await;
                 }
