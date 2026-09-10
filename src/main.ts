@@ -55,6 +55,7 @@ import {
 import {
   closeRemote,
   createSftpSessions,
+  defaultSessionSnap,
   hasRemote,
   openOrFocusRemote,
   openRemoteIds,
@@ -4372,7 +4373,11 @@ function snapshotActiveRemote(): void {
     root: state.sftpRoot || "/",
     selected: [...state.sftpSelected],
   });
-  sftpEntryCache.set(hostId, state.sftpEntries.slice());
+  // Mid-flight loads leave entries=[] while conn is still "connecting".
+  // Do not poison the parked-pane cache with that empty snapshot (#107).
+  if (state.sftpConn === "connected" || sftpEntryCache.has(hostId) || state.sftpEntries.length > 0) {
+    sftpEntryCache.set(hostId, state.sftpEntries.slice());
+  }
 }
 
 function remotePathFor(hostId: string): string {
@@ -4427,22 +4432,24 @@ function paneBodyForEndpoint(endpoint: string): HTMLElement | null {
   return null;
 }
 
-/** Paint a non-active remote that remains visible in the other pane (#103). */
+/** Paint a non-active remote that remains visible in the other pane (#103 / #107). */
 function paintParkedRemote(hostId: string): void {
   if (!hostId || isLocalEndpoint(hostId)) return;
   const body = paneBodyForEndpoint(hostId);
   if (!body) return;
   const snap = sftpSessions.byId[hostId];
-  const entries = sftpEntryCache.get(hostId)?.slice() ?? [];
   const path = snap?.path || ".";
-  if (!entries.length) {
+  // Distinguish "never listed" from "listed empty" — length alone is not enough (#107).
+  if (!sftpEntryCache.has(hostId)) {
     body.innerHTML = `${sftpToolbarHtml(hostId, path)}${sftpListLoadingHtml(
       sftpDisplayPath(snap?.cwd || "", path),
       "sftp-loading",
     )}`;
     bindSftpToolbar(hostId, path);
+    void loadParkedRemoteListing(hostId);
     return;
   }
+  const entries = sftpEntryCache.get(hostId)?.slice() ?? [];
   const filtered = filterFileEntries(entries, sftpListFilter());
   const rows = filtered.map((e) => buildRemoteRowHtml(e)).join("");
   const table = filtered.length
@@ -4454,6 +4461,64 @@ function paintParkedRemote(hostId: string): void {
   if (pane) delete pane.dataset.boundSftp;
   delete body.dataset.boundSftpCtx;
   bindSftpRows(hostId, body);
+}
+
+const parkedLoadInflight = new Set<string>();
+
+/** Load a parked remote into the entry cache without stealing the active host (#107). */
+async function loadParkedRemoteListing(hostId: string): Promise<void> {
+  if (!hostId || isLocalEndpoint(hostId) || parkedLoadInflight.has(hostId)) return;
+  if (state.sftpHostId === hostId) return;
+  parkedLoadInflight.add(hostId);
+  const snap = sftpSessions.byId[hostId] ?? defaultSessionSnap();
+  let root = snap.root || "/";
+  let cwd = snap.cwd || "";
+  let pathHint = snap.path || ".";
+  try {
+    if (!cwd) {
+      try {
+        const resolved = await invoke<string>("sftp_realpath", { hostId, path: "." });
+        cwd = typeof resolved === "string" ? resolved.replace(/\/+$/, "") || resolved : "";
+      } catch {
+        cwd = "";
+      }
+    }
+    const raw = pathHint && pathHint.trim() ? pathHint : ".";
+    const anchored = raw.startsWith("/")
+      ? raw
+      : cwd
+        ? normalizeSftpPath(`${cwd}/${raw}`)
+        : raw;
+    const safePath = resolveUnderRoot(root, anchored);
+    const entries = await invoke<SftpEntry[]>("sftp_list", {
+      hostId,
+      path: safePath,
+      root,
+    });
+    if (state.sftpHostId === hostId) return;
+    sftpSessions = rememberRemote(sftpSessions, hostId, {
+      path: safePath,
+      cwd,
+      root,
+      selected: snap.selected ?? [],
+    });
+    sftpEntryCache.set(hostId, entries.slice());
+    if (sftpBrowser.paneA === hostId || sftpBrowser.paneB === hostId) {
+      paintParkedRemote(hostId);
+    }
+  } catch (err) {
+    if (state.sftpHostId === hostId) return;
+    const body = paneBodyForEndpoint(hostId);
+    if (!body) return;
+    const typed = parseSftpError(err);
+    body.innerHTML = `${sftpToolbarHtml(hostId, pathHint)}<div class="sftp-error" data-testid="sftp-error" data-kind="${escapeHtml(typed.kind)}" role="alert">
+      <strong>${escapeHtml(typed.kind)}</strong>
+      <span>${escapeHtml(typed.message)}</span>
+    </div>`;
+    bindSftpToolbar(hostId, pathHint);
+  } finally {
+    parkedLoadInflight.delete(hostId);
+  }
 }
 
 function paintCompanionRemotes(activeId: string | null): void {
@@ -5921,44 +5986,59 @@ async function loadSftp(hostId: string, path: string) {
   setPaneListingLoading(remotePaneEl(), true);
   await ensureSftpCwd(hostId);
   if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
+  // Capture session anchors before another open can clobber globals (#107).
+  const sessionRoot = state.sftpRoot;
+  const sessionCwd = state.sftpCwd;
   let safePath: string;
   try {
     const raw = path && path.trim() ? path : ".";
     // Full-FS mode: anchor relative/"." onto the session home; absolute passes.
     const anchored = raw.startsWith("/")
       ? raw
-      : state.sftpCwd
-        ? normalizeSftpPath(`${state.sftpCwd}/${raw}`)
+      : sessionCwd
+        ? normalizeSftpPath(`${sessionCwd}/${raw}`)
         : raw;
-    safePath = resolveUnderRoot(state.sftpRoot, anchored);
+    safePath = resolveUnderRoot(sessionRoot, anchored);
   } catch (err) {
+    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
     setPaneListingLoading(remotePaneEl(), false);
     renderSftpError(hostId, state.sftpPath, err);
     return;
   }
-  state.sftpPath = safePath;
-  const loadingPath = sftpDisplayPath(state.sftpCwd, safePath);
-  renderSftpWorkspace(hostId, safePath, sftpListLoadingHtml(loadingPath, "sftp-loading"));
-  setPaneListingLoading(remotePaneEl(), true);
+  if (state.sftpHostId === hostId) state.sftpPath = safePath;
+  const loadingPath = sftpDisplayPath(sessionCwd, safePath);
+  if (seq === sftpLoadSeq && state.sftpHostId === hostId) {
+    renderSftpWorkspace(hostId, safePath, sftpListLoadingHtml(loadingPath, "sftp-loading"));
+    setPaneListingLoading(remotePaneEl(), true);
+  }
   try {
     const entries = await invoke<SftpEntry[]>("sftp_list", {
       hostId,
       path: safePath,
-      root: state.sftpRoot,
+      root: sessionRoot,
     });
-    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
-    setSftpConn("connected");
-    if (!entries.length) {
-      state.sftpEntries = [];
-      renderSftpWorkspace(hostId, safePath, wrapSftpContentEnter(remoteTableHtml([])));
-      setPaneListingLoading(remotePaneEl(), false);
-      snapshotActiveRemote();
-      paintCompanionRemotes(hostId);
+    // Always stash listing for this host so a superseding open can paint the parked pane (#107).
+    sftpEntryCache.set(hostId, entries.slice());
+    sftpSessions = rememberRemote(sftpSessions, hostId, {
+      path: safePath,
+      cwd: sessionCwd || "",
+      root: sessionRoot || "/",
+      selected: [...(sftpSessions.byId[hostId]?.selected ?? [])],
+    });
+    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) {
+      if (
+        state.sftpHostId !== hostId &&
+        (sftpBrowser.paneA === hostId || sftpBrowser.paneB === hostId)
+      ) {
+        paintParkedRemote(hostId);
+      }
       return;
     }
+    setSftpConn("connected");
     state.sftpEntries = entries;
+    state.sftpPath = safePath;
     renderSftpWorkspace(hostId, safePath, wrapSftpContentEnter(remoteTableHtml(entries)));
-    mountRemoteVirtualList(entries);
+    if (entries.length) mountRemoteVirtualList(entries);
     bindSftpRows(hostId, remotePaneEl());
     setPaneListingLoading(remotePaneEl(), false);
     updateTransferUi();
