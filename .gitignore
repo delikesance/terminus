@@ -18,6 +18,7 @@ src/groupSoftDelete.js
 src/groupExpand.js
 src/knownHostsParse.js
 src/identityKind.js
+src/authMethod.js
 src/sftpPath.js
 src/activityBar.js
 src/forwardPanel.js

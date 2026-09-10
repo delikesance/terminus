@@ -53,6 +53,9 @@
           at-spi2-atk
           glib-networking
           gsettings-desktop-schemas
+          krb5
+          clang
+          llvmPackages.libclang
         ];
 
         commonTools = with pkgs; [
@@ -87,7 +90,9 @@
             export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$PWD/target}"
             export RUST_BACKTRACE="''${RUST_BACKTRACE:-1}"
             unset CC CFLAGS
+            unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
             ${linuxHook}
+            export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
             echo "Terminus dev shell — rustc $(rustc --version) · node $(node --version)"
           '';
         };
@@ -105,8 +110,9 @@
             "terminus-selftest"
           ];
           doCheck = false;
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ];
+          nativeBuildInputs = [ pkgs.pkg-config ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.clang ];
+          buildInputs = [ pkgs.openssl ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.krb5 ];
+          LIBCLANG_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.llvmPackages.libclang.lib}/lib";
         };
       }
     );

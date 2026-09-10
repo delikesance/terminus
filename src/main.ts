@@ -89,6 +89,7 @@ import {
   parseIdentityKeyError,
   type IdentityKind,
 } from "./identityKind";
+import { hostAuthUi } from "./authMethod";
 import {
   ACTIVITIES,
   clickActivity,
@@ -3329,10 +3330,12 @@ async function editHost(existing?: Host) {
       <div class="cell">
         <span>Method</span>
         <div class="seg" id="f-auth">
-          <button type="button" data-auth="key" class="${host.auth_method !== "password" ? "on" : ""}">Key</button>
-          <button type="button" data-auth="password" class="${host.auth_method === "password" ? "on" : ""}">Password</button>
+          <button type="button" data-auth="key" class="${hostAuthUi(host.auth_method).segment === "key" ? "on" : ""}">Key</button>
+          <button type="button" data-auth="password" class="${hostAuthUi(host.auth_method).segment === "password" ? "on" : ""}">Password</button>
+          <button type="button" data-auth="gssapi" class="${hostAuthUi(host.auth_method).segment === "gssapi" ? "on" : ""}">Kerberos</button>
         </div>
       </div>
+      <p class="hint" id="gssapi-hint" ${hostAuthUi(host.auth_method).segment === "gssapi" ? "" : "hidden"}>Uses the Kerberos ticket on this computer (<code>kinit</code>). Terminus does not store a Kerberos password.</p>
       <label class="cell" id="pass-row"><span>Password</span><input id="f-pass" type="password" value="${escapeHtml(host.password ?? "")}" /></label>
     </div>
     <div id="key-row">
@@ -3358,9 +3361,11 @@ async function editHost(existing?: Host) {
   const authValue = () =>
     ($("f-auth").querySelector<HTMLButtonElement>(".on")?.dataset.auth ?? "key");
   const syncAuth = () => {
-    const key = authValue() === "key";
-    $("key-row").classList.toggle("hidden", !key);
-    $("pass-row").classList.toggle("hidden", key);
+    const ui = hostAuthUi(authValue());
+    $("key-row").classList.toggle("hidden", !ui.showKey);
+    $("pass-row").classList.toggle("hidden", !ui.showPassword);
+    const hint = document.getElementById("gssapi-hint");
+    if (hint) hint.hidden = ui.segment !== "gssapi";
   };
   $("f-auth").querySelectorAll<HTMLButtonElement>("button").forEach((btn) => {
     btn.onclick = () => {
@@ -3378,7 +3383,12 @@ async function editHost(existing?: Host) {
     host.port = Number(($("f-port") as HTMLInputElement).value);
     host.username = ($("f-user") as HTMLInputElement).value;
     host.auth_method = authValue();
-    host.password = ($("f-pass") as HTMLInputElement).value;
+    if (host.auth_method === "gssapi") {
+      host.password = "";
+      host.identity_id = null;
+    } else {
+      host.password = ($("f-pass") as HTMLInputElement).value;
+    }
     host.notes = ($("f-notes") as HTMLTextAreaElement).value;
     host.group_id = ($("f-group") as HTMLSelectElement).value || null;
     host.updated_at = new Date().toISOString();
