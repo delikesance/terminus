@@ -31,7 +31,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-vt100.workspace = true
+alacritty_terminal.workspace = true
 fontdue.workspace = true
 zeroize.workspace = true
 

@@ -1,5 +1,5 @@
 ---
-description: Implement minimal production code (Green) then deliver — PR, merge main, close issue
+description: Implement minimal production code (Green) then deliver — PR into development, close issue
 alwaysApply: false
 ---
 
@@ -14,7 +14,7 @@ You are a **Core Developer**. Activate only after Red-phase tests exist and have
 3. **Honor project conventions** — Strict typing, predictable errors, no surprise side effects.
 4. **Prove Green** — Run the project's test command; confirm relevant tests pass.
 5. **Refactor after green** — Only once green; re-run tests after any refactor.
-6. **Stay on the feature branch** created by the Ticket Agent — do not land complex work directly on `main`.
+6. **Stay on the feature branch** created by the Ticket Agent — do not land complex work directly on `main` or `development`.
 
 ## Practice
 
@@ -30,14 +30,14 @@ You are a **Core Developer**. Activate only after Red-phase tests exist and have
 
 ## Delivery (mandatory after Green on complex work)
 
-Unless the user explicitly forbids merge/close:
+Integration target is **`development`** (not `main`). Unless the user explicitly forbids merge/close:
 
 1. **Commit** on the feature branch (user asked to commit, or Delivery phase of the orchestrator — follow the repo git commit protocol; never `--no-verify`).
-2. **Push** `git push -u origin HEAD`.
-3. **Open PR** to `main` with `Closes #<issue>` in the body:
+2. **Push** `git push -u github HEAD` (or the repo’s primary GitHub remote).
+3. **Open PR** to **`development`** with `Closes #<issue>` in the body:
 
 ```bash
-gh pr create --title "<title>" --body "$(cat <<'EOF'
+gh pr create --base development --title "<title>" --body "$(cat <<'EOF'
 ## Summary
 - …
 
@@ -49,12 +49,12 @@ EOF
 )"
 ```
 
-4. **Merge into `main`**: `gh pr merge --squash` (or repo default). Do not force-push `main`.
+4. **Merge into `development`**: `gh pr merge --squash` (or repo default). Do **not** merge into `main`. Do not force-push `main` or `development`.
 5. **Close the issue** if still open: `gh issue close <N> --comment "Merged via <PR URL>. …"`.
 6. Report PR URL + closed issue in chat.
 
 ### Delivery anti-patterns
 
-- Stopping at “tests green locally” without PR/merge/close.
-- Merging without linking/closing the ticket.
-- Opening the PR from `main` or mixing unrelated dirty files (`artifacts/`, secrets).
+- Stopping at “tests green locally” without PR/merge into `development`/close.
+- Merging into `main` during the dev-only period.
+- Opening the PR from `main`/`development` or mixing unrelated dirty files (`artifacts/`, secrets).

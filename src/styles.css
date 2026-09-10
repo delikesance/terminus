@@ -123,6 +123,8 @@ svg {
   cursor: grab;
   -webkit-app-region: drag;
   app-region: drag;
+  min-width: 0;
+  overflow: hidden;
 }
 #titlebar button, #tabs, .title-actions, .lights, .window-controls, .tab-nav {
   -webkit-app-region: no-drag;
@@ -130,9 +132,11 @@ svg {
   cursor: default;
 }
 #drag {
-  flex: 1 1 72px;
+  /* Tiny drag handle only — do not compete with #tabstrip for flex space. */
+  flex: 0 0 8px;
   align-self: stretch;
-  min-width: 48px;
+  min-width: 8px;
+  max-width: 8px;
   cursor: grab;
   -webkit-app-region: drag;
   app-region: drag;
@@ -247,8 +251,11 @@ html[data-os-chrome="mac"] #window-controls {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 1;
+  /* Basis 0 so the strip fills leftover space without expanding past it. */
+  flex: 1 1 0;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   position: relative;
 }
 #tabstrip.overflow::before,
@@ -391,7 +398,12 @@ html[data-os-chrome="mac"] #window-controls {
   50% { opacity: 1; }
 }
 
-.title-actions { display: flex; align-items: center; gap: 2px; }
+.title-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
 
 #stage {
   display: grid;
@@ -1451,7 +1463,7 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   left: 0;
   top: 0;
   z-index: 1;
-  background: rgba(120, 170, 255, 0.30);
+  background: var(--term-selection, rgba(120, 170, 255, 0.30));
   pointer-events: none;
 }
 .pane-banner {
