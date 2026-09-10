@@ -47,6 +47,8 @@ export function getTestBridge(page: Page) {
     // C9: SFTP browser
     seedSftpHost: (hostId?: string) =>
       page.evaluate((id) => (window as any).__terminusTest.seedSftpHost(id), hostId),
+    openSftp: (hostId: string) =>
+      page.evaluate((id) => (window as any).__terminusTest.openSftp(id), hostId),
     sftpForceError: (kind: string, message: string) =>
       page.evaluate(
         ({ k, m }) => (window as any).__terminusTest.sftpForceError(k, m),

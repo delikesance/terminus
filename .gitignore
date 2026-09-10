@@ -32,6 +32,7 @@ src/sftpVirtualList.js
 src/motion.js
 src/hostDragGhost.js
 src/windowChrome.js
+src/sftpSessions.js
 test-results/
 
 # Perf / load reports (#45)

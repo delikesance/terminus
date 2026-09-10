@@ -1671,6 +1671,76 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   background: var(--fill);
   border-color: var(--line);
 }
+.sftp-open-remotes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.sftp-open-remotes-label {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+}
+.sftp-open-remote {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+.sftp-open-remote.active {
+  background: var(--fill);
+  border-color: var(--line);
+}
+.sftp-open-remote-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+.sftp-open-remote-btn:hover { color: var(--text); background: var(--hover-strong); }
+.sftp-open-remote.active .sftp-open-remote-btn { color: var(--text); }
+.sftp-open-remote-btn .sftp-host-ico {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+.sftp-open-remote-btn .sftp-host-ico svg { width: 14px; height: 14px; }
+.sftp-open-remote-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sftp-open-remote-close {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tertiary);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.sftp-open-remote-close svg { width: 12px; height: 12px; }
+.sftp-open-remote-close:hover { color: var(--text); background: var(--fill-strong); }
 
 .sftp-view.compact-rows .sftp-row,
 .sftp-view.compact-rows .local-row {
