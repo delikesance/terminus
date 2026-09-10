@@ -882,7 +882,7 @@ function renderHosts() {
     const keyHtml = h.identity_id
       ? `<span class="host-key-badge" data-testid="host-identity-icon" title="SSH identity">${icons.key}</span>`
       : "";
-    return `<div class="${classes}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}" tabindex="0" draggable="true">
+    return `<div class="${classes}" data-host="${h.id}" data-testid="host-${h.id}" title="${escapeHtml(userAtHost)}" tabindex="0" draggable="${IS_WIN ? "false" : "true"}">
         ${hostLeading(h)}
         <div class="body">
           <strong class="host-title">${escapeHtml(h.name || h.hostname)}</strong>
@@ -3485,6 +3485,8 @@ async function deleteGroupConfirm(group: Group) {
 
 const HOST_GROUP_MIME = "application/x-terminus-host";
 let hostGroupDnDAbort: AbortController | null = null;
+/** Id of the host currently being rearranged (pointer or HTML5 path) (#90). */
+let hostGroupDragHostId: string | null = null;
 
 function bindHostGroupDragDrop(): void {
   const panel = $("panel-hosts");
@@ -3505,27 +3507,164 @@ function bindHostGroupDragDrop(): void {
     return el.closest(".group-row, .group-children");
   };
 
-  // Delegated once per bind (AbortController prevents stacking across renderHosts).
+  const endHostDrag = () => {
+    hostGroupDragActive = false;
+    hostGroupDragHostId = null;
+    panel.querySelectorAll("[data-host].is-dragging").forEach((n) => n.classList.remove("is-dragging"));
+    clearDropMarks();
+  };
+
+  // ── Pointer DnD (primary on Windows WebView2 — HTML5 getData is unreliable) ──
+  let ptrHostEl: HTMLElement | null = null;
+  let ptrStartX = 0;
+  let ptrStartY = 0;
+  let ptrDragging = false;
+  let ptrId: number | null = null;
+  let suppressHostClick = false;
+  const DRAG_THRESH_PX = 8;
+
+  const markUnderPoint = (clientX: number, clientY: number) => {
+    const under = document.elementFromPoint(clientX, clientY);
+    const zone = isGroupDropZone(under);
+    clearDropMarks();
+    if (zone) {
+      zone.classList.add("drop-target");
+      return;
+    }
+    if ((under as HTMLElement | null)?.closest?.("[data-host],[data-local],[data-wsl-distro]")) {
+      return;
+    }
+    if (under && panel.contains(under)) panel.classList.add("drop-ungroup");
+  };
+
+  const finishPointerDrag = (clientX: number, clientY: number) => {
+    const hostId = hostGroupDragHostId;
+    const under = document.elementFromPoint(clientX, clientY);
+    const zone = isGroupDropZone(under);
+    const groupId = zone ? zone.dataset.group || zone.dataset.groupDrop || null : null;
+    const overHostRow = !!(under as HTMLElement | null)?.closest?.(
+      "[data-host],[data-local],[data-wsl-distro]",
+    );
+    endHostDrag();
+    ptrHostEl = null;
+    ptrDragging = false;
+    ptrId = null;
+    if (!hostId) return;
+    suppressHostClick = true;
+    queueMicrotask(() => {
+      suppressHostClick = false;
+    });
+    if (groupId) {
+      void assignHostToGroup(hostId, groupId);
+      return;
+    }
+    if (overHostRow) {
+      void refreshHostsRuntime();
+      return;
+    }
+    if (under && panel.contains(under)) {
+      void assignHostToGroup(hostId, null);
+      return;
+    }
+    void refreshHostsRuntime();
+  };
+
+  panel.addEventListener(
+    "pointerdown",
+    (ev) => {
+      if (ev.button !== 0) return;
+      if ((ev.target as HTMLElement | null)?.closest?.("button, a, input, textarea")) return;
+      const hostEl = (ev.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-host]");
+      if (!hostEl || !panel.contains(hostEl)) return;
+      const id = hostEl.dataset.host || "";
+      if (!id) return;
+      ptrHostEl = hostEl;
+      ptrStartX = ev.clientX;
+      ptrStartY = ev.clientY;
+      ptrDragging = false;
+      ptrId = ev.pointerId;
+    },
+    { signal },
+  );
+
+  panel.addEventListener(
+    "pointermove",
+    (ev) => {
+      if (!ptrHostEl || ptrId !== ev.pointerId) return;
+      const dx = ev.clientX - ptrStartX;
+      const dy = ev.clientY - ptrStartY;
+      if (!ptrDragging) {
+        if (dx * dx + dy * dy < DRAG_THRESH_PX * DRAG_THRESH_PX) return;
+        ptrDragging = true;
+        hostGroupDragActive = true;
+        hostGroupDragHostId = ptrHostEl.dataset.host || null;
+        ptrHostEl.classList.add("is-dragging");
+        try {
+          ptrHostEl.setPointerCapture(ev.pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+      markUnderPoint(ev.clientX, ev.clientY);
+    },
+    { signal },
+  );
+
+  const onPointerEnd = (ev: PointerEvent) => {
+    if (ptrId !== ev.pointerId) return;
+    if (ptrDragging) {
+      try {
+        ptrHostEl?.releasePointerCapture(ev.pointerId);
+      } catch {
+        /* ignore */
+      }
+      finishPointerDrag(ev.clientX, ev.clientY);
+      return;
+    }
+    ptrHostEl = null;
+    ptrId = null;
+  };
+
+  panel.addEventListener("pointerup", onPointerEnd, { signal });
+  panel.addEventListener("pointercancel", onPointerEnd, { signal });
+
+  // Suppress the click that would open SSH after a successful rearrange.
+  panel.addEventListener(
+    "click",
+    (ev) => {
+      if (!suppressHostClick) return;
+      if ((ev.target as HTMLElement | null)?.closest?.("[data-host]")) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    },
+    { capture: true, signal },
+  );
+
+  // HTML5 fallback for non-Windows (Playwright / Linux). WebView2 uses pointer path above.
+  if (IS_WIN) return;
+
   panel.addEventListener(
     "dragstart",
     (ev) => {
       const hostEl = (ev.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-host]");
       if (!hostEl || !panel.contains(hostEl) || !ev.dataTransfer) return;
-      // Don't start a host drag from action buttons.
       if ((ev.target as HTMLElement | null)?.closest?.("button, a, input")) {
         ev.preventDefault();
         return;
       }
       const id = hostEl.dataset.host || "";
       if (!id) return;
+      hostGroupDragHostId = id;
+      hostGroupDragActive = true;
       try {
+        ev.dataTransfer.setData("text", id);
+        ev.dataTransfer.setData("text/plain", id);
         ev.dataTransfer.setData(HOST_GROUP_MIME, id);
       } catch {
-        /* custom MIME may be rejected in some WebViews */
+        /* ignore */
       }
-      ev.dataTransfer.setData("text/plain", id);
-      ev.dataTransfer.effectAllowed = "move";
-      hostGroupDragActive = true;
+      ev.dataTransfer.effectAllowed = "all";
       hostEl.classList.add("is-dragging");
     },
     { signal },
@@ -3534,11 +3673,17 @@ function bindHostGroupDragDrop(): void {
   panel.addEventListener(
     "dragend",
     () => {
-      hostGroupDragActive = false;
-      panel.querySelectorAll("[data-host].is-dragging").forEach((n) => n.classList.remove("is-dragging"));
-      clearDropMarks();
-      // Runtime updates may have been deferred; refresh once.
+      endHostDrag();
       void refreshHostsRuntime();
+    },
+    { signal },
+  );
+
+  panel.addEventListener(
+    "dragenter",
+    (ev) => {
+      if (!hostGroupDragActive && !hostGroupDragHostId) return;
+      if (isGroupDropZone(ev.target) || panel.contains(ev.target as Node)) ev.preventDefault();
     },
     { signal },
   );
@@ -3546,35 +3691,25 @@ function bindHostGroupDragDrop(): void {
   panel.addEventListener(
     "dragover",
     (ev) => {
+      if (!hostGroupDragActive && !hostGroupDragHostId) return;
       const zone = isGroupDropZone(ev.target);
       if (zone) {
         ev.preventDefault();
-        ev.stopPropagation();
-        panel.classList.remove("drop-ungroup");
         if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
         clearDropMarks();
         zone.classList.add("drop-target");
         return;
       }
-      // Allow drop on empty panel chrome to ungroup.
       if ((ev.target as HTMLElement | null)?.closest?.("[data-host],[data-local],[data-wsl-distro]")) {
         clearDropMarks();
+        ev.preventDefault();
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "none";
         return;
       }
       ev.preventDefault();
       if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-      panel.querySelectorAll(".group-row.drop-target, .group-children.drop-target").forEach((n) => {
-        n.classList.remove("drop-target");
-      });
+      clearDropMarks();
       panel.classList.add("drop-ungroup");
-    },
-    { signal },
-  );
-
-  panel.addEventListener(
-    "dragleave",
-    (ev) => {
-      if (!panel.contains(ev.relatedTarget as Node)) clearDropMarks();
     },
     { signal },
   );
@@ -3582,24 +3717,32 @@ function bindHostGroupDragDrop(): void {
   panel.addEventListener(
     "drop",
     (ev) => {
-      const hostId =
-        ev.dataTransfer?.getData(HOST_GROUP_MIME) || ev.dataTransfer?.getData("text/plain") || "";
+      if (!hostGroupDragActive && !hostGroupDragHostId) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      let hostId = hostGroupDragHostId || "";
+      if (!hostId && ev.dataTransfer) {
+        for (const type of ["text", "text/plain", HOST_GROUP_MIME]) {
+          try {
+            hostId = ev.dataTransfer.getData(type) || hostId;
+          } catch {
+            /* ignore */
+          }
+          if (hostId) break;
+        }
+      }
       const zone = isGroupDropZone(ev.target);
-      clearDropMarks();
-      hostGroupDragActive = false;
+      const groupId = zone ? zone.dataset.group || zone.dataset.groupDrop || null : null;
+      endHostDrag();
       if (!hostId) return;
-      if (zone) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const groupId = zone.dataset.group || zone.dataset.groupDrop || null;
-        if (!groupId) return;
+      if (groupId) {
         void assignHostToGroup(hostId, groupId);
         return;
       }
       if ((ev.target as HTMLElement | null)?.closest?.("[data-host],[data-local],[data-wsl-distro]")) {
+        void refreshHostsRuntime();
         return;
       }
-      ev.preventDefault();
       void assignHostToGroup(hostId, null);
     },
     { signal },
