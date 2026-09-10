@@ -22,6 +22,7 @@ interface TerminusTestBridge {
   openVault(): Promise<void>;
   /** C9: seed a host + reset virtual SFTP tree */
   seedSftpHost(hostId?: string): Promise<string>;
+  openSftp(hostId: string): Promise<void>;
   /** C9: force next sftp_* IPC to fail with typed JSON error string */
   sftpForceError(kind: string, message: string): Promise<void>;
   sftpReset(hostId?: string): Promise<void>;
@@ -207,7 +208,7 @@ export function initTestBridge(): void {
       await invoke("hosts_upsert", {
         host: {
           id: hostId,
-          name: "SFTP Lab",
+          name: hostId.startsWith("sftp-host-") ? `SFTP ${hostId.slice("sftp-host-".length)}` : "SFTP Lab",
           hostname: "sftp.example.com",
           port: 22,
           username: "lab",
@@ -225,6 +226,11 @@ export function initTestBridge(): void {
       await invoke("test_sftp_reset", { hostId }).catch(() => undefined);
       await refreshUi();
       return hostId;
+    },
+
+    async openSftp(hostId: string): Promise<void> {
+      window.dispatchEvent(new CustomEvent("terminus-e2e-open-sftp", { detail: { hostId } }));
+      await refreshUi();
     },
 
     async sftpForceError(kind: string, message: string): Promise<void> {

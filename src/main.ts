@@ -50,6 +50,15 @@ import {
   type SftpPaneSlot,
 } from "./sftpLayout";
 import {
+  closeRemote,
+  createSftpSessions,
+  hasRemote,
+  openOrFocusRemote,
+  openRemoteIds,
+  rememberRemote,
+  type SftpSessions,
+} from "./sftpSessions";
+import {
   batchDownloadEnabled,
   batchUploadEnabled,
   filterFileEntries,
@@ -291,6 +300,9 @@ let navState: NavState = createNavState();
 let forwardUi: ForwardUiState = createForwardUiState();
 /** SFTP single/split browser (#41). */
 let sftpBrowser: SftpBrowserState = createSftpBrowserState();
+/** Parked remote SFTP sessions (#101). */
+let sftpSessions: SftpSessions = createSftpSessions();
+const sftpEntryCache = new Map<string, SftpEntry[]>();
 const sftpFilterDebounce = createTrailingDebounce(SFTP_FILTER_DEBOUNCE_MS, () => {
   rerenderSftpListings();
 });
@@ -4348,6 +4360,110 @@ function resetSftpCwd() {
   state.sftpCwdHostId = null;
 }
 
+function snapshotActiveRemote(): void {
+  const hostId = state.sftpHostId;
+  if (!hostId || isLocalEndpoint(hostId)) return;
+  sftpSessions = rememberRemote(sftpSessions, hostId, {
+    path: state.sftpPath || ".",
+    cwd: state.sftpCwd || "",
+    root: state.sftpRoot || "/",
+    selected: [...state.sftpSelected],
+  });
+  sftpEntryCache.set(hostId, state.sftpEntries.slice());
+}
+
+function applyRemoteSession(hostId: string): boolean {
+  const snap = sftpSessions.byId[hostId];
+  if (!snap) return false;
+  state.sftpHostId = hostId;
+  state.sftpPath = snap.path || ".";
+  state.sftpCwd = snap.cwd || "";
+  state.sftpCwdHostId = snap.cwd ? hostId : null;
+  state.sftpRoot = snap.root || "/";
+  state.sftpSelected = new Set(snap.selected);
+  state.sftpEntries = sftpEntryCache.get(hostId)?.slice() ?? [];
+  return true;
+}
+
+function bindLayoutToRemote(hostId: string): void {
+  if (sftpBrowser.mode === "split") {
+    if (isLocalEndpoint(sftpBrowser.paneA)) {
+      sftpBrowser = setPaneEndpoint(sftpBrowser, "b", hostId);
+    } else if (sftpBrowser.paneB != null && isLocalEndpoint(sftpBrowser.paneB)) {
+      sftpBrowser = setPaneEndpoint(sftpBrowser, "a", hostId);
+    } else {
+      sftpBrowser = setPaneEndpoint(sftpBrowser, "a", hostId);
+    }
+  } else {
+    sftpBrowser = openSingle(sftpBrowser, hostId);
+  }
+}
+
+function paintActiveRemoteFromCache(hostId: string): void {
+  const path = state.sftpPath || ".";
+  if (state.sftpEntries.length) {
+    renderSftpWorkspace(hostId, path, wrapSftpContentEnter(remoteTableHtml(state.sftpEntries)));
+    mountRemoteVirtualList(state.sftpEntries);
+    bindSftpRows(hostId, remotePaneEl());
+    refreshRemoteSelection();
+    updateTransferUi();
+    return;
+  }
+  void loadSftp(hostId, path);
+}
+
+function activateRemoteSession(hostId: string): void {
+  if (!hostId || hostId === state.sftpHostId) {
+    renderSftpSidebar(state.sftpHostId);
+    return;
+  }
+  snapshotActiveRemote();
+  sftpSessions = openOrFocusRemote(sftpSessions, hostId);
+  const restored = applyRemoteSession(hostId);
+  if (!restored) {
+    state.sftpHostId = hostId;
+    state.sftpRoot = "/";
+    state.sftpPath = ".";
+    state.sftpSelected.clear();
+    state.sftpEntries = [];
+    resetSftpCwd();
+  }
+  bindLayoutToRemote(hostId);
+  setActivity("sftp");
+  enterSftpMode();
+  ensureSftpShell(true);
+  paintActiveRemoteFromCache(hostId);
+  renderSftpSidebar(hostId);
+}
+
+function closeRemoteSession(hostId: string): void {
+  if (!hostId) return;
+  const wasActive = state.sftpHostId === hostId;
+  if (wasActive) snapshotActiveRemote();
+  const { sessions, nextActive } = closeRemote(sftpSessions, hostId, state.sftpHostId);
+  sftpSessions = sessions;
+  sftpEntryCache.delete(hostId);
+  if (!wasActive) {
+    renderSftpSidebar(state.sftpHostId);
+    return;
+  }
+  if (!nextActive) {
+    state.sftpHostId = null;
+    state.sftpEntries = [];
+    state.sftpSelected.clear();
+    resetSftpCwd();
+    sftpBrowser = openSingle(sftpBrowser, SFTP_LOCAL_ID);
+    ensureSftpShell(true);
+    renderSftpEmpty();
+    return;
+  }
+  applyRemoteSession(nextActive);
+  bindLayoutToRemote(nextActive);
+  ensureSftpShell(true);
+  paintActiveRemoteFromCache(nextActive);
+  renderSftpSidebar(nextActive);
+}
+
 async function ensureSftpCwd(hostId: string) {
   if (state.sftpCwdHostId === hostId && state.sftpCwd) return;
   state.sftpCwdHostId = hostId;
@@ -4360,17 +4476,30 @@ async function ensureSftpCwd(hostId: string) {
 }
 
 function openSftpFor(hostId: string) {
-  sftpBrowser = openSingle(sftpBrowser, hostId);
-  state.sftpHostId = hostId;
-  state.sftpRoot = "/";
-  state.sftpPath = ".";
+  snapshotActiveRemote();
+  const existed = hasRemote(sftpSessions, hostId);
+  sftpSessions = openOrFocusRemote(sftpSessions, hostId);
+  if (existed) {
+    applyRemoteSession(hostId);
+  } else {
+    state.sftpHostId = hostId;
+    state.sftpRoot = "/";
+    state.sftpPath = ".";
+    state.sftpSelected.clear();
+    state.sftpEntries = [];
+    resetSftpCwd();
+  }
   state.localSelected.clear();
-  state.sftpSelected.clear();
-  resetSftpCwd();
+  bindLayoutToRemote(hostId);
   setActivity("sftp");
   enterSftpMode();
   ensureSftpShell(true);
-  void loadSftp(hostId, ".");
+  if (existed && (sftpEntryCache.has(hostId) || state.sftpEntries.length)) {
+    paintActiveRemoteFromCache(hostId);
+  } else {
+    void loadSftp(hostId, state.sftpPath || ".");
+  }
+  renderSftpSidebar(hostId);
 }
 
 function ensureSftpView(): HTMLElement {
@@ -4625,9 +4754,20 @@ async function changePaneEndpoint(slot: SftpPaneSlot, endpoint: SftpEndpointId) 
   if (isLocalEndpoint(endpoint)) {
     await initLocalPane();
   } else {
-    state.sftpRoot = "/";
-    resetSftpCwd();
-    await loadSftp(endpoint, ".");
+    snapshotActiveRemote();
+    const existed = hasRemote(sftpSessions, endpoint);
+    sftpSessions = openOrFocusRemote(sftpSessions, endpoint);
+    if (existed) {
+      applyRemoteSession(endpoint);
+      paintActiveRemoteFromCache(endpoint);
+    } else {
+      state.sftpRoot = "/";
+      state.sftpPath = ".";
+      state.sftpSelected.clear();
+      state.sftpEntries = [];
+      resetSftpCwd();
+      await loadSftp(endpoint, ".");
+    }
   }
   updateTransferUi();
   renderSftpSidebar(state.sftpHostId);
@@ -4963,9 +5103,31 @@ function renderSftpSidebar(hostId: string | null) {
     : `<button type="button" class="sftp-side-toggle" id="sftp-split-btn" data-testid="sftp-split-btn" aria-pressed="false" title="${escapeHtml(splitLabel)}">${icons.columns}<span>${escapeHtml(splitLabel)}</span></button>`;
   const hiddenLabel = state.sftpShowHidden ? "Hide hidden files" : "Show hidden files";
   const hiddenIcon = state.sftpShowHidden ? icons.eye : icons.eyeOff;
+  const openIds = openRemoteIds(sftpSessions);
+  const openList =
+    openIds.length === 0
+      ? ""
+      : `<div class="sftp-open-remotes" data-testid="sftp-open-remotes" role="list">
+      <div class="sftp-open-remotes-label">Open remotes</div>
+      ${openIds
+        .map((id) => {
+          const active = id === (hostId || state.sftpHostId);
+          const label = sftpEndpointLabel(id);
+          const ico = sftpEndpointIcon(id);
+          return `<div class="sftp-open-remote${active ? " active" : ""}" role="listitem" data-testid="sftp-open-remote-${escapeHtml(id)}">
+            <button type="button" class="sftp-open-remote-btn" data-activate-remote="${escapeHtml(id)}" title="${escapeHtml(label)}">
+              <span class="sftp-host-ico" aria-hidden="true">${ico}</span>
+              <span class="sftp-open-remote-name">${escapeHtml(label)}</span>
+            </button>
+            <button type="button" class="sftp-open-remote-close" data-close-remote="${escapeHtml(id)}" title="Close" aria-label="Close ${escapeHtml(label)}">${icons.close}</button>
+          </div>`;
+        })
+        .join("")}
+    </div>`;
   $("panel-sftp").innerHTML = `<div class="sftp-side" data-testid="sftp-side">
     ${splitBtn}
     <button type="button" class="sftp-side-toggle" id="sftp-toggle-hidden" data-testid="sftp-toggle-hidden" aria-pressed="${state.sftpShowHidden}" title="${escapeHtml(hiddenLabel)}">${hiddenIcon}<span>${state.sftpShowHidden ? "Hidden on" : "Hidden off"}</span></button>
+    ${openList}
     <p class="sftp-side-hint" data-testid="sftp-filter-hint">Search filters ${escapeHtml(activeSftpPaneLabel())}.</p>
   </div>`;
   const split = document.getElementById("sftp-split-btn");
@@ -4981,6 +5143,16 @@ function renderSftpSidebar(hostId: string | null) {
       rerenderSftpListings();
     };
   }
+  $("panel-sftp").querySelectorAll<HTMLElement>("[data-activate-remote]").forEach((btn) => {
+    btn.onclick = () => activateRemoteSession(btn.dataset.activateRemote || "");
+  });
+  $("panel-sftp").querySelectorAll<HTMLElement>("[data-close-remote]").forEach((btn) => {
+    btn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeRemoteSession(btn.dataset.closeRemote || "");
+    };
+  });
   syncSftpSearchScopeHint();
 }
 
@@ -5536,10 +5708,11 @@ let sftpLoadSeq = 0;
 async function loadSftp(hostId: string, path: string) {
   const seq = ++sftpLoadSeq;
   state.sftpHostId = hostId;
+  sftpSessions = openOrFocusRemote(sftpSessions, hostId);
   if (sftpBrowser.mode === "single") {
     sftpBrowser = openSingle(sftpBrowser, hostId);
   } else if (sftpBrowser.paneA !== hostId && sftpBrowser.paneB !== hostId) {
-    sftpBrowser = setPaneEndpoint(sftpBrowser, "a", hostId);
+    bindLayoutToRemote(hostId);
   }
   setSftpConn("connecting");
   if (
@@ -5557,7 +5730,7 @@ async function loadSftp(hostId: string, path: string) {
   renderSftpWorkspace(hostId, hintRaw, sftpListLoadingHtml(hintLabel, "sftp-loading"));
   setPaneListingLoading(remotePaneEl(), true);
   await ensureSftpCwd(hostId);
-  if (seq !== sftpLoadSeq) return;
+  if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
   let safePath: string;
   try {
     const raw = path && path.trim() ? path : ".";
@@ -5583,12 +5756,13 @@ async function loadSftp(hostId: string, path: string) {
       path: safePath,
       root: state.sftpRoot,
     });
-    if (seq !== sftpLoadSeq) return;
+    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
     setSftpConn("connected");
     if (!entries.length) {
       state.sftpEntries = [];
       renderSftpWorkspace(hostId, safePath, wrapSftpContentEnter(remoteTableHtml([])));
       setPaneListingLoading(remotePaneEl(), false);
+      snapshotActiveRemote();
       return;
     }
     state.sftpEntries = entries;
@@ -5597,8 +5771,9 @@ async function loadSftp(hostId: string, path: string) {
     bindSftpRows(hostId, remotePaneEl());
     setPaneListingLoading(remotePaneEl(), false);
     updateTransferUi();
+    snapshotActiveRemote();
   } catch (err) {
-    if (seq !== sftpLoadSeq) return;
+    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
     setPaneListingLoading(remotePaneEl(), false);
     renderSftpError(hostId, safePath, err);
   }
@@ -6547,4 +6722,8 @@ if (import.meta.env.VITE_E2E === "1") {
   window.addEventListener("terminus-e2e-open-vault", () => {
     void openVault();
   });
+  window.addEventListener("terminus-e2e-open-sftp", ((ev: CustomEvent<{ hostId: string }>) => {
+    const id = ev.detail?.hostId;
+    if (id) openSftpFor(id);
+  }) as EventListener);
 }
