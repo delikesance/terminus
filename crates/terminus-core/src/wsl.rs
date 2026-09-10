@@ -1,13 +1,23 @@
-//! WSL distro discovery and helpers (#82).
+//! WSL distro discovery and helpers (#82 / #84).
 //! Parsing is platform-agnostic (unit-tested). Spawning `wsl.exe` is Windows-only.
 
 use crate::error::Result;
 #[cfg(windows)]
 use crate::error::Error;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 /// Synthetic session/host id prefix — never a SQLite host UUID.
 pub const WSL_HOST_PREFIX: &str = "wsl:";
+
+/// How long a successful `wsl -l -v` result is reused (#84 AC4).
+pub const LIST_CACHE_TTL: Duration = Duration::from_secs(45);
+
+/// Win32 `CREATE_NO_WINDOW` — hide console for non-PTY `wsl.exe` (#84 AC1).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WslDistro {
@@ -29,6 +39,17 @@ pub fn is_wsl_host_id(host_id: &str) -> bool {
     host_id.starts_with(WSL_HOST_PREFIX)
 }
 
+/// Args for an interactive WSL shell in a ConPTY (`wsl.exe` + these).
+/// Uses `--cd ~` instead of a Windows cwd so the distro starts in the Linux home (#84).
+pub fn shell_args(distro: &str) -> Vec<String> {
+    vec![
+        "-d".to_string(),
+        distro.to_string(),
+        "--cd".to_string(),
+        "~".to_string(),
+    ]
+}
+
 /// Parse `wsl.exe -l -v` output (UTF-16 LE bytes or UTF-8 fixtures).
 pub fn parse_wsl_list_output(raw: &[u8]) -> Result<Vec<WslDistro>> {
     let text = decode_wsl_list_bytes(raw);
@@ -39,7 +60,6 @@ fn decode_wsl_list_bytes(raw: &[u8]) -> String {
     if raw.starts_with(&[0xFF, 0xFE]) {
         return decode_utf16_le(&raw[2..]);
     }
-    // Dense NULs → UTF-16LE without BOM
     let nul_ratio = if raw.is_empty() {
         0.0
     } else {
@@ -82,7 +102,6 @@ fn parse_wsl_list_text(text: &str) -> Result<Vec<WslDistro>> {
         if cols.len() < 2 {
             continue;
         }
-        // NAME may be multi-token rarely; prefer last two cols as STATE VERSION when numeric version.
         let (name, state, version) = if cols.len() >= 3 {
             let version_str = cols[cols.len() - 1];
             let state = cols[cols.len() - 2];
@@ -109,11 +128,70 @@ fn parse_wsl_list_text(text: &str) -> Result<Vec<WslDistro>> {
     Ok(out)
 }
 
-/// List installed WSL distros. Empty when `wsl.exe` is missing.
-#[cfg(windows)]
+struct ListCache {
+    at: Instant,
+    list: Vec<WslDistro>,
+}
+
+static LIST_CACHE: Mutex<Option<ListCache>> = Mutex::new(None);
+/// Test/observability: how many times the uncached fetch path ran.
+static LIST_FETCH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Clear the in-process distro list cache (tests + rare force refresh).
+pub fn clear_list_cache() {
+    *LIST_CACHE.lock() = None;
+}
+
+pub fn list_fetch_count() -> usize {
+    LIST_FETCH_COUNT.load(Ordering::Relaxed)
+}
+
+/// Pure cache helper — unit-tested without invoking `wsl.exe`.
+pub fn cache_get_or_fetch<F>(
+    cache: &Mutex<Option<ListCache>>,
+    force: bool,
+    ttl: Duration,
+    mut fetch: F,
+) -> Result<Vec<WslDistro>>
+where
+    F: FnMut() -> Result<Vec<WslDistro>>,
+{
+    if !force {
+        let guard = cache.lock();
+        if let Some(entry) = guard.as_ref() {
+            if entry.at.elapsed() < ttl {
+                return Ok(entry.list.clone());
+            }
+        }
+    }
+    let list = fetch()?;
+    *cache.lock() = Some(ListCache {
+        at: Instant::now(),
+        list: list.clone(),
+    });
+    Ok(list)
+}
+
+/// List installed WSL distros (cached). Empty when `wsl.exe` is missing.
 pub fn list_distros() -> Result<Vec<WslDistro>> {
-    use std::process::Command;
-    let output = Command::new("wsl.exe")
+    list_distros_cached(false)
+}
+
+pub fn list_distros_cached(force: bool) -> Result<Vec<WslDistro>> {
+    cache_get_or_fetch(&LIST_CACHE, force, LIST_CACHE_TTL, fetch_distros_uncached)
+}
+
+fn fetch_distros_uncached() -> Result<Vec<WslDistro>> {
+    LIST_FETCH_COUNT.fetch_add(1, Ordering::Relaxed);
+    let list = fetch_distros_platform()?;
+    #[cfg(windows)]
+    schedule_warm(&list);
+    Ok(list)
+}
+
+#[cfg(windows)]
+fn fetch_distros_platform() -> Result<Vec<WslDistro>> {
+    let output = hidden_wsl_command()
         .args(["-l", "-v"])
         .output()
         .map_err(|err| Error::msg(format!("WSL not available ({err})")))?;
@@ -128,8 +206,37 @@ pub fn list_distros() -> Result<Vec<WslDistro>> {
 }
 
 #[cfg(not(windows))]
-pub fn list_distros() -> Result<Vec<WslDistro>> {
+fn fetch_distros_platform() -> Result<Vec<WslDistro>> {
     Ok(Vec::new())
+}
+
+#[cfg(windows)]
+fn hidden_wsl_command() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// Pre-start a Stopped distro (or the default) so the first interactive open is faster.
+#[cfg(windows)]
+fn schedule_warm(list: &[WslDistro]) {
+    let target = list
+        .iter()
+        .find(|d| d.is_default)
+        .or_else(|| list.first())
+        .map(|d| d.name.clone());
+    let Some(name) = target else {
+        return;
+    };
+    std::thread::Builder::new()
+        .name("wsl-warm".into())
+        .spawn(move || {
+            let _ = hidden_wsl_command()
+                .args(["-d", &name, "--cd", "~", "-e", "true"])
+                .output();
+        })
+        .ok();
 }
 
 #[cfg(test)]
@@ -180,5 +287,44 @@ mod tests {
         assert!(is_wsl_host_id("wsl:Debian"));
         assert!(!is_wsl_host_id("local"));
         assert!(!is_wsl_host_id("uuid-here"));
+    }
+
+    #[test]
+    fn shell_args_use_cd_home_not_windows_cwd() {
+        assert_eq!(
+            shell_args("Ubuntu").as_slice(),
+            ["-d", "Ubuntu", "--cd", "~"]
+        );
+        assert_eq!(
+            shell_args("Debian").as_slice(),
+            ["-d", "Debian", "--cd", "~"]
+        );
+    }
+
+    #[test]
+    fn list_cache_skips_fetch_within_ttl() {
+        let cache: Mutex<Option<ListCache>> = Mutex::new(None);
+        let calls = AtomicUsize::new(0);
+        let mut fetch = || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(vec![WslDistro {
+                name: "Ubuntu".into(),
+                state: "Running".into(),
+                version: 2,
+                is_default: true,
+            }])
+        };
+        let a = cache_get_or_fetch(&cache, false, Duration::from_secs(60), &mut fetch).unwrap();
+        let b = cache_get_or_fetch(&cache, false, Duration::from_secs(60), &mut fetch).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "second call must hit cache");
+        let _ = cache_get_or_fetch(&cache, true, Duration::from_secs(60), &mut fetch).unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2, "force must refetch");
+    }
+
+    #[test]
+    fn create_no_window_flag_value() {
+        // Document/lock the Win32 constant we pass to CommandExt::creation_flags.
+        assert_eq!(0x0800_0000u32, 0x08000000);
     }
 }

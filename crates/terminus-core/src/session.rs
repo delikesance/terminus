@@ -277,7 +277,7 @@ impl SessionManager {
         Ok(info)
     }
 
-    /// Open a WSL distro shell via `wsl.exe -d <distro>` on a local PTY (#82).
+    /// Open a WSL distro shell via `wsl.exe -d <distro> --cd ~` on a local PTY (#82 / #84).
     pub async fn open_wsl(
         self: &Arc<Self>,
         distro: &str,
@@ -296,7 +296,14 @@ impl SessionManager {
         let host_id = crate::wsl::wsl_host_id(distro);
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel::<Result<Vec<u8>>>();
-        let pty = LocalPty::spawn_program(Some("wsl.exe"), &["-d", distro], cols, rows, tx)?;
+        let args = crate::wsl::shell_args(distro);
+        let pty = tokio::task::spawn_blocking(move || {
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            // No Windows cwd — `--cd ~` selects the Linux home inside the distro.
+            LocalPty::spawn_program_with_cwd(Some("wsl.exe"), &arg_refs, cols, rows, tx, None)
+        })
+        .await
+        .map_err(|err| Error::msg(format!("WSL spawn join failed: {err}")))??;
         let emulator = Arc::new(parking_lot::Mutex::new(
             self.open_emulator(cols, rows, scale).await?,
         ));
