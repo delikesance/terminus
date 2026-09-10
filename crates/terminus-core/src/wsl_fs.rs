@@ -5,7 +5,9 @@ use crate::error::{Error, Result};
 use crate::models::SftpEntry;
 use crate::sftp_path::{normalize_sftp_path, resolve_under_root};
 use crate::wsl::{distro_from_host_id, is_wsl_host_id};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(any(windows, test))]
+use std::path::Path;
 
 #[cfg(windows)]
 use crate::local_fs;
