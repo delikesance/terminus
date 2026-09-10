@@ -55,7 +55,12 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2 \
+            libkrb5-dev clang libclang-dev llvm-dev pkg-config
+          echo "LIBCLANG_PATH=$(llvm-config-14 --libdir 2>/dev/null || llvm-config --libdir)" >> "$GITHUB_ENV"
+      - name: Force Apple GSS
+        if: runner.os == 'macOS'
+        run: echo "LIBGSSAPI_IMPL=apple" >> $GITHUB_ENV
       - run: npm ci
       - name: Generate icons
         if: runner.os != 'Windows'
@@ -128,6 +133,9 @@ jobs:
           prerelease: false
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+      - name: Assert bundled native libs
+        shell: bash
+        run: node scripts/assert-portable-libs.mjs
       - name: sccache stats
         if: always()
         run: sccache --show-stats

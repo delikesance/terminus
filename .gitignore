@@ -35,6 +35,7 @@ src/hostDragGhost.js
 src/windowChrome.js
 src/sftpSessions.js
 src/sftpPaneState.js
+src/portableBundle.js
 test-results/
 
 # Perf / load reports (#45)

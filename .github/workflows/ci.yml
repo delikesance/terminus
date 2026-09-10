@@ -101,6 +101,8 @@ jobs:
         run: nix develop --command python3 scripts/gen-icons.py
       - name: Build Tauri
         run: nix develop --command npm run tauri -- build --bundles deb
+      - name: Assert bundled native libs
+        run: nix develop --command node scripts/assert-portable-libs.mjs
 
   build-macos:
     if: github.event_name == 'pull_request'
@@ -122,9 +124,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Force Apple GSS
+        if: runner.os == 'macOS'
+        run: echo "LIBGSSAPI_IMPL=apple" >> $GITHUB_ENV
       - run: npm ci
       - run: python3 scripts/gen-icons.py
       - run: npm run tauri -- build --bundles app
+      - name: Assert bundled native libs
+        run: node scripts/assert-portable-libs.mjs
       - name: sccache stats
         if: always()
         run: sccache --show-stats
@@ -152,6 +159,9 @@ jobs:
       - run: npm ci
       - run: python scripts/gen-icons.py
       - run: npm run tauri -- build --bundles nsis
+      - name: Assert bundled native libs
+        shell: bash
+        run: node scripts/assert-portable-libs.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: terminus-windows-nsis
