@@ -33,6 +33,7 @@ src/motion.js
 src/hostDragGhost.js
 src/windowChrome.js
 src/sftpSessions.js
+src/sftpPaneState.js
 test-results/
 
 # Perf / load reports (#45)
