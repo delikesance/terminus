@@ -3,8 +3,7 @@ use crate::models::{ColorTheme, Host, HostRuntime, Identity, SessionInfo};
 use crate::pty::LocalPty;
 use crate::ssh::{self, SshCommand};
 use crate::store::Store;
-use crate::gpu_frame;
-use crate::term::TerminalEmulator;
+use crate::term::{pack_frame, TerminalEmulator};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -514,8 +513,11 @@ impl SessionManager {
         };
         let packed = {
             let mut emu = session.emulator.lock();
-            emu.capture_gpu_frame(force)
-                .map(|frame| gpu_frame::pack_gpu_frame(&frame))
+            // Full RGBA frames: GPU1 atlas path left panes blank when glyph
+            // stamps were missing/incremental (Canvas2D composite stayed empty).
+            let (cw, ch) = emu.cell_size();
+            emu.capture_frame(force)
+                .map(|frame| pack_frame(&frame, cw, ch))
         };
         Ok(packed)
     }
