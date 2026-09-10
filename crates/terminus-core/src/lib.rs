@@ -10,6 +10,7 @@ pub mod ssh;
 pub mod store;
 pub mod sync;
 pub mod term;
+pub mod wsl;
 
 pub use error::{Error, Result};
 pub use forward_runtime::ForwardRuntime;

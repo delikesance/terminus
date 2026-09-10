@@ -154,6 +154,7 @@ type PortForward = {
   deleted_at?: string | null;
 };
 type SessionInfo = { id: string; title: string; kind: string; host_id?: string | null };
+type WslDistro = { name: string; state: string; version: number; is_default: boolean };
 type Group = { id: string; name: string; parent_id?: string | null; created_at: string; updated_at: string; deleted_at?: string | null };
 type Appearance = {
   font_family: string;
@@ -233,6 +234,7 @@ type Pane = {
 const state = {
   hosts: [] as Host[],
   hostsRuntime: [] as HostRuntime[],
+  wslDistros: [] as WslDistro[],
   groups: [] as Group[],
   identities: [] as Identity[],
   snippets: [] as Snippet[],
@@ -286,6 +288,9 @@ let localVirtual: VirtualListHandle<LocalEntry> | null = null;
 let remoteVirtual: VirtualListHandle<SftpEntry> | null = null;
 
 document.head.appendChild(state.customCss);
+
+/** Windows host UI (WSL rows). Evaluated once at load. */
+const IS_WIN = /^Win/.test(navigator.platform || "");
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const $input = (id: string) => $(id) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
@@ -624,7 +629,7 @@ function applyAppearance() {
 }
 
 async function refreshSide() {
-  const [hosts, hostsRuntime, groups, identities, snippets, history, forwards, running] =
+  const [hosts, hostsRuntime, groups, identities, snippets, history, forwards, running, wslDistros] =
     await Promise.all([
       invoke<Host[]>("hosts_list"),
       invoke<HostRuntime[]>("hosts_runtime").catch(() => [] as HostRuntime[]),
@@ -634,9 +639,13 @@ async function refreshSide() {
       invoke<HistoryEntry[]>("history_search", { query: "", limit: 80 }),
       invoke<PortForward[]>("forwards_list").catch(() => [] as PortForward[]),
       invoke<string[]>("forwards_running").catch(() => [] as string[]),
+      IS_WIN
+        ? invoke<WslDistro[]>("wsl_list_distros").catch(() => [] as WslDistro[])
+        : Promise.resolve([] as WslDistro[]),
     ]);
   state.hosts = hosts;
   state.hostsRuntime = hostsRuntime;
+  state.wslDistros = wslDistros;
   state.groups = groups;
   state.identities = identities;
   state.snippets = snippets;
@@ -718,7 +727,46 @@ async function refreshSync() {
 }
 
 function hostPanes(hostId?: string | null) {
-  return state.panes.filter((p) => (hostId ? p.session?.host_id === hostId || p.pending?.hostId === hostId : p.session?.kind === "local" || p.pending?.kind === "local"));
+  if (hostId) {
+    return state.panes.filter(
+      (p) => p.session?.host_id === hostId || p.pending?.hostId === hostId,
+    );
+  }
+  // True local only — exclude WSL (`host_id` wsl:…).
+  return state.panes.filter((p) => {
+    const hid = p.session?.host_id ?? p.pending?.hostId;
+    if (hid?.startsWith("wsl:")) return false;
+    return p.session?.kind === "local" || p.pending?.kind === "local";
+  });
+}
+
+function wslHostId(distro: string) {
+  return `wsl:${distro}`;
+}
+
+function inferOsFromDistroName(name: string): string {
+  const n = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const keys = [
+    "ubuntu",
+    "debian",
+    "fedora",
+    "arch",
+    "alpine",
+    "kali",
+    "opensuse",
+    "suse",
+    "oracle",
+    "centos",
+    "rocky",
+    "alma",
+    "gentoo",
+    "nixos",
+    "manjaro",
+  ];
+  for (const k of keys) {
+    if (n.includes(k)) return k === "suse" ? "opensuse" : k;
+  }
+  return "linux";
 }
 
 async function closeBackendSession(sessionId: string) {
@@ -726,7 +774,7 @@ async function closeBackendSession(sessionId: string) {
 }
 
 /** Kill backend sessions that no longer belong to any open tab. */
-async function closeOrphanSessions(kind: "local" | "ssh", hostId?: string) {
+async function closeOrphanSessions(kind: "local" | "ssh" | "wsl", hostId?: string) {
   const live = await invoke<SessionInfo[]>("session_list").catch(() => [] as SessionInfo[]);
   const kept = new Set(
     state.panes.flatMap((p) => (p.session?.id && !p.aborted ? [p.session.id] : [])),
@@ -735,7 +783,8 @@ async function closeOrphanSessions(kind: "local" | "ssh", hostId?: string) {
     live
       .filter((s) => {
         if (kept.has(s.id)) return false;
-        if (kind === "local") return s.kind === "local" || !s.host_id;
+        if (kind === "local") return s.kind === "local" && !s.host_id;
+        if (kind === "wsl") return s.kind === "wsl" && !!hostId && s.host_id === hostId;
         return !!hostId && s.host_id === hostId;
       })
       .map((s) => closeBackendSession(s.id)),
@@ -867,7 +916,9 @@ function renderHosts() {
   };
   
   // Build the panel HTML
-  const localActive = active?.session?.kind === "local" || active?.pending?.kind === "local";
+  const localActive =
+    (active?.session?.kind === "local" || active?.pending?.kind === "local") &&
+    !(active?.session?.host_id ?? active?.pending?.hostId)?.startsWith("wsl:");
   const localClasses = hostCardClassList({ openCount: localOpen, active: !!localActive, kind: "local" });
   const localDotClass = connectionDotClassList("local");
   const localDotColor = connectionDotColor("local");
@@ -889,6 +940,46 @@ function renderHosts() {
         ${localCountHtml}
       </span>
     </div>`;
+
+  const filteredWsl = IS_WIN
+    ? state.wslDistros.filter((d) => !q.trim() || d.name.toLowerCase().includes(q))
+    : [];
+  for (const d of filteredWsl) {
+    const hid = wslHostId(d.name);
+    const runtime = state.hostsRuntime.find((r) => r.host_id === hid);
+    const openCount = Math.max(
+      runtime?.open_count ?? 0,
+      hostPanes(hid).filter((p) => p.session && !p.exited).length,
+    );
+    const isActive = hostPanes(hid).some((p) => p.id === state.activePane);
+    const classes = hostCardClassList({ openCount, active: isActive, kind: "host" });
+    const dotClass = connectionDotClassList("local");
+    const dotColor = connectionDotColor("local");
+    const aria = hostCardAriaStatus("local");
+    const countHtml = shouldShowSessionCount(openCount)
+      ? `<span class="sess-count" data-testid="open-count-pill" title="${openCount} sessions">${sessionCountLabel(openCount)}</span>`
+      : "";
+    const subtitle = openCount
+      ? `${openCount} open shell${openCount > 1 ? "s" : ""}`
+      : d.state || "WSL";
+    const osIco = hostOsIcon(inferOsFromDistroName(d.name));
+    const defaultMark = d.is_default ? " · default" : "";
+    panelHtml += `<div class="${classes}" data-wsl-distro="${escapeHtml(d.name)}" data-testid="host-wsl" title="WSL · ${escapeHtml(d.name)}${defaultMark}" tabindex="0">
+        <span class="leading" data-os="${escapeHtml(osIco.os)}">${osIco.icon}</span>
+        <div class="body">
+          <strong class="host-title">${escapeHtml(d.name)}</strong>
+          <small class="host-subtitle">${escapeHtml(subtitle)}${d.is_default ? " · default" : ""}</small>
+        </div>
+        <span class="host-actions">
+          <button type="button" class="quick" data-new-wsl="${escapeHtml(d.name)}" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
+          <button type="button" class="more" data-more-wsl="${escapeHtml(d.name)}" data-testid="host-action-more" title="More actions" aria-label="More actions" aria-haspopup="menu">${icons.more}</button>
+        </span>
+        <span class="host-status">
+          <span class="${dotClass}" style="background: ${dotColor};" data-testid="connection-dot" data-state="local" role="status" aria-label="${escapeHtml(aria)}"></span>
+          ${countHtml}
+        </span>
+      </div>`;
+  }
   
   const ungrouped = filteredHosts.filter((h) => !h.deleted_at && !h.group_id);
   for (const host of ungrouped) {
@@ -903,7 +994,7 @@ function renderHosts() {
 
   // Empty only for 0 real hosts (list already excludes soft-deleted). Search ≠ zero-host empty.
   const noFilter = !q.trim();
-  if (!state.hosts.length && noFilter) {
+  if (!state.hosts.length && noFilter && !filteredWsl.length) {
     $("panel-hosts").insertAdjacentHTML(
       "beforeend",
       `<div class="empty" data-testid="empty-hosts">
@@ -917,7 +1008,7 @@ function renderHosts() {
     );
     $("empty-add-host").onclick = () => editHost();
     $("empty-import-hosts").onclick = () => void importKnownHosts();
-  } else if (!filteredHosts.length) {
+  } else if (!filteredHosts.length && !filteredWsl.length) {
     $("panel-hosts").insertAdjacentHTML(
       "beforeend",
       `<div class="empty" data-testid="empty-hosts-match">${icons.search}<span class="empty-title">No hosts match</span></div>`,
@@ -930,6 +1021,39 @@ function renderHosts() {
     btn.onclick = (ev) => {
       ev.stopPropagation();
       void openLocal();
+    };
+  });
+  $("panel-hosts").querySelectorAll<HTMLElement>("[data-wsl-distro]").forEach((el) => {
+    const distro = el.dataset.wslDistro!;
+    el.onclick = () => focusOrOpenWsl(distro);
+    el.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      const hid = wslHostId(distro);
+      const open = hostPanes(hid);
+      showMenu(ev.clientX, ev.clientY, [
+        { label: "Connect", run: () => void openWsl(distro) },
+        { label: "Focus session", run: () => focusHost(hid), hidden: !open.length },
+        { label: "Copy name", run: () => void navigator.clipboard.writeText(distro) },
+      ]);
+    };
+  });
+  $("panel-hosts").querySelectorAll<HTMLButtonElement>("[data-new-wsl]").forEach((btn) => {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      void openWsl(btn.dataset.newWsl!);
+    };
+  });
+  $("panel-hosts").querySelectorAll<HTMLButtonElement>("[data-more-wsl]").forEach((btn) => {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const distro = btn.dataset.moreWsl!;
+      const hid = wslHostId(distro);
+      const rect = btn.getBoundingClientRect();
+      showMenu(rect.left, rect.bottom + 4, [
+        { label: "Connect", run: () => void openWsl(distro) },
+        { label: "Focus session", run: () => focusHost(hid), hidden: !hostPanes(hid).length },
+        { label: "Copy name", run: () => void navigator.clipboard.writeText(distro) },
+      ]);
     };
   });
 
@@ -1017,6 +1141,12 @@ function syncHostHighlights() {
     const small = localEl.querySelector("small");
     if (small) small.textContent = localOpen.length ? `${localOpen.length} open shell${localOpen.length > 1 ? "s" : ""}` : "Local shell";
   }
+  panel.querySelectorAll<HTMLElement>("[data-wsl-distro]").forEach((el) => {
+    const hid = wslHostId(el.dataset.wslDistro!);
+    const open = hostPanes(hid);
+    el.classList.toggle("open", open.length > 0);
+    el.classList.toggle("active-host", open.some((p) => p.id === state.activePane));
+  });
   panel.querySelectorAll<HTMLElement>("[data-host]").forEach((el) => {
     const open = hostPanes(el.dataset.host);
     el.classList.toggle("open", open.length > 0);
@@ -1699,10 +1829,17 @@ function focusOrOpenSsh(hostId: string) {
   else void openSsh(hostId);
 }
 
+function focusOrOpenWsl(distro: string) {
+  const open = hostPanes(wslHostId(distro));
+  if (open.length) selectPane(open[open.length - 1]!.id);
+  else void openWsl(distro);
+}
+
 function focusHost(hostId: string) {
   const open = hostPanes(hostId);
   if (!open.length) {
-    void openSsh(hostId);
+    if (hostId.startsWith("wsl:")) void openWsl(hostId.slice(4));
+    else void openSsh(hostId);
     return;
   }
   const idx = open.findIndex((p) => p.id === state.activePane);
@@ -1726,6 +1863,29 @@ async function openLocal(reuse?: Pane) {
     attachSession(info, pane);
   } catch (err) {
     if (!pane.aborted) failPane(pane, "Couldn't open a local shell", String(err));
+  }
+}
+
+async function openWsl(distro: string, reuse?: Pane) {
+  const hostId = wslHostId(distro);
+  if (!reuse) await closeOrphanSessions("wsl", hostId);
+  const pane = reuse ?? createPendingPane(distro, "wsl", hostId);
+  try {
+    const size = paneSize(pane);
+    const info = await invoke<SessionInfo>("session_open_wsl", {
+      distro,
+      cols: size.cols,
+      rows: size.rows,
+      scale: displayScale(),
+    });
+    if (pane.aborted || !state.panes.some((p) => p.id === pane.id)) {
+      await closeBackendSession(info.id);
+      return;
+    }
+    attachSession(info, pane);
+    void refreshHostsRuntime();
+  } catch (err) {
+    if (!pane.aborted) failPane(pane, `Couldn't open WSL · ${distro}`, String(err));
   }
 }
 
@@ -2238,7 +2398,7 @@ function cycleTab(delta: number) {
   if (next) selectPane(next.id);
 }
 
-/** Open hosts in sidebar order (local first), for Ctrl+Tab switching. */
+/** Open hosts in sidebar order (local first, then WSL, then SSH), for Ctrl+Tab switching. */
 function openHostKeys(): string[] {
   const keys: string[] = [];
   const seen = new Set<string>();
@@ -2248,13 +2408,19 @@ function openHostKeys(): string[] {
     keys.push(key);
   };
   if (hostPanes().length) add("local");
+  for (const d of state.wslDistros) {
+    const id = wslHostId(d.name);
+    if (hostPanes(id).length) add(id);
+  }
   for (const h of state.hosts) {
     if (h.deleted_at) continue;
     if (hostPanes(h.id).length) add(h.id);
   }
   for (const p of state.panes) {
-    if (p.session?.kind === "local" || p.pending?.kind === "local") add("local");
-    else {
+    if (p.session?.kind === "local" || p.pending?.kind === "local") {
+      const hid = p.session?.host_id ?? p.pending?.hostId;
+      if (!hid?.startsWith("wsl:")) add("local");
+    } else {
       const id = p.session?.host_id ?? p.pending?.hostId;
       if (id) add(id);
     }
@@ -2265,8 +2431,10 @@ function openHostKeys(): string[] {
 function currentHostKey(): string | null {
   const pane = activePane();
   if (!pane) return null;
+  const hid = pane.session?.host_id ?? pane.pending?.hostId;
+  if (hid?.startsWith("wsl:")) return hid;
   if (pane.session?.kind === "local" || pane.pending?.kind === "local") return "local";
-  return pane.session?.host_id ?? pane.pending?.hostId ?? null;
+  return hid ?? null;
 }
 
 function cycleHost(delta: number) {
@@ -2275,6 +2443,7 @@ function cycleHost(delta: number) {
   if (keys.length === 1) {
     const only = keys[0]!;
     if (only === "local") focusOrOpenLocal();
+    else if (only.startsWith("wsl:")) focusOrOpenWsl(only.slice(4));
     else focusOrOpenSsh(only);
     return;
   }
@@ -2283,6 +2452,7 @@ function cycleHost(delta: number) {
   if (idx < 0) idx = 0;
   const next = keys[(idx + delta + keys.length) % keys.length]!;
   if (next === "local") focusOrOpenLocal();
+  else if (next.startsWith("wsl:")) focusOrOpenWsl(next.slice(4));
   else focusOrOpenSsh(next);
 }
 
@@ -2530,13 +2700,15 @@ function layoutPane(pane: Pane) {
 
 function paneTitle(pane?: Pane | null) {
   if (!pane) return "";
+  const kind = pane.session?.kind ?? pane.pending?.kind;
   const base =
-    pane.session?.kind === "local"
+    kind === "local"
       ? "This computer"
       : pane.session?.title || pane.pending?.title || "Shell";
   const same = state.panes.filter((p) => {
+    const k = p.session?.kind ?? p.pending?.kind;
     const title =
-      p.session?.kind === "local" ? "This computer" : p.session?.title || p.pending?.title || "Shell";
+      k === "local" ? "This computer" : p.session?.title || p.pending?.title || "Shell";
     return title === base;
   });
   if (same.length < 2) return base;
@@ -2546,6 +2718,10 @@ function paneTitle(pane?: Pane | null) {
 function paneTabIcon(pane: Pane): { icon: string; os: string } {
   const kind = pane.session?.kind ?? pane.pending?.kind;
   if (kind === "local") return hostOsIcon(state.localOsId);
+  if (kind === "wsl") {
+    const title = pane.session?.title || pane.pending?.title || "";
+    return hostOsIcon(inferOsFromDistroName(title));
+  }
   if (kind !== "ssh") return { icon: icons.laptop, os: "" };
   const hostId = pane.session?.host_id ?? pane.pending?.hostId;
   const host = hostId ? state.hosts.find((h) => h.id === hostId) : undefined;
@@ -2673,7 +2849,9 @@ async function closePane(id: string) {
   pane.aborted = true;
   const sessionId = pane.session?.id;
   const hostId = pane.session?.host_id ?? pane.pending?.hostId;
-  const local = (pane.session?.kind ?? pane.pending?.kind) === "local";
+  const kind = pane.session?.kind ?? pane.pending?.kind;
+  const local = kind === "local";
+  const wsl = kind === "wsl" || !!hostId?.startsWith("wsl:");
   if (sessionId) {
     pane.session = undefined;
     await closeBackendSession(sessionId);
@@ -2687,6 +2865,7 @@ async function closePane(id: string) {
     if (next) selectPane(next.id);
   }
   if (local) await closeOrphanSessions("local");
+  else if (wsl && hostId) await closeOrphanSessions("wsl", hostId);
   else if (hostId) await closeOrphanSessions("ssh", hostId);
   renderTabs();
   await refreshSide();
@@ -2708,7 +2887,11 @@ function duplicatePane(pane: Pane) {
     void reconnectPane(pane);
     return;
   }
-  if (pane.session?.kind === "ssh" && pane.session.host_id) void openSsh(pane.session.host_id);
+  if (pane.session?.kind === "wsl" && pane.session.host_id?.startsWith("wsl:")) {
+    void openWsl(pane.session.host_id.slice(4));
+  } else if (pane.pending?.kind === "wsl" && pane.pending.hostId?.startsWith("wsl:")) {
+    void openWsl(pane.pending.hostId.slice(4));
+  } else if (pane.session?.kind === "ssh" && pane.session.host_id) void openSsh(pane.session.host_id);
   else if (pane.pending?.kind === "ssh" && pane.pending.hostId) void openSsh(pane.pending.hostId);
   else void openLocal();
 }
@@ -2754,7 +2937,10 @@ function markExited(sessionId: string) {
 
 async function reconnectPane(pane: Pane) {
   const hostId = pane.session?.host_id ?? pane.pending?.hostId;
-  const local = (pane.session?.kind ?? pane.pending?.kind) === "local";
+  const kind = pane.session?.kind ?? pane.pending?.kind;
+  const local = kind === "local";
+  const wsl = kind === "wsl" || !!hostId?.startsWith("wsl:");
+  const distro = wsl ? (hostId?.startsWith("wsl:") ? hostId.slice(4) : pane.pending?.title || "") : "";
   if (pane.session) await closeBackendSession(pane.session.id);
   pane.session = undefined;
   pane.exited = false;
@@ -2762,13 +2948,25 @@ async function reconnectPane(pane: Pane) {
   pane.cols = 0;
   pane.rows = 0;
   pane.pending = {
-    title: local ? "This computer" : state.hosts.find((h) => h.id === hostId)?.name || pane.pending?.title || "SSH",
-    kind: local ? "local" : "ssh",
-    hostId,
+    title: local
+      ? "This computer"
+      : wsl
+        ? distro || pane.pending?.title || "WSL"
+        : state.hosts.find((h) => h.id === hostId)?.name || pane.pending?.title || "SSH",
+    kind: local ? "local" : wsl ? "wsl" : "ssh",
+    hostId: wsl ? wslHostId(distro) : hostId,
   };
-  showBanner(pane, local ? "Opening local shell…" : `Connecting to ${pane.pending.title}…`);
+  showBanner(
+    pane,
+    local
+      ? "Opening local shell…"
+      : wsl
+        ? `Opening WSL · ${pane.pending.title}…`
+        : `Connecting to ${pane.pending.title}…`,
+  );
   renderTabs();
   if (local) await openLocal(pane);
+  else if (wsl && distro) await openWsl(distro, pane);
   else if (hostId) await openSsh(hostId, pane);
 }
 
@@ -2926,6 +3124,11 @@ function renderPalette(query: string) {
     { label: "Identities", hint: "vault", run: () => void openVault() },
     { label: "Settings", hint: "app", run: () => openSettings() },
     { label: "Sync now", hint: "cloud", run: () => invoke("sync_now").then(refreshSync) },
+    ...state.wslDistros.map((d) => ({
+      label: `WSL ${d.name}`,
+      hint: d.state || "wsl",
+      run: () => void openWsl(d.name),
+    })),
     ...state.hosts.map((h) => ({
       label: `SSH ${h.name}`,
       hint: `${h.username}@${h.hostname}`,
@@ -5333,8 +5536,6 @@ function sftpDeleteConfirm(hostId: string, path: string, name: string, isDir: bo
 }
 
 // ─── Local pane ─────────────────────────────────────────────────────────────
-const IS_WIN = /^Win/.test(navigator.platform || "");
-
 type DragItem = { path: string; name: string; is_dir: boolean };
 type FileRef = { src: string; rel: string; name: string };
 const DRAG_MIME = "application/x-terminus-files";

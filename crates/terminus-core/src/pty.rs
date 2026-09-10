@@ -18,13 +18,34 @@ impl LocalPty {
         rows: u16,
         output: mpsc::UnboundedSender<Result<Vec<u8>>>,
     ) -> Result<Arc<Self>> {
+        Self::spawn_program(None, &[], cols, rows, output)
+    }
+
+    /// Spawn a specific program in a PTY (e.g. `wsl.exe -d Distro`).
+    /// When `program` is `None`, uses the platform default shell.
+    pub fn spawn_program(
+        program: Option<&str>,
+        args: &[&str],
+        cols: u16,
+        rows: u16,
+        output: mpsc::UnboundedSender<Result<Vec<u8>>>,
+    ) -> Result<Arc<Self>> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        let mut cmd = CommandBuilder::new_default_prog();
+        let mut cmd = match program {
+            Some(prog) => {
+                let mut c = CommandBuilder::new(prog);
+                for arg in args {
+                    c.arg(arg);
+                }
+                c
+            }
+            None => CommandBuilder::new_default_prog(),
+        };
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         if let Some(home) = dirs::home_dir() {
