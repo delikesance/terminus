@@ -1253,6 +1253,8 @@ export function installE2eMock(): void {
           return new Uint8Array();
         case "session_scroll":
           return true;
+        case "session_scroll_to":
+          return true;
         case "session_selection_text": {
           const { r0, c0, r1, c1 } = args as any;
           const text = `sel-${r0}-${c0}-${r1}-${c1}`;

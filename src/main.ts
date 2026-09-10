@@ -268,6 +268,13 @@ type Pane = {
   cellH: number;
   /** Terminal mode bits from frame header: APP_CURSOR|APP_KEYPAD|ALT_SCREEN|BRACKETED_PASTE */
   modeFlags: number;
+  /** Alacritty display_offset (0 = live bottom). */
+  scrollOffset: number;
+  /** Lines of scrollback history above the viewport (0 = no scrollbar). */
+  scrollMax: number;
+  scrollbar: HTMLDivElement;
+  scrollThumb: HTMLDivElement;
+  _scrollDrag?: { startY: number; startOffset: number } | null;
   rasterScale: number;
   cols: number;
   rows: number;
@@ -773,7 +780,7 @@ async function paintFrame(sessionId: string, force = false) {
     if (cellChanged) scheduleLayout();
     return;
   }
-  // RGBA packed frames: w,h,cellW,cellH[,modeFlags] + pixels.
+  // RGBA packed frames: w,h,cellW,cellH[,modeFlags][,scrollOff,scrollMax] + pixels.
   if (raw.byteLength < 16) return;
   if (!pane.ctx) return;
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -781,8 +788,14 @@ async function paintFrame(sessionId: string, force = false) {
   const height = view.getUint32(4, true);
   const nextW = view.getUint32(8, true) || pane.cellW;
   const nextH = view.getUint32(12, true) || pane.cellH;
-  const header = raw.byteLength >= 20 + width * height * 4 ? 20 : 16;
-  if (header === 20) pane.modeFlags = view.getUint32(16, true);
+  const pixelsNeeded = width * height * 4;
+  const header =
+    raw.byteLength >= 28 + pixelsNeeded ? 28 : raw.byteLength >= 20 + pixelsNeeded ? 20 : 16;
+  if (header >= 20) pane.modeFlags = view.getUint32(16, true);
+  if (header >= 28) {
+    pane.scrollOffset = view.getUint32(20, true);
+    pane.scrollMax = view.getUint32(24, true);
+  }
   const cellChanged = nextW !== pane.cellW || nextH !== pane.cellH;
   pane.cellW = nextW;
   pane.cellH = nextH;
@@ -810,6 +823,7 @@ async function paintFrame(sessionId: string, force = false) {
   pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
   pane.ctx.imageSmoothingEnabled = false;
   pane.ctx.putImageData(image, 0, 0);
+  updateTermScrollbar(pane);
   if (cellChanged) scheduleLayout();
 }
 
@@ -2584,6 +2598,48 @@ async function handleTermWheel(ev: WheelEvent, pane: Pane) {
   scheduleFrame(pane.session.id, true);
 }
 
+function updateTermScrollbar(pane: Pane) {
+  const max = pane.scrollMax | 0;
+  const offset = pane.scrollOffset | 0;
+  if (max <= 0 || (pane.modeFlags & 0b0100)) {
+    pane.scrollbar.classList.add("hidden");
+    return;
+  }
+  pane.scrollbar.classList.remove("hidden");
+  const track = pane.scrollbar.clientHeight || pane.viewport.clientHeight || 1;
+  const minThumb = 24;
+  const linePx = Math.max(1, pane.cellH / Math.max(1, pane.rasterScale));
+  const content = track + max * linePx;
+  const thumbH = Math.max(minThumb, Math.round((track / Math.max(content, 1)) * track));
+  const travel = Math.max(1, track - thumbH);
+  // offset 0 = bottom (live); offset max = top of history
+  const t = (max - Math.min(offset, max)) / max;
+  const top = Math.round(t * travel);
+  pane.scrollThumb.style.height = `${thumbH}px`;
+  pane.scrollThumb.style.transform = `translateY(${top}px)`;
+}
+
+function offsetFromScrollbarY(pane: Pane, clientY: number): number {
+  const max = pane.scrollMax | 0;
+  if (max <= 0) return 0;
+  const rect = pane.scrollbar.getBoundingClientRect();
+  const track = rect.height || 1;
+  const thumbH = pane.scrollThumb.offsetHeight || 24;
+  const travel = Math.max(1, track - thumbH);
+  const y = Math.min(Math.max(0, clientY - rect.top - thumbH / 2), travel);
+  const fromTop = y / travel; // 0 top … 1 bottom
+  return Math.round(max * (1 - fromTop));
+}
+
+async function scrollPaneTo(pane: Pane, offset: number) {
+  if (!pane.session || pane.exited) return;
+  const ok = await invoke<boolean>("session_scroll_to", {
+    id: pane.session.id,
+    offset: Math.max(0, offset | 0),
+  }).catch(() => false);
+  if (ok !== false) scheduleFrame(pane.session.id, true);
+}
+
 function createPane(pending?: Pane["pending"]): Pane {
   const el = document.createElement("div");
   el.className = "pane";
@@ -2594,7 +2650,12 @@ function createPane(pending?: Pane["pending"]): Pane {
   const selLayer = document.createElement("div");
   selLayer.className = "term-selection";
   selLayer.style.display = "none";
-  viewport.append(canvas, selLayer);
+  const scrollbar = document.createElement("div");
+  scrollbar.className = "term-scrollbar hidden";
+  const scrollThumb = document.createElement("div");
+  scrollThumb.className = "term-scroll-thumb";
+  scrollbar.appendChild(scrollThumb);
+  viewport.append(canvas, selLayer, scrollbar);
   const banner = document.createElement("div");
   banner.className = "pane-banner hidden";
   el.append(viewport, banner);
@@ -2618,6 +2679,10 @@ function createPane(pending?: Pane["pending"]): Pane {
     cellW: 9,
     cellH: 23,
     modeFlags: 0,
+    scrollOffset: 0,
+    scrollMax: 0,
+    scrollbar,
+    scrollThumb,
     rasterScale: 1,
     cols: 0,
     rows: 0,
@@ -2656,6 +2721,37 @@ function createPane(pending?: Pane["pending"]): Pane {
   window.addEventListener("mouseup", () => {
     pane._selecting = false;
     pane._selStart = null;
+  });
+  scrollbar.onmousedown = (ev) => {
+    if (ev.button !== 0 || !pane.session || pane.exited) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    selectPane(pane.id);
+    el.focus();
+    const onThumb = ev.target === scrollThumb || scrollThumb.contains(ev.target as Node);
+    if (onThumb) {
+      pane._scrollDrag = { startY: ev.clientY, startOffset: pane.scrollOffset };
+    } else {
+      const jumped = offsetFromScrollbarY(pane, ev.clientY);
+      void scrollPaneTo(pane, jumped);
+      pane._scrollDrag = { startY: ev.clientY, startOffset: jumped };
+    }
+  };
+  window.addEventListener("mousemove", (ev) => {
+    if (!pane._scrollDrag || !pane.session) return;
+    const rect = scrollbar.getBoundingClientRect();
+    const track = rect.height || 1;
+    const thumbH = scrollThumb.offsetHeight || 24;
+    const travel = Math.max(1, track - thumbH);
+    const max = pane.scrollMax | 0;
+    if (max <= 0) return;
+    const dy = ev.clientY - pane._scrollDrag.startY;
+    // Dragging down → toward live bottom → decrease offset
+    const deltaLines = Math.round((-dy / travel) * max);
+    void scrollPaneTo(pane, pane._scrollDrag.startOffset + deltaLines);
+  });
+  window.addEventListener("mouseup", () => {
+    pane._scrollDrag = null;
   });
   el.oncontextmenu = (ev) => {
     ev.preventDefault();
