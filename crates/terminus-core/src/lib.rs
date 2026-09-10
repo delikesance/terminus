@@ -10,6 +10,7 @@ pub mod ssh;
 pub mod store;
 pub mod sync;
 pub mod term;
+pub mod vault;
 pub mod wsl;
 pub mod wsl_fs;
 
@@ -19,3 +20,4 @@ pub use models::*;
 pub use session::{ConnectFailKind, OutputSink, SessionManager};
 pub use store::Store;
 pub use sync::SyncEngine;
+pub use vault::{UnlockedVault, VaultHeader, VaultStatus};

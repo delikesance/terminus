@@ -121,6 +121,17 @@ impl Store {
               value TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS credentials (
+              id TEXT PRIMARY KEY,
+              kind TEXT NOT NULL,
+              owner_kind TEXT NOT NULL,
+              owner_id TEXT NOT NULL,
+              envelope TEXT NOT NULL,
+              key_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              deleted_at TEXT
+            );
             CREATE INDEX IF NOT EXISTS idx_hosts_updated ON hosts(updated_at);
             CREATE INDEX IF NOT EXISTS idx_snippets_updated ON snippets(updated_at);
             CREATE INDEX IF NOT EXISTS idx_history_created ON history(created_at);
@@ -137,6 +148,21 @@ impl Store {
         let _ = sqlx::query("ALTER TABLE hosts ADD COLUMN os_id TEXT")
             .execute(&self.pool)
             .await;
+        let _ = sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS credentials (
+              id TEXT PRIMARY KEY,
+              kind TEXT NOT NULL,
+              owner_kind TEXT NOT NULL,
+              owner_id TEXT NOT NULL,
+              envelope TEXT NOT NULL,
+              key_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              deleted_at TEXT
+            )"#,
+        )
+        .execute(&self.pool)
+        .await;
         Ok(())
     }
 
@@ -334,6 +360,61 @@ impl Store {
             .await?
             .into_iter()
             .find(|i| i.id == id))
+    }
+
+    pub async fn upsert_credential(&self, cred: &Credential) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO credentials (id,kind,owner_kind,owner_id,envelope,key_id,created_at,updated_at,deleted_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 kind=excluded.kind, owner_kind=excluded.owner_kind, owner_id=excluded.owner_id,
+                 envelope=excluded.envelope, key_id=excluded.key_id,
+                 updated_at=excluded.updated_at, deleted_at=excluded.deleted_at"#,
+        )
+        .bind(&cred.id)
+        .bind(&cred.kind)
+        .bind(&cred.owner_kind)
+        .bind(&cred.owner_id)
+        .bind(&cred.envelope)
+        .bind(&cred.key_id)
+        .bind(cred.created_at.to_rfc3339())
+        .bind(cred.updated_at.to_rfc3339())
+        .bind(cred.deleted_at.map(|d| d.to_rfc3339()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_credentials(&self) -> Result<Vec<Credential>> {
+        let rows = sqlx::query("SELECT * FROM credentials WHERE deleted_at IS NULL")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Credential {
+                id: row.get("id"),
+                kind: row.get("kind"),
+                owner_kind: row.get("owner_kind"),
+                owner_id: row.get("owner_id"),
+                envelope: row.get("envelope"),
+                key_id: row.get("key_id"),
+                created_at: parse_dt(row.get("created_at")),
+                updated_at: parse_dt(row.get("updated_at")),
+                deleted_at: row.get::<Option<String>, _>("deleted_at").map(parse_dt),
+            })
+            .collect())
+    }
+
+    pub async fn vault_header(&self) -> Result<Option<crate::vault::VaultHeader>> {
+        match self.get_setting("vault").await? {
+            Some(value) => Ok(serde_json::from_value(value).ok()),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn set_vault_header(&self, header: &crate::vault::VaultHeader) -> Result<()> {
+        self.set_setting("vault", &serde_json::to_value(header)?)
+            .await
     }
 
     pub async fn delete_identity(&self, id: &str) -> Result<()> {
@@ -544,6 +625,7 @@ impl Store {
             "history",
             "port_forwards",
             "settings",
+            "credentials",
         ];
         if !allowed.contains(&table) {
             return Err(crate::error::Error::msg("unknown table"));

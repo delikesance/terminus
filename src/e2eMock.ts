@@ -49,6 +49,8 @@ type SyncStatus = {
   last_error?: string | null;
   state: string;
   sync_secrets?: boolean;
+  vault_configured?: boolean;
+  vault_unlocked?: boolean;
 };
 
 type Identity = {
@@ -224,6 +226,8 @@ function createDb(): Db {
       last_error: null,
       state: "unconfigured",
       sync_secrets: false,
+      vault_configured: false,
+      vault_unlocked: false,
     },
     sftp: new Map(),
     local: null,
@@ -1042,9 +1046,14 @@ export function installE2eMock(): void {
           return {
             ...db.sync,
             sync_secrets: db.sync.sync_secrets ?? false,
+            vault_configured: db.sync.vault_configured ?? false,
+            vault_unlocked: db.sync.vault_unlocked ?? false,
           };
         case "sync_configure": {
           const config = (args.config ?? args) as { url?: string; sync_secrets?: boolean };
+          if (config.sync_secrets && !db.sync.vault_configured) {
+            throw new Error("a vault passphrase is required to sync secrets");
+          }
           db.sync = {
             configured: true,
             url: config.url ?? "postgres://test",
@@ -1052,6 +1061,8 @@ export function installE2eMock(): void {
             last_error: null,
             state: "idle",
             sync_secrets: Boolean(config.sync_secrets),
+            vault_configured: db.sync.vault_configured ?? false,
+            vault_unlocked: db.sync.vault_unlocked ?? false,
           };
           return null;
         }
@@ -1059,8 +1070,46 @@ export function installE2eMock(): void {
           const on = Boolean(
             args.syncSecrets ?? args.sync_secrets ?? false,
           );
+          if (on && !db.sync.vault_configured) {
+            throw new Error("a vault passphrase is required to sync secrets");
+          }
           db.sync.sync_secrets = on;
           return null;
+        }
+        case "vault_create": {
+          const passphrase = String(args.passphrase ?? args.password ?? "");
+          if (passphrase.length < 8) {
+            throw new Error("invalid vault passphrase");
+          }
+          db.sync.vault_configured = true;
+          db.sync.vault_unlocked = true;
+          return { configured: true, unlocked: true, key_id: "e2e-vault" };
+        }
+        case "vault_unlock": {
+          const passphrase = String(args.passphrase ?? args.password ?? "");
+          if (!db.sync.vault_configured) {
+            throw new Error("vault is not configured");
+          }
+          if (passphrase.length < 8) {
+            throw new Error("vault unlock failed");
+          }
+          db.sync.vault_unlocked = true;
+          return { configured: true, unlocked: true, key_id: "e2e-vault" };
+        }
+        case "vault_lock":
+          db.sync.vault_unlocked = false;
+          return null;
+        case "vault_status":
+          return {
+            configured: Boolean(db.sync.vault_configured),
+            unlocked: Boolean(db.sync.vault_unlocked),
+            key_id: db.sync.vault_configured ? "e2e-vault" : null,
+          };
+        case "vault_change_passphrase": {
+          if (!db.sync.vault_unlocked) {
+            throw new Error("vault is locked");
+          }
+          return { configured: true, unlocked: true, key_id: "e2e-vault" };
         }
         case "sync_now":
           db.sync.state = "idle";
@@ -1092,6 +1141,8 @@ export function installE2eMock(): void {
             last_error: (status.last_error as string | null | undefined) ?? null,
             state: stateName,
             sync_secrets: Boolean(status.sync_secrets ?? db.sync.sync_secrets ?? false),
+            vault_configured: Boolean(status.vault_configured ?? db.sync.vault_configured ?? false),
+            vault_unlocked: Boolean(status.vault_unlocked ?? db.sync.vault_unlocked ?? false),
           };
           return null;
         }

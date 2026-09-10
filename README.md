@@ -22,7 +22,7 @@ Stack: **Rust**, **Tauri 2**, **xterm.js (WebGL)**, **SQLite** locally, **Postgr
 - SFTP listing and local port forwarding
 - Themes, fonts, renderer, padding, opacity, custom CSS, keybindings
 - Settings → database URL for PostgreSQL sync (hosts, history, snippets, forwards)
-- Secrets stay local unless you opt in to secret sync
+- Secrets stay local unless you enable **encrypted vault sync** (Argon2id + XChaCha20-Poly1305). The database never sees plaintext SSH keys or passwords.
 
 ## Contributing
 
