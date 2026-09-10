@@ -262,6 +262,8 @@ type Pane = {
   banner: HTMLDivElement;
   cellW: number;
   cellH: number;
+  /** Terminal mode bits from frame header: APP_CURSOR|APP_KEYPAD|ALT_SCREEN|BRACKETED_PASTE */
+  modeFlags: number;
   rasterScale: number;
   cols: number;
   rows: number;
@@ -767,7 +769,7 @@ async function paintFrame(sessionId: string, force = false) {
     if (cellChanged) scheduleLayout();
     return;
   }
-  // Legacy RGBA packed frames (tests / older builds).
+  // RGBA packed frames: w,h,cellW,cellH[,modeFlags] + pixels.
   if (raw.byteLength < 16) return;
   if (!pane.ctx) return;
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -775,6 +777,8 @@ async function paintFrame(sessionId: string, force = false) {
   const height = view.getUint32(4, true);
   const nextW = view.getUint32(8, true) || pane.cellW;
   const nextH = view.getUint32(12, true) || pane.cellH;
+  const header = raw.byteLength >= 20 + width * height * 4 ? 20 : 16;
+  if (header === 20) pane.modeFlags = view.getUint32(16, true);
   const cellChanged = nextW !== pane.cellW || nextH !== pane.cellH;
   pane.cellW = nextW;
   pane.cellH = nextH;
@@ -783,7 +787,7 @@ async function paintFrame(sessionId: string, force = false) {
     clearPaneSurface(pane);
     return;
   }
-  const pixels = raw.subarray(16);
+  const pixels = raw.subarray(header);
   if (pixels.byteLength < width * height * 4) {
     clearPaneSurface(pane);
     return;
@@ -2464,7 +2468,7 @@ function attachSession(info: SessionInfo, pane = createPane()) {
     if (handleTerminalCopy(ev, pane)) return;
     if (handleTerminalCut(ev, pane)) return;
     if (handleTerminalPaste(ev, pane)) return;
-    const bytes = encodeTermKey(ev);
+    const bytes = encodeTermKey(ev, pane);
     if (!bytes) return;
     ev.preventDefault();
     sendText(bytes, pane);
@@ -2482,12 +2486,20 @@ function attachSession(info: SessionInfo, pane = createPane()) {
   void refreshSide();
 }
 
-function encodeTermKey(ev: KeyboardEvent): string | null {
-    if (ev.ctrlKey && ev.key.toLowerCase() === "v") return null;
-    if (ev.ctrlKey && ev.key.length === 1) {
-      const code = ev.key.toLowerCase().charCodeAt(0);
-      if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
-    }
+function encodeTermKey(ev: KeyboardEvent, pane?: Pane): string | null {
+  if (ev.ctrlKey && ev.key.toLowerCase() === "v") return null;
+  if (ev.ctrlKey && ev.key.length === 1) {
+    const code = ev.key.toLowerCase().charCodeAt(0);
+    if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
+  }
+  const appCursor = Boolean(pane && (pane.modeFlags & 0b0001));
+  // xterm modifier param: 1 + shift + 2*alt + 4*ctrl (CSI 1;5D = Ctrl+Left).
+  const mods = 1 + (ev.shiftKey ? 1 : 0) + (ev.altKey ? 2 : 0) + (ev.ctrlKey ? 4 : 0);
+  const arrow = (letter: string, application: string) => {
+    if (mods === 1) return appCursor ? application : `\x1b[${letter}`;
+    return `\x1b[1;${mods}${letter}`;
+  };
+  const tilde = (code: number) => (mods === 1 ? `\x1b[${code}~` : `\x1b[${code};${mods}~`);
   switch (ev.key) {
     case "Enter":
       return "\r";
@@ -2498,23 +2510,23 @@ function encodeTermKey(ev: KeyboardEvent): string | null {
     case "Escape":
       return "\x1b";
     case "ArrowUp":
-      return "\x1b[A";
+      return arrow("A", "\x1bOA");
     case "ArrowDown":
-      return "\x1b[B";
+      return arrow("B", "\x1bOB");
     case "ArrowRight":
-      return "\x1b[C";
+      return arrow("C", "\x1bOC");
     case "ArrowLeft":
-      return "\x1b[D";
+      return arrow("D", "\x1bOD");
     case "Home":
-      return "\x1b[H";
+      return mods === 1 ? arrow("H", "\x1bOH") : `\x1b[1;${mods}H`;
     case "End":
-      return "\x1b[F";
+      return mods === 1 ? arrow("F", "\x1bOF") : `\x1b[1;${mods}F`;
     case "Delete":
-      return "\x1b[3~";
+      return tilde(3);
     case "PageUp":
-      return "\x1b[5~";
+      return tilde(5);
     case "PageDown":
-      return "\x1b[6~";
+      return tilde(6);
     default:
       return ev.key.length === 1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey ? ev.key : null;
   }
@@ -2553,6 +2565,7 @@ function createPane(pending?: Pane["pending"]): Pane {
     banner,
     cellW: 9,
     cellH: 23,
+    modeFlags: 0,
     rasterScale: 1,
     cols: 0,
     rows: 0,

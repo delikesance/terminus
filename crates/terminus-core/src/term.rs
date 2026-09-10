@@ -6,7 +6,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::term::{point_to_viewport, viewport_to_point, Config, Term};
+use alacritty_terminal::term::{point_to_viewport, viewport_to_point, Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{self, Color, CursorShape, NamedColor};
 use fontdue::{Font, FontSettings};
 use parking_lot::Mutex;
@@ -243,6 +243,26 @@ impl TerminalEmulator {
 
     pub fn cell_size(&self) -> (u32, u32) {
         (self.cell_w, self.cell_h)
+    }
+
+    /// Bit flags for the frontend input encoder.
+    /// bit0 APP_CURSOR, bit1 APP_KEYPAD, bit2 ALT_SCREEN, bit3 BRACKETED_PASTE
+    pub fn mode_flags(&self) -> u32 {
+        let mode = self.term.mode();
+        let mut flags = 0u32;
+        if mode.contains(TermMode::APP_CURSOR) {
+            flags |= 0b0001;
+        }
+        if mode.contains(TermMode::APP_KEYPAD) {
+            flags |= 0b0010;
+        }
+        if mode.contains(TermMode::ALT_SCREEN) {
+            flags |= 0b0100;
+        }
+        if mode.contains(TermMode::BRACKETED_PASTE) {
+            flags |= 0b1000;
+        }
+        flags
     }
 
     pub fn take_frame(&mut self) -> Option<TermFrame> {
@@ -1071,12 +1091,13 @@ fn blend(bg: [u8; 4], fg: [u8; 4]) -> [u8; 4] {
     ]
 }
 
-pub fn pack_frame(frame: &TermFrame, cell_w: u32, cell_h: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(16 + frame.rgba.len());
+pub fn pack_frame(frame: &TermFrame, cell_w: u32, cell_h: u32, mode_flags: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(20 + frame.rgba.len());
     out.extend_from_slice(&frame.width.to_le_bytes());
     out.extend_from_slice(&frame.height.to_le_bytes());
     out.extend_from_slice(&cell_w.to_le_bytes());
     out.extend_from_slice(&cell_h.to_le_bytes());
+    out.extend_from_slice(&mode_flags.to_le_bytes());
     out.extend_from_slice(&frame.rgba);
     out
 }
@@ -1493,5 +1514,22 @@ mod tests {
             luma(dimmed) + 400 < luma(normal),
             "DIM must darken Color::Spec (dim={dimmed:?} normal={normal:?})"
         );
+    }
+
+    #[test]
+    fn ac3_app_cursor_mode_sets_pack_frame_flag() {
+        let mut term = TerminalEmulator::new(40, 12, 14.0).unwrap();
+        assert_eq!(term.mode_flags() & 0b0001, 0, "default: app cursor off");
+        // DECCKM set — what htop/ncurses enable under xterm.
+        term.feed(b"\x1b[?1h");
+        assert_eq!(term.mode_flags() & 0b0001, 0b0001, "DECCKM should set APP_CURSOR");
+        let (cw, ch) = term.cell_size();
+        let frame = term.capture_frame(true).expect("frame");
+        let packed = pack_frame(&frame, cw, ch, term.mode_flags());
+        assert!(packed.len() >= 20 + frame.rgba.len());
+        let flags = u32::from_le_bytes(packed[16..20].try_into().unwrap());
+        assert_eq!(flags & 0b0001, 0b0001);
+        term.feed(b"\x1b[?1l");
+        assert_eq!(term.mode_flags() & 0b0001, 0, "DECCKM reset clears APP_CURSOR");
     }
 }
