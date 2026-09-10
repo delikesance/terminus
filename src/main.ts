@@ -42,8 +42,10 @@ import {
   createSftpBrowserState,
   enterSplit,
   exitSplit,
+  focusRemoteInLayout,
   isLocalEndpoint,
   openSingle,
+  placeAdditionalRemote,
   setPaneEndpoint,
   type SftpBrowserState,
   type SftpEndpointId,
@@ -4386,17 +4388,60 @@ function applyRemoteSession(hostId: string): boolean {
 }
 
 function bindLayoutToRemote(hostId: string): void {
-  if (sftpBrowser.mode === "split") {
-    if (isLocalEndpoint(sftpBrowser.paneA)) {
-      sftpBrowser = setPaneEndpoint(sftpBrowser, "b", hostId);
-    } else if (sftpBrowser.paneB != null && isLocalEndpoint(sftpBrowser.paneB)) {
-      sftpBrowser = setPaneEndpoint(sftpBrowser, "a", hostId);
-    } else {
-      sftpBrowser = setPaneEndpoint(sftpBrowser, "a", hostId);
-    }
-  } else {
-    sftpBrowser = openSingle(sftpBrowser, hostId);
+  sftpBrowser = focusRemoteInLayout(sftpBrowser, hostId);
+}
+
+function paneBodyForEndpoint(endpoint: string): HTMLElement | null {
+  if (sftpBrowser.paneA === endpoint) return paneBodyEl("a");
+  if (sftpBrowser.paneB === endpoint) return paneBodyEl("b");
+  return null;
+}
+
+/** Paint a non-active remote that remains visible in the other pane (#103). */
+function paintParkedRemote(hostId: string): void {
+  if (!hostId || isLocalEndpoint(hostId)) return;
+  const body = paneBodyForEndpoint(hostId);
+  if (!body) return;
+  const snap = sftpSessions.byId[hostId];
+  const entries = sftpEntryCache.get(hostId)?.slice() ?? [];
+  const path = snap?.path || ".";
+  if (!entries.length) {
+    body.innerHTML = `${sftpToolbarHtml(hostId, path)}${sftpListLoadingHtml(
+      sftpDisplayPath(snap?.cwd || "", path),
+      "sftp-loading",
+    )}`;
+    bindSftpToolbar(hostId, path);
+    return;
   }
+  const filtered = filterFileEntries(entries, sftpListFilter());
+  const rows = filtered.map((e) => buildRemoteRowHtml(e)).join("");
+  const table = filtered.length
+    ? `${sftpTableHeadHtml()}<div class="sftp-table" data-testid="sftp-table">${rows}</div>`
+    : `${sftpTableHeadHtml()}<div class="sftp-empty" data-testid="sftp-empty"><span>No matching files</span></div>`;
+  body.innerHTML = `${sftpToolbarHtml(hostId, path)}${wrapSftpContentEnter(table)}`;
+  bindSftpToolbar(hostId, path);
+  const pane = body.closest(".sftp-pane") as HTMLElement | null;
+  if (pane) delete pane.dataset.boundSftp;
+  delete body.dataset.boundSftpCtx;
+  bindSftpRows(hostId, body);
+}
+
+function paintCompanionRemotes(activeId: string | null): void {
+  for (const id of [sftpBrowser.paneA, sftpBrowser.paneB]) {
+    if (!id || isLocalEndpoint(id) || id === activeId) continue;
+    paintParkedRemote(id);
+  }
+}
+
+function layoutChanged(
+  before: SftpBrowserState,
+  after: SftpBrowserState,
+): boolean {
+  return (
+    before.mode !== after.mode ||
+    before.paneA !== after.paneA ||
+    before.paneB !== after.paneB
+  );
 }
 
 function paintActiveRemoteFromCache(hostId: string): void {
@@ -4428,11 +4473,13 @@ function activateRemoteSession(hostId: string): void {
     state.sftpEntries = [];
     resetSftpCwd();
   }
+  const before = sftpBrowser;
   bindLayoutToRemote(hostId);
   setActivity("sftp");
   enterSftpMode();
-  ensureSftpShell(true);
+  ensureSftpShell(layoutChanged(before, sftpBrowser));
   paintActiveRemoteFromCache(hostId);
+  paintCompanionRemotes(hostId);
   renderSftpSidebar(hostId);
 }
 
@@ -4443,7 +4490,16 @@ function closeRemoteSession(hostId: string): void {
   const { sessions, nextActive } = closeRemote(sftpSessions, hostId, state.sftpHostId);
   sftpSessions = sessions;
   sftpEntryCache.delete(hostId);
+  detachRemoteFromLayout(hostId);
   if (!wasActive) {
+    ensureSftpShell(true);
+    if (state.sftpHostId) {
+      paintActiveRemoteFromCache(state.sftpHostId);
+      paintCompanionRemotes(state.sftpHostId);
+    } else if (sftpBrowser.paneA && !isLocalEndpoint(sftpBrowser.paneA)) {
+      paintParkedRemote(sftpBrowser.paneA);
+    }
+    if (sftpBrowser.paneB && isLocalEndpoint(sftpBrowser.paneB)) void initLocalPane();
     renderSftpSidebar(state.sftpHostId);
     return;
   }
@@ -4461,7 +4517,22 @@ function closeRemoteSession(hostId: string): void {
   bindLayoutToRemote(nextActive);
   ensureSftpShell(true);
   paintActiveRemoteFromCache(nextActive);
+  paintCompanionRemotes(nextActive);
+  if (sftpBrowser.paneB && isLocalEndpoint(sftpBrowser.paneB)) void initLocalPane();
   renderSftpSidebar(nextActive);
+}
+
+/** Drop a closed remote from the visible layout; prefer remaining remote|local (#103). */
+function detachRemoteFromLayout(hostId: string): void {
+  const a = sftpBrowser.paneA;
+  const b = sftpBrowser.paneB;
+  if (a !== hostId && b !== hostId) return;
+  const other = a === hostId ? b : a;
+  if (other && !isLocalEndpoint(other)) {
+    sftpBrowser = { mode: "split", paneA: other, paneB: SFTP_LOCAL_ID };
+  } else {
+    sftpBrowser = openSingle(sftpBrowser, other && isLocalEndpoint(other) ? SFTP_LOCAL_ID : SFTP_LOCAL_ID);
+  }
 }
 
 async function ensureSftpCwd(hostId: string) {
@@ -4476,6 +4547,8 @@ async function ensureSftpCwd(hostId: string) {
 }
 
 function openSftpFor(hostId: string) {
+  const previousRemote =
+    state.sftpHostId && !isLocalEndpoint(state.sftpHostId) ? state.sftpHostId : null;
   snapshotActiveRemote();
   const existed = hasRemote(sftpSessions, hostId);
   sftpSessions = openOrFocusRemote(sftpSessions, hostId);
@@ -4490,14 +4563,29 @@ function openSftpFor(hostId: string) {
     resetSftpCwd();
   }
   state.localSelected.clear();
-  bindLayoutToRemote(hostId);
+  if (previousRemote && previousRemote !== hostId) {
+    sftpBrowser = placeAdditionalRemote(sftpBrowser, hostId);
+    // Ensure previous stays in layout when we started from single/local.
+    if (sftpBrowser.paneA !== previousRemote && sftpBrowser.paneB !== previousRemote) {
+      sftpBrowser = placeAdditionalRemote(
+        openSingle(sftpBrowser, previousRemote),
+        hostId,
+      );
+    }
+  } else {
+    bindLayoutToRemote(hostId);
+  }
   setActivity("sftp");
   enterSftpMode();
   ensureSftpShell(true);
   if (existed && (sftpEntryCache.has(hostId) || state.sftpEntries.length)) {
     paintActiveRemoteFromCache(hostId);
+    paintCompanionRemotes(hostId);
   } else {
-    void loadSftp(hostId, state.sftpPath || ".");
+    paintCompanionRemotes(hostId);
+    void loadSftp(hostId, state.sftpPath || ".").then(() => {
+      paintCompanionRemotes(hostId);
+    });
   }
   renderSftpSidebar(hostId);
 }
@@ -5270,9 +5358,16 @@ function bindSftpRows(_hostId: string, root: ParentNode) {
   const el = viewport as HTMLElement;
   if (el.dataset.boundSftp === "1") return;
   el.dataset.boundSftp = "1";
-  const host = () => state.sftpHostId || _hostId;
+  const host = () => {
+    const section = el.closest<HTMLElement>("[data-endpoint]") ?? el;
+    const ep = section.dataset.endpoint;
+    if (ep && !isLocalEndpoint(ep)) return ep;
+    return state.sftpHostId || _hostId;
+  };
   const focusRemote = () => {
     state.sftpFocusSide = "remote";
+    const hid = host();
+    if (hid && hid !== state.sftpHostId) focusRemoteHostState(hid);
   };
   el.addEventListener("pointerdown", focusRemote);
   el.addEventListener("click", (ev) => {
@@ -5345,6 +5440,22 @@ function bindSftpRows(_hostId: string, root: ParentNode) {
     if (!row) return;
     openRemoteMenu(ev, row);
   });
+}
+
+/** Switch active remote bookkeeping without rebuilding the shell (#103). */
+function focusRemoteHostState(hostId: string): void {
+  if (!hostId || hostId === state.sftpHostId || isLocalEndpoint(hostId)) return;
+  snapshotActiveRemote();
+  sftpSessions = openOrFocusRemote(sftpSessions, hostId);
+  if (!applyRemoteSession(hostId)) {
+    state.sftpHostId = hostId;
+    state.sftpRoot = "/";
+    state.sftpPath = ".";
+    state.sftpSelected.clear();
+    state.sftpEntries = [];
+    resetSftpCwd();
+  }
+  renderSftpSidebar(hostId);
 }
 
 type FileCtxTarget = {
