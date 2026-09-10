@@ -23,6 +23,7 @@ Stack: **Rust**, **Tauri 2**, **xterm.js (WebGL)**, **SQLite** locally, **Postgr
 - Themes, fonts, renderer, padding, opacity, custom CSS, keybindings
 - Settings → database URL for PostgreSQL sync (hosts, history, snippets, forwards)
 - Secrets stay local unless you enable **encrypted vault sync** (Argon2id + XChaCha20-Poly1305). The database never sees plaintext SSH keys or passwords.
+- Kerberos / GSSAPI (`gssapi-with-mic`) on Linux and macOS using the ticket cache from `kinit` — no Kerberos password stored in Terminus.
 
 ## Contributing
 
