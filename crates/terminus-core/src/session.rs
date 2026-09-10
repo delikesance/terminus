@@ -531,6 +531,15 @@ impl SessionManager {
         Ok(text)
     }
 
+    /// Scroll primary-screen history. Returns false on alternate screen.
+    pub fn scroll(&self, session_id: &str, lines: i32) -> Result<bool> {
+        let Some(session) = self.sessions.get(session_id) else {
+            return Err(Error::SessionNotFound(session_id.into()));
+        };
+        let scrolled = session.emulator.lock().scroll_delta(lines);
+        Ok(scrolled)
+    }
+
     pub fn cell_size(&self, session_id: &str) -> Result<(u32, u32)> {
         let Some(session) = self.sessions.get(session_id) else {
             return Err(Error::SessionNotFound(session_id.into()));
