@@ -37,6 +37,7 @@
           wrapGAppsHook4
           xdg-utils
           patchelf
+          rpm
         ];
 
         linuxLibs = with pkgs; [
