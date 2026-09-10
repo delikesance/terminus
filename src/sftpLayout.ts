@@ -118,26 +118,60 @@ export function shouldShowTransferUi(state: SftpBrowserState): boolean {
   return state.mode === "split" && state.paneB != null;
 }
 
-/** Transfers need exactly one local side and one remote SSH side. */
+/**
+ * Transfers allowed for local↔remote or distinct remote↔remote (#105).
+ * Rejects null B, identical endpoints, and local|local.
+ */
 export function canTransferBetween(
   a: SftpEndpointId,
   b: SftpEndpointId | null,
 ): boolean {
-  if (b == null) return false;
+  if (b == null || a === b) return false;
   const aLocal = isLocalEndpoint(a);
   const bLocal = isLocalEndpoint(b);
-  return aLocal !== bLocal;
+  if (aLocal && bLocal) return false;
+  return true;
 }
 
+/** Local↔remote only (null when both remotes or both local). */
 export function transferDirection(
   a: SftpEndpointId,
   b: SftpEndpointId,
 ): { localSlot: SftpPaneSlot; remoteSlot: SftpPaneSlot; remoteHostId: string } | null {
-  if (!canTransferBetween(a, b)) return null;
-  if (isLocalEndpoint(a)) {
+  const aLocal = isLocalEndpoint(a);
+  const bLocal = isLocalEndpoint(b);
+  if (aLocal === bLocal) return null;
+  if (aLocal) {
     return { localSlot: "a", remoteSlot: "b", remoteHostId: b };
   }
   return { localSlot: "b", remoteSlot: "a", remoteHostId: a };
+}
+
+export type TransferLane =
+  | {
+      kind: "local-remote";
+      localSlot: SftpPaneSlot;
+      remoteSlot: SftpPaneSlot;
+      remoteHostId: string;
+    }
+  | {
+      kind: "remote-remote";
+      hostA: string;
+      hostB: string;
+    };
+
+/** Describes how split panes exchange files (#105). */
+export function transferLane(
+  a: SftpEndpointId,
+  b: SftpEndpointId | null,
+): TransferLane | null {
+  if (!canTransferBetween(a, b) || b == null) return null;
+  if (isLocalEndpoint(a) || isLocalEndpoint(b)) {
+    const dir = transferDirection(a, b);
+    if (!dir) return null;
+    return { kind: "local-remote", ...dir };
+  }
+  return { kind: "remote-remote", hostA: a, hostB: b };
 }
 
 export function paneTestId(slot: SftpPaneSlot): string {

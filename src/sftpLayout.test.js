@@ -16,6 +16,7 @@ import {
   setPaneEndpoint,
   shouldShowTransferUi,
   transferDirection,
+  transferLane,
 } from "./sftpLayout.js";
 
 function check(name, ok, detail) {
@@ -76,23 +77,86 @@ function runTests() {
     s = setPaneEndpoint(s, "b", "h2");
     checks.push(
       check(
-        "AC4 free Host B remote",
-        s.paneA === "h1" && s.paneB === "h2" && !canTransferBetween(s.paneA, s.paneB),
+        "AC4 free Host B remote (#105 transferable)",
+        s.paneA === "h1" && s.paneB === "h2" && canTransferBetween(s.paneA, s.paneB),
         JSON.stringify(s),
       ),
     );
-    const bothRemote = transferDirection(s.paneA, s.paneB);
+    const bothRemoteDir = transferDirection(s.paneA, s.paneB);
+    const bothRemoteLane = transferLane(s.paneA, s.paneB);
     s = setPaneEndpoint(s, "b", SFTP_LOCAL_ID);
     const dirOk = transferDirection(s.paneA, s.paneB);
+    const laneLocal = transferLane(s.paneA, s.paneB);
     checks.push(
       check(
-        "AC4 transfer only local↔remote",
-        bothRemote === null &&
+        "AC4 #105 remote↔remote lane; local↔remote direction unchanged",
+        bothRemoteDir === null &&
+          bothRemoteLane != null &&
+          bothRemoteLane.kind === "remote-remote" &&
+          bothRemoteLane.hostA === "h1" &&
+          bothRemoteLane.hostB === "h2" &&
           dirOk != null &&
           dirOk.localSlot === "b" &&
           dirOk.remoteSlot === "a" &&
-          dirOk.remoteHostId === "h1",
-        JSON.stringify({ bothRemote, dirOk }),
+          dirOk.remoteHostId === "h1" &&
+          laneLocal != null &&
+          laneLocal.kind === "local-remote" &&
+          laneLocal.remoteHostId === "h1",
+        JSON.stringify({ bothRemoteDir, bothRemoteLane, dirOk, laneLocal }),
+      ),
+    );
+  }
+
+  // #105 — dual-remote transfer eligibility
+  {
+    checks.push(
+      check(
+        "AC105 canTransferBetween remote|remote distinct",
+        canTransferBetween("host-a", "host-b"),
+        "",
+      ),
+    );
+    checks.push(
+      check(
+        "AC105 canTransferBetween rejects same host",
+        !canTransferBetween("host-a", "host-a"),
+        "",
+      ),
+    );
+    checks.push(
+      check(
+        "AC105 canTransferBetween rejects local|local",
+        !canTransferBetween(SFTP_LOCAL_ID, SFTP_LOCAL_ID),
+        "",
+      ),
+    );
+    checks.push(
+      check(
+        "AC105 canTransferBetween rejects null paneB",
+        !canTransferBetween("host-a", null),
+        "",
+      ),
+    );
+    checks.push(
+      check(
+        "AC105 canTransferBetween still allows local↔remote",
+        canTransferBetween(SFTP_LOCAL_ID, "host-a") && canTransferBetween("host-a", SFTP_LOCAL_ID),
+        "",
+      ),
+    );
+    const lane = transferLane("ra", "rb");
+    checks.push(
+      check(
+        "AC105 transferLane remote-remote",
+        lane?.kind === "remote-remote" && lane.hostA === "ra" && lane.hostB === "rb",
+        JSON.stringify(lane),
+      ),
+    );
+    checks.push(
+      check(
+        "AC105 transferLane null for same host",
+        transferLane("ra", "ra") === null,
+        "",
       ),
     );
   }
