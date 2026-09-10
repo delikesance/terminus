@@ -41,6 +41,19 @@ pub enum Error {
     /// Private key material could not be parsed (PEM decode / format). Never includes raw secret.
     #[error("invalid SSH identity key: {reason}")]
     IdentityKeyInvalid { reason: String },
+    /// Secret sync was requested but no vault exists. Never fall back to plaintext.
+    #[error("a vault passphrase is required to sync secrets")]
+    VaultRequired,
+    #[error("vault is locked")]
+    VaultLocked,
+    #[error("vault unlock failed")]
+    VaultUnlockFailed,
+    #[error("vault decrypt failed")]
+    VaultDecryptFailed,
+    #[error("invalid vault passphrase")]
+    InvalidPassphrase,
+    #[error("vault is not configured")]
+    VaultNotConfigured,
     /// SFTP path escaped the session root via `..` or absolute jump.
     #[error("SFTP path traversal blocked: {path}")]
     SftpPathTraversal { path: String },

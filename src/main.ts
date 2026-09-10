@@ -206,6 +206,13 @@ type SyncStatus = {
   last_error?: string | null;
   state?: string;
   sync_secrets?: boolean;
+  vault_configured?: boolean;
+  vault_unlocked?: boolean;
+};
+type VaultStatus = {
+  configured: boolean;
+  unlocked: boolean;
+  key_id?: string | null;
 };
 type SftpEntry = {
   name: string;
@@ -3885,10 +3892,12 @@ function attachedHostCount(identityId: string): number {
 
 function renderVaultSheet() {
   const statusPromise = invoke<SyncStatus>("sync_status").catch(
-    () => ({ configured: false, sync_secrets: false }) as SyncStatus,
+    () => ({ configured: false, sync_secrets: false, vault_configured: false, vault_unlocked: false }) as SyncStatus,
   );
   void statusPromise.then((status) => {
     const syncSecrets = Boolean(status.sync_secrets);
+    const vaultConfigured = Boolean(status.vault_configured);
+    const vaultUnlocked = Boolean(status.vault_unlocked);
     const items = state.identities
       .map((ident) => {
         const kind = inferIdentityKind(ident);
@@ -3915,11 +3924,22 @@ function renderVaultSheet() {
     openSheet(
       `
     <h2>Identities</h2>
-    <p class="lead">Keys, passwords, and agents stay on this device unless you opt in.</p>
+    <p class="lead">Keys and passwords stay on this device unless you enable encrypted vault sync.</p>
     <div class="group-card">
-      <label class="cell"><span>Sync secrets<small class="hint">Secrets stay local</small></span>
-        <span class="toggle"><input id="vault-sync-secrets" type="checkbox" ${syncSecrets ? "checked" : ""} data-testid="vault-sync-secrets" /><span class="track"></span></span>
+      <label class="cell"><span>Sync secrets<small class="hint">${syncSecrets ? "Encrypted vault sync" : "Secrets stay local"}</small></span>
+        <span class="toggle"><input id="vault-sync-secrets" type="checkbox" ${syncSecrets ? "checked" : ""} ${vaultConfigured ? "" : "disabled"} data-testid="vault-sync-secrets" /><span class="track"></span></span>
       </label>
+      ${
+        vaultConfigured
+          ? `<label class="cell stack"><span>${vaultUnlocked ? "Vault unlocked" : "Unlock vault"}</span>
+        <input id="vault-passphrase" type="password" placeholder="Vault passphrase" autocomplete="off" ${vaultUnlocked ? "disabled" : ""} />
+        </label>
+        <div class="row">${vaultUnlocked ? `<button type="button" id="vault-lock-btn">Lock</button>` : `<button type="button" id="vault-unlock-btn">Unlock</button>`}</div>`
+          : `<label class="cell stack"><span>Create vault<small class="hint">Argon2id + XChaCha20-Poly1305 — min 8 characters</small></span>
+        <input id="vault-passphrase" type="password" placeholder="New vault passphrase" autocomplete="new-password" />
+        </label>
+        <div class="row"><button type="button" id="vault-create-btn">Create vault</button></div>`
+      }
     </div>
     <div class="vault-list" id="vault-list" data-testid="vault-list">
       ${items || `<div class="empty" data-testid="vault-empty">${icons.key}<span class="empty-title">No identities yet</span></div>`}
@@ -3931,16 +3951,52 @@ function renderVaultSheet() {
     );
 
     $("vault-add").onclick = () => editIdentity();
-    ($("vault-sync-secrets") as HTMLInputElement).onchange = async (ev) => {
-      const on = (ev.target as HTMLInputElement).checked;
-      try {
-        await invoke("sync_set_secrets", { syncSecrets: on });
-      } catch (err) {
-        (ev.target as HTMLInputElement).checked = !on;
-        const msg = document.getElementById("vault-sync-msg");
-        if (msg) msg.textContent = String(err);
-      }
-    };
+    const syncToggle = $("vault-sync-secrets") as HTMLInputElement | null;
+    if (syncToggle) {
+      syncToggle.onchange = async (ev) => {
+        const on = (ev.target as HTMLInputElement).checked;
+        try {
+          await invoke("sync_set_secrets", { syncSecrets: on });
+        } catch (err) {
+          (ev.target as HTMLInputElement).checked = !on;
+          const msg = document.getElementById("vault-sync-msg");
+          if (msg) msg.textContent = String(err);
+        }
+      };
+    }
+    const createBtn = document.getElementById("vault-create-btn");
+    if (createBtn) {
+      createBtn.onclick = async () => {
+        const pass = (document.getElementById("vault-passphrase") as HTMLInputElement | null)?.value ?? "";
+        try {
+          await invoke("vault_create", { passphrase: pass });
+          renderVaultSheet();
+        } catch (err) {
+          const msg = document.getElementById("vault-sync-msg");
+          if (msg) msg.textContent = String(err);
+        }
+      };
+    }
+    const unlockBtn = document.getElementById("vault-unlock-btn");
+    if (unlockBtn) {
+      unlockBtn.onclick = async () => {
+        const pass = (document.getElementById("vault-passphrase") as HTMLInputElement | null)?.value ?? "";
+        try {
+          await invoke("vault_unlock", { passphrase: pass });
+          renderVaultSheet();
+        } catch (err) {
+          const msg = document.getElementById("vault-sync-msg");
+          if (msg) msg.textContent = String(err);
+        }
+      };
+    }
+    const lockBtn = document.getElementById("vault-lock-btn");
+    if (lockBtn) {
+      lockBtn.onclick = async () => {
+        await invoke("vault_lock");
+        renderVaultSheet();
+      };
+    }
     $("vault-list").querySelectorAll<HTMLButtonElement>("[data-reveal]").forEach((btn) => {
       btn.onclick = (ev) => {
         ev.stopPropagation();
@@ -4187,9 +4243,16 @@ async function openSettings() {
       <label class="cell stack"><span>Database URL<small class="hint">PostgreSQL or any sqlx-compatible URL</small></span>
         <input id="sync-url" placeholder="postgres://user:pass@host:5432/terminus" value="${escapeHtml(status.url ?? "")}" />
       </label>
-      <label class="cell"><span>Sync secrets<small class="hint">Secrets stay local</small></span>
-        <span class="toggle"><input id="sync-secrets" type="checkbox" ${status.sync_secrets ? "checked" : ""} /><span class="track"></span></span>
+      <label class="cell"><span>Sync secrets<small class="hint">${status.sync_secrets ? "Encrypted (vault)" : "Secrets stay local"}</small></span>
+        <span class="toggle"><input id="sync-secrets" type="checkbox" ${status.sync_secrets ? "checked" : ""} ${status.vault_configured ? "" : "disabled"} /><span class="track"></span></span>
       </label>
+      ${
+        status.vault_configured
+          ? `<label class="cell stack"><span>${status.vault_unlocked ? "Vault unlocked" : "Unlock vault"}</span>
+             <input id="vault-settings-pass" type="password" placeholder="Vault passphrase" autocomplete="off" ${status.vault_unlocked ? "disabled" : ""} /></label>`
+          : `<label class="cell stack"><span>Vault passphrase<small class="hint">Required to sync SSH keys and passwords (min 8 chars)</small></span>
+             <input id="vault-settings-pass" type="password" placeholder="Create vault passphrase" autocomplete="new-password" /></label>`
+      }
     </div>
     <div class="row">
       <button id="sync-now">Sync now</button>
@@ -4222,6 +4285,17 @@ async function openSettings() {
     await invoke("appearance_set", { appearance });
     const url = ($("sync-url") as HTMLInputElement).value.trim();
     const syncSecrets = ($("sync-secrets") as HTMLInputElement).checked;
+    const vaultPass = (document.getElementById("vault-settings-pass") as HTMLInputElement | null)?.value.trim() ?? "";
+    try {
+      if (!status.vault_configured && vaultPass) {
+        await invoke("vault_create", { passphrase: vaultPass });
+      } else if (status.vault_configured && !status.vault_unlocked && vaultPass) {
+        await invoke("vault_unlock", { passphrase: vaultPass });
+      }
+    } catch (err) {
+      $("sync-msg").textContent = String(err);
+      return;
+    }
     if (url) {
       try {
         await invoke("sync_configure", {

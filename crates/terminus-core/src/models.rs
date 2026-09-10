@@ -125,6 +125,21 @@ impl Identity {
     }
 }
 
+/// Encrypted secret envelope stored locally and synced as opaque ciphertext.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Credential {
+    pub id: String,
+    pub kind: String,
+    pub owner_kind: String,
+    pub owner_id: String,
+    /// JSON `SecretEnvelope` (nonce + ciphertext). Never plaintext.
+    pub envelope: String,
+    pub key_id: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snippet {
     pub id: String,
@@ -462,6 +477,12 @@ pub struct SyncStatus {
     /// Whether secret material may leave this device. Default false — secrets stay local.
     #[serde(default)]
     pub sync_secrets: bool,
+    /// Vault header exists locally (passphrase-derived MK wrapping a DEK).
+    #[serde(default)]
+    pub vault_configured: bool,
+    /// DEK is in memory for this process.
+    #[serde(default)]
+    pub vault_unlocked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
