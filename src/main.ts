@@ -276,6 +276,9 @@ const state = {
   localOsId: null as string | null,
 };
 
+/** True while a host card is dragged for group assign/ungroup (#88). */
+let hostGroupDragActive = false;
+
 /** Activity Bar + contextual sidebar navigation (#27). */
 let navState: NavState = createNavState();
 let forwardUi: ForwardUiState = createForwardUiState();
@@ -665,12 +668,21 @@ function applyHostRuntime(rt: HostRuntime) {
   const idx = state.hostsRuntime.findIndex((r) => r.host_id === rt.host_id);
   if (idx >= 0) state.hostsRuntime[idx] = rt;
   else state.hostsRuntime.push(rt);
+  // Full rebuild mid-drag destroys the dragged node and cancels HTML5 DnD (#88).
+  if (hostGroupDragActive) {
+    syncHostHighlights();
+    return;
+  }
   renderHosts();
 }
 
 async function refreshHostsRuntime() {
   try {
     state.hostsRuntime = await invoke<HostRuntime[]>("hosts_runtime");
+    if (hostGroupDragActive) {
+      syncHostHighlights();
+      return;
+    }
     renderHosts();
   } catch {
     /* ignore — sidebar stays on last known runtime */
@@ -872,8 +884,8 @@ function renderHosts() {
           <small class="host-subtitle"><span class="host-user">${escapeHtml(h.username)}</span><span class="host-sep">@</span><span class="host-addr">${escapeHtml(h.hostname)}${h.port !== 22 ? `:${h.port}` : ""}</span>${keyHtml}</small>
         </div>
         <span class="host-actions">
-          <button type="button" class="quick" data-new="${h.id}" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
-          <button type="button" class="more" data-more="${h.id}" data-testid="host-action-more" title="More actions" aria-label="More actions" aria-haspopup="menu">${icons.more}</button>
+          <button type="button" class="quick" draggable="false" data-new="${h.id}" data-testid="host-action-new" title="New session" aria-label="New session">${icons.plus}</button>
+          <button type="button" class="more" draggable="false" data-more="${h.id}" data-testid="host-action-more" title="More actions" aria-label="More actions" aria-haspopup="menu">${icons.more}</button>
         </span>
         <span class="host-status">
           <span class="${dotClass}" style="background: ${dotColor};" data-testid="connection-dot" data-state="${connection}" role="status" aria-label="${escapeHtml(aria)}"></span>
@@ -3467,9 +3479,14 @@ async function deleteGroupConfirm(group: Group) {
 }
 
 const HOST_GROUP_MIME = "application/x-terminus-host";
+let hostGroupDnDAbort: AbortController | null = null;
 
 function bindHostGroupDragDrop(): void {
   const panel = $("panel-hosts");
+  hostGroupDnDAbort?.abort();
+  hostGroupDnDAbort = new AbortController();
+  const { signal } = hostGroupDnDAbort;
+
   const clearDropMarks = () => {
     panel.classList.remove("drop-ungroup");
     panel.querySelectorAll(".group-row.drop-target, .group-children.drop-target").forEach((n) => {
@@ -3477,78 +3494,111 @@ function bindHostGroupDragDrop(): void {
     });
   };
 
-  panel.querySelectorAll<HTMLElement>("[data-host]").forEach((el) => {
-    el.addEventListener("dragstart", (ev) => {
-      if (!ev.dataTransfer) return;
-      const id = el.dataset.host || "";
-      ev.dataTransfer.setData(HOST_GROUP_MIME, id);
-      ev.dataTransfer.setData("text/plain", id);
-      ev.dataTransfer.effectAllowed = "move";
-      el.classList.add("is-dragging");
-    });
-    el.addEventListener("dragend", () => {
-      el.classList.remove("is-dragging");
-      clearDropMarks();
-    });
-  });
-
-  const markDrop = (el: HTMLElement | null, on: boolean) => {
-    el?.classList.toggle("drop-target", on);
-  };
-
   const isGroupDropZone = (node: EventTarget | null): HTMLElement | null => {
     const el = node as HTMLElement | null;
-    return el?.closest?.(".group-row, .group-children") as HTMLElement | null;
+    if (!el || typeof el.closest !== "function") return null;
+    return el.closest(".group-row, .group-children");
   };
 
-  // Dropping outside any group ungroups the host.
-  panel.addEventListener("dragover", (ev) => {
-    if (isGroupDropZone(ev.target)) {
-      panel.classList.remove("drop-ungroup");
-      return;
-    }
-    ev.preventDefault();
-    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-    panel.classList.add("drop-ungroup");
-  });
-  panel.addEventListener("dragleave", (ev) => {
-    if (!panel.contains(ev.relatedTarget as Node)) panel.classList.remove("drop-ungroup");
-  });
-  panel.addEventListener("drop", (ev) => {
-    if (isGroupDropZone(ev.target)) return;
-    ev.preventDefault();
-    panel.classList.remove("drop-ungroup");
-    const hostId =
-      ev.dataTransfer?.getData(HOST_GROUP_MIME) || ev.dataTransfer?.getData("text/plain") || "";
-    if (!hostId) return;
-    void assignHostToGroup(hostId, null);
-  });
-
-  panel.querySelectorAll<HTMLElement>(".group-row, .group-children").forEach((el) => {
-    el.addEventListener("dragover", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      panel.classList.remove("drop-ungroup");
-      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-      markDrop(el, true);
-    });
-    el.addEventListener("dragleave", (ev) => {
-      if (ev.currentTarget === el && !(el.contains(ev.relatedTarget as Node))) {
-        markDrop(el, false);
+  // Delegated once per bind (AbortController prevents stacking across renderHosts).
+  panel.addEventListener(
+    "dragstart",
+    (ev) => {
+      const hostEl = (ev.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-host]");
+      if (!hostEl || !panel.contains(hostEl) || !ev.dataTransfer) return;
+      // Don't start a host drag from action buttons.
+      if ((ev.target as HTMLElement | null)?.closest?.("button, a, input")) {
+        ev.preventDefault();
+        return;
       }
-    });
-    el.addEventListener("drop", (ev) => {
+      const id = hostEl.dataset.host || "";
+      if (!id) return;
+      try {
+        ev.dataTransfer.setData(HOST_GROUP_MIME, id);
+      } catch {
+        /* custom MIME may be rejected in some WebViews */
+      }
+      ev.dataTransfer.setData("text/plain", id);
+      ev.dataTransfer.effectAllowed = "move";
+      hostGroupDragActive = true;
+      hostEl.classList.add("is-dragging");
+    },
+    { signal },
+  );
+
+  panel.addEventListener(
+    "dragend",
+    () => {
+      hostGroupDragActive = false;
+      panel.querySelectorAll("[data-host].is-dragging").forEach((n) => n.classList.remove("is-dragging"));
+      clearDropMarks();
+      // Runtime updates may have been deferred; refresh once.
+      void refreshHostsRuntime();
+    },
+    { signal },
+  );
+
+  panel.addEventListener(
+    "dragover",
+    (ev) => {
+      const zone = isGroupDropZone(ev.target);
+      if (zone) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        panel.classList.remove("drop-ungroup");
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+        clearDropMarks();
+        zone.classList.add("drop-target");
+        return;
+      }
+      // Allow drop on empty panel chrome to ungroup.
+      if ((ev.target as HTMLElement | null)?.closest?.("[data-host],[data-local],[data-wsl-distro]")) {
+        clearDropMarks();
+        return;
+      }
       ev.preventDefault();
-      ev.stopPropagation();
-      markDrop(el, false);
-      panel.classList.remove("drop-ungroup");
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+      panel.querySelectorAll(".group-row.drop-target, .group-children.drop-target").forEach((n) => {
+        n.classList.remove("drop-target");
+      });
+      panel.classList.add("drop-ungroup");
+    },
+    { signal },
+  );
+
+  panel.addEventListener(
+    "dragleave",
+    (ev) => {
+      if (!panel.contains(ev.relatedTarget as Node)) clearDropMarks();
+    },
+    { signal },
+  );
+
+  panel.addEventListener(
+    "drop",
+    (ev) => {
       const hostId =
         ev.dataTransfer?.getData(HOST_GROUP_MIME) || ev.dataTransfer?.getData("text/plain") || "";
-      const groupId = el.dataset.group || el.dataset.groupDrop || null;
-      if (!hostId || !groupId) return;
-      void assignHostToGroup(hostId, groupId);
-    });
-  });
+      const zone = isGroupDropZone(ev.target);
+      clearDropMarks();
+      hostGroupDragActive = false;
+      if (!hostId) return;
+      if (zone) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const groupId = zone.dataset.group || zone.dataset.groupDrop || null;
+        if (!groupId) return;
+        void assignHostToGroup(hostId, groupId);
+        return;
+      }
+      if ((ev.target as HTMLElement | null)?.closest?.("[data-host],[data-local],[data-wsl-distro]")) {
+        return;
+      }
+      ev.preventDefault();
+      void assignHostToGroup(hostId, null);
+    },
+    { signal },
+  );
 }
 
 async function assignHostToGroup(hostId: string, groupId: string | null): Promise<void> {
