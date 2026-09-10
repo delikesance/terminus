@@ -336,7 +336,7 @@ async function boot() {
     void invoke("appearance_set", { appearance: state.appearance });
   }
   applyAppearance();
-  void Promise.all([refreshSide(), refreshSync()]).then(() => {
+  void Promise.all([refreshSide({ forceWsl: true }), refreshSync()]).then(() => {
     maybeShowOnboarding();
   });
   window.setTimeout(() => void checkForAppUpdate(), 1500);
@@ -628,7 +628,7 @@ function applyAppearance() {
   }
 }
 
-async function refreshSide() {
+async function refreshSide(opts?: { forceWsl?: boolean }) {
   const [hosts, hostsRuntime, groups, identities, snippets, history, forwards, running, wslDistros] =
     await Promise.all([
       invoke<Host[]>("hosts_list"),
@@ -640,7 +640,9 @@ async function refreshSide() {
       invoke<PortForward[]>("forwards_list").catch(() => [] as PortForward[]),
       invoke<string[]>("forwards_running").catch(() => [] as string[]),
       IS_WIN
-        ? invoke<WslDistro[]>("wsl_list_distros").catch(() => [] as WslDistro[])
+        ? invoke<WslDistro[]>("wsl_list_distros", { force: Boolean(opts?.forceWsl) }).catch(
+            () => [] as WslDistro[],
+          )
         : Promise.resolve([] as WslDistro[]),
     ]);
   state.hosts = hosts;
