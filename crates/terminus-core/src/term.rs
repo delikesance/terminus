@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::gpu_frame::{self, AtlasGlyph, GpuCell, GpuFrame};
+use crate::gpu_frame::{AtlasGlyph, GpuCell, GpuFrame};
 use crate::models::ColorTheme;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;

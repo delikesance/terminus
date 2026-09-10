@@ -578,6 +578,10 @@ async function flushFrames() {
 function toBytes(data: unknown): Uint8Array {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    const view = data as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
   if (Array.isArray(data)) return Uint8Array.from(data as number[]);
   return new Uint8Array();
 }
@@ -617,8 +621,15 @@ function clearPaneSurface(pane: Pane) {
     pane.canvas.height = height;
   }
   const bg = termBgColor();
+  if (pane.ctx) {
+    pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    pane.ctx.imageSmoothingEnabled = false;
+    pane.ctx.fillStyle = bg;
+    pane.ctx.fillRect(0, 0, width, height);
+    return;
+  }
   if (pane.gl) {
-    const gl = (pane.canvas.getContext("webgl2") as WebGL2RenderingContext | null);
+    const gl = pane.canvas.getContext("webgl2");
     if (gl) {
       const m = /^#?([0-9a-f]{6})$/i.exec(bg.trim());
       let r = 0.11;
@@ -634,17 +645,12 @@ function clearPaneSurface(pane: Pane) {
       gl.clearColor(r, g, b, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
     }
-    return;
   }
-  if (!pane.ctx) return;
-  pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
-  pane.ctx.imageSmoothingEnabled = false;
-  pane.ctx.fillStyle = bg;
-  pane.ctx.fillRect(0, 0, width, height);
 }
 
 function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
-  if (!pane.ctx) return;
+  const ctx = pane.ctx;
+  if (!ctx) return;
   if (!pane.atlasR8 || pane.atlasW !== frame.atlasW || pane.atlasH !== frame.atlasH) {
     pane.atlasW = Math.max(1, frame.atlasW);
     pane.atlasH = Math.max(1, frame.atlasH);
@@ -653,6 +659,8 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
   for (const g of frame.glyphs) {
     pane.glyphMap.set(g.id, g);
     if (g.bits && g.w > 0 && g.h > 0 && pane.atlasR8) {
+      const expected = g.w * g.h;
+      if (g.bits.byteLength < expected) continue;
       for (let dy = 0; dy < g.h; dy++) {
         for (let dx = 0; dx < g.w; dx++) {
           pane.atlasR8[(g.y + dy) * pane.atlasW + (g.x + dx)] = g.bits[dy * g.w + dx]!;
@@ -660,15 +668,15 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
       }
     }
   }
-  const width = frame.cols * frame.cellW;
-  const height = frame.rows * frame.cellH;
+  const width = Math.max(1, frame.cols * frame.cellW);
+  const height = Math.max(1, frame.rows * frame.cellH);
   pane.canvas.style.width = `${width / dpr}px`;
   pane.canvas.style.height = `${height / dpr}px`;
   if (pane.canvas.width !== width || pane.canvas.height !== height) {
     pane.canvas.width = width;
     pane.canvas.height = height;
   }
-  const img = pane.ctx.createImageData(width, height);
+  const img = ctx.createImageData(width, height);
   const data = img.data;
   const aw = Math.max(1, pane.atlasW);
   const atlas = pane.atlasR8;
@@ -703,20 +711,21 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
           if (!cover) continue;
           const px = x0 + g.ox + dx;
           const py = y0 + g.oy + dy;
-          if (px < x0 || py < y0 || px >= x0 + frame.cellW || py >= y0 + frame.cellH) continue;
           if (px < 0 || py < 0 || px >= width || py >= height) continue;
           const pi = (py * width + px) * 4;
           const a = cover / 255;
-          data[pi] = Math.round(fr * a + br * (1 - a));
-          data[pi + 1] = Math.round(fg_ * a + bg_ * (1 - a));
-          data[pi + 2] = Math.round(fb * a + bb * (1 - a));
+          data[pi] = Math.round(fr * a + data[pi]! * (1 - a));
+          data[pi + 1] = Math.round(fg_ * a + data[pi + 1]! * (1 - a));
+          data[pi + 2] = Math.round(fb * a + data[pi + 2]! * (1 - a));
           data[pi + 3] = 255;
         }
       }
     }
   }
   pane.paintGen += 1;
-  pane.ctx.putImageData(img, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.putImageData(img, 0, 0);
 }
 
 async function paintFrame(sessionId: string, force = false) {
@@ -728,7 +737,12 @@ async function paintFrame(sessionId: string, force = false) {
     return;
   }
   if (isGpuFrame(raw)) {
-    const frame = decodeGpuFrame(raw);
+    let frame: DecodedGpuFrame | null = null;
+    try {
+      frame = decodeGpuFrame(raw);
+    } catch {
+      frame = null;
+    }
     if (!frame) return;
     const cellChanged = frame.cellW !== pane.cellW || frame.cellH !== pane.cellH;
     pane.cellW = frame.cellW || pane.cellW;
@@ -738,11 +752,17 @@ async function paintFrame(sessionId: string, force = false) {
       clearPaneSurface(pane);
       return;
     }
-    if (pane.gl) {
-      pane.gl.paint(frame, pane.canvas, pane.rasterScale);
-      pane.paintGen += 1;
-    } else {
+    // Prefer Canvas2D software composite: WebGL2 on WSL/ZINK often creates a
+    // context that clears but never shows glyphs (blank pane + stray cursor).
+    if (pane.ctx) {
       paintGpuSoftware(pane, frame, pane.rasterScale);
+    } else if (pane.gl) {
+      try {
+        pane.gl.paint(frame, pane.canvas, pane.rasterScale);
+        pane.paintGen += 1;
+      } catch {
+        /* leave last frame */
+      }
     }
     if (cellChanged) scheduleLayout();
     return;
@@ -2515,8 +2535,10 @@ function createPane(pending?: Pane["pending"]): Pane {
   banner.className = "pane-banner hidden";
   el.append(viewport, banner);
   $("workspace").appendChild(el);
-  const gl = tryCreateTermGl(canvas);
-  const ctx = gl ? null : canvas.getContext("2d", { alpha: false });
+  // Always keep a 2D context for reliable paint. WebGL2 is optional and often
+  // broken under WSL/ZINK (blank pane). Compact GPU1 frames still apply.
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const gl = ctx ? null : tryCreateTermGl(canvas);
   const pane: Pane = {
     id: crypto.randomUUID(),
     canvas,
@@ -4365,7 +4387,7 @@ async function openSettings() {
           )
           .join("")}</div>
       </div>
-      <div class="cell"><span>Renderer<small class="hint">Alacritty VT + GPU glyph atlas (WebGL), blit to canvas</small></span><span class="meta">native</span></div>
+      <div class="cell"><span>Renderer<small class="hint">Alacritty VT + GPU1 atlas frames (Canvas2D composite)</small></span><span class="meta">native</span></div>
       <label class="cell"><span>Font</span><input id="a-font" value="${escapeHtml(appearance.font_family)}" /></label>
       <label class="cell"><span>Size</span><input id="a-size" type="number" value="${appearance.font_size}" /></label>
       <label class="cell"><span>Line height</span><input id="a-lh" type="number" step="0.05" value="${appearance.line_height}" /></label>
