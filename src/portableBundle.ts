@@ -1,6 +1,6 @@
-/** Policy for install-and-play native libs: vendor GSSAPI/krb5, not distro Depends. */
+/** Policy: Linux GSSAPI uses distro Kerberos (KCM-compatible), not vendored MIT copies. */
 
-const VENDOR_PREFIXES = [
+const KERBEROS_PREFIXES = [
   "libgssapi_krb5",
   "libkrb5support",
   "libk5crypto",
@@ -11,13 +11,19 @@ const VENDOR_PREFIXES = [
 
 export type LddEntry = { soname: string; path: string | null };
 
-export function shouldVendorSoname(soname: string): boolean {
+/** Sonames that must come from the host Kerberos stack (never Terminus-vendored). */
+export function isKerberosSoname(soname: string): boolean {
   const s = soname.toLowerCase();
   if (s.startsWith("libkrb5.so") || s === "libkrb5") return true;
   if (s.startsWith("libgssapi.so")) return true;
-  return VENDOR_PREFIXES.some(
+  return KERBEROS_PREFIXES.some(
     (p) => s === p || s.startsWith(`${p}.`) || s.startsWith(`${p}.so`),
   );
+}
+
+/** @deprecated use isKerberosSoname — kept name avoided; tests use isKerberosSoname */
+export function shouldVendorSoname(soname: string): boolean {
+  return isKerberosSoname(soname);
 }
 
 export function parseLddMapping(ldd: string): LddEntry[] {
@@ -37,13 +43,18 @@ export function parseLddMapping(ldd: string): LddEntry[] {
   return out;
 }
 
-export function lddEntriesToVendor(entries: LddEntry[]): { soname: string; path: string }[] {
+export function lddKerberosEntries(entries: LddEntry[]): { soname: string; path: string }[] {
   const out: { soname: string; path: string }[] = [];
   for (const e of entries) {
-    if (!shouldVendorSoname(e.soname) || !e.path) continue;
+    if (!isKerberosSoname(e.soname) || !e.path) continue;
     out.push({ soname: e.soname, path: e.path });
   }
   return out;
+}
+
+/** @deprecated */
+export function lddEntriesToVendor(entries: LddEntry[]): { soname: string; path: string }[] {
+  return lddKerberosEntries(entries);
 }
 
 export function parseReadelfDynamic(text: string): { needed: string[]; rpath: string } {
@@ -58,20 +69,22 @@ export function parseReadelfDynamic(text: string): { needed: string[]; rpath: st
   return { needed, rpath: rpaths.join(":") };
 }
 
+/** Violations when Linux packages vendor Kerberos or force $ORIGIN/../lib/terminus. */
 export function linuxPortableViolations(audit: {
   needed: string[];
   rpath: string;
   bundled: string[];
 }): string[] {
   const violations: string[] = [];
-  const vendorNeeded = audit.needed.filter(shouldVendorSoname);
-  const hasOrigin = audit.rpath.split(/[:;]/).some((p) => p.includes("$ORIGIN"));
-  if (vendorNeeded.length > 0 && !hasOrigin) {
-    violations.push("missing $ORIGIN rpath");
+  const rpathParts = audit.rpath.split(/[:;]/).filter(Boolean);
+  if (rpathParts.some((p) => p.includes("lib/terminus"))) {
+    violations.push("rpath must not force $ORIGIN/../lib/terminus (shadows system Kerberos/KCM)");
   }
-  for (const soname of vendorNeeded) {
-    const bundled = audit.bundled.some((f) => f === soname || f.startsWith(`${soname}.`));
-    if (!bundled) violations.push(`unbundled ${soname}`);
+  for (const f of audit.bundled) {
+    if (f === ".gitkeep") continue;
+    if (isKerberosSoname(f) || /\.so/.test(f)) {
+      violations.push(`must not vendor Kerberos lib ${f}`);
+    }
   }
   return violations;
 }
@@ -121,27 +134,40 @@ export function releaseYamlInstallsKrb5Toolchain(yaml: string): boolean {
   return blob.includes("libkrb5-dev") && blob.includes("libclang-dev") && /\bclang\b/.test(blob);
 }
 
-export function tauriConfVendorsLinuxGssapi(conf: unknown): boolean {
+/** True when Linux packaging prefers system Kerberos (no stage/vendor files). */
+export function tauriConfUsesSystemKerberos(conf: unknown): boolean {
   const c = conf as {
-    build?: { beforeBundleCommand?: string };
+    build?: { beforeBundleCommand?: string | null };
     bundle?: {
       linux?: {
-        deb?: { files?: Record<string, string> };
+        deb?: { files?: Record<string, string>; depends?: string[] };
         appimage?: { files?: Record<string, string> };
       };
     };
   };
   const cmd = String(c.build?.beforeBundleCommand ?? "");
-  if (!cmd.includes("stage-gssapi-libs")) return false;
-  const deb = c.bundle?.linux?.deb?.files?.["/usr/lib/terminus"];
-  const app = c.bundle?.linux?.appimage?.files?.["/usr/lib/terminus"];
-  return Boolean(deb) && Boolean(app);
+  if (cmd.includes("stage-gssapi-libs")) return false;
+  const debFiles = c.bundle?.linux?.deb?.files?.["/usr/lib/terminus"];
+  const appFiles = c.bundle?.linux?.appimage?.files?.["/usr/lib/terminus"];
+  if (debFiles || appFiles) return false;
+  const depends = c.bundle?.linux?.deb?.depends ?? [];
+  return depends.some((d) => /libgssapi-krb5/.test(d));
 }
 
-export function tauriConfDoesNotDependOnDistroGssapi(conf: unknown): boolean {
+/** @deprecated inverted — use tauriConfUsesSystemKerberos */
+export function tauriConfVendorsLinuxGssapi(conf: unknown): boolean {
+  return !tauriConfUsesSystemKerberos(conf);
+}
+
+export function tauriConfDependsOnDistroGssapi(conf: unknown): boolean {
   const c = conf as { bundle?: { linux?: { deb?: { depends?: string[] } } } };
   const depends = c.bundle?.linux?.deb?.depends ?? [];
-  return !depends.some((d) => /gssapi|krb5/i.test(d));
+  return depends.some((d) => /libgssapi-krb5/.test(d));
+}
+
+/** @deprecated */
+export function tauriConfDoesNotDependOnDistroGssapi(conf: unknown): boolean {
+  return !tauriConfDependsOnDistroGssapi(conf);
 }
 
 export function macosJobsForceAppleGssOnMacOnly(yaml: string): boolean {
@@ -150,8 +176,14 @@ export function macosJobsForceAppleGssOnMacOnly(yaml: string): boolean {
   return /runner\.os == ['"]macOS['"]/.test(yaml) && /LIBGSSAPI_IMPL=apple/.test(yaml);
 }
 
+/** Linux must not set the vendored Kerberos rpath. */
+export function buildRsAvoidsVendoredGssapiRpath(src: string): boolean {
+  return !src.includes("lib/terminus");
+}
+
+/** @deprecated */
 export function buildRsSetsOriginRpath(src: string): boolean {
-  return src.includes("rpath") && src.includes("$ORIGIN");
+  return !buildRsAvoidsVendoredGssapiRpath(src);
 }
 
 export function cargoTomlGssapiUnixOnly(toml: string): boolean {
@@ -163,6 +195,12 @@ export function cargoTomlGssapiUnixOnly(toml: string): boolean {
 
 export function workflowsRunPortableLibChecker(yaml: string): boolean {
   return yaml.includes("scripts/assert-portable-libs.mjs");
+}
+
+export function isBundledKerberosPath(libPath: string): boolean {
+  const p = libPath.replace(/\\/g, "/").toLowerCase();
+  if (p.includes("/usr/lib/terminus/") || p.includes("native-libs/gssapi")) return true;
+  return false;
 }
 
 function u16(bytes: Uint8Array, off: number): number {

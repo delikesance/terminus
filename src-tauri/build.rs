@@ -7,12 +7,7 @@ fn main() {
     if std::env::var("TERMINUS_E2E").ok().as_deref() == Some("1") {
         println!("cargo:rustc-cfg=terminus_e2e");
     }
-    // Linux GSSAPI/krb5 is vendored next to the binary / in /usr/lib/terminus.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/terminus");
-        println!("cargo:rustc-link-arg=-Wl,-z,origin");
-        println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags");
-    }
+    // Linux Kerberos/GSSAPI must use distro libs (KCM ticket caches, krb5.conf).
+    // Do not force an app-local rpath that shadows the system MIT Kerberos stack.
     tauri_build::build()
 }
