@@ -1035,6 +1035,7 @@ function renderHosts() {
       showMenu(ev.clientX, ev.clientY, [
         { label: "Connect", run: () => void openWsl(distro) },
         { label: "Focus session", run: () => focusHost(hid), hidden: !open.length },
+        { label: "Files", run: () => openSftpFor(hid) },
         { label: "Copy name", run: () => void navigator.clipboard.writeText(distro) },
       ]);
     };
@@ -1054,6 +1055,7 @@ function renderHosts() {
       showMenu(rect.left, rect.bottom + 4, [
         { label: "Connect", run: () => void openWsl(distro) },
         { label: "Focus session", run: () => focusHost(hid), hidden: !hostPanes(hid).length },
+        { label: "Files", run: () => openSftpFor(hid) },
         { label: "Copy name", run: () => void navigator.clipboard.writeText(distro) },
       ]);
     };
@@ -4167,23 +4169,36 @@ function localPaneEl(): HTMLElement {
 
 function sftpEndpointLabel(endpoint: SftpEndpointId): string {
   if (isLocalEndpoint(endpoint)) return "This computer";
+  if (endpoint.startsWith("wsl:")) return endpoint.slice(4) || "WSL";
   const host = state.hosts.find((h) => h.id === endpoint);
   return host?.name || host?.hostname || endpoint;
 }
 
 function sftpEndpointIcon(endpoint: SftpEndpointId): string {
-  return isLocalEndpoint(endpoint) ? icons.laptop : icons.server;
+  if (isLocalEndpoint(endpoint)) return icons.laptop;
+  if (endpoint.startsWith("wsl:")) {
+    return hostOsIcon(inferOsFromDistroName(endpoint.slice(4))).icon;
+  }
+  return icons.server;
 }
 
 function sftpHostMenuItems(selected: SftpEndpointId): string {
   const local = `<button type="button" class="sftp-host-option" role="option" data-value="${SFTP_LOCAL_ID}" aria-selected="${selected === SFTP_LOCAL_ID}"><span class="sftp-host-ico">${icons.laptop}</span><span>This computer</span></button>`;
+  const wsl = state.wslDistros
+    .map((d) => {
+      const id = wslHostId(d.name);
+      const sel = id === selected;
+      const ico = hostOsIcon(inferOsFromDistroName(d.name)).icon;
+      return `<button type="button" class="sftp-host-option" role="option" data-value="${escapeHtml(id)}" aria-selected="${sel}"><span class="sftp-host-ico">${ico}</span><span>${escapeHtml(d.name)}</span></button>`;
+    })
+    .join("");
   const hosts = state.hosts
     .map((h) => {
       const sel = h.id === selected;
       return `<button type="button" class="sftp-host-option" role="option" data-value="${escapeHtml(h.id)}" aria-selected="${sel}"><span class="sftp-host-ico">${icons.server}</span><span>${escapeHtml(h.name || h.hostname)}</span></button>`;
     })
     .join("");
-  return local + hosts;
+  return local + wsl + hosts;
 }
 
 function paneChrome(slot: SftpPaneSlot, endpoint: SftpEndpointId): string {
@@ -4366,7 +4381,10 @@ async function activateSplit() {
   const fragA = keepA ? takePaneBody("a") : null;
   sftpBrowser = enterSplit(
     sftpBrowser,
-    state.hosts.map((h) => h.id),
+    [
+      ...state.wslDistros.map((d) => wslHostId(d.name)),
+      ...state.hosts.map((h) => h.id),
+    ],
   );
   ensureSftpShell(true);
   renderSftpSidebar(state.sftpHostId);
@@ -5269,7 +5287,11 @@ async function loadSftp(hostId: string, path: string) {
     sftpBrowser = setPaneEndpoint(sftpBrowser, "a", hostId);
   }
   setSftpConn("connecting");
-  if (!state.hosts.length && !isLocalEndpoint(hostId)) {
+  if (
+    !isLocalEndpoint(hostId) &&
+    !hostId.startsWith("wsl:") &&
+    !state.hosts.length
+  ) {
     setSftpConn("disconnected");
     renderSftpEmpty();
     return;
