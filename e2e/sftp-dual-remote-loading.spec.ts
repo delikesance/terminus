@@ -2,9 +2,9 @@ import { test, expect } from "@playwright/test";
 import { waitForTestBridge, getTestBridge } from "./testBridge";
 
 /**
- * #107 — Dual remote must not leave a pane stuck on Loading
+ * #107 / #109 — Dual remote loading without canceling or re-listing the first pane
  */
-test.describe("Dual remote SFTP loading (#107)", () => {
+test.describe("Dual remote SFTP loading (#107/#109)", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
@@ -13,13 +13,17 @@ test.describe("Dual remote SFTP loading (#107)", () => {
     await bridge.clearAllHosts();
   });
 
-  test("AC1: after open A then B, both panes list files (no stuck loading)", async ({ page }) => {
+  test("AC1: after A loaded, opening B does not re-list A", async ({ page }) => {
     const bridge = getTestBridge(page);
     await bridge.seedSftpHost("sftp-host-a");
     await bridge.seedSftpHost("sftp-host-b");
 
     await bridge.openSftp("sftp-host-a");
     await expect(page.locator('[data-testid="sftp-row"]').first()).toBeVisible({ timeout: 8000 });
+    const countsAfterA = await bridge.sftpListCounts();
+    expect(countsAfterA["sftp-host-a"] ?? 0).toBeGreaterThanOrEqual(1);
+    const aListsBeforeB = countsAfterA["sftp-host-a"] ?? 0;
+
     await bridge.openSftp("sftp-host-b");
 
     const paneA = page.locator('[data-testid="sftp-pane-a"]');
@@ -35,17 +39,22 @@ test.describe("Dual remote SFTP loading (#107)", () => {
     await expect(paneB.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible({
       timeout: 10000,
     });
+
+    const countsAfterB = await bridge.sftpListCounts();
+    expect(countsAfterB["sftp-host-a"] ?? 0).toBe(aListsBeforeB);
   });
 
-  test("AC2: opening B while A list is slow still fills both panes", async ({ page }) => {
+  test("AC2: opening B while A list is in flight does not start a second A list", async ({
+    page,
+  }) => {
     const bridge = getTestBridge(page);
     await bridge.seedSftpHost("sftp-host-a");
     await bridge.seedSftpHost("sftp-host-b");
 
-    // Next sftp_list for A is slow — open B before it finishes (#107 race).
+    await bridge.sftpListCountsReset();
     await bridge.sftpSlowList("sftp-host-a", 1200);
     await bridge.openSftp("sftp-host-a");
-    // Do not wait for A's rows — open B immediately to cancel/supersede A's load.
+    // Open B before A's list finishes — must not cancel or re-fetch A (#109).
     await bridge.openSftp("sftp-host-b");
 
     const paneA = page.locator('[data-testid="sftp-pane-a"]');
@@ -56,10 +65,12 @@ test.describe("Dual remote SFTP loading (#107)", () => {
     await expect(paneB.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible({
       timeout: 10000,
     });
-    // A must not remain on permanent Loading skeleton
     await expect(paneA.locator('[data-testid="sftp-loading"]')).toHaveCount(0, { timeout: 15000 });
     await expect(paneA.locator('[data-testid="sftp-row"]').filter({ hasText: "docs" })).toBeVisible({
       timeout: 15000,
     });
+
+    const counts = await bridge.sftpListCounts();
+    expect(counts["sftp-host-a"] ?? 0).toBe(1);
   });
 });

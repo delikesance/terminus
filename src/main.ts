@@ -63,6 +63,14 @@ import {
   type SftpSessions,
 } from "./sftpSessions";
 import {
+  beginPaneLoad,
+  createSftpPaneLive,
+  failPaneLoad,
+  finishPaneLoad,
+  isPaneLoadCurrent,
+  type SftpPaneLive,
+} from "./sftpPaneState";
+import {
   batchDownloadEnabled,
   batchUploadEnabled,
   filterFileEntries,
@@ -307,6 +315,9 @@ let sftpBrowser: SftpBrowserState = createSftpBrowserState();
 /** Parked remote SFTP sessions (#101). */
 let sftpSessions: SftpSessions = createSftpSessions();
 const sftpEntryCache = new Map<string, SftpEntry[]>();
+/** Per-host live load bookkeeping (#109) — opening B never cancels A. */
+const sftpPaneLive = new Map<string, SftpPaneLive>();
+const sftpLoadInflight = new Map<string, Promise<void>>();
 const sftpFilterDebounce = createTrailingDebounce(SFTP_FILTER_DEBOUNCE_MS, () => {
   rerenderSftpListings();
 });
@@ -4432,21 +4443,25 @@ function paneBodyForEndpoint(endpoint: string): HTMLElement | null {
   return null;
 }
 
-/** Paint a non-active remote that remains visible in the other pane (#103 / #107). */
+/** Paint a non-active remote that remains visible in the other pane (#103 / #109). */
 function paintParkedRemote(hostId: string): void {
   if (!hostId || isLocalEndpoint(hostId)) return;
   const body = paneBodyForEndpoint(hostId);
   if (!body) return;
   const snap = sftpSessions.byId[hostId];
-  const path = snap?.path || ".";
-  // Distinguish "never listed" from "listed empty" — length alone is not enough (#107).
+  const live = sftpPaneLive.get(hostId);
+  const path = live?.path || snap?.path || ".";
+  // Prefer completed cache. If a load is already in flight for this host, wait for it
+  // (show Loading) — never start a second sftp_list (#109).
   if (!sftpEntryCache.has(hostId)) {
     body.innerHTML = `${sftpToolbarHtml(hostId, path)}${sftpListLoadingHtml(
-      sftpDisplayPath(snap?.cwd || "", path),
+      sftpDisplayPath(live?.cwd || snap?.cwd || "", path),
       "sftp-loading",
     )}`;
     bindSftpToolbar(hostId, path);
-    void loadParkedRemoteListing(hostId);
+    if (!sftpLoadInflight.has(hostId)) {
+      void loadSftp(hostId, path, { focus: false });
+    }
     return;
   }
   const entries = sftpEntryCache.get(hostId)?.slice() ?? [];
@@ -4461,64 +4476,6 @@ function paintParkedRemote(hostId: string): void {
   if (pane) delete pane.dataset.boundSftp;
   delete body.dataset.boundSftpCtx;
   bindSftpRows(hostId, body);
-}
-
-const parkedLoadInflight = new Set<string>();
-
-/** Load a parked remote into the entry cache without stealing the active host (#107). */
-async function loadParkedRemoteListing(hostId: string): Promise<void> {
-  if (!hostId || isLocalEndpoint(hostId) || parkedLoadInflight.has(hostId)) return;
-  if (state.sftpHostId === hostId) return;
-  parkedLoadInflight.add(hostId);
-  const snap = sftpSessions.byId[hostId] ?? defaultSessionSnap();
-  let root = snap.root || "/";
-  let cwd = snap.cwd || "";
-  let pathHint = snap.path || ".";
-  try {
-    if (!cwd) {
-      try {
-        const resolved = await invoke<string>("sftp_realpath", { hostId, path: "." });
-        cwd = typeof resolved === "string" ? resolved.replace(/\/+$/, "") || resolved : "";
-      } catch {
-        cwd = "";
-      }
-    }
-    const raw = pathHint && pathHint.trim() ? pathHint : ".";
-    const anchored = raw.startsWith("/")
-      ? raw
-      : cwd
-        ? normalizeSftpPath(`${cwd}/${raw}`)
-        : raw;
-    const safePath = resolveUnderRoot(root, anchored);
-    const entries = await invoke<SftpEntry[]>("sftp_list", {
-      hostId,
-      path: safePath,
-      root,
-    });
-    if (state.sftpHostId === hostId) return;
-    sftpSessions = rememberRemote(sftpSessions, hostId, {
-      path: safePath,
-      cwd,
-      root,
-      selected: snap.selected ?? [],
-    });
-    sftpEntryCache.set(hostId, entries.slice());
-    if (sftpBrowser.paneA === hostId || sftpBrowser.paneB === hostId) {
-      paintParkedRemote(hostId);
-    }
-  } catch (err) {
-    if (state.sftpHostId === hostId) return;
-    const body = paneBodyForEndpoint(hostId);
-    if (!body) return;
-    const typed = parseSftpError(err);
-    body.innerHTML = `${sftpToolbarHtml(hostId, pathHint)}<div class="sftp-error" data-testid="sftp-error" data-kind="${escapeHtml(typed.kind)}" role="alert">
-      <strong>${escapeHtml(typed.kind)}</strong>
-      <span>${escapeHtml(typed.message)}</span>
-    </div>`;
-    bindSftpToolbar(hostId, pathHint);
-  } finally {
-    parkedLoadInflight.delete(hostId);
-  }
 }
 
 function paintCompanionRemotes(activeId: string | null): void {
@@ -4585,6 +4542,8 @@ function closeRemoteSession(hostId: string): void {
   const { sessions, nextActive } = closeRemote(sftpSessions, hostId, state.sftpHostId);
   sftpSessions = sessions;
   sftpEntryCache.delete(hostId);
+  sftpPaneLive.delete(hostId);
+  sftpLoadInflight.delete(hostId);
   detachRemoteFromLayout(hostId);
   if (!wasActive) {
     ensureSftpShell(true);
@@ -5957,97 +5916,213 @@ function refreshRemoteSelection(): void {
   });
 }
 
-let sftpLoadSeq = 0;
+function ensurePaneLive(hostId: string): SftpPaneLive {
+  let live = sftpPaneLive.get(hostId);
+  if (!live) {
+    live = createSftpPaneLive(hostId);
+    sftpPaneLive.set(hostId, live);
+  }
+  return live;
+}
 
-async function loadSftp(hostId: string, path: string) {
-  const seq = ++sftpLoadSeq;
-  if (state.sftpHostId && state.sftpHostId !== hostId) snapshotActiveRemote();
-  state.sftpHostId = hostId;
-  sftpSessions = openOrFocusRemote(sftpSessions, hostId);
-  if (sftpBrowser.mode === "single") {
-    sftpBrowser = openSingle(sftpBrowser, hostId);
-  } else if (sftpBrowser.paneA !== hostId && sftpBrowser.paneB !== hostId) {
-    bindLayoutToRemote(hostId);
-  }
-  setSftpConn("connecting");
-  if (
-    !isLocalEndpoint(hostId) &&
-    !hostId.startsWith("wsl:") &&
-    !state.hosts.length
-  ) {
-    setSftpConn("disconnected");
-    renderSftpEmpty();
-    return;
-  }
-  renderSftpSidebar(hostId);
-  const hintRaw = path && path.trim() ? path : state.sftpPath || ".";
-  const hintLabel = sftpDisplayPath(state.sftpCwd, hintRaw);
-  renderSftpWorkspace(hostId, hintRaw, sftpListLoadingHtml(hintLabel, "sftp-loading"));
-  setPaneListingLoading(remotePaneEl(), true);
-  await ensureSftpCwd(hostId);
-  if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
-  // Capture session anchors before another open can clobber globals (#107).
-  const sessionRoot = state.sftpRoot;
-  const sessionCwd = state.sftpCwd;
-  let safePath: string;
+/** Resolve home cwd for a host without requiring global focus (#109). */
+async function resolveHostCwd(
+  hostId: string,
+  existing: string,
+): Promise<string> {
+  if (existing) return existing;
   try {
-    const raw = path && path.trim() ? path : ".";
-    // Full-FS mode: anchor relative/"." onto the session home; absolute passes.
-    const anchored = raw.startsWith("/")
-      ? raw
-      : sessionCwd
-        ? normalizeSftpPath(`${sessionCwd}/${raw}`)
-        : raw;
-    safePath = resolveUnderRoot(sessionRoot, anchored);
-  } catch (err) {
-    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
-    setPaneListingLoading(remotePaneEl(), false);
-    renderSftpError(hostId, state.sftpPath, err);
-    return;
+    const cwd = await invoke<string>("sftp_realpath", { hostId, path: "." });
+    return typeof cwd === "string" ? cwd.replace(/\/+$/, "") || cwd : "";
+  } catch {
+    return "";
   }
-  if (state.sftpHostId === hostId) state.sftpPath = safePath;
-  const loadingPath = sftpDisplayPath(sessionCwd, safePath);
-  if (seq === sftpLoadSeq && state.sftpHostId === hostId) {
-    renderSftpWorkspace(hostId, safePath, sftpListLoadingHtml(loadingPath, "sftp-loading"));
-    setPaneListingLoading(remotePaneEl(), true);
-  }
-  try {
-    const entries = await invoke<SftpEntry[]>("sftp_list", {
-      hostId,
-      path: safePath,
-      root: sessionRoot,
-    });
-    // Always stash listing for this host so a superseding open can paint the parked pane (#107).
-    sftpEntryCache.set(hostId, entries.slice());
-    sftpSessions = rememberRemote(sftpSessions, hostId, {
-      path: safePath,
-      cwd: sessionCwd || "",
-      root: sessionRoot || "/",
-      selected: [...(sftpSessions.byId[hostId]?.selected ?? [])],
-    });
-    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) {
-      if (
-        state.sftpHostId !== hostId &&
-        (sftpBrowser.paneA === hostId || sftpBrowser.paneB === hostId)
-      ) {
-        paintParkedRemote(hostId);
-      }
-      return;
-    }
-    setSftpConn("connected");
+}
+
+/** Paint listing into the pane that owns this endpoint (focused or parked). */
+function paintHostListing(hostId: string, path: string, entries: SftpEntry[]): void {
+  const isFocus = state.sftpHostId === hostId;
+  if (isFocus) {
     state.sftpEntries = entries;
-    state.sftpPath = safePath;
-    renderSftpWorkspace(hostId, safePath, wrapSftpContentEnter(remoteTableHtml(entries)));
+    state.sftpPath = path;
+    renderSftpWorkspace(hostId, path, wrapSftpContentEnter(remoteTableHtml(entries)));
     if (entries.length) mountRemoteVirtualList(entries);
     bindSftpRows(hostId, remotePaneEl());
     setPaneListingLoading(remotePaneEl(), false);
     updateTransferUi();
-    snapshotActiveRemote();
-    paintCompanionRemotes(hostId);
-  } catch (err) {
-    if (seq !== sftpLoadSeq || state.sftpHostId !== hostId) return;
-    setPaneListingLoading(remotePaneEl(), false);
-    renderSftpError(hostId, safePath, err);
+    return;
+  }
+  if (sftpBrowser.paneA === hostId || sftpBrowser.paneB === hostId) {
+    paintParkedRemote(hostId);
+  }
+}
+
+/**
+ * Load a remote listing. Per-host loadSeq — opening B never cancels A (#109).
+ * `focus: false` updates that host's pane/cache without stealing sidebar focus.
+ */
+async function loadSftp(
+  hostId: string,
+  path: string,
+  opts?: { focus?: boolean },
+): Promise<void> {
+  if (!hostId || isLocalEndpoint(hostId)) return;
+  const focus = opts?.focus !== false;
+
+  if (focus) {
+    if (state.sftpHostId && state.sftpHostId !== hostId) snapshotActiveRemote();
+    state.sftpHostId = hostId;
+    sftpSessions = openOrFocusRemote(sftpSessions, hostId);
+    if (sftpBrowser.mode === "single") {
+      sftpBrowser = openSingle(sftpBrowser, hostId);
+    } else if (sftpBrowser.paneA !== hostId && sftpBrowser.paneB !== hostId) {
+      bindLayoutToRemote(hostId);
+    }
+    setSftpConn("connecting");
+    if (!hostId.startsWith("wsl:") && !state.hosts.length) {
+      setSftpConn("disconnected");
+      renderSftpEmpty();
+      return;
+    }
+    renderSftpSidebar(hostId);
+  } else {
+    sftpSessions = openOrFocusRemote(sftpSessions, hostId);
+  }
+
+  const snap = sftpSessions.byId[hostId] ?? defaultSessionSnap();
+  let live = ensurePaneLive(hostId);
+  const hintRaw = path && path.trim() ? path : live.path || snap.path || ".";
+  const started = beginPaneLoad(live, hintRaw);
+  live = started.live;
+  sftpPaneLive.set(hostId, live);
+  const seq = started.seq;
+
+  const body = paneBodyForEndpoint(hostId);
+  if (focus) {
+    const hintLabel = sftpDisplayPath(state.sftpCwd || live.cwd, hintRaw);
+    renderSftpWorkspace(hostId, hintRaw, sftpListLoadingHtml(hintLabel, "sftp-loading"));
+    setPaneListingLoading(remotePaneEl(), true);
+  } else if (body) {
+    body.innerHTML = `${sftpToolbarHtml(hostId, hintRaw)}${sftpListLoadingHtml(
+      sftpDisplayPath(live.cwd || snap.cwd || "", hintRaw),
+      "sftp-loading",
+    )}`;
+    bindSftpToolbar(hostId, hintRaw);
+  }
+
+  // Mark inflight before any await so a concurrent open of B can see A's load (#109).
+  let settleInflight!: () => void;
+  const inflightGate = new Promise<void>((resolve) => {
+    settleInflight = resolve;
+  });
+  sftpLoadInflight.set(hostId, inflightGate);
+
+  const run = (async () => {
+    // Resolve cwd/root from this host's live/snap only — never trust globals after awaits (#109).
+    let sessionRoot = live.root || snap.root || "/";
+    let sessionCwd = live.cwd || snap.cwd || "";
+    sessionCwd = await resolveHostCwd(hostId, sessionCwd);
+    if (!isPaneLoadCurrent(sftpPaneLive.get(hostId), seq)) return;
+
+    let safePath: string;
+    try {
+      const raw = hintRaw && hintRaw.trim() ? hintRaw : ".";
+      const anchored = raw.startsWith("/")
+        ? raw
+        : sessionCwd
+          ? normalizeSftpPath(`${sessionCwd}/${raw}`)
+          : raw;
+      safePath = resolveUnderRoot(sessionRoot, anchored);
+    } catch (err) {
+      if (!isPaneLoadCurrent(sftpPaneLive.get(hostId), seq)) return;
+      const failed = failPaneLoad(ensurePaneLive(hostId), seq, parseSftpError(err));
+      if (failed) sftpPaneLive.set(hostId, failed);
+      if (focus && state.sftpHostId === hostId) {
+        setPaneListingLoading(remotePaneEl(), false);
+        renderSftpError(hostId, state.sftpPath, err);
+      } else if (body) {
+        const typed = parseSftpError(err);
+        body.innerHTML = `${sftpToolbarHtml(hostId, hintRaw)}<div class="sftp-error" data-testid="sftp-error" data-kind="${escapeHtml(typed.kind)}" role="alert">
+          <strong>${escapeHtml(typed.kind)}</strong>
+          <span>${escapeHtml(typed.message)}</span>
+        </div>`;
+        bindSftpToolbar(hostId, hintRaw);
+      }
+      return;
+    }
+
+    if (focus && state.sftpHostId === hostId) {
+      state.sftpPath = safePath;
+      state.sftpCwd = sessionCwd;
+      state.sftpCwdHostId = hostId;
+      state.sftpRoot = sessionRoot;
+      renderSftpWorkspace(
+        hostId,
+        safePath,
+        sftpListLoadingHtml(sftpDisplayPath(sessionCwd, safePath), "sftp-loading"),
+      );
+      setPaneListingLoading(remotePaneEl(), true);
+    }
+
+    try {
+      const entries = await invoke<SftpEntry[]>("sftp_list", {
+        hostId,
+        path: safePath,
+        root: sessionRoot,
+      });
+      if (!isPaneLoadCurrent(sftpPaneLive.get(hostId), seq)) return;
+
+      sftpEntryCache.set(hostId, entries.slice());
+      sftpSessions = rememberRemote(sftpSessions, hostId, {
+        path: safePath,
+        cwd: sessionCwd || "",
+        root: sessionRoot || "/",
+        selected: [...(sftpSessions.byId[hostId]?.selected ?? [])],
+      });
+      const finished = finishPaneLoad(ensurePaneLive(hostId), seq, {
+        path: safePath,
+        cwd: sessionCwd || "",
+        root: sessionRoot || "/",
+      });
+      if (finished) sftpPaneLive.set(hostId, finished);
+
+      if (focus && state.sftpHostId === hostId) {
+        setSftpConn("connected");
+        state.sftpCwd = sessionCwd;
+        state.sftpCwdHostId = hostId;
+        state.sftpRoot = sessionRoot;
+        state.sftpSelected = new Set(sftpSessions.byId[hostId]?.selected ?? []);
+        paintHostListing(hostId, safePath, entries);
+        snapshotActiveRemote();
+        paintCompanionRemotes(hostId);
+      } else {
+        paintHostListing(hostId, safePath, entries);
+      }
+    } catch (err) {
+      if (!isPaneLoadCurrent(sftpPaneLive.get(hostId), seq)) return;
+      const failed = failPaneLoad(ensurePaneLive(hostId), seq, parseSftpError(err));
+      if (failed) sftpPaneLive.set(hostId, failed);
+      if (focus && state.sftpHostId === hostId) {
+        setPaneListingLoading(remotePaneEl(), false);
+        renderSftpError(hostId, safePath, err);
+      } else {
+        const errBody = paneBodyForEndpoint(hostId);
+        if (!errBody) return;
+        const typed = parseSftpError(err);
+        errBody.innerHTML = `${sftpToolbarHtml(hostId, safePath)}<div class="sftp-error" data-testid="sftp-error" data-kind="${escapeHtml(typed.kind)}" role="alert">
+          <strong>${escapeHtml(typed.kind)}</strong>
+          <span>${escapeHtml(typed.message)}</span>
+        </div>`;
+        bindSftpToolbar(hostId, safePath);
+      }
+    }
+  })();
+
+  try {
+    await run;
+  } finally {
+    settleInflight();
+    if (sftpLoadInflight.get(hostId) === inflightGate) sftpLoadInflight.delete(hostId);
   }
 }
 

@@ -28,6 +28,9 @@ interface TerminusTestBridge {
   sftpReset(hostId?: string): Promise<void>;
   /** #107: delay the next sftp_list for hostId (ms). */
   sftpSlowList(hostId: string, ms?: number): Promise<void>;
+  /** #109: per-host sftp_list call counts. */
+  sftpListCounts(): Promise<Record<string, number>>;
+  sftpListCountsReset(): Promise<void>;
   lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null>;
   /** C9b: reset + seed the virtual local FS (local pane), optional new home path. */
   seedLocalDir(path?: string): Promise<string>;
@@ -247,6 +250,14 @@ export function initTestBridge(): void {
 
     async sftpSlowList(hostId: string, ms = 800): Promise<void> {
       await invoke("test_sftp_slow_list", { hostId, ms });
+    },
+
+    async sftpListCounts(): Promise<Record<string, number>> {
+      return invoke("test_sftp_list_counts");
+    },
+
+    async sftpListCountsReset(): Promise<void> {
+      await invoke("test_sftp_list_counts_reset");
     },
 
     async lastSftpOpen(): Promise<{ hostId: string; path: string; name: string } | null> {

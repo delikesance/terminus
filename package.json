@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux && npm run test:group-softdelete && npm run test:known-hosts && npm run test:identity-kind && npm run test:sftp-path && npm run test:activity-bar && npm run test:forward-panel && npm run test:host-card && npm run test:polish-finish && npm run test:sftp-layout && npm run test:sftp-ux && npm run test:perf-load && npm run test:perf-timing && npm run test:sftp-virtual-list && npm run test:motion && npm run test:host-drag-ghost && npm run test:window-chrome && npm run test:sftp-sessions",
+    "selftest": "cargo run -p terminus-core --bin terminus-selftest && npm run test:search-ux && npm run test:group-softdelete && npm run test:known-hosts && npm run test:identity-kind && npm run test:sftp-path && npm run test:activity-bar && npm run test:forward-panel && npm run test:host-card && npm run test:polish-finish && npm run test:sftp-layout && npm run test:sftp-ux && npm run test:perf-load && npm run test:perf-timing && npm run test:sftp-virtual-list && npm run test:motion && npm run test:host-drag-ghost && npm run test:window-chrome && npm run test:sftp-sessions && npm run test:sftp-pane-state",
     "test:search-ux": "npm run compile:test-groupexpand && node src/groupExpand.test.js",
     "test:group-softdelete": "npm run compile:test-groupsoftdelete && node src/groupSoftDelete.test.js",
     "test:known-hosts": "npm run compile:test-knownhosts && node src/knownHostsParse.test.js",
@@ -50,6 +50,8 @@
     "test:window-chrome": "npm run compile:test-windowchrome && node src/windowChrome.test.js",
     "compile:test-sftpsessions": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/sftpSessions.ts",
     "test:sftp-sessions": "npm run compile:test-sftpsessions && node src/sftpSessions.test.js",
+    "compile:test-sftppanestate": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/sftpPaneState.ts",
+    "test:sftp-pane-state": "npm run compile:test-sftppanestate && node src/sftpPaneState.test.js",
     "capture:preview": "node scripts/capture-preview.mjs",
     "test:e2e:perf": "playwright test e2e/perf-load.spec.ts",
     "test:perf-native": "bash scripts/perf-native.sh"

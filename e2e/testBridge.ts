@@ -61,6 +61,10 @@ export function getTestBridge(page: Page) {
         ({ id, delay }) => (window as any).__terminusTest.sftpSlowList(id, delay),
         { id: hostId, delay: ms },
       ),
+    sftpListCounts: () =>
+      page.evaluate(() => (window as any).__terminusTest.sftpListCounts()),
+    sftpListCountsReset: () =>
+      page.evaluate(() => (window as any).__terminusTest.sftpListCountsReset()),
     lastSftpOpen: () =>
       page.evaluate(() => (window as any).__terminusTest.lastSftpOpen()),
     seedTofuHost: (hostId?: string) =>
