@@ -1816,6 +1816,18 @@ function runAction(action: string) {
     case "terminal.clear":
       sendText("\x0c");
       break;
+    case "terminal.copy": {
+      const pane = activePane();
+      if (!pane?.session || pane.exited) break;
+      const s = selectionRect(pane);
+      if (s) void copyTerminalSelection(pane, s);
+      break;
+    }
+    case "terminal.paste": {
+      const pane = activePane();
+      if (pane) void pasteIntoPane(pane);
+      break;
+    }
     case "font.increase":
       bumpFont(1);
       break;

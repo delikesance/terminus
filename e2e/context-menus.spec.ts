@@ -93,6 +93,28 @@ test.describe("Scoped context menus (#77)", () => {
     expect(after.last).toBe("paste-e2e-marker");
   });
 
+  test("AC3b: Ctrl+Shift+V pastes via terminal.paste keybinding", async ({ page }) => {
+    await ensureActivePane(page);
+    const pane = page.locator(".pane.active").first();
+    await pane.click();
+
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.evaluate(async () => {
+      await navigator.clipboard.writeText("paste-shift-e2e-marker");
+    });
+
+    const before = await page.evaluate(() => (window as any).__pasteIntoPaneCalls ?? 0);
+    await page.keyboard.press("Control+Shift+v");
+    await page.waitForTimeout(150);
+
+    const after = await page.evaluate(() => ({
+      calls: (window as any).__pasteIntoPaneCalls ?? 0,
+      last: (window as any).__pasteIntoPaneLast ?? null,
+    }));
+    expect(after.calls).toBeGreaterThan(before);
+    expect(after.last).toBe("paste-shift-e2e-marker");
+  });
+
   test("AC5: right-click anywhere prevents the native context menu", async ({ page }) => {
     await ensureActivePane(page);
 
