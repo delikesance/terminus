@@ -81,6 +81,7 @@ import {
 import { mountVirtualList, type VirtualListHandle } from "./sftpVirtualList";
 import { filterFileEntriesAsync } from "./sftpFilterAsync";
 import { pickRenderer } from "./perf";
+import { decodeGpuFrame, isGpuFrame, tryCreateTermGl, type DecodedGpuFrame, type TermGlPainter } from "./termGl";
 import { createTrailingDebounce, FRAME_MIN_MS, SFTP_FILTER_DEBOUNCE_MS } from "./perfTiming";
 import { parseKnownHosts } from "./knownHostsParse";
 import {
@@ -249,7 +250,12 @@ type Pane = {
   /** Set when the tab is closed while a connect is still in flight. */
   aborted?: boolean;
   canvas: HTMLCanvasElement;
-  ctx: CanvasRenderingContext2D;
+  ctx: CanvasRenderingContext2D | null;
+  gl: TermGlPainter | null;
+  atlasR8: Uint8Array | null;
+  atlasW: number;
+  atlasH: number;
+  glyphMap: Map<number, { x: number; y: number; w: number; h: number; ox: number; oy: number }>;
   el: HTMLDivElement;
   /** Wraps canvas + selection so overlay coords share the canvas origin. */
   viewport: HTMLDivElement;
@@ -610,22 +616,140 @@ function clearPaneSurface(pane: Pane) {
     pane.canvas.width = width;
     pane.canvas.height = height;
   }
+  const bg = termBgColor();
+  if (pane.gl) {
+    const gl = (pane.canvas.getContext("webgl2") as WebGL2RenderingContext | null);
+    if (gl) {
+      const m = /^#?([0-9a-f]{6})$/i.exec(bg.trim());
+      let r = 0.11;
+      let g = 0.11;
+      let b = 0.12;
+      if (m) {
+        const n = parseInt(m[1], 16);
+        r = ((n >> 16) & 255) / 255;
+        g = ((n >> 8) & 255) / 255;
+        b = (n & 255) / 255;
+      }
+      gl.viewport(0, 0, width, height);
+      gl.clearColor(r, g, b, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    return;
+  }
+  if (!pane.ctx) return;
   pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
   pane.ctx.imageSmoothingEnabled = false;
-  pane.ctx.fillStyle = termBgColor();
+  pane.ctx.fillStyle = bg;
   pane.ctx.fillRect(0, 0, width, height);
+}
+
+function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
+  if (!pane.ctx) return;
+  if (!pane.atlasR8 || pane.atlasW !== frame.atlasW || pane.atlasH !== frame.atlasH) {
+    pane.atlasW = Math.max(1, frame.atlasW);
+    pane.atlasH = Math.max(1, frame.atlasH);
+    pane.atlasR8 = new Uint8Array(pane.atlasW * pane.atlasH);
+  }
+  for (const g of frame.glyphs) {
+    pane.glyphMap.set(g.id, g);
+    if (g.bits && g.w > 0 && g.h > 0 && pane.atlasR8) {
+      for (let dy = 0; dy < g.h; dy++) {
+        for (let dx = 0; dx < g.w; dx++) {
+          pane.atlasR8[(g.y + dy) * pane.atlasW + (g.x + dx)] = g.bits[dy * g.w + dx]!;
+        }
+      }
+    }
+  }
+  const width = frame.cols * frame.cellW;
+  const height = frame.rows * frame.cellH;
+  pane.canvas.style.width = `${width / dpr}px`;
+  pane.canvas.style.height = `${height / dpr}px`;
+  if (pane.canvas.width !== width || pane.canvas.height !== height) {
+    pane.canvas.width = width;
+    pane.canvas.height = height;
+  }
+  const img = pane.ctx.createImageData(width, height);
+  const data = img.data;
+  const aw = Math.max(1, pane.atlasW);
+  const atlas = pane.atlasR8;
+  for (let row = 0; row < frame.rows; row++) {
+    for (let col = 0; col < frame.cols; col++) {
+      const i = row * frame.cols + col;
+      const glyphId = frame.cells[i * 3]!;
+      const fg = frame.cells[i * 3 + 1]!;
+      const bg = frame.cells[i * 3 + 2]!;
+      const fr = fg & 255;
+      const fg_ = (fg >> 8) & 255;
+      const fb = (fg >> 16) & 255;
+      const br = bg & 255;
+      const bg_ = (bg >> 8) & 255;
+      const bb = (bg >> 16) & 255;
+      const x0 = col * frame.cellW;
+      const y0 = row * frame.cellH;
+      for (let dy = 0; dy < frame.cellH; dy++) {
+        for (let dx = 0; dx < frame.cellW; dx++) {
+          const pi = ((y0 + dy) * width + (x0 + dx)) * 4;
+          data[pi] = br;
+          data[pi + 1] = bg_;
+          data[pi + 2] = bb;
+          data[pi + 3] = 255;
+        }
+      }
+      const g = glyphId ? pane.glyphMap.get(glyphId) : undefined;
+      if (!g || !atlas || g.w <= 0 || g.h <= 0) continue;
+      for (let dy = 0; dy < g.h; dy++) {
+        for (let dx = 0; dx < g.w; dx++) {
+          const cover = atlas[(g.y + dy) * aw + (g.x + dx)] ?? 0;
+          if (!cover) continue;
+          const px = x0 + g.ox + dx;
+          const py = y0 + g.oy + dy;
+          if (px < x0 || py < y0 || px >= x0 + frame.cellW || py >= y0 + frame.cellH) continue;
+          if (px < 0 || py < 0 || px >= width || py >= height) continue;
+          const pi = (py * width + px) * 4;
+          const a = cover / 255;
+          data[pi] = Math.round(fr * a + br * (1 - a));
+          data[pi + 1] = Math.round(fg_ * a + bg_ * (1 - a));
+          data[pi + 2] = Math.round(fb * a + bb * (1 - a));
+          data[pi + 3] = 255;
+        }
+      }
+    }
+  }
+  pane.paintGen += 1;
+  pane.ctx.putImageData(img, 0, 0);
 }
 
 async function paintFrame(sessionId: string, force = false) {
   const pane = state.panes.find((p) => p.session?.id === sessionId);
   if (!pane || pane.exited) return;
   const raw = toBytes(await invoke("session_frame", { id: sessionId, force }).catch(() => new Uint8Array()));
-  if (raw.byteLength < 16) {
-    // No new screen state (e.g. a cursor-move/OSC escape that left the screen
-    // unchanged). Keep the last frame — clearing the canvas here is what made
-    // the terminal flash/blink during normal output.
+  if (raw.byteLength < 4) {
+    // No new screen state. Keep the last frame — clearing flashes the terminal.
     return;
   }
+  if (isGpuFrame(raw)) {
+    const frame = decodeGpuFrame(raw);
+    if (!frame) return;
+    const cellChanged = frame.cellW !== pane.cellW || frame.cellH !== pane.cellH;
+    pane.cellW = frame.cellW || pane.cellW;
+    pane.cellH = frame.cellH || pane.cellH;
+    pane.rasterScale = displayScale();
+    if (!frame.cols || !frame.rows) {
+      clearPaneSurface(pane);
+      return;
+    }
+    if (pane.gl) {
+      pane.gl.paint(frame, pane.canvas, pane.rasterScale);
+      pane.paintGen += 1;
+    } else {
+      paintGpuSoftware(pane, frame, pane.rasterScale);
+    }
+    if (cellChanged) scheduleLayout();
+    return;
+  }
+  // Legacy RGBA packed frames (tests / older builds).
+  if (raw.byteLength < 16) return;
+  if (!pane.ctx) return;
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const width = view.getUint32(0, true);
   const height = view.getUint32(4, true);
@@ -644,7 +768,6 @@ async function paintFrame(sessionId: string, force = false) {
     clearPaneSurface(pane);
     return;
   }
-  // Copy into ImageData then putImageData (sync) — avoids createImageBitmap overhead (#54).
   const copy = new Uint8ClampedArray(pixels.byteLength);
   copy.set(pixels);
   const image = new ImageData(copy, width, height);
@@ -2392,11 +2515,17 @@ function createPane(pending?: Pane["pending"]): Pane {
   banner.className = "pane-banner hidden";
   el.append(viewport, banner);
   $("workspace").appendChild(el);
-  const ctx = canvas.getContext("2d", { alpha: false })!;
+  const gl = tryCreateTermGl(canvas);
+  const ctx = gl ? null : canvas.getContext("2d", { alpha: false });
   const pane: Pane = {
     id: crypto.randomUUID(),
     canvas,
     ctx,
+    gl,
+    atlasR8: null,
+    atlasW: 1,
+    atlasH: 1,
+    glyphMap: new Map(),
     el,
     viewport,
     banner,
@@ -4236,7 +4365,7 @@ async function openSettings() {
           )
           .join("")}</div>
       </div>
-      <div class="cell"><span>Renderer<small class="hint">Alacritty VT + CPU glyph raster, blit to canvas</small></span><span class="meta">native</span></div>
+      <div class="cell"><span>Renderer<small class="hint">Alacritty VT + GPU glyph atlas (WebGL), blit to canvas</small></span><span class="meta">native</span></div>
       <label class="cell"><span>Font</span><input id="a-font" value="${escapeHtml(appearance.font_family)}" /></label>
       <label class="cell"><span>Size</span><input id="a-size" type="number" value="${appearance.font_size}" /></label>
       <label class="cell"><span>Line height</span><input id="a-lh" type="number" step="0.05" value="${appearance.line_height}" /></label>
