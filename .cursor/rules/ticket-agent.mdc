@@ -59,7 +59,7 @@ Write a structured Markdown ticket in the conversation (or `docs/tickets/<slug>.
 
 Once the user confirms the ticket:
 
-1. Ensure `main` is up to date (`git fetch origin` + checkout `main` + pull if clean/safe).
+1. Ensure **`development`** is up to date (`git fetch` + checkout `development` + pull if clean/safe). Create `development` from `main` only if it does not exist yet (and push it); never invent a parallel base.
 2. Create the issue with `gh`:
 
 ```bash
@@ -81,20 +81,23 @@ EOF
 ```
 
 3. Label defaults: `enhancement` for features, `bug` for major fixes (existing labels only).
-4. From the new issue number `N`, create and check out the feature branch:
+4. From the new issue number `N`, create and check out the feature branch **from `development`**:
 
 ```bash
+git checkout development
+git pull --ff-only
 git checkout -b "feat/#N-<short-slug>"
 ```
 
 Slug: lowercase kebab-case, ≤40 chars, from the title. Example: `feat/#29-port-forward-switch`.
 
-5. Return in chat: **issue URL**, **issue number**, **branch name**.
+5. Return in chat: **issue URL**, **issue number**, **branch name**, base = `development`.
 6. Only then hand off to the **Architect Agent**, referencing that issue and branch.
 
 ### Publish rules
 
 - Never `gh issue create` or branch on an unvalidated draft.
 - Never open a PR, merge, or write feature code in this role.
-- Never commit on `main` for complex work — the branch is mandatory.
+- Never commit on `main` or `development` for complex work — the feature branch is mandatory.
+- Never target `main` for feature PRs during the dev-only period (base is `development`).
 - If `gh` / git fails, report the error and keep the approved Markdown until retry succeeds.
