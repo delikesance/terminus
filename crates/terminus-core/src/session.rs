@@ -516,8 +516,9 @@ impl SessionManager {
             // Full RGBA frames: GPU1 atlas path left panes blank when glyph
             // stamps were missing/incremental (Canvas2D composite stayed empty).
             let (cw, ch) = emu.cell_size();
+            let modes = emu.mode_flags();
             emu.capture_frame(force)
-                .map(|frame| pack_frame(&frame, cw, ch))
+                .map(|frame| pack_frame(&frame, cw, ch, modes))
         };
         Ok(packed)
     }
