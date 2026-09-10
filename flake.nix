@@ -36,6 +36,7 @@
           pkg-config
           wrapGAppsHook4
           xdg-utils
+          patchelf
         ];
 
         linuxLibs = with pkgs; [
@@ -93,6 +94,9 @@
             unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
             ${linuxHook}
             export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+            if [ "$(uname -s)" = Darwin ]; then
+              export LIBGSSAPI_IMPL="''${LIBGSSAPI_IMPL:-apple}"
+            fi
             echo "Terminus dev shell — rustc $(rustc --version) · node $(node --version)"
           '';
         };
