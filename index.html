@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-os-chrome="win">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,10 +11,10 @@
   <body>
     <div id="app">
       <header id="titlebar">
-        <div class="lights">
-          <button type="button" id="win-close" class="light close" title="Close"></button>
-          <button type="button" id="win-min" class="light min" title="Minimize"></button>
-          <button type="button" id="win-max" class="light max" title="Maximize"></button>
+        <div id="window-controls" class="window-controls lights" role="group" aria-label="Window">
+          <button type="button" id="win-close" class="light close" title="Close" aria-label="Close"></button>
+          <button type="button" id="win-min" class="light min" title="Minimize" aria-label="Minimize"></button>
+          <button type="button" id="win-max" class="light max" title="Maximize" aria-label="Maximize"></button>
         </div>
         <button type="button" id="btn-sidebar" class="tb-btn" title="Connections" aria-label="Connections"></button>
         <div id="tabstrip">
