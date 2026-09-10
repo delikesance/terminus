@@ -27,6 +27,7 @@ import {
   spawnHostDragGhost,
   type GhostState,
 } from "./hostDragGhost";
+import { applyWindowChrome, resolveWindowChrome } from "./windowChrome";
 import {
   resolveUnderRoot,
   normalizeSftpPath,
@@ -301,6 +302,13 @@ document.head.appendChild(state.customCss);
 /** Windows host UI (WSL rows). Evaluated once at load. */
 const IS_WIN = /^Win/.test(navigator.platform || "");
 
+/** Titlebar caption style: mac traffic lights vs win/linux symbols (#99). */
+applyWindowChrome(
+  resolveWindowChrome({
+    platform: navigator.platform || "",
+    userAgent: navigator.userAgent || "",
+  }),
+);
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const $input = (id: string) => $(id) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
