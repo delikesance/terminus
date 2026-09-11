@@ -3,6 +3,7 @@ use crate::gpu_frame::{AtlasGlyph, GpuCell, GpuFrame};
 use crate::models::ColorTheme;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Column, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
@@ -13,8 +14,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const FONT_TTF: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
-const NERD_TTF: &[u8] = include_bytes!("../fonts/SymbolsNerdFontMono-Regular.ttf");
+const FONT_TTF: &[u8] = include_bytes!("../fonts/CascadiaMonoNF-Regular.ttf");
 const SCROLLBACK: usize = 2000;
 const ATLAS_SIZE: u32 = 1024;
 
@@ -246,7 +246,8 @@ impl TerminalEmulator {
     }
 
     /// Bit flags for the frontend input encoder.
-    /// bit0 APP_CURSOR, bit1 APP_KEYPAD, bit2 ALT_SCREEN, bit3 BRACKETED_PASTE
+    /// bit0 APP_CURSOR, bit1 APP_KEYPAD, bit2 ALT_SCREEN, bit3 BRACKETED_PASTE,
+    /// bit4 MOUSE_MODE, bit5 SGR_MOUSE, bit6 MOUSE_DRAG/MOTION
     pub fn mode_flags(&self) -> u32 {
         let mode = self.term.mode();
         let mut flags = 0u32;
@@ -262,7 +263,63 @@ impl TerminalEmulator {
         if mode.contains(TermMode::BRACKETED_PASTE) {
             flags |= 0b1000;
         }
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            flags |= 0b1_0000;
+        }
+        if mode.contains(TermMode::SGR_MOUSE) {
+            flags |= 0b10_0000;
+        }
+        if mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
+            flags |= 0b100_0000;
+        }
         flags
+    }
+
+    /// Scroll the primary screen history. Returns false on the alternate screen
+    /// (caller should send arrow/wheel sequences to the PTY instead).
+    pub fn scroll_delta(&mut self, lines: i32) -> bool {
+        if lines == 0 {
+            return true;
+        }
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        self.term.scroll_display(Scroll::Delta(lines));
+        self.dirty = true;
+        true
+    }
+
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
+    /// `(display_offset, history_lines)`. Both zero on the alternate screen.
+    pub fn scroll_state(&self) -> (u32, u32) {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return (0, 0);
+        }
+        let offset = self.term.grid().display_offset() as u32;
+        let max = self
+            .term
+            .total_lines()
+            .saturating_sub(self.term.screen_lines()) as u32;
+        (offset, max)
+    }
+
+    /// Jump to an absolute display offset (clamped). False on alt screen.
+    pub fn scroll_to(&mut self, offset: u32) -> bool {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        let (_, max) = self.scroll_state();
+        let target = (offset.min(max)) as usize;
+        let cur = self.term.grid().display_offset();
+        let delta = target as i32 - cur as i32;
+        if delta != 0 {
+            self.term.scroll_display(Scroll::Delta(delta));
+            self.dirty = true;
+        }
+        true
     }
 
     pub fn take_frame(&mut self) -> Option<TermFrame> {
@@ -1008,20 +1065,17 @@ fn pick_font_idx(fonts: &[Font], ch: char) -> usize {
 }
 
 fn load_fonts() -> Result<Vec<Font>> {
+    // Cascadia Mono NF: Latin + Braille + Nerd Font icons in one face.
     let primary = Font::from_bytes(FONT_TTF, FontSettings::default())
         .map_err(|err| Error::msg(format!("font: {err}")))?;
-    let mut fonts = vec![primary];
-    if let Ok(nerd) = Font::from_bytes(NERD_TTF, FontSettings::default()) {
-        fonts.push(nerd);
-    }
-    Ok(fonts)
+    Ok(vec![primary])
 }
 
 fn metrics_for(font: &Font, font_px: f32, line_height: f32) -> (f32, u32, u32, i32) {
     let px = font_px.max(10.0);
     let line = font
         .horizontal_line_metrics(px)
-        .expect("IBM Plex Mono has line metrics");
+        .expect("Cascadia Mono NF has line metrics");
     let em = font.metrics('M', px);
     let cell_w = em.advance_width.ceil().max(1.0) as u32;
     let typo = (line.ascent - line.descent).max(1.0);
@@ -1091,13 +1145,22 @@ fn blend(bg: [u8; 4], fg: [u8; 4]) -> [u8; 4] {
     ]
 }
 
-pub fn pack_frame(frame: &TermFrame, cell_w: u32, cell_h: u32, mode_flags: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(20 + frame.rgba.len());
+pub fn pack_frame(
+    frame: &TermFrame,
+    cell_w: u32,
+    cell_h: u32,
+    mode_flags: u32,
+    scroll_offset: u32,
+    scroll_max: u32,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(28 + frame.rgba.len());
     out.extend_from_slice(&frame.width.to_le_bytes());
     out.extend_from_slice(&frame.height.to_le_bytes());
     out.extend_from_slice(&cell_w.to_le_bytes());
     out.extend_from_slice(&cell_h.to_le_bytes());
     out.extend_from_slice(&mode_flags.to_le_bytes());
+    out.extend_from_slice(&scroll_offset.to_le_bytes());
+    out.extend_from_slice(&scroll_max.to_le_bytes());
     out.extend_from_slice(&frame.rgba);
     out
 }
@@ -1525,11 +1588,157 @@ mod tests {
         assert_eq!(term.mode_flags() & 0b0001, 0b0001, "DECCKM should set APP_CURSOR");
         let (cw, ch) = term.cell_size();
         let frame = term.capture_frame(true).expect("frame");
-        let packed = pack_frame(&frame, cw, ch, term.mode_flags());
-        assert!(packed.len() >= 20 + frame.rgba.len());
+        let packed = pack_frame(&frame, cw, ch, term.mode_flags(), 0, 0);
+        assert!(packed.len() >= 28 + frame.rgba.len());
         let flags = u32::from_le_bytes(packed[16..20].try_into().unwrap());
         assert_eq!(flags & 0b0001, 0b0001);
         term.feed(b"\x1b[?1l");
         assert_eq!(term.mode_flags() & 0b0001, 0, "DECCKM reset clears APP_CURSOR");
+    }
+
+    #[test]
+    fn ac1_mouse_mode_sets_pack_frame_flags() {
+        let mut term = TerminalEmulator::new(40, 12, 14.0).unwrap();
+        assert_eq!(term.mode_flags() & 0b1_0000, 0);
+        // Normal mouse tracking + SGR + button-event tracking (vim mouse=a style).
+        term.feed(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+        let flags = term.mode_flags();
+        assert_eq!(flags & 0b1_0000, 0b1_0000, "MOUSE_MODE");
+        assert_eq!(flags & 0b10_0000, 0b10_0000, "SGR_MOUSE");
+        assert_eq!(flags & 0b100_0000, 0b100_0000, "MOUSE_DRAG");
+        let (cw, ch) = term.cell_size();
+        let frame = term.capture_frame(true).expect("frame");
+        let packed = pack_frame(&frame, cw, ch, flags, 0, 0);
+        let packed_flags = u32::from_le_bytes(packed[16..20].try_into().unwrap());
+        assert_eq!(packed_flags & 0b111_0000, 0b111_0000);
+    }
+
+    #[test]
+    fn ac1_scroll_delta_moves_into_history() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        assert_eq!(term.display_offset(), 0);
+        assert!(term.scroll_delta(3));
+        assert!(
+            term.display_offset() >= 3,
+            "wheel-up should reveal history (offset={})",
+            term.display_offset()
+        );
+    }
+
+    #[test]
+    fn ac2_scroll_delta_false_on_alt_screen() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        term.feed(b"\x1b[?1049h");
+        assert_eq!(term.mode_flags() & 0b0100, 0b0100);
+        assert!(!term.scroll_delta(2));
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn scroll_delta_zero_is_noop() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        assert!(term.scroll_delta(0));
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn ac1_scroll_state_reports_offset_and_max() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        let (offset, max) = term.scroll_state();
+        assert_eq!(offset, 0);
+        assert!(max >= 10, "expected history above viewport, max={max}");
+        assert!(term.scroll_delta(4));
+        let (offset2, max2) = term.scroll_state();
+        assert_eq!(offset2, 4);
+        assert_eq!(max2, max);
+    }
+
+    #[test]
+    fn ac2_scroll_to_sets_absolute_offset() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        let (_, max) = term.scroll_state();
+        assert!(term.scroll_to(max.saturating_sub(2)));
+        assert_eq!(term.display_offset(), max.saturating_sub(2) as usize);
+        assert!(term.scroll_to(0));
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn ac3_scroll_state_zero_on_alt_screen() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        term.feed(b"\x1b[?1049h");
+        assert_eq!(term.scroll_state(), (0, 0));
+        assert!(!term.scroll_to(3));
+    }
+
+    #[test]
+    fn pack_frame_includes_scroll_metrics() {
+        let mut term = TerminalEmulator::new(40, 5, 14.0).unwrap();
+        for i in 0..20 {
+            term.feed(format!("line{i}\n").as_bytes());
+        }
+        term.scroll_delta(5);
+        let (cw, ch) = term.cell_size();
+        let (off, max) = term.scroll_state();
+        let frame = term.capture_frame(true).expect("frame");
+        let packed = pack_frame(&frame, cw, ch, term.mode_flags(), off, max);
+        assert_eq!(packed.len(), 28 + frame.rgba.len());
+        let got_off = u32::from_le_bytes(packed[20..24].try_into().unwrap());
+        let got_max = u32::from_le_bytes(packed[24..28].try_into().unwrap());
+        assert_eq!(got_off, off);
+        assert_eq!(got_max, max);
+        assert!(got_max > 0);
+    }
+
+    #[test]
+    fn ac1_braille_spinner_glyphs_have_ink() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        // Cursor/CLI spinners use Braille (missing in old IBM Plex + Symbols NF).
+        term.feed("⠰⠳".as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let (t0, m0, b0) = cell_ink(&frame, cell_w, cell_h, 0, 0);
+        let (t1, m1, b1) = cell_ink(&frame, cell_w, cell_h, 1, 0);
+        assert!(
+            t0 + m0 + b0 > 8,
+            "Braille U+2838 must paint (got {})",
+            t0 + m0 + b0
+        );
+        assert!(
+            t1 + m1 + b1 > 8,
+            "Braille U+283D must paint (got {})",
+            t1 + m1 + b1
+        );
+    }
+
+    #[test]
+    fn ac2_nerd_powerline_glyph_has_ink() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        term.feed("\u{e0b0}".as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let (t, m, b) = cell_ink(&frame, cell_w, cell_h, 0, 0);
+        assert!(t + m + b > 20, "Nerd/powerline U+E0B0 must paint (got {})", t + m + b);
+    }
+
+    #[test]
+    fn bundled_cascadia_mono_nf_is_substantial() {
+        assert!(
+            FONT_TTF.len() > 2_000_000,
+            "expected Cascadia Mono NF Regular embed, got {} bytes",
+            FONT_TTF.len()
+        );
     }
 }

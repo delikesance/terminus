@@ -1,5 +1,5 @@
 const APPLE_MONO = ["SF Mono", "Menlo", "Monaco"] as const;
-export const WEB_MONO = "IBM Plex Mono";
+export const WEB_MONO = "Cascadia Mono NF";
 
 function localFontExists(name: string): boolean {
   const probe = "mmmmmmmmlli";

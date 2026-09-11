@@ -31,6 +31,8 @@ src/perfTiming.js
 src/perf.js
 src/sftpVirtualList.js
 src/motion.js
+src/termPaste.js
+src/termMouse.js
 src/hostDragGhost.js
 src/windowChrome.js
 src/sftpSessions.js

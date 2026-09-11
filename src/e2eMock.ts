@@ -163,7 +163,7 @@ const GRAPHITE = {
 };
 
 const DEFAULT_APPEARANCE = {
-  font_family: "IBM Plex Mono",
+  font_family: "Cascadia Mono NF",
   font_size: 14,
   line_height: 1.0,
   letter_spacing: 0,
@@ -1251,6 +1251,10 @@ export function installE2eMock(): void {
           return db.sessions;
         case "session_frame":
           return new Uint8Array();
+        case "session_scroll":
+          return true;
+        case "session_scroll_to":
+          return true;
         case "session_selection_text": {
           const { r0, c0, r1, c1 } = args as any;
           const text = `sel-${r0}-${c0}-${r1}-${c1}`;
