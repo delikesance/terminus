@@ -22,6 +22,7 @@
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
+        inherit (pkgs) lib;
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [
             "rust-src"
@@ -70,14 +71,113 @@
           git
           docker-compose
           openssh
-        ]
-        ;
+        ];
 
         linuxHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
           export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:''${XDG_DATA_DIRS:-}"
           export GIO_MODULE_DIR="${pkgs.glib-networking}/lib/gio/modules/"
           export WEBKIT_DISABLE_COMPOSITING_MODE="''${WEBKIT_DISABLE_COMPOSITING_MODE:-1}"
         '';
+
+        terminusSrc = lib.cleanSourceWith {
+          src = ./.;
+          filter =
+            path: type:
+            (lib.cleanSourceFilter path type)
+            && !(builtins.elem (baseNameOf path) [
+              "node_modules"
+              "target"
+              "dist"
+              "result"
+              "result-nix-linux-package"
+              "test-results"
+              "artifacts"
+              "scripts"
+              "e2e"
+              "docs"
+              ".github"
+              ".cursor"
+              "docker"
+              "design"
+            ]);
+        };
+
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
+        };
+
+        # Desktop app for Linux (nix profile install / nix run / nix build).
+        terminus = rustPlatform.buildRustPackage (
+          finalAttrs: {
+            pname = "terminus";
+            version = "0.1.0";
+            src = terminusSrc;
+
+            cargoLock.lockFile = ./Cargo.lock;
+
+            npmDeps = pkgs.fetchNpmDeps {
+              name = "${finalAttrs.pname}-${finalAttrs.version}-npm-deps";
+              inherit (finalAttrs) src;
+              hash = "sha256-Jc1sn/o4fk6LMO36fCTTdiNH1GCtXV6Mg2jep0xNYqg=";
+            };
+
+            nativeBuildInputs =
+              with pkgs;
+              [
+                cargo-tauri.hook
+                nodejs_22
+                npmHooks.npmConfigHook
+                pkg-config
+                patchelf
+              ]
+              ++ lib.optionals stdenv.hostPlatform.isLinux [
+                wrapGAppsHook4
+                clang
+              ];
+
+            buildInputs =
+              with pkgs;
+              [
+                openssl
+              ]
+              ++ lib.optionals stdenv.hostPlatform.isLinux [
+                webkitgtk_4_1
+                gtk3
+                cairo
+                gdk-pixbuf
+                glib
+                dbus
+                libsoup_3
+                librsvg
+                pango
+                harfbuzz
+                at-spi2-atk
+                glib-networking
+                gsettings-desktop-schemas
+                krb5
+                llvmPackages.libclang
+              ];
+
+            # Workspace root owns Cargo.lock; Tauri app lives in src-tauri.
+            buildAndTestSubdir = "src-tauri";
+
+            # cargo-tauri.hook defaults to a deb bundle and installs data/usr → $out.
+            tauriBundleType = "deb";
+
+            LIBCLANG_PATH = lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.llvmPackages.libclang.lib}/lib";
+
+            doCheck = false;
+
+            meta = {
+              description = "Open-source Termius alternative — SSH/SFTP terminal";
+              homepage = "https://github.com/delikesance/terminus";
+              license = lib.licenses.mit;
+              mainProgram = "terminus";
+              platforms = lib.platforms.linux;
+            };
+          }
+        );
       in
       {
         devShells.default = pkgs.mkShell {
@@ -102,8 +202,6 @@
           '';
         };
 
-        packages.default = self.packages.${system}.terminus-selftest;
-
         packages.terminus-selftest = pkgs.rustPlatform.buildRustPackage {
           pname = "terminus-selftest";
           version = "0.1.0";
@@ -119,6 +217,9 @@
           buildInputs = [ pkgs.openssl ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.krb5 ];
           LIBCLANG_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.llvmPackages.libclang.lib}/lib";
         };
+
+        packages.terminus = terminus;
+        packages.default = if pkgs.stdenv.hostPlatform.isLinux then terminus else self.packages.${system}.terminus-selftest;
       }
     );
 }
