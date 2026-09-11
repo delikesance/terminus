@@ -13,7 +13,7 @@ import {
   readText as tauriClipboardReadText,
   writeText as tauriClipboardWriteText,
 } from "@tauri-apps/plugin-clipboard-manager";
-import { decideDomPasteAction, nextPasteSuppressUntil } from "./termPaste";
+import { claimPasteDelivery, decideDomPasteAction, nextPasteSuppressUntil } from "./termPaste";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
@@ -2042,7 +2042,11 @@ function runAction(action: string) {
     }
     case "terminal.paste": {
       const pane = activePane();
-      if (pane) void pasteIntoPane(pane);
+      if (!pane) break;
+      const claimed = claimPasteDelivery(pane._pasteSuppressUntil ?? 0);
+      if (claimed === null) break;
+      pane._pasteSuppressUntil = claimed;
+      void pasteIntoPane(pane);
       break;
     }
     case "font.increase":
@@ -2506,6 +2510,8 @@ function attachSession(info: SessionInfo, pane = createPane()) {
       clipboardText,
     });
     if (action === "ignore") return;
+    // Claim so a following keydown / keybinding twin is skipped.
+    pane._pasteSuppressUntil = nextPasteSuppressUntil();
     if (action === "fallback") {
       void pasteIntoPane(pane);
       return;
@@ -2949,8 +2955,10 @@ function handleTerminalPaste(ev: KeyboardEvent, pane: Pane): boolean {
   // Ctrl+V and Ctrl+Shift+V (Linux terminal convention) both paste.
   if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "v") return false;
   ev.preventDefault();
-  // WebView2/WebKit still emit `paste` after keydown — suppress the twin insert.
-  pane._pasteSuppressUntil = nextPasteSuppressUntil();
+  // Global keybinding may already have delivered Ctrl+Shift+V (capture phase).
+  const claimed = claimPasteDelivery(pane._pasteSuppressUntil ?? 0);
+  if (claimed === null) return true;
+  pane._pasteSuppressUntil = claimed;
   void pasteIntoPane(pane);
   return true;
 }
