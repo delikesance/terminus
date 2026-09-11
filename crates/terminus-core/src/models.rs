@@ -257,7 +257,7 @@ pub struct TerminalAppearance {
 impl Default for TerminalAppearance {
     fn default() -> Self {
         Self {
-            font_family: "IBM Plex Mono".into(),
+            font_family: "Cascadia Mono NF".into(),
             font_size: 14.0,
             font_weight: "400".into(),
             line_height: 1.0,

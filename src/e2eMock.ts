@@ -163,7 +163,7 @@ const GRAPHITE = {
 };
 
 const DEFAULT_APPEARANCE = {
-  font_family: "IBM Plex Mono",
+  font_family: "Cascadia Mono NF",
   font_size: 14,
   line_height: 1.0,
   letter_spacing: 0,

@@ -14,8 +14,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const FONT_TTF: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
-const NERD_TTF: &[u8] = include_bytes!("../fonts/SymbolsNerdFontMono-Regular.ttf");
+const FONT_TTF: &[u8] = include_bytes!("../fonts/CascadiaMonoNF-Regular.ttf");
 const SCROLLBACK: usize = 2000;
 const ATLAS_SIZE: u32 = 1024;
 
@@ -1056,20 +1055,17 @@ fn pick_font_idx(fonts: &[Font], ch: char) -> usize {
 }
 
 fn load_fonts() -> Result<Vec<Font>> {
+    // Cascadia Mono NF: Latin + Braille + Nerd Font icons in one face.
     let primary = Font::from_bytes(FONT_TTF, FontSettings::default())
         .map_err(|err| Error::msg(format!("font: {err}")))?;
-    let mut fonts = vec![primary];
-    if let Ok(nerd) = Font::from_bytes(NERD_TTF, FontSettings::default()) {
-        fonts.push(nerd);
-    }
-    Ok(fonts)
+    Ok(vec![primary])
 }
 
 fn metrics_for(font: &Font, font_px: f32, line_height: f32) -> (f32, u32, u32, i32) {
     let px = font_px.max(10.0);
     let line = font
         .horizontal_line_metrics(px)
-        .expect("IBM Plex Mono has line metrics");
+        .expect("Cascadia Mono NF has line metrics");
     let em = font.metrics('M', px);
     let cell_w = em.advance_width.ceil().max(1.0) as u32;
     let typo = (line.ascent - line.descent).max(1.0);
@@ -1677,5 +1673,45 @@ mod tests {
         assert_eq!(got_off, off);
         assert_eq!(got_max, max);
         assert!(got_max > 0);
+    }
+
+    #[test]
+    fn ac1_braille_spinner_glyphs_have_ink() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        // Cursor/CLI spinners use Braille (missing in old IBM Plex + Symbols NF).
+        term.feed("⠰⠳".as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let (t0, m0, b0) = cell_ink(&frame, cell_w, cell_h, 0, 0);
+        let (t1, m1, b1) = cell_ink(&frame, cell_w, cell_h, 1, 0);
+        assert!(
+            t0 + m0 + b0 > 8,
+            "Braille U+2838 must paint (got {})",
+            t0 + m0 + b0
+        );
+        assert!(
+            t1 + m1 + b1 > 8,
+            "Braille U+283D must paint (got {})",
+            t1 + m1 + b1
+        );
+    }
+
+    #[test]
+    fn ac2_nerd_powerline_glyph_has_ink() {
+        let mut term = TerminalEmulator::new(8, 2, 14.0).unwrap();
+        term.feed("\u{e0b0}".as_bytes());
+        let (cell_w, cell_h) = term.cell_size();
+        let frame = term.raster();
+        let (t, m, b) = cell_ink(&frame, cell_w, cell_h, 0, 0);
+        assert!(t + m + b > 20, "Nerd/powerline U+E0B0 must paint (got {})", t + m + b);
+    }
+
+    #[test]
+    fn bundled_cascadia_mono_nf_is_substantial() {
+        assert!(
+            FONT_TTF.len() > 2_000_000,
+            "expected Cascadia Mono NF Regular embed, got {} bytes",
+            FONT_TTF.len()
+        );
     }
 }
