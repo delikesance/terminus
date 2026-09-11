@@ -69,8 +69,7 @@ Release CI pushes `.#terminus` to the public **`delikesance-terminus`** Cachix c
 nix.settings = {
   extra-substituters = [ "https://delikesance-terminus.cachix.org" ];
   extra-trusted-public-keys = [
-    # From https://app.cachix.org/cache/delikesance-terminus after cache create
-    "delikesance-terminus.cachix.org-1:REPLACE_AFTER_CACHE_CREATE"
+    "delikesance-terminus.cachix.org-1:p8Fekuq1NcfXc2qpgp9w5LF25ErO9uNnAV7iuyTuxNQ="
   ];
 };
 ```
