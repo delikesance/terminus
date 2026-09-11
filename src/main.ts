@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
@@ -19,6 +20,7 @@ import {
   mouseReportingEnabled,
   xtermButtonCode,
 } from "./termMouse";
+import { findUrlAt, isOpenableHttpUrl, shouldAttemptLinkOpen } from "./termLinks";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
@@ -2824,9 +2826,28 @@ function createPane(pending?: Pane["pending"]): Pane {
       });
       if (seq) sendText(seq, pane);
       pane._mouseBtn = null;
+      pane._selecting = false;
+      pane._selStart = null;
+      return;
     }
+    const down = pane._selStart;
+    const selecting = pane._selecting;
     pane._selecting = false;
     pane._selStart = null;
+    if (!selecting || !down || !pane.session || pane.exited) return;
+    const up = selCellFromEvent(pane, ev) ?? down;
+    const dragOccurred = up.row !== down.row || up.col !== down.col;
+    if (
+      !shouldAttemptLinkOpen({
+        button: ev.button,
+        shiftKey: ev.shiftKey,
+        mouseReporting: mouseReportingEnabled(pane.modeFlags),
+        dragOccurred,
+      })
+    ) {
+      return;
+    }
+    void openTerminalLinkAt(pane, up.row, up.col);
   });
   scrollbar.onmousedown = (ev) => {
     if (ev.button !== 0 || !pane.session || pane.exited) return;
@@ -3007,6 +3028,24 @@ function clearSelection(pane: Pane): void {
   pane.selAnchor = null;
   pane.selFocus = null;
   renderSelection(pane);
+}
+
+async function openTerminalLinkAt(pane: Pane, row: number, col: number): Promise<void> {
+  if (!pane.session || pane.exited) return;
+  try {
+    const line = await invoke<string>("session_selection_text", {
+      id: pane.session.id,
+      r0: row,
+      c0: 0,
+      r1: row,
+      c1: Math.max(0, pane.cols - 1),
+    });
+    const hit = findUrlAt(line, col);
+    if (!hit || !isOpenableHttpUrl(hit.url)) return;
+    await openExternal(hit.url);
+  } catch (err) {
+    console.error("open link failed", err);
+  }
 }
 
 async function copyTerminalSelection(pane: Pane, s: { r0: number; c0: number; r1: number; c1: number }) {
