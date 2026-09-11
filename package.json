@@ -17,6 +17,7 @@
     "test:auth-method": "npm run compile:test-authmethod && node src/authMethod.test.js",
     "test:portable-bundle": "npm run compile:test-portablebundle && node src/portableBundle.test.js",
     "test:nix-linux-package": "node scripts/assert-nix-linux-package.mjs",
+    "test:nixos-distribution": "node scripts/assert-nixos-distribution.mjs",
     "test:sftp-path": "npm run compile:test-sftppath && node src/sftpPath.test.js",
     "test:activity-bar": "npm run compile:test-activitybar && node src/activityBar.test.js",
     "compile:test-groupexpand": "npx tsc --module esnext --target es2022 --moduleResolution bundler --outDir src src/groupExpand.ts",
