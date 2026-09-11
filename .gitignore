@@ -1,6 +1,8 @@
 /target
 /dist
 /node_modules
+/result
+/result-nix-linux-package
 /.direnv
 /src-tauri/gen
 /src-tauri/target
@@ -33,6 +35,7 @@ src/sftpVirtualList.js
 src/motion.js
 src/termPaste.js
 src/termMouse.js
+src/termLinks.js
 src/hostDragGhost.js
 src/windowChrome.js
 src/sftpSessions.js
