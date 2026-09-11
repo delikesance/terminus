@@ -14,6 +14,11 @@ import {
   writeText as tauriClipboardWriteText,
 } from "@tauri-apps/plugin-clipboard-manager";
 import { claimPasteDelivery, decideDomPasteAction, nextPasteSuppressUntil } from "./termPaste";
+import {
+  encodeTermMouse,
+  mouseReportingEnabled,
+  xtermButtonCode,
+} from "./termMouse";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
@@ -267,7 +272,7 @@ type Pane = {
   banner: HTMLDivElement;
   cellW: number;
   cellH: number;
-  /** Terminal mode bits from frame header: APP_CURSOR|APP_KEYPAD|ALT_SCREEN|BRACKETED_PASTE */
+  /** Terminal mode bits from frame header: APP_CURSOR|APP_KEYPAD|ALT_SCREEN|BRACKETED_PASTE|MOUSE|SGR|DRAG */
   modeFlags: number;
   /** Alacritty display_offset (0 = live bottom). */
   scrollOffset: number;
@@ -287,6 +292,8 @@ type Pane = {
   _selStart?: { row: number; col: number } | null;
   /** Ignore DOM paste until this timestamp (keydown Ctrl+V already inserted). */
   _pasteSuppressUntil?: number;
+  /** Button currently reported to the PTY while mouse mode is active. */
+  _mouseBtn?: number | null;
 };
 
 const state = {
@@ -2586,6 +2593,30 @@ async function handleTermWheel(ev: WheelEvent, pane: Pane) {
     lines = Math.round(-ev.deltaY / linePx);
   }
   if (!lines) lines = ev.deltaY < 0 ? 1 : -1;
+
+  // xterm mouse wheel reports when the app enabled mouse tracking.
+  if (mouseReportingEnabled(pane.modeFlags) && !ev.shiftKey) {
+    const cell = selCellFromEvent(pane, ev) ?? { col: 0, row: 0 };
+    const wheel = lines > 0 ? "up" : "down";
+    const n = Math.min(32, Math.abs(lines));
+    let seq = "";
+    for (let i = 0; i < n; i++) {
+      const part = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: xtermButtonCode(0, wheel),
+        action: "press",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (part) seq += part;
+    }
+    if (seq) sendText(seq, pane);
+    return;
+  }
+
   const altScreen = Boolean(pane.modeFlags & 0b0100);
   if (altScreen) {
     const appCursor = Boolean(pane.modeFlags & 0b0001);
@@ -2717,11 +2748,37 @@ function createPane(pending?: Pane["pending"]): Pane {
     el.focus();
   };
   el.onmousedown = (ev) => {
-    if (ev.button !== 0) return;
     selectPane(pane.id);
     el.focus();
     const cell = selCellFromEvent(pane, ev);
     if (!cell) return;
+    // Mouse protocol apps (vim/htop): report to PTY unless Shift forces selection.
+    if (
+      pane.session &&
+      !pane.exited &&
+      mouseReportingEnabled(pane.modeFlags) &&
+      !ev.shiftKey &&
+      (ev.button === 0 || ev.button === 1 || ev.button === 2)
+    ) {
+      const btn = xtermButtonCode(ev.button);
+      const seq = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: btn,
+        action: "press",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (seq) {
+        sendText(seq, pane);
+        pane._mouseBtn = btn;
+        ev.preventDefault();
+        return;
+      }
+    }
+    if (ev.button !== 0) return;
     // Click without drag clears selection; drag creates a new one.
     clearSelection(pane);
     pane._selStart = cell;
@@ -2729,6 +2786,22 @@ function createPane(pending?: Pane["pending"]): Pane {
     ev.preventDefault();
   };
   window.addEventListener("mousemove", (ev) => {
+    if (pane._mouseBtn != null && pane.session && !pane.exited) {
+      const cell = selCellFromEvent(pane, ev);
+      if (!cell) return;
+      const seq = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: pane._mouseBtn,
+        action: "motion",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (seq) sendText(seq, pane);
+      return;
+    }
     if (!pane._selecting || !pane._selStart) return;
     const cell = selCellFromEvent(pane, ev);
     if (!cell) return;
@@ -2736,7 +2809,22 @@ function createPane(pending?: Pane["pending"]): Pane {
     pane.selFocus = cell;
     renderSelection(pane);
   });
-  window.addEventListener("mouseup", () => {
+  window.addEventListener("mouseup", (ev) => {
+    if (pane._mouseBtn != null && pane.session && !pane.exited) {
+      const cell = selCellFromEvent(pane, ev) ?? pane.selFocus ?? { col: 0, row: 0 };
+      const seq = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: pane._mouseBtn,
+        action: "release",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (seq) sendText(seq, pane);
+      pane._mouseBtn = null;
+    }
     pane._selecting = false;
     pane._selStart = null;
   });
@@ -2776,6 +2864,8 @@ function createPane(pending?: Pane["pending"]): Pane {
     ev.stopPropagation();
     selectPane(pane.id);
     el.focus();
+    // In mouse mode, right-click is for the app; Shift+right keeps our menu.
+    if (mouseReportingEnabled(pane.modeFlags) && !ev.shiftKey) return;
     showMenu(ev.clientX, ev.clientY, terminalContextMenuItems(pane));
   };
   renderTabs();
@@ -2874,7 +2964,10 @@ function cycleHost(delta: number) {
   else focusOrOpenSsh(next);
 }
 
-function selCellFromEvent(pane: Pane, ev: MouseEvent): { row: number; col: number } | null {
+function selCellFromEvent(
+  pane: Pane,
+  ev: { clientX: number; clientY: number },
+): { row: number; col: number } | null {
   const rect = pane.canvas.getBoundingClientRect();
   const cw = pane.cellW / pane.rasterScale;
   const ch = pane.cellH / pane.rasterScale;
