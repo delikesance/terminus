@@ -1,6 +1,8 @@
 /target
 /dist
 /node_modules
+/result
+/result-nix-linux-package
 /.direnv
 /src-tauri/gen
 /src-tauri/target

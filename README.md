@@ -50,6 +50,24 @@ nix develop -c node scripts/capture-preview.mjs
 
 For a social/GitHub hero in Canva, follow [`docs/media/CANVA_BRIEF.md`](./docs/media/CANVA_BRIEF.md) (size, colors, copy, import steps).
 
+## Install (Nix / Linux)
+
+From this repo (flakes enabled):
+
+```bash
+nix profile install .#terminus
+# or one-shot:
+nix run .#terminus
+```
+
+From GitHub once the flake is on your preferred branch:
+
+```bash
+nix profile install github:delikesance/terminus#terminus
+```
+
+`packages.default` on Linux is the desktop app. The CI selftest binary remains available as `.#terminus-selftest`.
+
 ## Development (Nix flake)
 
 ```bash
