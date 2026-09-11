@@ -246,7 +246,8 @@ impl TerminalEmulator {
     }
 
     /// Bit flags for the frontend input encoder.
-    /// bit0 APP_CURSOR, bit1 APP_KEYPAD, bit2 ALT_SCREEN, bit3 BRACKETED_PASTE
+    /// bit0 APP_CURSOR, bit1 APP_KEYPAD, bit2 ALT_SCREEN, bit3 BRACKETED_PASTE,
+    /// bit4 MOUSE_MODE, bit5 SGR_MOUSE, bit6 MOUSE_DRAG/MOTION
     pub fn mode_flags(&self) -> u32 {
         let mode = self.term.mode();
         let mut flags = 0u32;
@@ -261,6 +262,15 @@ impl TerminalEmulator {
         }
         if mode.contains(TermMode::BRACKETED_PASTE) {
             flags |= 0b1000;
+        }
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            flags |= 0b1_0000;
+        }
+        if mode.contains(TermMode::SGR_MOUSE) {
+            flags |= 0b10_0000;
+        }
+        if mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
+            flags |= 0b100_0000;
         }
         flags
     }
@@ -1584,6 +1594,23 @@ mod tests {
         assert_eq!(flags & 0b0001, 0b0001);
         term.feed(b"\x1b[?1l");
         assert_eq!(term.mode_flags() & 0b0001, 0, "DECCKM reset clears APP_CURSOR");
+    }
+
+    #[test]
+    fn ac1_mouse_mode_sets_pack_frame_flags() {
+        let mut term = TerminalEmulator::new(40, 12, 14.0).unwrap();
+        assert_eq!(term.mode_flags() & 0b1_0000, 0);
+        // Normal mouse tracking + SGR + button-event tracking (vim mouse=a style).
+        term.feed(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+        let flags = term.mode_flags();
+        assert_eq!(flags & 0b1_0000, 0b1_0000, "MOUSE_MODE");
+        assert_eq!(flags & 0b10_0000, 0b10_0000, "SGR_MOUSE");
+        assert_eq!(flags & 0b100_0000, 0b100_0000, "MOUSE_DRAG");
+        let (cw, ch) = term.cell_size();
+        let frame = term.capture_frame(true).expect("frame");
+        let packed = pack_frame(&frame, cw, ch, flags, 0, 0);
+        let packed_flags = u32::from_le_bytes(packed[16..20].try_into().unwrap());
+        assert_eq!(packed_flags & 0b111_0000, 0b111_0000);
     }
 
     #[test]
