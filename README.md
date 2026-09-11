@@ -85,7 +85,7 @@ From a local clone: `nix profile install .#terminus` / `nix run .#terminus`.
 
 ### nixpkgs
 
-Upstream attribute target: `pkgs.terminus` (or `terminus-ssh` if the name is taken). Until that lands, use FlakeHub or the GitHub flake above. The shared derivation lives in [`nix/package.nix`](./nix/package.nix); see [`nix/nixpkgs-example.nix`](./nix/nixpkgs-example.nix) for a callPackage stub.
+Upstream attribute target: `pkgs.terminus` (or `terminus-ssh` if the name is taken). Packaging PR: [NixOS/nixpkgs#562315](https://github.com/NixOS/nixpkgs/pull/562315). Until merged, use FlakeHub or the GitHub flake above. The shared derivation lives in [`nix/package.nix`](./nix/package.nix); see [`nix/nixpkgs-example.nix`](./nix/nixpkgs-example.nix) for a callPackage stub.
 
 On NixOS once packaged:
 
