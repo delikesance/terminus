@@ -517,8 +517,9 @@ impl SessionManager {
             // stamps were missing/incremental (Canvas2D composite stayed empty).
             let (cw, ch) = emu.cell_size();
             let modes = emu.mode_flags();
+            let (scroll_off, scroll_max) = emu.scroll_state();
             emu.capture_frame(force)
-                .map(|frame| pack_frame(&frame, cw, ch, modes))
+                .map(|frame| pack_frame(&frame, cw, ch, modes, scroll_off, scroll_max))
         };
         Ok(packed)
     }
@@ -529,6 +530,24 @@ impl SessionManager {
         };
         let text = session.emulator.lock().extract_text(r0, c0, r1, c1);
         Ok(text)
+    }
+
+    /// Scroll primary-screen history. Returns false on alternate screen.
+    pub fn scroll(&self, session_id: &str, lines: i32) -> Result<bool> {
+        let Some(session) = self.sessions.get(session_id) else {
+            return Err(Error::SessionNotFound(session_id.into()));
+        };
+        let scrolled = session.emulator.lock().scroll_delta(lines);
+        Ok(scrolled)
+    }
+
+    /// Jump to an absolute display offset. Returns false on alternate screen.
+    pub fn scroll_to(&self, session_id: &str, offset: u32) -> Result<bool> {
+        let Some(session) = self.sessions.get(session_id) else {
+            return Err(Error::SessionNotFound(session_id.into()));
+        };
+        let scrolled = session.emulator.lock().scroll_to(offset);
+        Ok(scrolled)
     }
 
     pub fn cell_size(&self, session_id: &str) -> Result<(u32, u32)> {

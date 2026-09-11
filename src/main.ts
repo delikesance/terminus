@@ -13,6 +13,12 @@ import {
   readText as tauriClipboardReadText,
   writeText as tauriClipboardWriteText,
 } from "@tauri-apps/plugin-clipboard-manager";
+import { claimPasteDelivery, decideDomPasteAction, nextPasteSuppressUntil } from "./termPaste";
+import {
+  encodeTermMouse,
+  mouseReportingEnabled,
+  xtermButtonCode,
+} from "./termMouse";
 import { computeAffectedGroups, findOrphanedHosts, applySoftDelete, detachHost } from "./groupSoftDelete";
 import { initTestBridge } from "./testBridge";
 import { installE2eMock } from "./e2eMock";
@@ -266,8 +272,15 @@ type Pane = {
   banner: HTMLDivElement;
   cellW: number;
   cellH: number;
-  /** Terminal mode bits from frame header: APP_CURSOR|APP_KEYPAD|ALT_SCREEN|BRACKETED_PASTE */
+  /** Terminal mode bits from frame header: APP_CURSOR|APP_KEYPAD|ALT_SCREEN|BRACKETED_PASTE|MOUSE|SGR|DRAG */
   modeFlags: number;
+  /** Alacritty display_offset (0 = live bottom). */
+  scrollOffset: number;
+  /** Lines of scrollback history above the viewport (0 = no scrollbar). */
+  scrollMax: number;
+  scrollbar: HTMLDivElement;
+  scrollThumb: HTMLDivElement;
+  _scrollDrag?: { startY: number; startOffset: number } | null;
   rasterScale: number;
   cols: number;
   rows: number;
@@ -277,6 +290,10 @@ type Pane = {
   selLayer: HTMLDivElement;
   _selecting?: boolean;
   _selStart?: { row: number; col: number } | null;
+  /** Ignore DOM paste until this timestamp (keydown Ctrl+V already inserted). */
+  _pasteSuppressUntil?: number;
+  /** Button currently reported to the PTY while mouse mode is active. */
+  _mouseBtn?: number | null;
 };
 
 const state = {
@@ -773,7 +790,7 @@ async function paintFrame(sessionId: string, force = false) {
     if (cellChanged) scheduleLayout();
     return;
   }
-  // RGBA packed frames: w,h,cellW,cellH[,modeFlags] + pixels.
+  // RGBA packed frames: w,h,cellW,cellH[,modeFlags][,scrollOff,scrollMax] + pixels.
   if (raw.byteLength < 16) return;
   if (!pane.ctx) return;
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -781,8 +798,14 @@ async function paintFrame(sessionId: string, force = false) {
   const height = view.getUint32(4, true);
   const nextW = view.getUint32(8, true) || pane.cellW;
   const nextH = view.getUint32(12, true) || pane.cellH;
-  const header = raw.byteLength >= 20 + width * height * 4 ? 20 : 16;
-  if (header === 20) pane.modeFlags = view.getUint32(16, true);
+  const pixelsNeeded = width * height * 4;
+  const header =
+    raw.byteLength >= 28 + pixelsNeeded ? 28 : raw.byteLength >= 20 + pixelsNeeded ? 20 : 16;
+  if (header >= 20) pane.modeFlags = view.getUint32(16, true);
+  if (header >= 28) {
+    pane.scrollOffset = view.getUint32(20, true);
+    pane.scrollMax = view.getUint32(24, true);
+  }
   const cellChanged = nextW !== pane.cellW || nextH !== pane.cellH;
   pane.cellW = nextW;
   pane.cellH = nextH;
@@ -810,6 +833,7 @@ async function paintFrame(sessionId: string, force = false) {
   pane.ctx.setTransform(1, 0, 0, 1, 0, 0);
   pane.ctx.imageSmoothingEnabled = false;
   pane.ctx.putImageData(image, 0, 0);
+  updateTermScrollbar(pane);
   if (cellChanged) scheduleLayout();
 }
 
@@ -2025,7 +2049,11 @@ function runAction(action: string) {
     }
     case "terminal.paste": {
       const pane = activePane();
-      if (pane) void pasteIntoPane(pane);
+      if (!pane) break;
+      const claimed = claimPasteDelivery(pane._pasteSuppressUntil ?? 0);
+      if (claimed === null) break;
+      pane._pasteSuppressUntil = claimed;
+      void pasteIntoPane(pane);
       break;
     }
     case "font.increase":
@@ -2477,11 +2505,25 @@ function attachSession(info: SessionInfo, pane = createPane()) {
     ev.preventDefault();
     sendText(bytes, pane);
   };
+  pane.el.onwheel = (ev) => {
+    void handleTermWheel(ev, pane);
+  };
   pane.el.onpaste = (ev) => {
-    const text = ev.clipboardData?.getData("text") ?? "";
-    if (!text) return;
     ev.preventDefault();
-    sendText(text, pane);
+    if (!pane.session || pane.exited) return;
+    const clipboardText = ev.clipboardData?.getData("text") ?? "";
+    const action = decideDomPasteAction({
+      suppressUntil: pane._pasteSuppressUntil ?? 0,
+      clipboardText,
+    });
+    if (action === "ignore") return;
+    // Claim so a following keydown / keybinding twin is skipped.
+    pane._pasteSuppressUntil = nextPasteSuppressUntil();
+    if (action === "fallback") {
+      void pasteIntoPane(pane);
+      return;
+    }
+    sendText(action.send, pane);
   };
   selectPane(pane.id);
   layoutPane(pane);
@@ -2536,6 +2578,117 @@ function encodeTermKey(ev: KeyboardEvent, pane?: Pane): string | null {
   }
 }
 
+async function handleTermWheel(ev: WheelEvent, pane: Pane) {
+  if (!pane.session || pane.exited) return;
+  // Ignore pinch-zoom / horizontal-only gestures.
+  if (ev.ctrlKey || Math.abs(ev.deltaY) < 0.5) return;
+  ev.preventDefault();
+  const linePx = Math.max(1, pane.cellH / Math.max(1, pane.rasterScale));
+  let lines = 0;
+  if (ev.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    lines = Math.round(-ev.deltaY);
+  } else if (ev.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    lines = Math.round(-ev.deltaY * Math.max(1, pane.rows || 24));
+  } else {
+    lines = Math.round(-ev.deltaY / linePx);
+  }
+  if (!lines) lines = ev.deltaY < 0 ? 1 : -1;
+
+  // xterm mouse wheel reports when the app enabled mouse tracking.
+  if (mouseReportingEnabled(pane.modeFlags) && !ev.shiftKey) {
+    const cell = selCellFromEvent(pane, ev) ?? { col: 0, row: 0 };
+    const wheel = lines > 0 ? "up" : "down";
+    const n = Math.min(32, Math.abs(lines));
+    let seq = "";
+    for (let i = 0; i < n; i++) {
+      const part = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: xtermButtonCode(0, wheel),
+        action: "press",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (part) seq += part;
+    }
+    if (seq) sendText(seq, pane);
+    return;
+  }
+
+  const altScreen = Boolean(pane.modeFlags & 0b0100);
+  if (altScreen) {
+    const appCursor = Boolean(pane.modeFlags & 0b0001);
+    const up = appCursor ? "\x1bOA" : "\x1b[A";
+    const down = appCursor ? "\x1bOB" : "\x1b[B";
+    const seq =
+      lines > 0
+        ? up.repeat(Math.min(32, Math.abs(lines)))
+        : down.repeat(Math.min(32, Math.abs(lines)));
+    sendText(seq, pane);
+    return;
+  }
+  const ok = await invoke<boolean>("session_scroll", {
+    id: pane.session.id,
+    lines,
+  }).catch(() => true);
+  if (ok === false) {
+    const appCursor = Boolean(pane.modeFlags & 0b0001);
+    const up = appCursor ? "\x1bOA" : "\x1b[A";
+    const down = appCursor ? "\x1bOB" : "\x1b[B";
+    const seq =
+      lines > 0
+        ? up.repeat(Math.min(32, Math.abs(lines)))
+        : down.repeat(Math.min(32, Math.abs(lines)));
+    sendText(seq, pane);
+    return;
+  }
+  scheduleFrame(pane.session.id, true);
+}
+
+function updateTermScrollbar(pane: Pane) {
+  const max = pane.scrollMax | 0;
+  const offset = pane.scrollOffset | 0;
+  if (max <= 0 || (pane.modeFlags & 0b0100)) {
+    pane.scrollbar.classList.add("hidden");
+    return;
+  }
+  pane.scrollbar.classList.remove("hidden");
+  const track = pane.scrollbar.clientHeight || pane.viewport.clientHeight || 1;
+  const minThumb = 24;
+  const linePx = Math.max(1, pane.cellH / Math.max(1, pane.rasterScale));
+  const content = track + max * linePx;
+  const thumbH = Math.max(minThumb, Math.round((track / Math.max(content, 1)) * track));
+  const travel = Math.max(1, track - thumbH);
+  // offset 0 = bottom (live); offset max = top of history
+  const t = (max - Math.min(offset, max)) / max;
+  const top = Math.round(t * travel);
+  pane.scrollThumb.style.height = `${thumbH}px`;
+  pane.scrollThumb.style.transform = `translateY(${top}px)`;
+}
+
+function offsetFromScrollbarY(pane: Pane, clientY: number): number {
+  const max = pane.scrollMax | 0;
+  if (max <= 0) return 0;
+  const rect = pane.scrollbar.getBoundingClientRect();
+  const track = rect.height || 1;
+  const thumbH = pane.scrollThumb.offsetHeight || 24;
+  const travel = Math.max(1, track - thumbH);
+  const y = Math.min(Math.max(0, clientY - rect.top - thumbH / 2), travel);
+  const fromTop = y / travel; // 0 top … 1 bottom
+  return Math.round(max * (1 - fromTop));
+}
+
+async function scrollPaneTo(pane: Pane, offset: number) {
+  if (!pane.session || pane.exited) return;
+  const ok = await invoke<boolean>("session_scroll_to", {
+    id: pane.session.id,
+    offset: Math.max(0, offset | 0),
+  }).catch(() => false);
+  if (ok !== false) scheduleFrame(pane.session.id, true);
+}
+
 function createPane(pending?: Pane["pending"]): Pane {
   const el = document.createElement("div");
   el.className = "pane";
@@ -2546,7 +2699,12 @@ function createPane(pending?: Pane["pending"]): Pane {
   const selLayer = document.createElement("div");
   selLayer.className = "term-selection";
   selLayer.style.display = "none";
-  viewport.append(canvas, selLayer);
+  const scrollbar = document.createElement("div");
+  scrollbar.className = "term-scrollbar hidden";
+  const scrollThumb = document.createElement("div");
+  scrollThumb.className = "term-scroll-thumb";
+  scrollbar.appendChild(scrollThumb);
+  viewport.append(canvas, selLayer, scrollbar);
   const banner = document.createElement("div");
   banner.className = "pane-banner hidden";
   el.append(viewport, banner);
@@ -2570,6 +2728,10 @@ function createPane(pending?: Pane["pending"]): Pane {
     cellW: 9,
     cellH: 23,
     modeFlags: 0,
+    scrollOffset: 0,
+    scrollMax: 0,
+    scrollbar,
+    scrollThumb,
     rasterScale: 1,
     cols: 0,
     rows: 0,
@@ -2586,11 +2748,37 @@ function createPane(pending?: Pane["pending"]): Pane {
     el.focus();
   };
   el.onmousedown = (ev) => {
-    if (ev.button !== 0) return;
     selectPane(pane.id);
     el.focus();
     const cell = selCellFromEvent(pane, ev);
     if (!cell) return;
+    // Mouse protocol apps (vim/htop): report to PTY unless Shift forces selection.
+    if (
+      pane.session &&
+      !pane.exited &&
+      mouseReportingEnabled(pane.modeFlags) &&
+      !ev.shiftKey &&
+      (ev.button === 0 || ev.button === 1 || ev.button === 2)
+    ) {
+      const btn = xtermButtonCode(ev.button);
+      const seq = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: btn,
+        action: "press",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (seq) {
+        sendText(seq, pane);
+        pane._mouseBtn = btn;
+        ev.preventDefault();
+        return;
+      }
+    }
+    if (ev.button !== 0) return;
     // Click without drag clears selection; drag creates a new one.
     clearSelection(pane);
     pane._selStart = cell;
@@ -2598,6 +2786,22 @@ function createPane(pending?: Pane["pending"]): Pane {
     ev.preventDefault();
   };
   window.addEventListener("mousemove", (ev) => {
+    if (pane._mouseBtn != null && pane.session && !pane.exited) {
+      const cell = selCellFromEvent(pane, ev);
+      if (!cell) return;
+      const seq = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: pane._mouseBtn,
+        action: "motion",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (seq) sendText(seq, pane);
+      return;
+    }
     if (!pane._selecting || !pane._selStart) return;
     const cell = selCellFromEvent(pane, ev);
     if (!cell) return;
@@ -2605,15 +2809,63 @@ function createPane(pending?: Pane["pending"]): Pane {
     pane.selFocus = cell;
     renderSelection(pane);
   });
-  window.addEventListener("mouseup", () => {
+  window.addEventListener("mouseup", (ev) => {
+    if (pane._mouseBtn != null && pane.session && !pane.exited) {
+      const cell = selCellFromEvent(pane, ev) ?? pane.selFocus ?? { col: 0, row: 0 };
+      const seq = encodeTermMouse({
+        modeFlags: pane.modeFlags,
+        col: cell.col,
+        row: cell.row,
+        button: pane._mouseBtn,
+        action: "release",
+        shift: ev.shiftKey,
+        alt: ev.altKey,
+        ctrl: ev.ctrlKey,
+      });
+      if (seq) sendText(seq, pane);
+      pane._mouseBtn = null;
+    }
     pane._selecting = false;
     pane._selStart = null;
+  });
+  scrollbar.onmousedown = (ev) => {
+    if (ev.button !== 0 || !pane.session || pane.exited) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    selectPane(pane.id);
+    el.focus();
+    const onThumb = ev.target === scrollThumb || scrollThumb.contains(ev.target as Node);
+    if (onThumb) {
+      pane._scrollDrag = { startY: ev.clientY, startOffset: pane.scrollOffset };
+    } else {
+      const jumped = offsetFromScrollbarY(pane, ev.clientY);
+      void scrollPaneTo(pane, jumped);
+      pane._scrollDrag = { startY: ev.clientY, startOffset: jumped };
+    }
+  };
+  window.addEventListener("mousemove", (ev) => {
+    if (!pane._scrollDrag || !pane.session) return;
+    const rect = scrollbar.getBoundingClientRect();
+    const track = rect.height || 1;
+    const thumbH = scrollThumb.offsetHeight || 24;
+    const travel = Math.max(1, track - thumbH);
+    const max = pane.scrollMax | 0;
+    if (max <= 0) return;
+    const dy = ev.clientY - pane._scrollDrag.startY;
+    // Dragging down → toward live bottom → decrease offset
+    const deltaLines = Math.round((-dy / travel) * max);
+    void scrollPaneTo(pane, pane._scrollDrag.startOffset + deltaLines);
+  });
+  window.addEventListener("mouseup", () => {
+    pane._scrollDrag = null;
   });
   el.oncontextmenu = (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
     selectPane(pane.id);
     el.focus();
+    // In mouse mode, right-click is for the app; Shift+right keeps our menu.
+    if (mouseReportingEnabled(pane.modeFlags) && !ev.shiftKey) return;
     showMenu(ev.clientX, ev.clientY, terminalContextMenuItems(pane));
   };
   renderTabs();
@@ -2712,7 +2964,10 @@ function cycleHost(delta: number) {
   else focusOrOpenSsh(next);
 }
 
-function selCellFromEvent(pane: Pane, ev: MouseEvent): { row: number; col: number } | null {
+function selCellFromEvent(
+  pane: Pane,
+  ev: { clientX: number; clientY: number },
+): { row: number; col: number } | null {
   const rect = pane.canvas.getBoundingClientRect();
   const cw = pane.cellW / pane.rasterScale;
   const ch = pane.cellH / pane.rasterScale;
@@ -2793,6 +3048,10 @@ function handleTerminalPaste(ev: KeyboardEvent, pane: Pane): boolean {
   // Ctrl+V and Ctrl+Shift+V (Linux terminal convention) both paste.
   if (!(ev.ctrlKey || ev.metaKey) || ev.key.toLowerCase() !== "v") return false;
   ev.preventDefault();
+  // Global keybinding may already have delivered Ctrl+Shift+V (capture phase).
+  const claimed = claimPasteDelivery(pane._pasteSuppressUntil ?? 0);
+  if (claimed === null) return true;
+  pane._pasteSuppressUntil = claimed;
   void pasteIntoPane(pane);
   return true;
 }

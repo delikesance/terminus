@@ -195,6 +195,24 @@ fn session_selection_text(
 }
 
 #[tauri::command]
+fn session_scroll(
+    state: State<'_, AppState>,
+    id: String,
+    lines: i32,
+) -> Result<bool, String> {
+    state.sessions.scroll(&id, lines).map_err(map_err)
+}
+
+#[tauri::command]
+fn session_scroll_to(
+    state: State<'_, AppState>,
+    id: String,
+    offset: u32,
+) -> Result<bool, String> {
+    state.sessions.scroll_to(&id, offset).map_err(map_err)
+}
+
+#[tauri::command]
 fn session_list(state: State<'_, AppState>) -> Vec<SessionInfo> {
     state.sessions.list()
 }
@@ -967,6 +985,8 @@ pub fn run() {
             session_close,
             session_frame,
             session_selection_text,
+            session_scroll,
+            session_scroll_to,
             session_list,
             hosts_list,
             hosts_runtime,
