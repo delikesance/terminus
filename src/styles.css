@@ -37,7 +37,7 @@
   --scroll-thumb: rgba(255, 255, 255, 0.18);
   --select-chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ebebf599' stroke-width='2'><path d='m6 9 6 6 6-6'/></svg>");
   --font-ui: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "SF Mono", Menlo, Monaco, "IBM Plex Mono", ui-monospace, monospace;
+  --font-mono: "SF Mono", Menlo, Monaco, "Cascadia Mono NF", ui-monospace, monospace;
   --bar: 42px;
   --sidebar: 292px;
   --activity-bar: 48px;
@@ -1904,7 +1904,7 @@ html:not([data-scheme="light"]) #tabs .tab-ico[data-os="devuan"] { color: #b0b0b
   padding: 7px 0;
   outline: none;
   font-size: 12.5px;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: "Cascadia Mono NF", ui-monospace, monospace;
   color: var(--text);
 }
 .sftp-icon-btn {
