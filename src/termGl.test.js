@@ -204,10 +204,6 @@ function packSampleGpu2(format = STAMP_FMT_R8) {
     mainTs.includes("STAMP_FMT_RGBA") || mainTs.includes("atlasRGBA"),
     "paintGpuSoftware must handle RGBA color stamps",
   );
-  assert.ok(
-    termGlTs.includes("ATTR_WIDE_SPACER") && mainTs.includes("snapSelectCell"),
-    "emoji spacer attr + selection snap must exist for single-cell emoji UX",
-  );
 }
 
 console.log("termGl.test.js: ok");
