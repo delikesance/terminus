@@ -11,10 +11,12 @@ import {
   decodeGpu2Frame,
   CELL_VS_SOURCE,
   CELL_FS_SOURCE,
+  growAtlasR8,
 } from "./termGl.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const termGlTs = fs.readFileSync(path.join(root, "src/termGl.ts"), "utf8");
+const mainTs = fs.readFileSync(path.join(root, "src/main.ts"), "utf8");
 
 assert.equal(GPU_CELL_BYTES, 20);
 
@@ -144,6 +146,36 @@ function packSampleGpu2() {
   assert.ok(
     CELL_FS_SOURCE.includes("exclusion") || CELL_FS_SOURCE.includes("cell_h") || CELL_FS_SOURCE.includes("stamp"),
     "FS should mask underline under descenders",
+  );
+}
+
+// #165 AC2 — software atlas grow must preserve prior layer stamps
+{
+  const prevW = 64;
+  const prevH = 17; // one layer
+  const prev = new Uint8Array(prevW * prevH);
+  prev[0] = 200;
+  prev[prevW * prevH - 1] = 111;
+  const next = growAtlasR8(prev, prevW, prevH, prevW, prevH * 2);
+  assert.equal(next.length, prevW * prevH * 2);
+  assert.equal(next[0], 200);
+  assert.equal(next[prevW * prevH - 1], 111);
+  assert.equal(next[prevW * prevH], 0);
+  // Width change cannot preserve layout — fresh buffer.
+  const resized = growAtlasR8(prev, prevW, prevH, prevW * 2, prevH);
+  assert.equal(resized.length, prevW * 2 * prevH);
+  assert.equal(resized[0], 0);
+}
+
+// #165 — Canvas2D paint path must use growAtlasR8; WebGL rebuild relies on host resend
+{
+  assert.ok(
+    termGlTs.includes("export function growAtlasR8"),
+    "growAtlasR8 must be exported for software atlas persistence",
+  );
+  assert.ok(
+    mainTs.includes("growAtlasR8"),
+    "paintGpuSoftware must grow-copy via growAtlasR8",
   );
 }
 
