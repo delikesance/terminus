@@ -105,9 +105,14 @@ import { mountVirtualList, type VirtualListHandle } from "./sftpVirtualList";
 import { filterFileEntriesAsync } from "./sftpFilterAsync";
 import { pickRenderer } from "./perf";
 import {
+  ATTR_COLORED,
+  ATTR_WIDE_SPACER,
   decodeGpuFrame,
   growAtlasR8,
+  growAtlasRGBA,
   isGpuFrame,
+  STAMP_FMT_R8,
+  STAMP_FMT_RGBA,
   tryCreateTermGl,
   type DecodedGpuFrame,
   type TermGlPainter,
@@ -284,6 +289,9 @@ type Pane = {
   ctx: CanvasRenderingContext2D | null;
   gl: TermGlPainter | null;
   atlasR8: Uint8Array | null;
+  atlasRGBA: Uint8Array | null;
+  /** Per-slot stamp format: key = layer*spl+idx → 0=R8, 1=RGBA */
+  atlasFormat: Map<number, number>;
   atlasW: number;
   atlasH: number;
   glyphMap: Map<number, { x: number; y: number; w: number; h: number; ox: number; oy: number }>;
@@ -306,6 +314,8 @@ type Pane = {
   cols: number;
   rows: number;
   paintGen: number;
+  /** Per-cell attrs from last GPU2 frame (for selection snap on emoji spacers). */
+  lastCellAttrs: Uint32Array | null;
   selAnchor: { row: number; col: number } | null;
   selFocus: { row: number; col: number } | null;
   selLayer: HTMLDivElement;
@@ -707,18 +717,50 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
       layerW,
       stampH * layers,
     );
+    pane.atlasRGBA = growAtlasRGBA(
+      pane.atlasRGBA,
+      pane.atlasW,
+      pane.atlasH,
+      layerW,
+      stampH * layers,
+    );
     pane.atlasW = layerW;
     pane.atlasH = stampH * layers;
   }
+  if (!pane.atlasRGBA) {
+    pane.atlasRGBA = growAtlasRGBA(null, 0, 0, layerW, stampH * layers);
+  }
+  if (!pane.atlasFormat) pane.atlasFormat = new Map();
   const atlas = pane.atlasR8;
+  const atlasRgba = pane.atlasRGBA;
   for (const s of frame.sprites) {
-    if (!s.bits || s.bits.byteLength < frame.cellW * stampH) continue;
     if (s.spriteLayer >= layers) continue;
+    const slot = s.spriteLayer * spl + s.spriteIdx;
+    if (s.bits) {
+      pane.atlasFormat.set(slot, s.format);
+    }
+    const format = s.bits ? s.format : (pane.atlasFormat.get(slot) ?? STAMP_FMT_R8);
+    if (!s.bits) continue;
     const base = s.spriteLayer * layerW * stampH;
     const x0 = s.spriteIdx * frame.cellW;
-    for (let dy = 0; dy < stampH; dy++) {
-      for (let dx = 0; dx < frame.cellW; dx++) {
-        atlas[base + dy * layerW + x0 + dx] = s.bits[dy * frame.cellW + dx]!;
+    if (format === STAMP_FMT_RGBA) {
+      if (s.bits.byteLength < frame.cellW * stampH * 4) continue;
+      for (let dy = 0; dy < stampH; dy++) {
+        for (let dx = 0; dx < frame.cellW; dx++) {
+          const si = (dy * frame.cellW + dx) * 4;
+          const di = (base + dy * layerW + x0 + dx) * 4;
+          atlasRgba[di] = s.bits[si]!;
+          atlasRgba[di + 1] = s.bits[si + 1]!;
+          atlasRgba[di + 2] = s.bits[si + 2]!;
+          atlasRgba[di + 3] = s.bits[si + 3]!;
+        }
+      }
+    } else {
+      if (s.bits.byteLength < frame.cellW * stampH) continue;
+      for (let dy = 0; dy < stampH; dy++) {
+        for (let dx = 0; dx < frame.cellW; dx++) {
+          atlas[base + dy * layerW + x0 + dx] = s.bits[dy * frame.cellW + dx]!;
+        }
       }
     }
   }
@@ -761,18 +803,42 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
         }
       }
       if (spriteIdx > 0) {
+        const slot = spriteLayer * spl + spriteIdx;
+        const format =
+          (attrs & ATTR_COLORED) !== 0
+            ? STAMP_FMT_RGBA
+            : (pane.atlasFormat.get(slot) ?? STAMP_FMT_R8);
         const base = spriteLayer * layerW * stampH;
         const sx0 = spriteIdx * frame.cellW;
-        for (let dy = 0; dy < frame.cellH; dy++) {
-          for (let dx = 0; dx < frame.cellW; dx++) {
-            const cover = atlas[base + dy * layerW + sx0 + dx] ?? 0;
-            if (!cover) continue;
-            const pi = ((y0 + dy) * width + (x0 + dx)) * 4;
-            const a = cover / 255;
-            data[pi] = Math.round(fr * a + data[pi]! * (1 - a));
-            data[pi + 1] = Math.round(fg_ * a + data[pi + 1]! * (1 - a));
-            data[pi + 2] = Math.round(fb * a + data[pi + 2]! * (1 - a));
-            data[pi + 3] = 255;
+        if (format === STAMP_FMT_RGBA) {
+          for (let dy = 0; dy < frame.cellH; dy++) {
+            for (let dx = 0; dx < frame.cellW; dx++) {
+              const di = (base + dy * layerW + sx0 + dx) * 4;
+              const a = (atlasRgba[di + 3] ?? 0) / 255;
+              if (!a) continue;
+              const pi = ((y0 + dy) * width + (x0 + dx)) * 4;
+              const sr = atlasRgba[di] ?? 0;
+              const sg = atlasRgba[di + 1] ?? 0;
+              const sb = atlasRgba[di + 2] ?? 0;
+              // mix(bg, rgb, a) — ignore cell fg for colored stamps
+              data[pi] = Math.round(sr * a + data[pi]! * (1 - a));
+              data[pi + 1] = Math.round(sg * a + data[pi + 1]! * (1 - a));
+              data[pi + 2] = Math.round(sb * a + data[pi + 2]! * (1 - a));
+              data[pi + 3] = 255;
+            }
+          }
+        } else {
+          for (let dy = 0; dy < frame.cellH; dy++) {
+            for (let dx = 0; dx < frame.cellW; dx++) {
+              const cover = atlas[base + dy * layerW + sx0 + dx] ?? 0;
+              if (!cover) continue;
+              const pi = ((y0 + dy) * width + (x0 + dx)) * 4;
+              const a = cover / 255;
+              data[pi] = Math.round(fr * a + data[pi]! * (1 - a));
+              data[pi + 1] = Math.round(fg_ * a + data[pi + 1]! * (1 - a));
+              data[pi + 2] = Math.round(fb * a + data[pi + 2]! * (1 - a));
+              data[pi + 3] = 255;
+            }
           }
         }
       }
@@ -843,6 +909,7 @@ async function paintFrame(sessionId: string, force = false) {
       clearPaneSurface(pane);
       return;
     }
+    storeCellAttrs(pane, frame);
     // Prefer Canvas2D software composite: WebGL2 on WSL/ZINK often creates a
     // context that clears but never shows glyphs (blank pane + stray cursor).
     if (pane.ctx) {
@@ -2798,6 +2865,8 @@ function createPane(pending?: Pane["pending"]): Pane {
     ctx,
     gl,
     atlasR8: null,
+    atlasRGBA: null,
+    atlasFormat: new Map(),
     atlasW: 1,
     atlasH: 1,
     glyphMap: new Map(),
@@ -2815,6 +2884,7 @@ function createPane(pending?: Pane["pending"]): Pane {
     cols: 0,
     rows: 0,
     paintGen: 0,
+    lastCellAttrs: null,
     selAnchor: null,
     selFocus: null,
     selLayer,
@@ -3072,7 +3142,31 @@ function selCellFromEvent(
   if (cw <= 0 || ch <= 0 || !pane.cols || !pane.rows) return null;
   const col = Math.max(0, Math.min(pane.cols - 1, Math.floor((ev.clientX - rect.left) / cw)));
   const row = Math.max(0, Math.min(pane.rows - 1, Math.floor((ev.clientY - rect.top) / ch)));
-  return { row, col };
+  return snapSelectCell(pane, { row, col });
+}
+
+/** Map emoji wide-spacers back to the head cell so selection is one cell wide. */
+function snapSelectCell(
+  pane: Pane,
+  cell: { row: number; col: number },
+): { row: number; col: number } {
+  const attrs = pane.lastCellAttrs;
+  if (!attrs || !pane.cols) return cell;
+  const i = cell.row * pane.cols + cell.col;
+  if (i >= 0 && i < attrs.length && (attrs[i]! & ATTR_WIDE_SPACER) !== 0) {
+    return { row: cell.row, col: Math.max(0, cell.col - 1) };
+  }
+  return cell;
+}
+
+function storeCellAttrs(pane: Pane, frame: DecodedGpuFrame): void {
+  const n = frame.cols * frame.rows;
+  const out = new Uint32Array(n);
+  const view = new DataView(frame.cells.buffer, frame.cells.byteOffset, frame.cells.byteLength);
+  for (let i = 0; i < n; i++) {
+    out[i] = view.getUint32(i * 20 + 16, true);
+  }
+  pane.lastCellAttrs = out;
 }
 
 function selectionRect(pane: Pane): { r0: number; c0: number; r1: number; c1: number } | null {

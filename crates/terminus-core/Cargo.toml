@@ -33,6 +33,8 @@ tracing.workspace = true
 uuid.workspace = true
 alacritty_terminal.workspace = true
 fontdue.workspace = true
+font-kit.workspace = true
+freetype-rs.workspace = true
 rustybuzz.workspace = true
 zeroize.workspace = true
 

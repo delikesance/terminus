@@ -17,6 +17,9 @@ pub mod vault;
 pub mod wsl;
 pub mod wsl_fs;
 
+#[cfg(test)]
+mod test_cjk_font;
+
 pub use error::{Error, Result};
 pub use forward_runtime::ForwardRuntime;
 pub use models::*;
