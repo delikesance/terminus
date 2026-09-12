@@ -41,6 +41,7 @@ src/windowChrome.js
 src/sftpSessions.js
 src/sftpPaneState.js
 src/portableBundle.js
+src/tabRename.js
 test-results/
 
 # Perf / load reports (#45)

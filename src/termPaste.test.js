@@ -7,6 +7,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PASTE_SUPPRESS_MS,
+  MODE_BRACKETED_PASTE,
+  isBracketedPaste,
+  formatTerminalPaste,
   nextPasteSuppressUntil,
   shouldIgnorePaste,
   decideDomPasteAction,
@@ -96,10 +99,56 @@ assert.ok(PASTE_SUPPRESS_MS >= 50 && PASTE_SUPPRESS_MS <= 250);
   assert.equal(shouldIgnorePaste(until, 1000 + PASTE_SUPPRESS_MS), false);
 }
 
+// Bracketed paste detection
+assert.equal(isBracketedPaste(0), false);
+assert.equal(isBracketedPaste(MODE_BRACKETED_PASTE), true);
+assert.equal(isBracketedPaste(0b1111), true);
+assert.equal(isBracketedPaste(undefined), false);
+
+// Paste formatting — bracketed paste inactive
+assert.equal(formatTerminalPaste("", 0), "");
+assert.equal(formatTerminalPaste("git status", 0), "git status");
+assert.equal(formatTerminalPaste("git status\n", 0), "git status", "strips trailing newline to prevent auto-execution");
+assert.equal(formatTerminalPaste("git status\r\n", 0), "git status");
+assert.equal(formatTerminalPaste("echo a\necho b\n", 0), "echo a\recho b");
+
+// Paste formatting — bracketed paste active (DECSET 2004)
+assert.equal(
+  formatTerminalPaste("git status", MODE_BRACKETED_PASTE),
+  "\x1b[200~git status\x1b[201~",
+);
+assert.equal(
+  formatTerminalPaste("git status\n", MODE_BRACKETED_PASTE),
+  "\x1b[200~git status\x1b[201~",
+  "strips trailing newline to cleanly place cursor at line end",
+);
+assert.equal(
+  formatTerminalPaste("echo 1\r\necho 2\r\n", MODE_BRACKETED_PASTE),
+  "\x1b[200~echo 1\recho 2\x1b[201~",
+  "normalizes CRLF to single CR within bracketed paste",
+);
+assert.equal(
+  formatTerminalPaste("line1\n\nline2\n", MODE_BRACKETED_PASTE),
+  "\x1b[200~line1\r\rline2\x1b[201~",
+  "preserves blank lines within multiline paste",
+);
+assert.equal(
+  formatTerminalPaste("\x1b[201~malicious\r\x1b[200~", MODE_BRACKETED_PASTE),
+  "\x1b[200~malicious\x1b[201~",
+  "sanitizes bracketed paste injection tokens",
+);
+assert.equal(
+  formatTerminalPaste("keep\n", MODE_BRACKETED_PASTE, { stripTrailingNewline: false }),
+  "\x1b[200~keep\r\x1b[201~",
+  "preserves trailing newline when explicitly requested",
+);
+
 // Wiring
 assert.match(mainTs, /from ["']\.\/termPaste/);
 assert.match(mainTs, /claimPasteDelivery/);
 assert.match(mainTs, /decideDomPasteAction/);
+assert.match(mainTs, /formatTerminalPaste/);
+assert.match(mainTs, /formatTerminalPaste\(text, pane\.modeFlags\)/);
 assert.match(mainTs, /case "terminal\.paste"/);
 
 console.log("termPaste.test.js: ok");
