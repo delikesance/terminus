@@ -109,6 +109,21 @@ void main() {
   outColor = color;
 }`;
 
+/** Grow (or replace) an R8 atlas buffer, copying prior stamps when width is unchanged. */
+export function growAtlasR8(
+  prev: Uint8Array | null,
+  prevW: number,
+  prevH: number,
+  nextW: number,
+  nextH: number,
+): Uint8Array {
+  const next = new Uint8Array(Math.max(0, nextW * nextH));
+  if (prev && prevW === nextW && prevW > 0) {
+    next.set(prev.subarray(0, Math.min(prev.length, next.length)));
+  }
+  return next;
+}
+
 export function isGpu2Frame(raw: Uint8Array): boolean {
   if (raw.byteLength < 4) return false;
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);

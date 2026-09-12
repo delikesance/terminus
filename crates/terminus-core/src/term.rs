@@ -615,6 +615,7 @@ impl TerminalEmulator {
     fn alloc_sprite(&mut self, key: u64, stamp: Vec<u8>) -> (u16, u16) {
         let expected = (self.cell_w * (self.cell_h + 1)) as usize;
         debug_assert_eq!(stamp.len(), expected);
+        let layers_before = self.atlas_layer_count.max(1);
         if self.atlas_fill_idx >= self.sprites_per_layer {
             self.atlas_fill_idx = 0;
             self.atlas_fill_layer = self.atlas_fill_layer.saturating_add(1);
@@ -636,6 +637,13 @@ impl TerminalEmulator {
         self.atlas_glyphs.insert(key, (sprite_idx, sprite_layer));
         self.atlas_bits.insert((sprite_idx, sprite_layer), stamp);
         self.atlas_pending.insert((sprite_idx, sprite_layer));
+        // Client atlases wipe on layer growth; re-pend every stamp so the growth
+        // frame can rebuild coverage (Canvas2D zero-fill / WebGL texImage3D null).
+        if self.atlas_layer_count > layers_before {
+            for slot in self.atlas_bits.keys().copied().collect::<Vec<_>>() {
+                self.atlas_pending.insert(slot);
+            }
+        }
         self.atlas_dirty = true;
         (sprite_idx, sprite_layer)
     }
@@ -1658,6 +1666,60 @@ mod tests {
             "steady frame should drop stamp bytes ({} vs {})",
             packed2.len(),
             packed.len()
+        );
+    }
+
+    /// #165 — when the atlas grows past SPRITES_PER_LAYER, the growth frame must
+    /// re-attach stamp bits for *prior* sprites (client atlas wipe otherwise leaves
+    /// sparse glyphs after `cat` of a large unique-glyph dump).
+    #[test]
+    fn atlas_layer_growth_resends_prior_stamp_bits() {
+        let mut term = TerminalEmulator::new(80, 24, 14.0).unwrap();
+        let alphabet: String = (33u8..127).map(|b| b as char).collect();
+        let wave1 = &alphabet[..50];
+        term.feed(wave1.as_bytes());
+        let f1 = term.capture_gpu_frame(true).expect("wave1 gpu frame");
+        assert_eq!(f1.layer_count, 1, "50 glyphs stay on layer 0");
+        let prior: HashSet<(u16, u16)> = f1
+            .sprites
+            .iter()
+            .filter(|s| s.bits.is_some())
+            .map(|s| (s.sprite_idx, s.sprite_layer))
+            .collect();
+        assert!(
+            prior.len() >= 40,
+            "expected many stamped glyphs in wave1, got {}",
+            prior.len()
+        );
+
+        let wave2 = &alphabet[50..];
+        term.feed(b"\n");
+        term.feed(wave2.as_bytes());
+        let f2 = term.capture_gpu_frame(true).expect("growth gpu frame");
+        assert!(
+            f2.layer_count >= 2,
+            "expected layer growth after {} unique glyphs, layer_count={}",
+            alphabet.len(),
+            f2.layer_count
+        );
+        for key in &prior {
+            let spr = f2
+                .sprites
+                .iter()
+                .find(|s| (s.sprite_idx, s.sprite_layer) == *key)
+                .unwrap_or_else(|| panic!("missing prior sprite {key:?} after layer growth"));
+            assert!(
+                spr.bits.is_some(),
+                "prior stamp {key:?} must be resent when atlas layers grow"
+            );
+        }
+
+        // AC3 — steady frame after growth stays compact.
+        term.feed(wave1.as_bytes());
+        let f3 = term.capture_gpu_frame(true).expect("steady gpu frame");
+        assert!(
+            f3.sprites.iter().all(|s| s.bits.is_none()),
+            "repeated glyphs must not resend atlas stamps after layer growth"
         );
     }
 

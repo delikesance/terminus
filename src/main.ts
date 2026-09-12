@@ -104,7 +104,14 @@ import {
 import { mountVirtualList, type VirtualListHandle } from "./sftpVirtualList";
 import { filterFileEntriesAsync } from "./sftpFilterAsync";
 import { pickRenderer } from "./perf";
-import { decodeGpuFrame, isGpuFrame, tryCreateTermGl, type DecodedGpuFrame, type TermGlPainter } from "./termGl";
+import {
+  decodeGpuFrame,
+  growAtlasR8,
+  isGpuFrame,
+  tryCreateTermGl,
+  type DecodedGpuFrame,
+  type TermGlPainter,
+} from "./termGl";
 import { createTrailingDebounce, FRAME_MIN_MS, SFTP_FILTER_DEBOUNCE_MS } from "./perfTiming";
 import { parseKnownHosts } from "./knownHostsParse";
 import {
@@ -692,11 +699,16 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
   const stampH = frame.cellH + 1;
   const layerW = spl * frame.cellW;
   const layers = Math.max(1, frame.layerCount);
-  const atlasBytes = layerW * stampH * layers;
   if (!pane.atlasR8 || pane.atlasW !== layerW || pane.atlasH !== stampH * layers) {
+    pane.atlasR8 = growAtlasR8(
+      pane.atlasR8,
+      pane.atlasW,
+      pane.atlasH,
+      layerW,
+      stampH * layers,
+    );
     pane.atlasW = layerW;
     pane.atlasH = stampH * layers;
-    pane.atlasR8 = new Uint8Array(atlasBytes);
   }
   const atlas = pane.atlasR8;
   for (const s of frame.sprites) {
