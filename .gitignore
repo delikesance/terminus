@@ -36,6 +36,7 @@ src/motion.js
 src/termPaste.js
 src/termMouse.js
 src/termLinks.js
+src/termGl.js
 src/hostDragGhost.js
 src/windowChrome.js
 src/sftpSessions.js
