@@ -33,6 +33,7 @@ tracing.workspace = true
 uuid.workspace = true
 alacritty_terminal.workspace = true
 fontdue.workspace = true
+rustybuzz.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
