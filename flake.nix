@@ -53,6 +53,8 @@
           librsvg
           pango
           harfbuzz
+          freetype
+          fontconfig
           at-spi2-atk
           glib-networking
           gsettings-desktop-schemas

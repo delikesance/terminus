@@ -1,10 +1,15 @@
 /** WebGL2 painter for GPU2 Kitty-style frames (instanced cells + TEXTURE_2D_ARRAY). */
 
 export const GPU_CELL_BYTES = 20;
+export const STAMP_FMT_R8 = 0;
+export const STAMP_FMT_RGBA = 1;
+export const ATTR_COLORED = 1 << 9;
 
 export type GpuSprite = {
   spriteIdx: number;
   spriteLayer: number;
+  /** 0 = R8 coverage, 1 = RGBA color stamp */
+  format: number;
   bits: Uint8Array | null;
 };
 
@@ -88,6 +93,11 @@ void main() {
   vec4 sample = texture(u_atlas, vec3(v_uv, v_layer));
   float cover = sample.r;
   vec4 color = mix(v_bg, vec4(v_fg.rgb, 1.0), cover);
+  // Colored stamps: sample already holds RGBA in atlas when ATTR_COLORED set —
+  // Canvas2D path composites; WebGL R8 atlas keeps mono tint (RGBA atlas is software).
+  if ((v_attrs & 512u) != 0u) {
+    color = mix(v_bg, vec4(sample.rgb, 1.0), sample.a);
+  }
   uint underline = v_attrs & 0xfu;
   if (underline != 0u) {
     float y = gl_PointCoord.y; // unused; use UV y in cell space
@@ -124,6 +134,26 @@ export function growAtlasR8(
   return next;
 }
 
+/** Grow RGBA atlas (4 bytes/pixel), copying prior stamps when width is unchanged. */
+export function growAtlasRGBA(
+  prev: Uint8Array | null,
+  prevW: number,
+  prevH: number,
+  nextW: number,
+  nextH: number,
+): Uint8Array {
+  const next = new Uint8Array(Math.max(0, nextW * nextH * 4));
+  if (prev && prevW === nextW && prevW > 0) {
+    next.set(prev.subarray(0, Math.min(prev.length, next.length)));
+  }
+  return next;
+}
+
+export function stampByteLength(cellW: number, cellH: number, format: number): number {
+  const bpp = format === STAMP_FMT_RGBA ? 4 : 1;
+  return cellW * (cellH + 1) * bpp;
+}
+
 export function isGpu2Frame(raw: Uint8Array): boolean {
   if (raw.byteLength < 4) return false;
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -153,7 +183,6 @@ export function decodeGpu2Frame(raw: Uint8Array): DecodedGpuFrame | null {
   o += 2;
   const spriteN = view.getUint32(o, true);
   o += 4;
-  const stamp = cellW * (cellH + 1);
   const sprites: GpuSprite[] = [];
   for (let i = 0; i < spriteN; i++) {
     if (o + 6 > raw.byteLength) return null;
@@ -162,14 +191,17 @@ export function decodeGpu2Frame(raw: Uint8Array): DecodedGpuFrame | null {
     const spriteLayer = view.getUint16(o, true);
     o += 2;
     const hasBits = view.getUint8(o);
-    o += 2;
+    o += 1;
+    const format = view.getUint8(o);
+    o += 1;
     let bits: Uint8Array | null = null;
     if (hasBits) {
+      const stamp = stampByteLength(cellW, cellH, format);
       if (o + stamp > raw.byteLength) return null;
       bits = raw.subarray(o, o + stamp);
       o += stamp;
     }
-    sprites.push({ spriteIdx, spriteLayer, bits });
+    sprites.push({ spriteIdx, spriteLayer, format, bits });
   }
   const cellCount = cols * rows;
   const cellBytes = cellCount * GPU_CELL_BYTES;
@@ -293,6 +325,8 @@ export class TermGlPainter {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     const stampH = frame.cellH + 1;
     for (const s of frame.sprites) {
+      // WebGL path uploads R8 stamps only; RGBA color emoji uses Canvas2D.
+      if (s.format === STAMP_FMT_RGBA) continue;
       if (!s.bits || s.bits.byteLength < frame.cellW * stampH) continue;
       if (s.spriteLayer >= this.layers) continue;
       const x = s.spriteIdx * frame.cellW;
