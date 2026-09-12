@@ -29,6 +29,9 @@ pub const ATTR_ITALIC: u32 = 1 << 7;
 pub const ATTR_BLINK: u32 = 1 << 8;
 /// Cell uses a colored (RGBA) atlas stamp — composite stamp RGB over bg, ignore fg tint.
 pub const ATTR_COLORED: u32 = 1 << 9;
+/// Wide-char spacer after an emoji that was painted in a single head cell (Kitty-style).
+/// Selection should snap this column to the previous head.
+pub const ATTR_WIDE_SPACER: u32 = 1 << 10;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

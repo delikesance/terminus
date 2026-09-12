@@ -2,7 +2,7 @@ use crate::box_draw::{is_procedural_cell, render_box_cell};
 use crate::error::{Error, Result};
 use crate::gpu_frame::{
     rgba_to_u32, stamp_bytes, AtlasSprite, GpuCell, GpuFrame, ATTR_BOLD, ATTR_COLORED, ATTR_DIM,
-    ATTR_ITALIC, ATTR_STRIKE, ATTR_UNDERLINE_SINGLE, STAMP_FMT_R8, STAMP_FMT_RGBA,
+    ATTR_ITALIC, ATTR_STRIKE, ATTR_UNDERLINE_SINGLE, ATTR_WIDE_SPACER, STAMP_FMT_R8, STAMP_FMT_RGBA,
 };
 use crate::models::ColorTheme;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -513,40 +513,77 @@ impl TerminalEmulator {
                     }
                     WideKind::Head => {
                         let ch = grid[i];
-                        let ((li, ll), (ri, rl), colored) = if ch == ' ' || ch == '\0' {
-                            ((0, 0), (0, 0), false)
-                        } else {
-                            self.ensure_wide_atlas_glyph(ch)
-                        };
-                        if colored {
-                            attrs |= ATTR_COLORED;
-                        }
-                        cells[i] = GpuCell {
-                            fg: fg_u,
-                            bg: bg_u,
-                            decoration_fg: fg_u,
-                            sprite_idx: li,
-                            sprite_layer: ll,
-                            attrs,
-                        };
-                        if col + 1 < cols as usize {
-                            let si = i + 1;
-                            let (sfg, sbg, sattrs) = meta[si]
-                                .map(|(a, b, c, _)| (a, b, c))
-                                .unwrap_or((fg, bg, attrs));
-                            let mut sattrs = sattrs;
-                            if colored {
-                                sattrs |= ATTR_COLORED;
+                        // Kitty-style: emoji presentation shrinks into the head cell only.
+                        // Spacer stays empty (ATTR_WIDE_SPACER) so selection snaps to one cell.
+                        // True wide scripts (CJK, etc.) still use left/right half stamps.
+                        if wants_emoji_presentation(ch) && ch != ' ' && ch != '\0' {
+                            let (sprite_idx, sprite_layer) = self.ensure_atlas_glyph(ch);
+                            if self.atlas_colored.contains(&(sprite_idx, sprite_layer)) {
+                                attrs |= ATTR_COLORED;
                             }
-                            cells[si] = GpuCell {
-                                fg: rgba_to_u32(crate::gpu_frame::contrast_fg(sfg, sbg)),
-                                bg: rgba_to_u32(sbg),
-                                decoration_fg: rgba_to_u32(crate::gpu_frame::contrast_fg(sfg, sbg)),
-                                sprite_idx: ri,
-                                sprite_layer: rl,
-                                attrs: sattrs,
+                            cells[i] = GpuCell {
+                                fg: fg_u,
+                                bg: bg_u,
+                                decoration_fg: fg_u,
+                                sprite_idx,
+                                sprite_layer,
+                                attrs,
                             };
-                            skip_spacer = true;
+                            if col + 1 < cols as usize {
+                                let si = i + 1;
+                                let (sfg, sbg, sattrs) = meta[si]
+                                    .map(|(a, b, c, _)| (a, b, c))
+                                    .unwrap_or((fg, bg, attrs));
+                                cells[si] = GpuCell {
+                                    fg: rgba_to_u32(crate::gpu_frame::contrast_fg(sfg, sbg)),
+                                    bg: rgba_to_u32(sbg),
+                                    decoration_fg: rgba_to_u32(crate::gpu_frame::contrast_fg(
+                                        sfg, sbg,
+                                    )),
+                                    sprite_idx: 0,
+                                    sprite_layer: 0,
+                                    attrs: sattrs | ATTR_WIDE_SPACER,
+                                };
+                                skip_spacer = true;
+                            }
+                        } else {
+                            let ((li, ll), (ri, rl), colored) = if ch == ' ' || ch == '\0' {
+                                ((0, 0), (0, 0), false)
+                            } else {
+                                self.ensure_wide_atlas_glyph(ch)
+                            };
+                            if colored {
+                                attrs |= ATTR_COLORED;
+                            }
+                            cells[i] = GpuCell {
+                                fg: fg_u,
+                                bg: bg_u,
+                                decoration_fg: fg_u,
+                                sprite_idx: li,
+                                sprite_layer: ll,
+                                attrs,
+                            };
+                            if col + 1 < cols as usize {
+                                let si = i + 1;
+                                let (sfg, sbg, sattrs) = meta[si]
+                                    .map(|(a, b, c, _)| (a, b, c))
+                                    .unwrap_or((fg, bg, attrs));
+                                let mut sattrs = sattrs;
+                                if colored {
+                                    sattrs |= ATTR_COLORED;
+                                }
+                                cells[si] = GpuCell {
+                                    fg: rgba_to_u32(crate::gpu_frame::contrast_fg(sfg, sbg)),
+                                    bg: rgba_to_u32(sbg),
+                                    decoration_fg: rgba_to_u32(crate::gpu_frame::contrast_fg(
+                                        sfg, sbg,
+                                    )),
+                                    sprite_idx: ri,
+                                    sprite_layer: rl,
+                                    attrs: sattrs,
+                                };
+                                skip_spacer = true;
+                            }
                         }
                     }
                     WideKind::Normal => {
@@ -730,7 +767,8 @@ impl TerminalEmulator {
         self.alloc_sprite(key, STAMP_FMT_R8, stamp)
     }
 
-    /// Rasterize a double-width glyph into left/right cell stamps.
+    /// Rasterize a double-width (non-emoji) glyph into left/right cell stamps.
+    /// Emoji presentation uses the single-cell path instead (`ensure_atlas_glyph`).
     fn ensure_wide_atlas_glyph(&mut self, ch: char) -> ((u16, u16), (u16, u16), bool) {
         let key_l = sprite_key_char_half(ch, 0);
         let key_r = sprite_key_char_half(ch, 1);
@@ -740,19 +778,6 @@ impl TerminalEmulator {
             return (l, r, colored);
         }
         let canvas_w = self.cell_w * 2;
-        if wants_emoji_presentation(ch) {
-            if let Some((full, colored)) = self.raster_color_emoji(ch, canvas_w, self.cell_h) {
-                let fmt = if colored {
-                    STAMP_FMT_RGBA
-                } else {
-                    STAMP_FMT_R8
-                };
-                let (left, right) = split_stamp_halves(&full, self.cell_w, self.cell_h, fmt);
-                let l = self.alloc_sprite(key_l, fmt, left);
-                let r = self.alloc_sprite(key_r, fmt, right);
-                return (l, r, colored);
-            }
-        }
         let (meta, cover) = self.glyph(ch);
         // Fit into 2×cell width so ink spans head + spacer (never squash into one cell).
         let mut dw = meta.w.max(1);
@@ -2519,6 +2544,29 @@ mod tests {
         assert!(
             right_bits.map(|b| b.iter().any(|&p| p > 0)).unwrap_or(false),
             "right half must have ink (not empty spacer)"
+        );
+    }
+
+    /// #172 — emoji presentation paints only the head cell; spacer is empty + ATTR_WIDE_SPACER.
+    #[test]
+    fn emoji_presentation_uses_single_cell_not_halves() {
+        let mut term = TerminalEmulator::new(8, 3, 14.0).unwrap();
+        // U+1F600 😀 is typically WIDE_CHAR + spacer in Alacritty.
+        term.feed("\u{1F600}".as_bytes());
+        let frame = term.capture_gpu_frame(true).expect("gpu");
+        let c0 = &frame.cells[0];
+        let c1 = &frame.cells[1];
+        assert!(c0.sprite_idx > 0, "emoji head must have a sprite");
+        assert_eq!(c1.sprite_idx, 0, "emoji spacer must not carry a half-stamp");
+        assert_eq!(
+            c1.attrs & ATTR_WIDE_SPACER,
+            ATTR_WIDE_SPACER,
+            "emoji spacer must be marked ATTR_WIDE_SPACER for selection snap"
+        );
+        assert_eq!(
+            c0.attrs & ATTR_WIDE_SPACER,
+            0,
+            "emoji head must not be marked as spacer"
         );
     }
 

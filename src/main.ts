@@ -106,6 +106,7 @@ import { filterFileEntriesAsync } from "./sftpFilterAsync";
 import { pickRenderer } from "./perf";
 import {
   ATTR_COLORED,
+  ATTR_WIDE_SPACER,
   decodeGpuFrame,
   growAtlasR8,
   growAtlasRGBA,
@@ -313,6 +314,8 @@ type Pane = {
   cols: number;
   rows: number;
   paintGen: number;
+  /** Per-cell attrs from last GPU2 frame (for selection snap on emoji spacers). */
+  lastCellAttrs: Uint32Array | null;
   selAnchor: { row: number; col: number } | null;
   selFocus: { row: number; col: number } | null;
   selLayer: HTMLDivElement;
@@ -906,6 +909,7 @@ async function paintFrame(sessionId: string, force = false) {
       clearPaneSurface(pane);
       return;
     }
+    storeCellAttrs(pane, frame);
     // Prefer Canvas2D software composite: WebGL2 on WSL/ZINK often creates a
     // context that clears but never shows glyphs (blank pane + stray cursor).
     if (pane.ctx) {
@@ -2880,6 +2884,7 @@ function createPane(pending?: Pane["pending"]): Pane {
     cols: 0,
     rows: 0,
     paintGen: 0,
+    lastCellAttrs: null,
     selAnchor: null,
     selFocus: null,
     selLayer,
@@ -3137,7 +3142,31 @@ function selCellFromEvent(
   if (cw <= 0 || ch <= 0 || !pane.cols || !pane.rows) return null;
   const col = Math.max(0, Math.min(pane.cols - 1, Math.floor((ev.clientX - rect.left) / cw)));
   const row = Math.max(0, Math.min(pane.rows - 1, Math.floor((ev.clientY - rect.top) / ch)));
-  return { row, col };
+  return snapSelectCell(pane, { row, col });
+}
+
+/** Map emoji wide-spacers back to the head cell so selection is one cell wide. */
+function snapSelectCell(
+  pane: Pane,
+  cell: { row: number; col: number },
+): { row: number; col: number } {
+  const attrs = pane.lastCellAttrs;
+  if (!attrs || !pane.cols) return cell;
+  const i = cell.row * pane.cols + cell.col;
+  if (i >= 0 && i < attrs.length && (attrs[i]! & ATTR_WIDE_SPACER) !== 0) {
+    return { row: cell.row, col: Math.max(0, cell.col - 1) };
+  }
+  return cell;
+}
+
+function storeCellAttrs(pane: Pane, frame: DecodedGpuFrame): void {
+  const n = frame.cols * frame.rows;
+  const out = new Uint32Array(n);
+  const view = new DataView(frame.cells.buffer, frame.cells.byteOffset, frame.cells.byteLength);
+  for (let i = 0; i < n; i++) {
+    out[i] = view.getUint32(i * 20 + 16, true);
+  }
+  pane.lastCellAttrs = out;
 }
 
 function selectionRect(pane: Pane): { r0: number; c0: number; r1: number; c1: number } | null {

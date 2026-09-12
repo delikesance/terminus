@@ -4,6 +4,8 @@ export const GPU_CELL_BYTES = 20;
 export const STAMP_FMT_R8 = 0;
 export const STAMP_FMT_RGBA = 1;
 export const ATTR_COLORED = 1 << 9;
+/** Spacer after single-cell emoji head — selection snaps to previous column. */
+export const ATTR_WIDE_SPACER = 1 << 10;
 
 export type GpuSprite = {
   spriteIdx: number;
