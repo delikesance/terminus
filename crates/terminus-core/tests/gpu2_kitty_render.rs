@@ -27,6 +27,7 @@ fn sample_frame(with_bits: bool) -> GpuFrame {
         sprites: vec![AtlasSprite {
             sprite_idx: 1,
             sprite_layer: 0,
+            format: 0,
             bits,
         }],
         cells: (0..8)
@@ -119,6 +120,7 @@ fn ac1_gpu2_frame_is_far_smaller_than_full_rgba() {
         sprites: vec![AtlasSprite {
             sprite_idx: 1,
             sprite_layer: 0,
+            format: 0,
             bits: Some(vec![255u8; (cell_w * (cell_h + 1)) as usize]),
         }],
         cells: vec![

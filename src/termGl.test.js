@@ -1,5 +1,5 @@
 /**
- * #163 — GPU2 decode + Kitty-style WebGL2 painter contracts.
+ * #163 / #168 — GPU2 decode + Kitty-style WebGL2 painter contracts.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -12,6 +12,9 @@ import {
   CELL_VS_SOURCE,
   CELL_FS_SOURCE,
   growAtlasR8,
+  stampByteLength,
+  STAMP_FMT_R8,
+  STAMP_FMT_RGBA,
 } from "./termGl.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -32,14 +35,20 @@ function writeU32(buf, o, v) {
 }
 
 /** Minimal GPU2 frame: 2×1 grid, one sprite stamp with bits. */
-function packSampleGpu2() {
+function packSampleGpu2(format = STAMP_FMT_R8) {
   const cellW = 8;
   const cellH = 16;
   const stampH = cellH + 1;
-  const bits = new Uint8Array(cellW * stampH);
+  const bpp = format === STAMP_FMT_RGBA ? 4 : 1;
+  const bits = new Uint8Array(cellW * stampH * bpp);
   bits[0] = 255;
+  if (format === STAMP_FMT_RGBA) {
+    bits[1] = 10;
+    bits[2] = 20;
+    bits[3] = 255;
+  }
   const header = 4 + 2 + 2 + 4 + 4 + 2 + 2 + 4; // magic..sprite_n
-  const spriteHdr = 2 + 2 + 1 + 1; // idx, layer, has_bits, pad
+  const spriteHdr = 2 + 2 + 1 + 1; // idx, layer, has_bits, format
   const cells = 2 * 20;
   const out = new Uint8Array(header + spriteHdr + bits.length + cells);
   out[0] = 0x47;
@@ -66,7 +75,7 @@ function packSampleGpu2() {
   writeU16(out, o, 0);
   o += 2; // layer
   out[o++] = 1; // has_bits
-  out[o++] = 0; // pad
+  out[o++] = format; // format (was pad)
   out.set(bits, o);
   o += bits.length;
   // cell 0
@@ -80,7 +89,7 @@ function packSampleGpu2() {
   o += 2;
   writeU16(out, o, 0);
   o += 2;
-  writeU32(out, o, 1);
+  writeU32(out, o, format === STAMP_FMT_RGBA ? 1 << 9 : 1);
   o += 4;
   // cell 1 empty
   writeU32(out, o, 0xfff5f5f7);
@@ -110,10 +119,24 @@ function packSampleGpu2() {
   assert.equal(frame.cellW, 8);
   assert.equal(frame.cellH, 16);
   assert.equal(frame.sprites.length, 1);
+  assert.equal(frame.sprites[0].format, STAMP_FMT_R8);
   assert.equal(frame.sprites[0].bits.length, 8 * 17);
   assert.equal(frame.cells.byteLength, 2 * 20);
   const view = new DataView(frame.cells.buffer, frame.cells.byteOffset, frame.cells.byteLength);
   assert.equal(view.getUint16(12, true), 1); // sprite_idx of cell 0
+}
+
+// #168 — format-aware RGBA stamp length
+{
+  assert.equal(stampByteLength(8, 16, STAMP_FMT_R8), 8 * 17);
+  assert.equal(stampByteLength(8, 16, STAMP_FMT_RGBA), 8 * 17 * 4);
+  const raw = packSampleGpu2(STAMP_FMT_RGBA);
+  const frame = decodeGpu2Frame(raw);
+  assert.ok(frame);
+  assert.equal(frame.sprites[0].format, STAMP_FMT_RGBA);
+  assert.equal(frame.sprites[0].bits.length, 8 * 17 * 4);
+  assert.equal(frame.sprites[0].bits[0], 255);
+  assert.equal(frame.sprites[0].bits[3], 255);
 }
 
 // AC1 — truncated / corrupt
@@ -176,6 +199,10 @@ function packSampleGpu2() {
   assert.ok(
     mainTs.includes("growAtlasR8"),
     "paintGpuSoftware must grow-copy via growAtlasR8",
+  );
+  assert.ok(
+    mainTs.includes("STAMP_FMT_RGBA") || mainTs.includes("atlasRGBA"),
+    "paintGpuSoftware must handle RGBA color stamps",
   );
 }
 

@@ -1,8 +1,8 @@
 use crate::box_draw::{is_procedural_cell, render_box_cell};
 use crate::error::{Error, Result};
 use crate::gpu_frame::{
-    rgba_to_u32, AtlasSprite, GpuCell, GpuFrame, ATTR_BOLD, ATTR_DIM, ATTR_ITALIC, ATTR_STRIKE,
-    ATTR_UNDERLINE_SINGLE,
+    rgba_to_u32, stamp_bytes, AtlasSprite, GpuCell, GpuFrame, ATTR_BOLD, ATTR_COLORED, ATTR_DIM,
+    ATTR_ITALIC, ATTR_STRIKE, ATTR_UNDERLINE_SINGLE, STAMP_FMT_R8, STAMP_FMT_RGBA,
 };
 use crate::models::ColorTheme;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -22,6 +22,12 @@ use std::sync::Arc;
 const FONT_TTF: &[u8] = include_bytes!("../fonts/CascadiaMonoNF-Regular.ttf");
 const SCROLLBACK: usize = 2000;
 const SPRITES_PER_LAYER: u16 = 64;
+
+#[derive(Clone)]
+struct AtlasEntry {
+    format: u8,
+    bits: Vec<u8>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GlyphFit {
@@ -62,12 +68,16 @@ pub struct TerminalEmulator {
     cols: u16,
     rows: u16,
     fonts: Vec<Font>,
+    /// Optional color-emoji font file bytes for FreeType `FT_LOAD_COLOR`.
+    emoji_font_bytes: Option<Vec<u8>>,
     hb_face: Face<'static>,
     glyphs: HashMap<char, (Glyph, Vec<u8>)>,
     /// char / shaped key → (sprite_idx, sprite_layer)
     atlas_glyphs: HashMap<u64, (u16, u16)>,
-    atlas_bits: HashMap<(u16, u16), Vec<u8>>,
+    atlas_bits: HashMap<(u16, u16), AtlasEntry>,
     atlas_pending: HashSet<(u16, u16)>,
+    /// sprite slot → colored flag (ATTR_COLORED) for cells referencing it
+    atlas_colored: HashSet<(u16, u16)>,
     atlas_dirty: bool,
     atlas_fill_idx: u16,
     atlas_fill_layer: u16,
@@ -109,7 +119,28 @@ impl TerminalEmulator {
         line_height: f32,
         scale: f32,
     ) -> Result<Self> {
-        let fonts = load_fonts()?;
+        Self::new_with_fonts(cols, rows, font_px, line_height, scale, &[])
+    }
+
+    /// Build an emulator with Cascadia primary plus optional extra font faces (for tests / CI).
+    pub fn new_with_extra_font_bytes(
+        cols: u16,
+        rows: u16,
+        font_px: f32,
+        extra_fonts: &[&[u8]],
+    ) -> Result<Self> {
+        Self::new_with_fonts(cols, rows, font_px, 1.0, 1.0, extra_fonts)
+    }
+
+    fn new_with_fonts(
+        cols: u16,
+        rows: u16,
+        font_px: f32,
+        line_height: f32,
+        scale: f32,
+        extra_fonts: &[&[u8]],
+    ) -> Result<Self> {
+        let (fonts, emoji_font_bytes) = load_fonts_with_extras(extra_fonts)?;
         let hb_face = Face::from_slice(FONT_TTF, 0).ok_or_else(|| {
             Error::Message("failed to load HarfBuzz face from bundled font".into())
         })?;
@@ -133,11 +164,13 @@ impl TerminalEmulator {
             cols,
             rows,
             fonts,
+            emoji_font_bytes,
             hb_face,
             glyphs: HashMap::new(),
             atlas_glyphs: HashMap::new(),
             atlas_bits: HashMap::new(),
             atlas_pending: HashSet::new(),
+            atlas_colored: HashSet::new(),
             atlas_dirty: true,
             atlas_fill_idx: 0,
             atlas_fill_layer: 0,
@@ -194,6 +227,7 @@ impl TerminalEmulator {
         self.atlas_glyphs.clear();
         self.atlas_bits.clear();
         self.atlas_pending.clear();
+        self.atlas_colored.clear();
         self.atlas_dirty = true;
     }
 
@@ -363,6 +397,13 @@ impl TerminalEmulator {
             (rows * cols) as usize
         ];
 
+        #[derive(Clone, Copy)]
+        enum WideKind {
+            Normal,
+            Head,
+            Spacer,
+        }
+
         let snapshots = {
             let content = self.term.renderable_content();
             let display_offset = content.display_offset;
@@ -381,9 +422,13 @@ impl TerminalEmulator {
                     continue;
                 }
                 let cell = &indexed.cell;
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
-                }
+                let wide = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    WideKind::Spacer
+                } else if cell.flags.contains(Flags::WIDE_CHAR) {
+                    WideKind::Head
+                } else {
+                    WideKind::Normal
+                };
                 let bold = cell.flags.contains(Flags::BOLD) && !cell.flags.contains(Flags::DIM);
                 let dim = cell.flags.contains(Flags::DIM);
                 let mut fg = self.resolve_cell_color(cell.fg, colors, self.fg, bold, dim);
@@ -420,70 +465,133 @@ impl TerminalEmulator {
                 if cell.flags.contains(Flags::ITALIC) {
                     attrs |= ATTR_ITALIC;
                 }
-                snaps.push((col, row, ch, fg, bg, attrs));
+                snaps.push((col, row, ch, fg, bg, attrs, wide));
             }
             snaps
         };
 
         // Row-major char grid for HarfBuzz shaping (ligatures).
         let mut grid: Vec<char> = vec![' '; (rows * cols) as usize];
-        let mut meta: Vec<Option<([u8; 4], [u8; 4], u32)>> = vec![None; (rows * cols) as usize];
-        for (col, row, ch, fg, bg, attrs) in &snapshots {
+        let mut meta: Vec<Option<([u8; 4], [u8; 4], u32, WideKind)>> =
+            vec![None; (rows * cols) as usize];
+        for (col, row, ch, fg, bg, attrs, wide) in &snapshots {
             let i = (*row * cols + *col) as usize;
-            grid[i] = *ch;
-            meta[i] = Some((*fg, *bg, *attrs));
+            if !matches!(wide, WideKind::Spacer) {
+                grid[i] = *ch;
+            }
+            meta[i] = Some((*fg, *bg, *attrs, *wide));
         }
 
         for row in 0..rows {
             let start = (row * cols) as usize;
-            let end = start + cols as usize;
-            let line: String = grid[start..end].iter().collect();
+            let line: String = grid[start..start + cols as usize].iter().collect();
             let shaped = self.shape_line(&line);
             let shaped_active = shaped.iter().any(|s| s.is_some());
+            let mut skip_spacer = false;
             for col in 0..cols as usize {
+                if skip_spacer {
+                    skip_spacer = false;
+                    continue;
+                }
                 let i = start + col;
-                let Some((fg, bg, attrs)) = meta[i] else {
+                let Some((fg, bg, mut attrs, wide)) = meta[i] else {
                     continue;
                 };
                 let fg_u = rgba_to_u32(crate::gpu_frame::contrast_fg(fg, bg));
                 let bg_u = rgba_to_u32(bg);
-                let (sprite_idx, sprite_layer) = if shaped_active {
-                    match shaped.get(col) {
-                        Some(Some(key)) => self.ensure_sprite_key(*key),
-                        _ => (0, 0),
+                match wide {
+                    WideKind::Spacer => {
+                        // Orphan spacer (no head processed) — bg only.
+                        cells[i] = GpuCell {
+                            fg: fg_u,
+                            bg: bg_u,
+                            decoration_fg: fg_u,
+                            sprite_idx: 0,
+                            sprite_layer: 0,
+                            attrs,
+                        };
                     }
-                } else {
-                    let ch = grid[i];
-                    if ch == ' ' || ch == '\0' {
-                        (0, 0)
-                    } else {
-                        self.ensure_atlas_glyph(ch)
+                    WideKind::Head => {
+                        let ch = grid[i];
+                        let ((li, ll), (ri, rl), colored) = if ch == ' ' || ch == '\0' {
+                            ((0, 0), (0, 0), false)
+                        } else {
+                            self.ensure_wide_atlas_glyph(ch)
+                        };
+                        if colored {
+                            attrs |= ATTR_COLORED;
+                        }
+                        cells[i] = GpuCell {
+                            fg: fg_u,
+                            bg: bg_u,
+                            decoration_fg: fg_u,
+                            sprite_idx: li,
+                            sprite_layer: ll,
+                            attrs,
+                        };
+                        if col + 1 < cols as usize {
+                            let si = i + 1;
+                            let (sfg, sbg, sattrs) = meta[si]
+                                .map(|(a, b, c, _)| (a, b, c))
+                                .unwrap_or((fg, bg, attrs));
+                            let mut sattrs = sattrs;
+                            if colored {
+                                sattrs |= ATTR_COLORED;
+                            }
+                            cells[si] = GpuCell {
+                                fg: rgba_to_u32(crate::gpu_frame::contrast_fg(sfg, sbg)),
+                                bg: rgba_to_u32(sbg),
+                                decoration_fg: rgba_to_u32(crate::gpu_frame::contrast_fg(sfg, sbg)),
+                                sprite_idx: ri,
+                                sprite_layer: rl,
+                                attrs: sattrs,
+                            };
+                            skip_spacer = true;
+                        }
                     }
-                };
-                cells[i] = GpuCell {
-                    fg: fg_u,
-                    bg: bg_u,
-                    decoration_fg: fg_u,
-                    sprite_idx,
-                    sprite_layer,
-                    attrs,
-                };
+                    WideKind::Normal => {
+                        let (sprite_idx, sprite_layer) = if shaped_active {
+                            match shaped.get(col) {
+                                Some(Some(key)) => self.ensure_sprite_key(*key),
+                                _ => (0, 0),
+                            }
+                        } else {
+                            let ch = grid[i];
+                            if ch == ' ' || ch == '\0' {
+                                (0, 0)
+                            } else {
+                                self.ensure_atlas_glyph(ch)
+                            }
+                        };
+                        if self.atlas_colored.contains(&(sprite_idx, sprite_layer)) {
+                            attrs |= ATTR_COLORED;
+                        }
+                        cells[i] = GpuCell {
+                            fg: fg_u,
+                            bg: bg_u,
+                            decoration_fg: fg_u,
+                            sprite_idx,
+                            sprite_layer,
+                            attrs,
+                        };
+                    }
+                }
             }
         }
 
         let sprites: Vec<AtlasSprite> = self
             .atlas_bits
-            .keys()
-            .copied()
-            .map(|(sprite_idx, sprite_layer)| {
+            .iter()
+            .map(|(&(sprite_idx, sprite_layer), entry)| {
                 let bits = if self.atlas_pending.remove(&(sprite_idx, sprite_layer)) {
-                    self.atlas_bits.get(&(sprite_idx, sprite_layer)).cloned()
+                    Some(entry.bits.clone())
                 } else {
                     None
                 };
                 AtlasSprite {
                     sprite_idx,
                     sprite_layer,
+                    format: entry.format,
                     bits,
                 }
             })
@@ -562,7 +670,7 @@ impl TerminalEmulator {
             self.cell_w,
             self.cell_h,
         );
-        self.alloc_sprite(key, stamp)
+        self.alloc_sprite(key, STAMP_FMT_R8, stamp)
     }
 
     fn ensure_atlas_glyph(&mut self, ch: char) -> (u16, u16) {
@@ -573,10 +681,20 @@ impl TerminalEmulator {
         if let Some(&slot) = self.atlas_glyphs.get(&key) {
             return slot;
         }
+        if wants_emoji_presentation(ch) {
+            if let Some((stamp, colored)) = self.raster_color_emoji(ch, self.cell_w, self.cell_h) {
+                let fmt = if colored {
+                    STAMP_FMT_RGBA
+                } else {
+                    STAMP_FMT_R8
+                };
+                return self.alloc_sprite(key, fmt, stamp);
+            }
+        }
         let cp = ch as u32;
         if is_procedural_cell(cp) {
             if let Some(bits) = render_box_cell(cp, self.cell_w, self.cell_h) {
-                return self.alloc_sprite(key, bits);
+                return self.alloc_sprite(key, STAMP_FMT_R8, bits);
             }
         }
         let (meta, cover) = self.glyph(ch);
@@ -609,11 +727,125 @@ impl TerminalEmulator {
             let ox = xmin.max(0);
             pad_stamp(&bits, dw, dh, ox, oy, self.cell_w, self.cell_h)
         };
-        self.alloc_sprite(key, stamp)
+        self.alloc_sprite(key, STAMP_FMT_R8, stamp)
     }
 
-    fn alloc_sprite(&mut self, key: u64, stamp: Vec<u8>) -> (u16, u16) {
-        let expected = (self.cell_w * (self.cell_h + 1)) as usize;
+    /// Rasterize a double-width glyph into left/right cell stamps.
+    fn ensure_wide_atlas_glyph(&mut self, ch: char) -> ((u16, u16), (u16, u16), bool) {
+        let key_l = sprite_key_char_half(ch, 0);
+        let key_r = sprite_key_char_half(ch, 1);
+        if let (Some(&l), Some(&r)) = (self.atlas_glyphs.get(&key_l), self.atlas_glyphs.get(&key_r))
+        {
+            let colored = self.atlas_colored.contains(&l);
+            return (l, r, colored);
+        }
+        let canvas_w = self.cell_w * 2;
+        if wants_emoji_presentation(ch) {
+            if let Some((full, colored)) = self.raster_color_emoji(ch, canvas_w, self.cell_h) {
+                let fmt = if colored {
+                    STAMP_FMT_RGBA
+                } else {
+                    STAMP_FMT_R8
+                };
+                let (left, right) = split_stamp_halves(&full, self.cell_w, self.cell_h, fmt);
+                let l = self.alloc_sprite(key_l, fmt, left);
+                let r = self.alloc_sprite(key_r, fmt, right);
+                return (l, r, colored);
+            }
+        }
+        let (meta, cover) = self.glyph(ch);
+        // Fit into 2×cell width so ink spans head + spacer (never squash into one cell).
+        let mut dw = meta.w.max(1);
+        let mut dh = meta.h.max(1);
+        let s = canvas_w as f32 / dw as f32;
+        let target_h = ((dh as f32) * s).round().max(1.0) as u32;
+        let target_h = target_h.min(self.cell_h.max(1));
+        let s_h = target_h as f32 / dh as f32;
+        let s = s.min(s_h);
+        dw = ((dw as f32) * s).round().max(1.0) as u32;
+        dh = ((dh as f32) * s).round().max(1.0) as u32;
+        let bits = scale_cover(&cover, meta.w.max(1), meta.h.max(1), dw, dh);
+        let ox = ((canvas_w as i32 - dw as i32) / 2).max(0);
+        let oy = ((self.cell_h as i32 - dh as i32) / 2).max(0);
+        let full = pad_stamp(&bits, dw, dh, ox, oy, canvas_w, self.cell_h);
+        let (left, right) = split_stamp_halves(&full, self.cell_w, self.cell_h, STAMP_FMT_R8);
+        let l = self.alloc_sprite(key_l, STAMP_FMT_R8, left);
+        let r = self.alloc_sprite(key_r, STAMP_FMT_R8, right);
+        (l, r, false)
+    }
+
+    /// FreeType color emoji raster → RGBA (or R8 fallback) stamp for `dst_w × cell_h`.
+    fn raster_color_emoji(&self, ch: char, dst_w: u32, dst_h: u32) -> Option<(Vec<u8>, bool)> {
+        let bytes = self.emoji_font_bytes.as_ref()?;
+        let library = freetype::Library::init().ok()?;
+        let face = library.new_memory_face(bytes.clone(), 0).ok()?;
+        let px = (dst_h.max(1) as isize) * 64;
+        face.set_char_size(px, 0, 72, 72).ok()?;
+        let flags = freetype::face::LoadFlag::COLOR | freetype::face::LoadFlag::RENDER;
+        face.load_char(ch as usize, flags).ok()?;
+        let glyph = face.glyph();
+        let bitmap = glyph.bitmap();
+        let w = bitmap.width().max(0) as u32;
+        let h = bitmap.rows().max(0) as u32;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let buffer = bitmap.buffer();
+        let pitch = bitmap.pitch().unsigned_abs() as usize;
+        let left = glyph.bitmap_left();
+        let top = glyph.bitmap_top();
+        let mode = bitmap.pixel_mode().ok()?;
+        match mode {
+            freetype::bitmap::PixelMode::Bgra => {
+                        let mut rgba = vec![0u8; (w * h * 4) as usize];
+                        for y in 0..h as usize {
+                            for x in 0..w as usize {
+                                let src = y * pitch + x * 4;
+                                if src + 3 >= buffer.len() {
+                                    continue;
+                                }
+                                let b = buffer[src];
+                                let g = buffer[src + 1];
+                                let r = buffer[src + 2];
+                                let a = buffer[src + 3];
+                                let dst = (y * w as usize + x) * 4;
+                                rgba[dst] = r;
+                                rgba[dst + 1] = g;
+                                rgba[dst + 2] = b;
+                                rgba[dst + 3] = a;
+                            }
+                        }
+                        let ox = ((dst_w as i32 - w as i32) / 2 + left).max(0);
+                        let oy = {
+                            let baseline_y = self.baseline - top;
+                            if baseline_y >= 0 && baseline_y + h as i32 <= dst_h as i32 {
+                                baseline_y
+                            } else {
+                                ((dst_h as i32 - h as i32) / 2).max(0)
+                            }
+                        };
+                        Some((pad_stamp_rgba(&rgba, w, h, ox, oy, dst_w, dst_h), true))
+                    }
+            freetype::bitmap::PixelMode::Gray => {
+                let mut cover = vec![0u8; (w * h) as usize];
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let src = y * pitch + x;
+                        if src < buffer.len() {
+                            cover[y * w as usize + x] = buffer[src];
+                        }
+                    }
+                }
+                let ox = ((dst_w as i32 - w as i32) / 2).max(0);
+                let oy = ((dst_h as i32 - h as i32) / 2).max(0);
+                Some((pad_stamp(&cover, w, h, ox, oy, dst_w, dst_h), false))
+            }
+            _ => None,
+        }
+    }
+
+    fn alloc_sprite(&mut self, key: u64, format: u8, stamp: Vec<u8>) -> (u16, u16) {
+        let expected = stamp_bytes(self.cell_w, self.cell_h, format);
         debug_assert_eq!(stamp.len(), expected);
         let layers_before = self.atlas_layer_count.max(1);
         if self.atlas_fill_idx >= self.sprites_per_layer {
@@ -635,8 +867,17 @@ impl TerminalEmulator {
         let sprite_layer = self.atlas_fill_layer;
         self.atlas_fill_idx = self.atlas_fill_idx.saturating_add(1);
         self.atlas_glyphs.insert(key, (sprite_idx, sprite_layer));
-        self.atlas_bits.insert((sprite_idx, sprite_layer), stamp);
+        self.atlas_bits.insert(
+            (sprite_idx, sprite_layer),
+            AtlasEntry {
+                format,
+                bits: stamp,
+            },
+        );
         self.atlas_pending.insert((sprite_idx, sprite_layer));
+        if format == STAMP_FMT_RGBA {
+            self.atlas_colored.insert((sprite_idx, sprite_layer));
+        }
         // Client atlases wipe on layer growth; re-pend every stamp so the growth
         // frame can rebuild coverage (Canvas2D zero-fill / WebGL texImage3D null).
         if self.atlas_layer_count > layers_before {
@@ -1058,6 +1299,10 @@ fn sprite_key_char(ch: char) -> u64 {
     0x1000_0000_0000_0000 | (ch as u64)
 }
 
+fn sprite_key_char_half(ch: char, half: u8) -> u64 {
+    0x3000_0000_0000_0000 | ((half as u64) << 32) | (ch as u64)
+}
+
 fn sprite_key_glyph(glyph_id: u32) -> u64 {
     0x2000_0000_0000_0000 | (glyph_id as u64)
 }
@@ -1102,6 +1347,75 @@ fn pad_stamp(
         }
     }
     out
+}
+
+fn pad_stamp_rgba(
+    rgba: &[u8],
+    src_w: u32,
+    src_h: u32,
+    ox: i32,
+    oy: i32,
+    cell_w: u32,
+    cell_h: u32,
+) -> Vec<u8> {
+    let stamp_h = cell_h + 1;
+    let mut out = vec![0u8; (cell_w * stamp_h * 4) as usize];
+    for dy in 0..src_h {
+        for dx in 0..src_w {
+            let px = ox + dx as i32;
+            let py = oy + dy as i32;
+            if px < 0 || py < 0 || px >= cell_w as i32 || py >= cell_h as i32 {
+                continue;
+            }
+            let si = ((dy * src_w + dx) * 4) as usize;
+            let di = ((py as u32 * cell_w + px as u32) * 4) as usize;
+            if si + 3 < rgba.len() && di + 3 < out.len() {
+                out[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
+            }
+        }
+    }
+            if cell_h > 0 {
+                let y = cell_h - 1;
+                for x in 0..cell_w {
+                    let src = ((y * cell_w + x) * 4) as usize;
+                    let dst = ((cell_h * cell_w + x) * 4) as usize;
+                    let px = [out[src], out[src + 1], out[src + 2], out[src + 3]];
+                    out[dst..dst + 4].copy_from_slice(&px);
+                }
+            }
+    out
+}
+
+fn split_stamp_halves(full: &[u8], cell_w: u32, cell_h: u32, format: u8) -> (Vec<u8>, Vec<u8>) {
+    let bpp = if format == STAMP_FMT_RGBA { 4u32 } else { 1 };
+    let stamp_h = cell_h + 1;
+    let canvas_w = cell_w * 2;
+    let mut left = vec![0u8; (cell_w * stamp_h * bpp) as usize];
+    let mut right = vec![0u8; (cell_w * stamp_h * bpp) as usize];
+    for y in 0..stamp_h {
+        for x in 0..cell_w {
+            for c in 0..bpp {
+                let li = ((y * cell_w + x) * bpp + c) as usize;
+                let fl = ((y * canvas_w + x) * bpp + c) as usize;
+                let fr = ((y * canvas_w + cell_w + x) * bpp + c) as usize;
+                if fl < full.len() {
+                    left[li] = full[fl];
+                }
+                if fr < full.len() {
+                    right[li] = full[fr];
+                }
+            }
+        }
+    }
+    (left, right)
+}
+
+fn wants_emoji_presentation(ch: char) -> bool {
+    let cp = ch as u32;
+    matches!(
+        cp,
+        0x1F300..=0x1FAFF | 0x2600..=0x27BF | 0xFE0F | 0x1F000..=0x1F2FF
+    ) || matches!(ch, '😀'..='🙏' | '🚀'..='🛿')
 }
 
 fn sanitize_scale(scale: f32) -> f32 {
@@ -1247,11 +1561,102 @@ fn pick_font_idx(fonts: &[Font], ch: char) -> usize {
     fonts.iter().position(|font| font.has_glyph(ch)).unwrap_or(0)
 }
 
-fn load_fonts() -> Result<Vec<Font>> {
-    // Cascadia Mono NF: Latin + Braille + Nerd Font icons in one face.
+fn load_fonts_with_extras(extra: &[&[u8]]) -> Result<(Vec<Font>, Option<Vec<u8>>)> {
     let primary = Font::from_bytes(FONT_TTF, FontSettings::default())
         .map_err(|err| Error::msg(format!("font: {err}")))?;
-    Ok(vec![primary])
+    let mut fonts = vec![primary];
+    let mut seen_paths = HashSet::new();
+    for bytes in extra {
+        if let Ok(face) = Font::from_bytes(*bytes, FontSettings::default()) {
+            fonts.push(face);
+        }
+    }
+    // System fallback faces via font-kit (CJK / symbols / etc.).
+    for bytes in discover_system_fallback_bytes(&mut seen_paths) {
+        if let Ok(face) = Font::from_bytes(bytes.as_slice(), FontSettings::default()) {
+            fonts.push(face);
+        }
+    }
+    let emoji_font_bytes = discover_emoji_font_bytes(&mut seen_paths);
+    Ok((fonts, emoji_font_bytes))
+}
+
+fn discover_system_fallback_bytes(seen: &mut HashSet<String>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let families = [
+        "Noto Sans CJK JP",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK TC",
+        "Noto Sans CJK KR",
+        "Noto Sans JP",
+        "Noto Sans SC",
+        "Source Han Sans",
+        "WenQuanYi Micro Hei",
+        "DejaVu Sans",
+        "FreeSans",
+        "Liberation Sans",
+        "Arial Unicode MS",
+        "Segoe UI Symbol",
+    ];
+    let source = font_kit::source::SystemSource::new();
+    for name in families {
+        if out.len() >= 8 {
+            break;
+        }
+        let handle = source.select_best_match(
+            &[font_kit::family_name::FamilyName::Title(name.into())],
+            &font_kit::properties::Properties::new(),
+        );
+        let Ok(handle) = handle else { continue };
+        if let Some(bytes) = font_handle_bytes(&handle, seen) {
+            out.push(bytes);
+        }
+    }
+    out
+}
+
+fn discover_emoji_font_bytes(seen: &mut HashSet<String>) -> Option<Vec<u8>> {
+    let families = [
+        "Noto Color Emoji",
+        "Apple Color Emoji",
+        "Segoe UI Emoji",
+        "Emoji One",
+        "Twemoji Mozilla",
+    ];
+    let source = font_kit::source::SystemSource::new();
+    for name in families {
+        let handle = source.select_best_match(
+            &[font_kit::family_name::FamilyName::Title(name.into())],
+            &font_kit::properties::Properties::new(),
+        );
+        let Ok(handle) = handle else { continue };
+        if let Some(bytes) = font_handle_bytes(&handle, seen) {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+fn font_handle_bytes(
+    handle: &font_kit::handle::Handle,
+    seen: &mut HashSet<String>,
+) -> Option<Vec<u8>> {
+    match handle {
+        font_kit::handle::Handle::Path { path, .. } => {
+            let key = path.to_string_lossy().into_owned();
+            if !seen.insert(key) {
+                return None;
+            }
+            std::fs::read(path).ok()
+        }
+        font_kit::handle::Handle::Memory { bytes, .. } => {
+            let key = format!("mem:{}", bytes.len());
+            if !seen.insert(key) {
+                return None;
+            }
+            Some(bytes.as_ref().clone())
+        }
+    }
 }
 
 fn metrics_for(font: &Font, font_px: f32, line_height: f32) -> (f32, u32, u32, i32) {
@@ -1992,6 +2397,104 @@ mod tests {
             FONT_TTF.len() > 2_000_000,
             "expected Cascadia Mono NF Regular embed, got {} bytes",
             FONT_TTF.len()
+        );
+    }
+
+    #[test]
+    fn injected_fallback_font_produces_atlas_ink() {
+        use crate::test_cjk_font::TEST_CJK_TTF;
+        let primary = Font::from_bytes(FONT_TTF, FontSettings::default()).unwrap();
+        let ch = '\u{4e00}';
+        assert!(
+            !primary.has_glyph(ch),
+            "Cascadia should lack CJK U+4E00 so fallback is exercised"
+        );
+        let extra = Font::from_bytes(TEST_CJK_TTF, FontSettings::default())
+            .expect("test CJK font must parse");
+        assert!(extra.has_glyph(ch), "injected font must provide U+4E00");
+
+        let mut term =
+            TerminalEmulator::new_with_extra_font_bytes(8, 3, 14.0, &[TEST_CJK_TTF]).unwrap();
+        assert!(
+            term.fonts.len() >= 2,
+            "extra face must be loaded (got {} faces)",
+            term.fonts.len()
+        );
+        assert!(
+            term.fonts.iter().any(|f| f.has_glyph(ch)),
+            "fallback chain must include a face with U+4E00"
+        );
+        term.feed(ch.to_string().as_bytes());
+        let frame = term.capture_gpu_frame(true).expect("gpu frame");
+        let stamped: Vec<_> = frame
+            .sprites
+            .iter()
+            .filter(|s| s.bits.as_ref().map(|b| b.iter().any(|&p| p > 0)).unwrap_or(false))
+            .collect();
+        assert!(
+            !stamped.is_empty(),
+            "fallback face must produce atlas ink for U+4E00"
+        );
+        let cells_with_sprite = frame.cells.iter().filter(|c| c.sprite_idx > 0).count();
+        assert!(
+            cells_with_sprite >= 2,
+            "wide CJK must stamp head+spacer (got {cells_with_sprite} sprite cells)"
+        );
+    }
+
+    #[test]
+    fn wide_glyph_spans_two_cells_in_gpu_frame() {
+        use crate::test_cjk_font::TEST_CJK_TTF;
+        let mut term =
+            TerminalEmulator::new_with_extra_font_bytes(8, 3, 14.0, &[TEST_CJK_TTF]).unwrap();
+        term.feed("\u{4e00}".as_bytes());
+        let frame = term.capture_gpu_frame(true).expect("gpu");
+        assert!(frame.cols >= 2);
+        let c0 = &frame.cells[0];
+        let c1 = &frame.cells[1];
+        assert!(c0.sprite_idx > 0, "wide head must have a sprite");
+        assert!(c1.sprite_idx > 0, "wide spacer must have right-half sprite");
+        assert!(
+            (c0.sprite_idx, c0.sprite_layer) != (c1.sprite_idx, c1.sprite_layer),
+            "left/right halves must be distinct atlas slots"
+        );
+        let left_bits = frame
+            .sprites
+            .iter()
+            .find(|s| s.sprite_idx == c0.sprite_idx && s.sprite_layer == c0.sprite_layer)
+            .and_then(|s| s.bits.as_ref());
+        let right_bits = frame
+            .sprites
+            .iter()
+            .find(|s| s.sprite_idx == c1.sprite_idx && s.sprite_layer == c1.sprite_layer)
+            .and_then(|s| s.bits.as_ref());
+        assert!(
+            left_bits.map(|b| b.iter().any(|&p| p > 0)).unwrap_or(false),
+            "left half must have ink"
+        );
+        assert!(
+            right_bits.map(|b| b.iter().any(|&p| p > 0)).unwrap_or(false),
+            "right half must have ink (not empty spacer)"
+        );
+    }
+
+    #[test]
+    fn color_emoji_integration_skips_without_emoji_font() {
+        let mut term = TerminalEmulator::new(8, 3, 14.0).unwrap();
+        if term.emoji_font_bytes.is_none() {
+            // Protocol + blend covered elsewhere; skip raster when no system emoji font.
+            return;
+        }
+        term.feed("😀".as_bytes());
+        let frame = term.capture_gpu_frame(true).expect("gpu");
+        let colored = frame
+            .sprites
+            .iter()
+            .any(|s| s.format == STAMP_FMT_RGBA && s.bits.is_some());
+        let attr = frame.cells.iter().any(|c| c.attrs & ATTR_COLORED != 0);
+        assert!(
+            colored || attr,
+            "with emoji font available, expect RGBA stamp or ATTR_COLORED"
         );
     }
 }
