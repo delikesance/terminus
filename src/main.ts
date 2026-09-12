@@ -688,20 +688,25 @@ function clearPaneSurface(pane: Pane) {
 function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
   const ctx = pane.ctx;
   if (!ctx) return;
-  if (!pane.atlasR8 || pane.atlasW !== frame.atlasW || pane.atlasH !== frame.atlasH) {
-    pane.atlasW = Math.max(1, frame.atlasW);
-    pane.atlasH = Math.max(1, frame.atlasH);
-    pane.atlasR8 = new Uint8Array(pane.atlasW * pane.atlasH);
+  const spl = Math.max(1, frame.spritesPerLayer);
+  const stampH = frame.cellH + 1;
+  const layerW = spl * frame.cellW;
+  const layers = Math.max(1, frame.layerCount);
+  const atlasBytes = layerW * stampH * layers;
+  if (!pane.atlasR8 || pane.atlasW !== layerW || pane.atlasH !== stampH * layers) {
+    pane.atlasW = layerW;
+    pane.atlasH = stampH * layers;
+    pane.atlasR8 = new Uint8Array(atlasBytes);
   }
-  for (const g of frame.glyphs) {
-    pane.glyphMap.set(g.id, g);
-    if (g.bits && g.w > 0 && g.h > 0 && pane.atlasR8) {
-      const expected = g.w * g.h;
-      if (g.bits.byteLength < expected) continue;
-      for (let dy = 0; dy < g.h; dy++) {
-        for (let dx = 0; dx < g.w; dx++) {
-          pane.atlasR8[(g.y + dy) * pane.atlasW + (g.x + dx)] = g.bits[dy * g.w + dx]!;
-        }
+  const atlas = pane.atlasR8;
+  for (const s of frame.sprites) {
+    if (!s.bits || s.bits.byteLength < frame.cellW * stampH) continue;
+    if (s.spriteLayer >= layers) continue;
+    const base = s.spriteLayer * layerW * stampH;
+    const x0 = s.spriteIdx * frame.cellW;
+    for (let dy = 0; dy < stampH; dy++) {
+      for (let dx = 0; dx < frame.cellW; dx++) {
+        atlas[base + dy * layerW + x0 + dx] = s.bits[dy * frame.cellW + dx]!;
       }
     }
   }
@@ -715,14 +720,17 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
   }
   const img = ctx.createImageData(width, height);
   const data = img.data;
-  const aw = Math.max(1, pane.atlasW);
-  const atlas = pane.atlasR8;
+  const view = new DataView(frame.cells.buffer, frame.cells.byteOffset, frame.cells.byteLength);
   for (let row = 0; row < frame.rows; row++) {
     for (let col = 0; col < frame.cols; col++) {
       const i = row * frame.cols + col;
-      const glyphId = frame.cells[i * 3]!;
-      const fg = frame.cells[i * 3 + 1]!;
-      const bg = frame.cells[i * 3 + 2]!;
+      const o = i * 20;
+      const fg = view.getUint32(o, true);
+      const bg = view.getUint32(o + 4, true);
+      const dec = view.getUint32(o + 8, true);
+      const spriteIdx = view.getUint16(o + 12, true);
+      const spriteLayer = view.getUint16(o + 14, true);
+      const attrs = view.getUint32(o + 16, true);
       const fr = fg & 255;
       const fg_ = (fg >> 8) & 255;
       const fb = (fg >> 16) & 255;
@@ -740,20 +748,40 @@ function paintGpuSoftware(pane: Pane, frame: DecodedGpuFrame, dpr: number) {
           data[pi + 3] = 255;
         }
       }
-      const g = glyphId ? pane.glyphMap.get(glyphId) : undefined;
-      if (!g || !atlas || g.w <= 0 || g.h <= 0) continue;
-      for (let dy = 0; dy < g.h; dy++) {
-        for (let dx = 0; dx < g.w; dx++) {
-          const cover = atlas[(g.y + dy) * aw + (g.x + dx)] ?? 0;
-          if (!cover) continue;
-          const px = x0 + g.ox + dx;
-          const py = y0 + g.oy + dy;
-          if (px < 0 || py < 0 || px >= width || py >= height) continue;
-          const pi = (py * width + px) * 4;
-          const a = cover / 255;
-          data[pi] = Math.round(fr * a + data[pi]! * (1 - a));
-          data[pi + 1] = Math.round(fg_ * a + data[pi + 1]! * (1 - a));
-          data[pi + 2] = Math.round(fb * a + data[pi + 2]! * (1 - a));
+      if (spriteIdx > 0) {
+        const base = spriteLayer * layerW * stampH;
+        const sx0 = spriteIdx * frame.cellW;
+        for (let dy = 0; dy < frame.cellH; dy++) {
+          for (let dx = 0; dx < frame.cellW; dx++) {
+            const cover = atlas[base + dy * layerW + sx0 + dx] ?? 0;
+            if (!cover) continue;
+            const pi = ((y0 + dy) * width + (x0 + dx)) * 4;
+            const a = cover / 255;
+            data[pi] = Math.round(fr * a + data[pi]! * (1 - a));
+            data[pi + 1] = Math.round(fg_ * a + data[pi + 1]! * (1 - a));
+            data[pi + 2] = Math.round(fb * a + data[pi + 2]! * (1 - a));
+            data[pi + 3] = 255;
+          }
+        }
+      }
+      const underline = attrs & 0xf;
+      if (underline) {
+        const lineY = frame.cellH - 2;
+        const dr = dec & 255;
+        const dg = (dec >> 8) & 255;
+        const db = (dec >> 16) & 255;
+        for (let dx = 0; dx < frame.cellW; dx++) {
+          const excl =
+            spriteIdx > 0
+              ? (atlas[
+                  spriteLayer * layerW * stampH + frame.cellH * layerW + spriteIdx * frame.cellW + dx
+                ] ?? 0)
+              : 0;
+          if (excl > 128) continue;
+          const pi = ((y0 + lineY) * width + (x0 + dx)) * 4;
+          data[pi] = dr;
+          data[pi + 1] = dg;
+          data[pi + 2] = db;
           data[pi + 3] = 255;
         }
       }
@@ -785,6 +813,20 @@ async function paintFrame(sessionId: string, force = false) {
     pane.cellW = frame.cellW || pane.cellW;
     pane.cellH = frame.cellH || pane.cellH;
     pane.rasterScale = displayScale();
+    // Optional GPU2 trailer: mode_flags + scroll_off + scroll_max (12 bytes).
+    {
+      let o = 24;
+      for (const s of frame.sprites) {
+        o += 6 + (s.bits ? s.bits.byteLength : 0);
+      }
+      o += frame.cols * frame.rows * 20;
+      if (raw.byteLength >= o + 12) {
+        const tv = new DataView(raw.buffer, raw.byteOffset + o, 12);
+        pane.modeFlags = tv.getUint32(0, true);
+        pane.scrollOffset = tv.getUint32(4, true);
+        pane.scrollMax = tv.getUint32(8, true);
+      }
+    }
     if (!frame.cols || !frame.rows) {
       clearPaneSurface(pane);
       return;
@@ -2735,7 +2777,7 @@ function createPane(pending?: Pane["pending"]): Pane {
   el.append(viewport, banner);
   $("workspace").appendChild(el);
   // Always keep a 2D context for reliable paint. WebGL2 is optional and often
-  // broken under WSL/ZINK (blank pane). Compact GPU1 frames still apply.
+  // broken under WSL/ZINK (blank pane). Compact GPU2 frames still apply.
   const ctx = canvas.getContext("2d", { alpha: false });
   const gl = ctx ? null : tryCreateTermGl(canvas);
   const pane: Pane = {
@@ -4908,7 +4950,7 @@ async function openSettings() {
           )
           .join("")}</div>
       </div>
-      <div class="cell"><span>Renderer<small class="hint">Alacritty VT + GPU1 atlas frames (Canvas2D composite)</small></span><span class="meta">native</span></div>
+      <div class="cell"><span>Renderer<small class="hint">Alacritty VT + GPU2 Kitty-style frames (Canvas2D / WebGL2)</small></span><span class="meta">native</span></div>
       <label class="cell"><span>Font</span><input id="a-font" value="${escapeHtml(appearance.font_family)}" /></label>
       <label class="cell"><span>Size</span><input id="a-size" type="number" value="${appearance.font_size}" /></label>
       <label class="cell"><span>Line height</span><input id="a-lh" type="number" step="0.05" value="${appearance.line_height}" /></label>
