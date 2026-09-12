@@ -109,5 +109,13 @@ export function getTestBridge(page: Page) {
       page.evaluate((ms) => (window as any).__terminusTest.measureFps(ms), durationMs),
     setUpdateAvailable: (version: string) =>
       page.evaluate((v) => (window as any).__terminusTest.setUpdateAvailable(v), version),
+    renameTab: (paneId: string, title: string) =>
+      page.evaluate(({ id, t }) => (window as any).__terminusTest.renameTab(id, t), { id: paneId, t: title }),
+    resetTabName: (paneId: string) =>
+      page.evaluate((id) => (window as any).__terminusTest.resetTabName(id), paneId),
+    startTabRename: (paneId: string) =>
+      page.evaluate((id) => (window as any).__terminusTest.startTabRename(id), paneId),
+    tabTitles: () =>
+      page.evaluate(() => (window as any).__terminusTest.tabTitles()),
   };
 }

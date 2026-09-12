@@ -14,7 +14,12 @@ import {
   readText as tauriClipboardReadText,
   writeText as tauriClipboardWriteText,
 } from "@tauri-apps/plugin-clipboard-manager";
-import { claimPasteDelivery, decideDomPasteAction, nextPasteSuppressUntil } from "./termPaste";
+import {
+  claimPasteDelivery,
+  decideDomPasteAction,
+  formatTerminalPaste,
+  nextPasteSuppressUntil,
+} from "./termPaste";
 import {
   encodeTermMouse,
   mouseReportingEnabled,
@@ -48,6 +53,12 @@ import {
   sftpDisplayPath,
   logicalFromDisplayPath,
 } from "./sftpPath";
+import {
+  sanitizeTabTitle,
+  resolveTabTitle,
+  buildTabContextMenu,
+  handleRenameInputKeydown,
+} from "./tabRename";
 import {
   SFTP_LOCAL_ID,
   canTransferBetween,
@@ -256,6 +267,7 @@ type TransferJob = {
 
 type Pane = {
   id: string;
+  customTitle?: string;
   session?: SessionInfo;
   pending?: { title: string; kind: string; hostId?: string };
   exited?: boolean;
@@ -1910,6 +1922,14 @@ function onGlobalKey(ev: KeyboardEvent) {
     syncForwardAddBtn();
     return;
   }
+  if (ev.key === "F2" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    const tag = (ev.target as HTMLElement | null)?.tagName;
+    if (tag !== "INPUT" && tag !== "TEXTAREA" && state.activePane) {
+      ev.preventDefault();
+      startTabRename(state.activePane);
+      return;
+    }
+  }
   if (
     state.sftpMode &&
     navState.active === "sftp" &&
@@ -2016,6 +2036,9 @@ function runAction(action: string) {
       break;
     case "tab.close":
       closeActive();
+      break;
+    case "tab.rename":
+      if (state.activePane) startTabRename(state.activePane);
       break;
     case "tab.next":
       cycleTab(1);
@@ -2525,7 +2548,7 @@ function attachSession(info: SessionInfo, pane = createPane()) {
       void pasteIntoPane(pane);
       return;
     }
-    sendText(action.send, pane);
+    void pasteIntoPane(pane, action.send);
   };
   selectPane(pane.id);
   layoutPane(pane);
@@ -3141,15 +3164,16 @@ function terminalContextMenuItems(pane: Pane): MenuItem[] {
   ];
 }
 
-async function pasteIntoPane(pane: Pane): Promise<void> {
+async function pasteIntoPane(pane: Pane, textOverride?: string): Promise<void> {
   if (!pane.session || pane.exited) return;
-  const text = await readClipboard();
+  const text = textOverride ?? (await readClipboard());
   if (!text) return;
   if (import.meta.env.VITE_E2E === "1") {
     (window as any).__pasteIntoPaneCalls = ((window as any).__pasteIntoPaneCalls ?? 0) + 1;
     (window as any).__pasteIntoPaneLast = text;
   }
-  sendText(text, pane);
+  const formatted = formatTerminalPaste(text, pane.modeFlags);
+  sendText(formatted, pane);
 }
 
 async function writeClipboard(text: string): Promise<void> {
@@ -3267,21 +3291,24 @@ function layoutPane(pane: Pane) {
   });
 }
 
-function paneTitle(pane?: Pane | null) {
+function paneTitle(pane?: Pane | null): string {
   if (!pane) return "";
-  const kind = pane.session?.kind ?? pane.pending?.kind;
-  const base =
-    kind === "local"
-      ? "This computer"
-      : pane.session?.title || pane.pending?.title || "Shell";
-  const same = state.panes.filter((p) => {
-    const k = p.session?.kind ?? p.pending?.kind;
-    const title =
-      k === "local" ? "This computer" : p.session?.title || p.pending?.title || "Shell";
-    return title === base;
-  });
-  if (same.length < 2) return base;
-  return `${base} · ${same.indexOf(pane) + 1}`;
+  return resolveTabTitle(
+    {
+      id: pane.id,
+      customTitle: pane.customTitle,
+      kind: pane.session?.kind ?? pane.pending?.kind,
+      sessionTitle: pane.session?.title,
+      pendingTitle: pane.pending?.title,
+    },
+    state.panes.map((p) => ({
+      id: p.id,
+      customTitle: p.customTitle,
+      kind: p.session?.kind ?? p.pending?.kind,
+      sessionTitle: p.session?.title,
+      pendingTitle: p.pending?.title,
+    })),
+  );
 }
 
 function paneTabIcon(pane: Pane): { icon: string; os: string } {
@@ -3297,6 +3324,73 @@ function paneTabIcon(pane: Pane): { icon: string; os: string } {
   return host ? hostOsIcon(host.os_id) : { icon: icons.server, os: "" };
 }
 
+let editingPaneId: string | null = null;
+
+function startTabRename(paneId: string) {
+  const pane = state.panes.find((p) => p.id === paneId);
+  if (!pane) return;
+  if (editingPaneId && editingPaneId !== paneId) {
+    const prevInput = $("tabs").querySelector<HTMLInputElement>(`[data-tab="${editingPaneId}"] .tab-rename-input`);
+    if (prevInput) commitTabRename(editingPaneId, prevInput.value);
+  }
+  editingPaneId = paneId;
+  if (state.activePane !== paneId) {
+    selectPane(paneId);
+  } else {
+    renderTabs();
+  }
+  const root = $("tabs");
+  const btn = root.querySelector<HTMLElement>(`[data-tab="${paneId}"]`);
+  if (!btn) return;
+  const input = btn.querySelector<HTMLInputElement>(".tab-rename-input");
+  if (!input) return;
+  input.value = pane.customTitle ?? paneTitle(pane);
+  btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+function commitTabRename(paneId: string, newTitle: string) {
+  if (editingPaneId !== paneId) return;
+  editingPaneId = null;
+  const pane = state.panes.find((p) => p.id === paneId);
+  if (!pane) return;
+  const sanitized = sanitizeTabTitle(newTitle);
+  if (sanitized) {
+    pane.customTitle = sanitized;
+  } else {
+    delete pane.customTitle;
+  }
+  const active = activePane();
+  if (active) $("status-session").textContent = paneTitle(active) || "idle";
+  renderTabs();
+  if (pane.id === state.activePane) {
+    pane.el.focus();
+  }
+}
+
+function cancelTabRename(paneId: string) {
+  if (editingPaneId !== paneId) return;
+  editingPaneId = null;
+  renderTabs();
+  const pane = state.panes.find((p) => p.id === paneId);
+  if (pane && pane.id === state.activePane) {
+    pane.el.focus();
+  }
+}
+
+function resetTabName(paneId: string) {
+  const pane = state.panes.find((p) => p.id === paneId);
+  if (!pane) return;
+  delete pane.customTitle;
+  if (editingPaneId === paneId) editingPaneId = null;
+  const active = activePane();
+  if (active) $("status-session").textContent = paneTitle(active) || "idle";
+  renderTabs();
+}
+
 function renderTabs() {
   const root = $("tabs");
   const ids = state.panes.map((p) => p.id);
@@ -3307,27 +3401,41 @@ function renderTabs() {
       .map((p) => {
         const osIco = paneTabIcon(p);
         const osAttr = osIco.os ? ` data-os="${escapeHtml(osIco.os)}"` : "";
-        return `<button type="button" role="tab" data-tab="${p.id}"><span class="tab-ico"${osAttr}>${osIco.icon}</span><span class="live-dot"></span><span class="label"></span><span class="x" data-close="${p.id}">${icons.close}</span></button>`;
+        return `<button type="button" role="tab" data-tab="${p.id}" data-testid="tab-${p.id}"><span class="tab-ico"${osAttr}>${osIco.icon}</span><span class="live-dot"></span><span class="label"></span><input class="tab-rename-input" data-testid="tab-rename-input" type="text" spellcheck="false" autocomplete="off" /><span class="x" data-close="${p.id}">${icons.close}</span></button>`;
       })
       .join("");
     root.querySelectorAll<HTMLElement>("[data-tab]").forEach((el) => {
-      el.draggable = true;
+      const tabId = el.dataset.tab!;
+      el.draggable = editingPaneId !== tabId;
       el.onclick = (ev) => {
-        const close = (ev.target as HTMLElement).closest("[data-close]") as HTMLElement | null;
+        const target = ev.target as HTMLElement;
+        if (target.closest(".tab-rename-input")) return;
+        const close = target.closest("[data-close]") as HTMLElement | null;
         if (close) {
           ev.stopPropagation();
           void closePane(close.dataset.close!);
         } else {
-          selectPane(el.dataset.tab!);
+          selectPane(tabId);
         }
+      };
+      el.ondblclick = (ev) => {
+        const target = ev.target as HTMLElement;
+        if (target.closest(".tab-rename-input") || target.closest("[data-close]")) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        startTabRename(tabId);
       };
       el.onauxclick = (ev) => {
         if (ev.button !== 1) return;
         ev.preventDefault();
-        void closePane(el.dataset.tab!);
+        void closePane(tabId);
       };
       el.ondragstart = (ev) => {
-        ev.dataTransfer?.setData("text/plain", el.dataset.tab ?? "");
+        if (editingPaneId === tabId) {
+          ev.preventDefault();
+          return;
+        }
+        ev.dataTransfer?.setData("text/plain", tabId);
         el.classList.add("dragging");
       };
       el.ondragend = () => {
@@ -3341,24 +3449,86 @@ function renderTabs() {
       el.ondrop = (ev) => {
         ev.preventDefault();
         const id = ev.dataTransfer?.getData("text/plain");
-        if (id && id !== el.dataset.tab) movePane(id, el.dataset.tab ?? null);
+        if (id && id !== tabId) movePane(id, tabId);
       };
+      const input = el.querySelector<HTMLInputElement>(".tab-rename-input");
+      if (input) {
+        input.onclick = (ev) => ev.stopPropagation();
+        input.onmousedown = (ev) => ev.stopPropagation();
+        input.onmouseup = (ev) => ev.stopPropagation();
+        input.ondblclick = (ev) => ev.stopPropagation();
+        input.onkeydown = (ev) => {
+          ev.stopPropagation();
+          handleRenameInputKeydown(ev.key, {
+            onCommit: () => {
+              ev.preventDefault();
+              commitTabRename(tabId, input.value);
+            },
+            onCancel: () => {
+              ev.preventDefault();
+              cancelTabRename(tabId);
+            },
+          });
+        };
+        input.onblur = () => {
+          if (editingPaneId === tabId) {
+            commitTabRename(tabId, input.value);
+          }
+        };
+      }
       el.oncontextmenu = (ev) => {
         ev.preventDefault();
-        const pane = state.panes.find((p) => p.id === el.dataset.tab);
+        const pane = state.panes.find((p) => p.id === tabId);
         if (!pane) return;
-        showMenu(ev.clientX, ev.clientY, [
-          { label: "Close", run: () => void closePane(pane.id) },
-          { label: "Close others", run: () => closeOtherPanes(pane.id), hidden: state.panes.length < 2 },
-          { label: "Close all", run: () => closeAllPanes(), hidden: !state.panes.length },
-          { label: pane.exited ? "Reconnect" : "New session", run: () => duplicatePane(pane) },
-        ]);
+        const menuDescriptors = buildTabContextMenu({
+          paneId: pane.id,
+          hasCustomTitle: Boolean(pane.customTitle),
+          isExited: Boolean(pane.exited),
+          totalPanes: state.panes.length,
+        });
+        const menuItems: MenuItem[] = menuDescriptors.map((desc) => {
+          if (desc.sep) return { sep: true };
+          let run: (() => void) | undefined;
+          switch (desc.action) {
+            case "rename":
+              run = () => startTabRename(pane.id);
+              break;
+            case "reset-name":
+              run = () => resetTabName(pane.id);
+              break;
+            case "close":
+              run = () => void closePane(pane.id);
+              break;
+            case "close-others":
+              run = () => closeOtherPanes(pane.id);
+              break;
+            case "close-all":
+              run = () => closeAllPanes();
+              break;
+            case "reconnect":
+            case "duplicate":
+              run = () => duplicatePane(pane);
+              break;
+          }
+          return {
+            label: desc.label,
+            testId: desc.testId,
+            hidden: desc.hidden,
+            disabled: desc.disabled,
+            danger: desc.danger,
+            run,
+          };
+        });
+        showMenu(ev.clientX, ev.clientY, menuItems);
       };
     });
   }
   for (const pane of state.panes) {
     const btn = root.querySelector<HTMLElement>(`[data-tab="${pane.id}"]`);
     if (!btn) continue;
+    const isRenaming = editingPaneId === pane.id;
+    btn.classList.toggle("renaming", isRenaming);
+    btn.draggable = !isRenaming;
     btn.classList.toggle("active", pane.id === state.activePane);
     btn.classList.toggle("pending", !!pane.pending && !pane.session);
     btn.classList.toggle("exited", !!pane.exited);
@@ -3369,9 +3539,14 @@ function renderTabs() {
       if (os) icoEl.setAttribute("data-os", os);
       else icoEl.removeAttribute("data-os");
     }
+    const title = paneTitle(pane);
     const label = btn.querySelector(".label");
-    if (label) label.textContent = paneTitle(pane);
-    btn.title = paneTitle(pane);
+    if (label) label.textContent = title;
+    btn.title = title;
+    const input = btn.querySelector<HTMLInputElement>(".tab-rename-input");
+    if (input && !isRenaming) {
+      input.value = pane.customTitle ?? title;
+    }
   }
   $("workspace-empty").classList.toggle("hidden", state.panes.length > 0);
   requestAnimationFrame(() => {
@@ -3413,6 +3588,7 @@ function updateTabOverflow() {
 }
 
 async function closePane(id: string) {
+  if (editingPaneId === id) editingPaneId = null;
   const pane = state.panes.find((p) => p.id === id);
   if (!pane) return;
   pane.aborted = true;
@@ -3541,6 +3717,7 @@ async function reconnectPane(pane: Pane) {
 
 type MenuItem = {
   label?: string;
+  testId?: string;
   run?: () => void;
   danger?: boolean;
   hidden?: boolean;
@@ -3561,6 +3738,7 @@ function showMenu(x: number, y: number, items: MenuItem[]) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = item.label ?? "";
+    if (item.testId) btn.dataset.testid = item.testId;
     if (item.danger) btn.classList.add("danger");
     if (item.disabled) btn.disabled = true;
     if (!item.disabled && item.run) {
@@ -3690,6 +3868,17 @@ function renderPalette(query: string) {
   const q = query.toLowerCase();
   const items: { label: string; hint: string; run: () => void }[] = [
     { label: "New local shell", hint: "session", run: () => openLocal() },
+    ...(state.activePane
+      ? [
+          {
+            label: "Rename active tab",
+            hint: "tab",
+            run: () => {
+              if (state.activePane) startTabRename(state.activePane);
+            },
+          },
+        ]
+      : []),
     { label: "Identities", hint: "vault", run: () => void openVault() },
     { label: "Settings", hint: "app", run: () => openSettings() },
     { label: "Sync now", hint: "cloud", run: () => invoke("sync_now").then(refreshSync) },
@@ -3715,15 +3904,17 @@ function renderPalette(query: string) {
       const ico =
         i.hint === "session"
           ? icons.laptop
-          : i.hint === "vault"
-            ? icons.key
-            : i.hint === "app"
-              ? icons.settings
-              : i.hint === "cloud"
-                ? icons.cloud
-                : i.label.startsWith("Snippet")
-                  ? icons.snippet
-                  : icons.server;
+          : i.hint === "tab"
+            ? icons.terminal
+            : i.hint === "vault"
+              ? icons.key
+              : i.hint === "app"
+                ? icons.settings
+                : i.hint === "cloud"
+                  ? icons.cloud
+                  : i.label.startsWith("Snippet")
+                    ? icons.snippet
+                    : icons.server;
       return `<li class="${idx === 0 ? "active" : ""}" data-i="${idx}"><span class="leading">${ico}</span><span class="grow">${escapeHtml(i.label)}<small>${escapeHtml(i.hint)}</small></span></li>`;
     })
     .join("");
@@ -7760,6 +7951,19 @@ if (import.meta.env.VITE_E2E === "1") {
   initTestBridge();
   (window as any).__terminusUpdateTest = {
     setPendingAppUpdate: setPendingAppUpdateForTest,
+  };
+  (window as any).__terminusTabTest = {
+    startTabRename,
+    commitTabRename,
+    cancelTabRename,
+    resetTabName,
+    getPanes: () =>
+      state.panes.map((p) => ({
+        id: p.id,
+        title: paneTitle(p),
+        customTitle: p.customTitle,
+        kind: p.session?.kind ?? p.pending?.kind,
+      })),
   };
   window.addEventListener("terminus-e2e-refresh", () => {
     void refreshSide();

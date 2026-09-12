@@ -34,10 +34,12 @@ export function normalizeSftpPath(path: string): string {
   return stack.length ? stack.join("/") : ".";
 }
 
-/** Resolve any path to an absolute one. Relative input is anchored to `/`. */
-export function resolveUnderRoot(_root: string, path: string): string {
+/** Resolve any path to an absolute one. Absolute paths pass through; relative paths are anchored to root (or `/`). */
+export function resolveUnderRoot(root: string, path: string): string {
   const p = (path && path.trim()) || ".";
-  return normalizeSftpPath(p.startsWith("/") ? p : `/${p}`);
+  if (p.startsWith("/")) return normalizeSftpPath(p);
+  const base = (root && root !== "." ? root : "/").replace(/\/+$/, "");
+  return normalizeSftpPath(`${base}/${p}`);
 }
 
 /** Show the remote path (absolute). Relative input is joined onto cwd. */
@@ -48,6 +50,7 @@ export function sftpDisplayPath(cwd: string | null | undefined, logical: string)
   } catch {
     norm = logical || "/";
   }
+  if (norm === "." || norm === "") return tidyAbs(cwd) || "/";
   if (norm.startsWith("/")) return norm === "/" ? "/" : norm.replace(/\/+$/, "");
   const home = tidyAbs(cwd);
   if (home) return home === "/" ? `/${norm}` : `${home}/${norm}`;
