@@ -32,6 +32,8 @@ jobs:
         run: nix develop --command npm run test:sftp-ux
       - name: Prove CPU perf-load harness
         run: nix develop --command npm run test:perf-load
+      - name: Verify Nix desktop package npm dependencies
+        run: nix build .#terminus.npmDeps
       - name: Upload perf report
         if: always()
         uses: actions/upload-artifact@v4
