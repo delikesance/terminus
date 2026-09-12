@@ -68,6 +68,10 @@ interface TerminusTestBridge {
   seedAuthFailHost(hostId?: string): Promise<string>;
   hostsRuntime(): Promise<Array<{ host_id: string; connection: string; open_count: number }>>;
   setUpdateAvailable(version: string): Promise<void>;
+  renameTab(paneId: string, title: string): Promise<void>;
+  resetTabName(paneId: string): Promise<void>;
+  startTabRename(paneId: string): Promise<void>;
+  tabTitles(): Promise<Array<{ id: string; title: string; customTitle?: string }>>;
 }
 
 async function refreshUi(): Promise<void> {
@@ -518,6 +522,35 @@ export function initTestBridge(): void {
       if (typeof api?.setPendingAppUpdate === "function") {
         api.setPendingAppUpdate(version);
       }
+    },
+
+    async renameTab(paneId: string, title: string): Promise<void> {
+      const api = (window as any).__terminusTabTest;
+      if (api) {
+        api.commitTabRename(paneId, title);
+        await refreshUi();
+      }
+    },
+
+    async resetTabName(paneId: string): Promise<void> {
+      const api = (window as any).__terminusTabTest;
+      if (api) {
+        api.resetTabName(paneId);
+        await refreshUi();
+      }
+    },
+
+    async startTabRename(paneId: string): Promise<void> {
+      const api = (window as any).__terminusTabTest;
+      if (api) {
+        api.startTabRename(paneId);
+        await refreshUi();
+      }
+    },
+
+    async tabTitles(): Promise<Array<{ id: string; title: string; customTitle?: string }>> {
+      const api = (window as any).__terminusTabTest;
+      return api ? api.getPanes() : [];
     },
   };
 

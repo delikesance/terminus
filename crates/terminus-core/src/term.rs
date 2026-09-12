@@ -1597,6 +1597,22 @@ mod tests {
     }
 
     #[test]
+    fn bracketed_paste_mode_sets_pack_frame_flags() {
+        let mut term = TerminalEmulator::new(40, 12, 14.0).unwrap();
+        assert_eq!(term.mode_flags() & 0b1000, 0, "default: bracketed paste off");
+        // DECSET 2004 — what bash/zsh/readline/vim enable for bracketed paste.
+        term.feed(b"\x1b[?2004h");
+        assert_eq!(term.mode_flags() & 0b1000, 0b1000, "DECSET 2004 should set BRACKETED_PASTE");
+        let (cw, ch) = term.cell_size();
+        let frame = term.capture_frame(true).expect("frame");
+        let packed = pack_frame(&frame, cw, ch, term.mode_flags(), 0, 0);
+        let flags = u32::from_le_bytes(packed[16..20].try_into().unwrap());
+        assert_eq!(flags & 0b1000, 0b1000, "mode_flags in packed frame contains BRACKETED_PASTE");
+        term.feed(b"\x1b[?2004l");
+        assert_eq!(term.mode_flags() & 0b1000, 0, "DECRST 2004 clears BRACKETED_PASTE");
+    }
+
+    #[test]
     fn ac1_mouse_mode_sets_pack_frame_flags() {
         let mut term = TerminalEmulator::new(40, 12, 14.0).unwrap();
         assert_eq!(term.mode_flags() & 0b1_0000, 0);
