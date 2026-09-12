@@ -50,21 +50,49 @@ nix develop -c node scripts/capture-preview.mjs
 
 For a social/GitHub hero in Canva, follow [`docs/media/CANVA_BRIEF.md`](./docs/media/CANVA_BRIEF.md) (size, colors, copy, import steps).
 
-## Install (Nix / Linux)
+## Install (Nix / NixOS)
 
-From this repo (flakes enabled):
+Release CI (same path as deb/rpm/exe) builds the Linux flake package, pushes it to **Cachix**, and publishes the flake to **FlakeHub**.
+
+### FlakeHub
 
 ```bash
-nix profile install .#terminus
-# or one-shot:
-nix run .#terminus
+nix profile install "https://flakehub.com/f/delikesance/terminus/*"
 ```
 
-From GitHub once the flake is on your preferred branch:
+### GitHub flake + Cachix (fast substitute)
+
+Release CI pushes `.#terminus` to the public **`delikesance-terminus`** Cachix cache (requires repo secret `CACHIX_AUTH_TOKEN`). Trust it in NixOS:
+
+```nix
+# configuration.nix / flake nixosConfiguration
+nix.settings = {
+  extra-substituters = [ "https://delikesance-terminus.cachix.org" ];
+  extra-trusted-public-keys = [
+    "delikesance-terminus.cachix.org-1:p8Fekuq1NcfXc2qpgp9w5LF25ErO9uNnAV7iuyTuxNQ="
+  ];
+};
+```
 
 ```bash
 nix profile install github:delikesance/terminus#terminus
+# or one-shot:
+nix run github:delikesance/terminus#terminus
 ```
+
+From a local clone: `nix profile install .#terminus` / `nix run .#terminus`.
+
+### nixpkgs
+
+Upstream attribute target: `pkgs.terminus` (or `terminus-ssh` if the name is taken). Packaging PR: [NixOS/nixpkgs#562315](https://github.com/NixOS/nixpkgs/pull/562315). Until merged, use FlakeHub or the GitHub flake above. The shared derivation lives in [`nix/package.nix`](./nix/package.nix); see [`nix/nixpkgs-example.nix`](./nix/nixpkgs-example.nix) for a callPackage stub.
+
+On NixOS once packaged:
+
+```nix
+environment.systemPackages = [ pkgs.terminus ];
+```
+
+No NixOS module is required — install the package like any other desktop app.
 
 `packages.default` on Linux is the desktop app. The CI selftest binary remains available as `.#terminus-selftest`.
 
