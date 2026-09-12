@@ -775,12 +775,16 @@ impl TerminalEmulator {
     }
 
     /// FreeType color emoji raster → RGBA (or R8 fallback) stamp for `dst_w × cell_h`.
+    ///
+    /// Bitmaps are **scaled to fit** the canvas and centered. Sizing to `cell_h` alone
+    /// plus `bitmap_left` often overflowed `2*cell_w` and clipped the right edge.
     fn raster_color_emoji(&self, ch: char, dst_w: u32, dst_h: u32) -> Option<(Vec<u8>, bool)> {
         let bytes = self.emoji_font_bytes.as_ref()?;
         let library = freetype::Library::init().ok()?;
         let face = library.new_memory_face(bytes.clone(), 0).ok()?;
-        let px = (dst_h.max(1) as isize) * 64;
-        face.set_char_size(px, 0, 72, 72).ok()?;
+        // Request pixels covering the larger canvas axis, then fit down.
+        let req = dst_w.max(dst_h).max(1);
+        face.set_pixel_sizes(0, req).ok()?;
         let flags = freetype::face::LoadFlag::COLOR | freetype::face::LoadFlag::RENDER;
         face.load_char(ch as usize, flags).ok()?;
         let glyph = face.glyph();
@@ -792,40 +796,29 @@ impl TerminalEmulator {
         }
         let buffer = bitmap.buffer();
         let pitch = bitmap.pitch().unsigned_abs() as usize;
-        let left = glyph.bitmap_left();
-        let top = glyph.bitmap_top();
         let mode = bitmap.pixel_mode().ok()?;
         match mode {
             freetype::bitmap::PixelMode::Bgra => {
-                        let mut rgba = vec![0u8; (w * h * 4) as usize];
-                        for y in 0..h as usize {
-                            for x in 0..w as usize {
-                                let src = y * pitch + x * 4;
-                                if src + 3 >= buffer.len() {
-                                    continue;
-                                }
-                                let b = buffer[src];
-                                let g = buffer[src + 1];
-                                let r = buffer[src + 2];
-                                let a = buffer[src + 3];
-                                let dst = (y * w as usize + x) * 4;
-                                rgba[dst] = r;
-                                rgba[dst + 1] = g;
-                                rgba[dst + 2] = b;
-                                rgba[dst + 3] = a;
-                            }
+                let mut rgba = vec![0u8; (w * h * 4) as usize];
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let src = y * pitch + x * 4;
+                        if src + 3 >= buffer.len() {
+                            continue;
                         }
-                        let ox = ((dst_w as i32 - w as i32) / 2 + left).max(0);
-                        let oy = {
-                            let baseline_y = self.baseline - top;
-                            if baseline_y >= 0 && baseline_y + h as i32 <= dst_h as i32 {
-                                baseline_y
-                            } else {
-                                ((dst_h as i32 - h as i32) / 2).max(0)
-                            }
-                        };
-                        Some((pad_stamp_rgba(&rgba, w, h, ox, oy, dst_w, dst_h), true))
+                        let b = buffer[src];
+                        let g = buffer[src + 1];
+                        let r = buffer[src + 2];
+                        let a = buffer[src + 3];
+                        let dst = (y * w as usize + x) * 4;
+                        rgba[dst] = r;
+                        rgba[dst + 1] = g;
+                        rgba[dst + 2] = b;
+                        rgba[dst + 3] = a;
                     }
+                }
+                Some((fit_rgba_stamp(&rgba, w, h, dst_w, dst_h), true))
+            }
             freetype::bitmap::PixelMode::Gray => {
                 let mut cover = vec![0u8; (w * h) as usize];
                 for y in 0..h as usize {
@@ -836,9 +829,7 @@ impl TerminalEmulator {
                         }
                     }
                 }
-                let ox = ((dst_w as i32 - w as i32) / 2).max(0);
-                let oy = ((dst_h as i32 - h as i32) / 2).max(0);
-                Some((pad_stamp(&cover, w, h, ox, oy, dst_w, dst_h), false))
+                Some((fit_cover_stamp(&cover, w, h, dst_w, dst_h), false))
             }
             _ => None,
         }
@@ -1344,6 +1335,59 @@ fn pad_stamp(
         let y = cell_h - 1;
         for x in 0..cell_w {
             out[(cell_h * cell_w + x) as usize] = out[(y * cell_w + x) as usize];
+        }
+    }
+    out
+}
+
+/// Scale RGBA to fit inside `dst_w × dst_h` (aspect preserved) and center — no clip.
+fn fit_rgba_stamp(rgba: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return pad_stamp_rgba(&[], 0, 0, 0, 0, dst_w, dst_h);
+    }
+    // Slight inset so FreeType AA / rounding never kisses the clip edge.
+    let scale =
+        (dst_w as f32 / src_w as f32).min(dst_h as f32 / src_h as f32).max(0.0) * 0.96;
+    let nw = ((src_w as f32) * scale).floor().max(1.0) as u32;
+    let nh = ((src_h as f32) * scale).floor().max(1.0) as u32;
+    let nw = nw.min(dst_w);
+    let nh = nh.min(dst_h);
+    let scaled = scale_rgba(rgba, src_w, src_h, nw, nh);
+    let ox = ((dst_w as i32 - nw as i32) / 2).max(0);
+    let oy = ((dst_h as i32 - nh as i32) / 2).max(0);
+    pad_stamp_rgba(&scaled, nw, nh, ox, oy, dst_w, dst_h)
+}
+
+fn fit_cover_stamp(cover: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return pad_stamp(&[], 0, 0, 0, 0, dst_w, dst_h);
+    }
+    let scale =
+        (dst_w as f32 / src_w as f32).min(dst_h as f32 / src_h as f32).max(0.0) * 0.96;
+    let nw = ((src_w as f32) * scale).floor().max(1.0) as u32;
+    let nh = ((src_h as f32) * scale).floor().max(1.0) as u32;
+    let nw = nw.min(dst_w);
+    let nh = nh.min(dst_h);
+    let scaled = scale_cover(cover, src_w, src_h, nw, nh);
+    let ox = ((dst_w as i32 - nw as i32) / 2).max(0);
+    let oy = ((dst_h as i32 - nh as i32) / 2).max(0);
+    pad_stamp(&scaled, nw, nh, ox, oy, dst_w, dst_h)
+}
+
+fn scale_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (dst_w * dst_h * 4) as usize];
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return out;
+    }
+    for y in 0..dst_h {
+        for x in 0..dst_w {
+            let sx = (((x as f32 + 0.5) * src_w as f32 / dst_w as f32) as u32).min(src_w - 1);
+            let sy = (((y as f32 + 0.5) * src_h as f32 / dst_h as f32) as u32).min(src_h - 1);
+            let si = ((sy * src_w + sx) * 4) as usize;
+            let di = ((y * dst_w + x) * 4) as usize;
+            if si + 3 < src.len() && di + 3 < out.len() {
+                out[di..di + 4].copy_from_slice(&src[si..si + 4]);
+            }
         }
     }
     out
@@ -2495,6 +2539,51 @@ mod tests {
         assert!(
             colored || attr,
             "with emoji font available, expect RGBA stamp or ATTR_COLORED"
+        );
+    }
+
+    /// #170 — source wider than the canvas must scale-to-fit; right-side ink stays inside.
+    #[test]
+    fn fit_rgba_stamp_keeps_right_edge_inside_canvas() {
+        let sw = 40u32;
+        let sh = 20u32;
+        let mut src = vec![0u8; (sw * sh * 4) as usize];
+        for y in 0..sh {
+            for x in 0..sw {
+                let i = ((y * sw + x) * 4) as usize;
+                // Opaque band on the right third (survives nearest-neighbor downscale).
+                if x >= (sw * 2) / 3 {
+                    src[i] = 255;
+                    src[i + 1] = 200;
+                    src[i + 2] = 0;
+                    src[i + 3] = 255;
+                }
+            }
+        }
+        let dw = 18u32;
+        let dh = 16u32;
+        let stamp = fit_rgba_stamp(&src, sw, sh, dw, dh);
+        assert_eq!(stamp.len(), (dw * (dh + 1) * 4) as usize);
+        let mut max_x_with_ink = 0u32;
+        let mut right_quarter_ink = 0u32;
+        for y in 0..dh {
+            for x in 0..dw {
+                let i = ((y * dw + x) * 4) as usize;
+                if stamp[i + 3] > 0 {
+                    max_x_with_ink = max_x_with_ink.max(x);
+                    if x >= dw * 3 / 4 {
+                        right_quarter_ink += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            right_quarter_ink > 0,
+            "right-side source ink must appear after fit (not clipped away)"
+        );
+        assert!(
+            max_x_with_ink + 2 >= dw - 1,
+            "right band should reach near canvas right edge (max_x={max_x_with_ink} dw={dw})"
         );
     }
 }
