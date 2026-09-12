@@ -39,6 +39,7 @@ struct LiveSession {
     info: SessionInfo,
     backend: Backend,
     input_buf: parking_lot::Mutex<String>,
+    in_bracketed_paste: parking_lot::Mutex<bool>,
     emulator: Arc<parking_lot::Mutex<TerminalEmulator>>,
 }
 
@@ -270,6 +271,7 @@ impl SessionManager {
                 info: info.clone(),
                 backend: Backend::Local(pty),
                 input_buf: parking_lot::Mutex::new(String::new()),
+                in_bracketed_paste: parking_lot::Mutex::new(false),
                 emulator,
             },
         );
@@ -319,6 +321,7 @@ impl SessionManager {
                 info: info.clone(),
                 backend: Backend::Local(pty),
                 input_buf: parking_lot::Mutex::new(String::new()),
+                in_bracketed_paste: parking_lot::Mutex::new(false),
                 emulator,
             },
         );
@@ -373,6 +376,7 @@ impl SessionManager {
                 info: info.clone(),
                 backend: Backend::Ssh(cmd_tx),
                 input_buf: parking_lot::Mutex::new(String::new()),
+                in_bracketed_paste: parking_lot::Mutex::new(false),
                 emulator,
             },
         );
@@ -704,22 +708,60 @@ impl SessionManager {
 fn feed_history(session: &LiveSession, data: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(data);
     let mut buf = session.input_buf.lock();
+    let mut in_paste = session.in_bracketed_paste.lock();
     let mut command = None;
-    for ch in text.chars() {
-        match ch {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\u{1b}' {
+            // Check for \x1b[200~ (bracketed paste start)
+            if i + 5 < chars.len() && &chars[i..i + 6] == &['\u{1b}', '[', '2', '0', '0', '~'] {
+                *in_paste = true;
+                i += 6;
+                continue;
+            }
+            // Check for \x1b[201~ (bracketed paste end)
+            if i + 5 < chars.len() && &chars[i..i + 6] == &['\u{1b}', '[', '2', '0', '1', '~'] {
+                *in_paste = false;
+                i += 6;
+                continue;
+            }
+            // Skip other escape sequence \x1b[ ... or \x1bO ...
+            i += 1;
+            if i < chars.len() && (chars[i] == '[' || chars[i] == 'O') {
+                i += 1;
+                while i < chars.len() && !chars[i].is_alphabetic() && chars[i] != '~' {
+                    i += 1;
+                }
+                if i < chars.len() {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        match chars[i] {
             '\r' | '\n' => {
-                let next = buf.trim().to_string();
-                buf.clear();
-                if !next.is_empty() && !next.starts_with('\u{1b}') {
-                    command = Some(next);
+                if *in_paste {
+                    buf.push('\n');
+                } else {
+                    let next = buf.trim().to_string();
+                    buf.clear();
+                    if !next.is_empty() && !next.starts_with('\u{1b}') {
+                        command = Some(next);
+                    }
                 }
             }
             '\u{7f}' | '\u{08}' => {
                 buf.pop();
             }
+            '\u{03}' => {
+                buf.clear();
+            }
             c if !c.is_control() => buf.push(c),
             _ => {}
         }
+        i += 1;
     }
     command
 }
@@ -1106,6 +1148,50 @@ mod tests {
             let emitted = sink.last_runtime_for(&host.id).expect("emit on host-key fail");
             assert_eq!(emitted.connection, "disconnected");
         });
+    }
+
+    #[test]
+    fn test_feed_history_bracketed_paste_and_multiline() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let session = LiveSession {
+            info: SessionInfo {
+                id: "test-sess".into(),
+                title: "local".into(),
+                kind: "local".into(),
+                host_id: None,
+            },
+            backend: Backend::Ssh(tx),
+            input_buf: parking_lot::Mutex::new(String::new()),
+            in_bracketed_paste: parking_lot::Mutex::new(false),
+            emulator: Arc::new(parking_lot::Mutex::new(
+                TerminalEmulator::new(80, 24, 1.0).unwrap(),
+            )),
+        };
+
+        // 1. Single-line bracketed paste — should not trigger on paste, only on subsequent Enter
+        let res = feed_history(&session, b"\x1b[200~echo hello\x1b[201~");
+        assert_eq!(res, None, "paste payload itself must not commit history");
+        let res = feed_history(&session, b"\r");
+        assert_eq!(res.as_deref(), Some("echo hello"), "Enter commits the clean pasted command");
+
+        // 2. Multiline bracketed paste — newlines inside brackets should not execute
+        let res = feed_history(&session, b"\x1b[200~echo 1\recho 2\x1b[201~");
+        assert_eq!(res, None, "multiline paste must not commit lines individually");
+        let res = feed_history(&session, b"\r");
+        assert_eq!(
+            res.as_deref(),
+            Some("echo 1\necho 2"),
+            "multiline command is committed as a whole"
+        );
+
+        // 3. Arrow keys should not pollute command buffer
+        let res = feed_history(&session, b"ls\x1b[A -la\r");
+        assert_eq!(res.as_deref(), Some("ls -la"));
+
+        // 4. Ctrl+C should clear in-progress command buffer
+        let _ = feed_history(&session, b"wrong command\x03");
+        let res = feed_history(&session, b"real command\r");
+        assert_eq!(res.as_deref(), Some("real command"));
     }
 }
 
