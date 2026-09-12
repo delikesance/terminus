@@ -1,3 +1,4 @@
+pub mod box_draw;
 pub mod error;
 pub mod forward_runtime;
 pub mod gpu_frame;

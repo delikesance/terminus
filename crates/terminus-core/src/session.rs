@@ -1,9 +1,10 @@
 use crate::error::{Error, Result};
+use crate::gpu_frame;
 use crate::models::{ColorTheme, Host, HostRuntime, Identity, SessionInfo};
 use crate::pty::LocalPty;
 use crate::ssh::{self, SshCommand};
 use crate::store::Store;
-use crate::term::{pack_frame, TerminalEmulator};
+use crate::term::TerminalEmulator;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -517,13 +518,17 @@ impl SessionManager {
         };
         let packed = {
             let mut emu = session.emulator.lock();
-            // Full RGBA frames: GPU1 atlas path left panes blank when glyph
-            // stamps were missing/incremental (Canvas2D composite stayed empty).
-            let (cw, ch) = emu.cell_size();
+            // Compact GPU2 atlas frames (Kitty-style). Optional 12-byte trailer
+            // carries mode_flags + scroll state for UI (not part of cell grid).
             let modes = emu.mode_flags();
             let (scroll_off, scroll_max) = emu.scroll_state();
-            emu.capture_frame(force)
-                .map(|frame| pack_frame(&frame, cw, ch, modes, scroll_off, scroll_max))
+            emu.capture_gpu_frame(force).map(|frame| {
+                let mut packed = gpu_frame::pack_gpu2_frame(&frame);
+                packed.extend_from_slice(&modes.to_le_bytes());
+                packed.extend_from_slice(&scroll_off.to_le_bytes());
+                packed.extend_from_slice(&scroll_max.to_le_bytes());
+                packed
+            })
         };
         Ok(packed)
     }
