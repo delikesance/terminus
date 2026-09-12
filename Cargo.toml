@@ -34,5 +34,7 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 alacritty_terminal = { version = "0.26", default-features = false }
 fontdue = "0.9"
+font-kit = "0.14"
+freetype-rs = "0.36"
 rustybuzz = "0.20"
 zeroize = { version = "1", features = ["derive"] }
