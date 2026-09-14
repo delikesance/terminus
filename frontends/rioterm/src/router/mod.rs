@@ -191,6 +191,11 @@ impl Route<'_> {
         if self.window.screen.renderer.assistant.is_error() {
             return Some(Modal::Assistant);
         }
+        // The add-host editor outranks the route screens: it can be
+        // opened from any of them and is a modal text sink.
+        if self.window.screen.chrome.add_host_is_open() {
+            return Some(Modal::HostEditor);
+        }
         if self.path != RoutePath::Terminal {
             return Some(Modal::Route);
         }
@@ -221,6 +226,12 @@ impl Route<'_> {
                     .command_palette
                     .append_query(text)
                 {
+                    self.request_overlay_redraw();
+                }
+                true
+            }
+            Some(Modal::HostEditor) => {
+                if self.window.screen.chrome_commit_text(text) {
                     self.request_overlay_redraw();
                 }
                 true
@@ -464,13 +475,24 @@ impl Route<'_> {
                 true
             }
 
+            // The add-host editor is a modal text sink: it owns every
+            // key while it is open, and Enter is a request to save
+            // rather than a dismissal (only the store can accept a host).
+            Modal::HostEditor => {
+                use terminus_ui::add_host::FormOutcome;
+                if let Some(FormOutcome::Submit) =
+                    self.window.screen.chrome_key_input(key_event)
+                {
+                    self.window.screen.submit_host_form();
+                }
+                self.request_overlay_redraw();
+                true
+            }
+
             // Terminus overlays (TOFU host-key approval, vault unlock,
-            // host editor, SFTP dual-pane): scaffolding placeholders —
-            // swallow input until their handlers land (see milestone.md).
-            Modal::TofuHostKeyApproval
-            | Modal::VaultUnlock
-            | Modal::HostEditor
-            | Modal::SftpPane => true,
+            // SFTP dual-pane): scaffolding placeholders — swallow input
+            // until their handlers land (see milestone.md).
+            Modal::TofuHostKeyApproval | Modal::VaultUnlock | Modal::SftpPane => true,
         }
     }
 }

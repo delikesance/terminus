@@ -1,12 +1,15 @@
 //! Local persistence layer (SQLx/SQLite).
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    SqlitePool,
+};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::error::{Error, Result};
 use crate::models::*;
 use chrono::{DateTime, Utc};
 use sqlx::Row;
-use crate::error::{Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -17,11 +20,20 @@ impl Store {
     pub async fn open(data_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&data_dir)?;
         let db_path = data_dir.join("terminus.db");
-        let url = format!("sqlite://{}?foreign_keys=on", db_path.display());
+
+        // Options are built directly instead of using a
+        // `sqlite://<path>?foreign_keys=on` URL: sqlx 0.7's SQLite URL parser
+        // only accepts the `mode` and `cache` query parameters and rejects
+        // every other one, so the URL form failed to open at all. This also
+        // creates the database file when it does not exist yet.
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true)
+            .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
-            .connect(&url)
+            .connect_with(options)
             .await
             .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
@@ -229,14 +241,31 @@ impl Store {
                 username: r.get("username"),
                 auth_method: r.get("auth_method"),
                 password: r.get("password"),
-                identity_id: r.get::<Option<String>, _>("identity_id").and_then(|s| Uuid::parse_str(&s).ok()),
-                group_id: r.get::<Option<String>, _>("group_id").and_then(|s| Uuid::parse_str(&s).ok()),
-                tags: serde_json::from_str(&r.get::<String, _>("tags")).unwrap_or_default(),
+                identity_id: r
+                    .get::<Option<String>, _>("identity_id")
+                    .and_then(|s| Uuid::parse_str(&s).ok()),
+                group_id: r
+                    .get::<Option<String>, _>("group_id")
+                    .and_then(|s| Uuid::parse_str(&s).ok()),
+                tags: serde_json::from_str(&r.get::<String, _>("tags"))
+                    .unwrap_or_default(),
                 notes: r.get("notes"),
                 os_id: r.get("os_id"),
-                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at")).unwrap().with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at")).unwrap().with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+                created_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("created_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                updated_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("updated_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|d| d.with_timezone(&Utc))
+                }),
             })
             .collect())
     }
@@ -284,10 +313,24 @@ impl Store {
             .map(|r| Group {
                 id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
                 name: r.get("name"),
-                parent_id: r.get::<Option<String>, _>("parent_id").and_then(|s| Uuid::parse_str(&s).ok()),
-                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at")).unwrap().with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at")).unwrap().with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+                parent_id: r
+                    .get::<Option<String>, _>("parent_id")
+                    .and_then(|s| Uuid::parse_str(&s).ok()),
+                created_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("created_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                updated_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("updated_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|d| d.with_timezone(&Utc))
+                }),
             })
             .collect())
     }
@@ -333,12 +376,16 @@ impl Store {
                 public_key: r.get("public_key"),
                 private_key: r.get("private_key"),
                 passphrase: r.get("passphrase"),
-                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at"))
-                    .unwrap()
-                    .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at"))
-                    .unwrap()
-                    .with_timezone(&Utc),
+                created_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("created_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                updated_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("updated_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
                 deleted_at: r
                     .get::<Option<String>, _>("deleted_at")
                     .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
@@ -392,11 +439,24 @@ impl Store {
                 id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
                 title: r.get("title"),
                 content: r.get("content"),
-                tags: serde_json::from_str(&r.get::<String, _>("tags")).unwrap_or_default(),
+                tags: serde_json::from_str(&r.get::<String, _>("tags"))
+                    .unwrap_or_default(),
                 shortcut: r.get("shortcut"),
-                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at")).unwrap().with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at")).unwrap().with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+                created_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("created_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                updated_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("updated_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|d| d.with_timezone(&Utc))
+                }),
             })
             .collect())
     }
@@ -422,10 +482,13 @@ impl Store {
     }
 
     pub async fn list_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
-        let rows = sqlx::query(&format!("SELECT * FROM history ORDER BY created_at DESC LIMIT {}", limit))
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        let rows = sqlx::query(&format!(
+            "SELECT * FROM history ORDER BY created_at DESC LIMIT {}",
+            limit
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
         Ok(rows
             .into_iter()
@@ -433,9 +496,15 @@ impl Store {
                 id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
                 command: r.get("command"),
                 cwd: r.get("cwd"),
-                host_id: r.get::<Option<String>, _>("host_id").and_then(|s| Uuid::parse_str(&s).ok()),
+                host_id: r
+                    .get::<Option<String>, _>("host_id")
+                    .and_then(|s| Uuid::parse_str(&s).ok()),
                 session_kind: r.get("session_kind"),
-                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at")).unwrap().with_timezone(&Utc),
+                created_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("created_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
             })
             .collect())
     }
@@ -472,7 +541,10 @@ impl Store {
 
     pub async fn list_forwards(&self, host_id: Option<Uuid>) -> Result<Vec<PortForward>> {
         let query = if let Some(hid) = host_id {
-            format!("SELECT * FROM port_forwards WHERE deleted_at IS NULL AND host_id = '{}'", hid)
+            format!(
+                "SELECT * FROM port_forwards WHERE deleted_at IS NULL AND host_id = '{}'",
+                hid
+            )
         } else {
             "SELECT * FROM port_forwards WHERE deleted_at IS NULL".into()
         };
@@ -493,9 +565,21 @@ impl Store {
                 bind_port: r.get::<i64, _>("bind_port") as u16,
                 dest_host: r.get("dest_host"),
                 dest_port: r.get::<Option<i64>, _>("dest_port").map(|p| p as u16),
-                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at")).unwrap().with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at")).unwrap().with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+                created_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("created_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                updated_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("updated_at"),
+                )
+                .unwrap()
+                .with_timezone(&Utc),
+                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|d| d.with_timezone(&Utc))
+                }),
             })
             .collect())
     }

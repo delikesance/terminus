@@ -19,9 +19,7 @@ pub enum SessionSpec {
         working_dir: Option<String>,
     },
     /// Connect to a remote host via SSH (from terminus-core store).
-    Ssh {
-        host_id: String,
-    },
+    Ssh { host_id: String },
 }
 use crate::performer::{self, Machine};
 use renderable::Cursor;

@@ -1,7 +1,7 @@
-use argon2::{Argon2, Algorithm, Version, Params};
+use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
-use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use chacha20poly1305::aead::{Aead, KeyInit, OsRng};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::ZeroizeOnDrop;
@@ -68,7 +68,8 @@ impl UnlockedVault {
         Ok(VaultHeader {
             version: ENVELOPE_VERSION,
             salt: base64::engine::general_purpose::STANDARD.encode(&salt),
-            wrapped_dek: base64::engine::general_purpose::STANDARD.encode(&wrapped_with_nonce),
+            wrapped_dek: base64::engine::general_purpose::STANDARD
+                .encode(&wrapped_with_nonce),
         })
     }
 

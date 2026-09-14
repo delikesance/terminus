@@ -71,6 +71,16 @@ pub struct Screen<'screen> {
     pub search_state: SearchState,
     pub hint_state: HintState,
     pub renderer: Renderer,
+    /// Handle to the host database. Owned by the screen (not by the
+    /// renderer) because the chrome, the keyboard and the painter all
+    /// need it, and only the screen sees mouse and key events.
+    pub host_store: crate::hosts::HostRepository,
+    /// Terminus chrome: activity rail, host panel and add-host editor.
+    pub chrome: terminus_ui::chrome::Chrome,
+    /// Host label to highlight once its insert comes back from the
+    /// worker. `create` hands out no id, so the row is matched by name
+    /// on the next refresh instead of guessing an index.
+    pending_host_select: Option<String>,
     pub sugarloaf: Sugarloaf<'screen>,
     pub context_manager: context::ContextManager<EventProxy>,
     /// IME state is per window, not per context: the platform IME
@@ -269,17 +279,46 @@ impl Screen<'_> {
         };
 
         let rich_text_id = next_rich_text_id();
+
+        // The host worker runs on its own thread; when a write lands it
+        // pings the event loop so an idle window repaints with the new
+        // list. Same `RioEvent::Render` the PTY path uses.
+        let host_wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>> = {
+            let proxy = event_proxy.clone();
+            let id = window_id.into();
+            Some(std::sync::Arc::new(move || {
+                proxy.send_event(
+                    rio_backend::event::RioEventType::Rio(
+                        rio_backend::event::RioEvent::Render,
+                    ),
+                    id,
+                );
+            }))
+        };
+
+        // The chrome reserves its own strip on the left; the grid margin
+        // carries it so the terminal reflows beside the rail instead of
+        // being painted over.
+        let chrome = {
+            let mut chrome = terminus_ui::chrome::Chrome::default();
+            // The rail starts under the tab strip rather than behind
+            // it, so it lines up with the terminal's own top margin.
+            chrome.top_inset = padding_y_top;
+            chrome
+        };
+        let chrome_left = chrome.reserved_width();
+
         let margin = Margin::new(
             padding_y_top,
             config.margin.right,
             padding_y_bottom,
-            config.margin.left,
+            config.margin.left + chrome_left,
         );
         let scaled_margin = Margin::new(
             padding_y_top * scale as f32,
             config.margin.right * scale as f32,
             padding_y_bottom * scale as f32,
-            config.margin.left * scale as f32,
+            (config.margin.left + chrome_left) * scale as f32,
         );
         let (text_dimensions, cell_metrics) = sugarloaf.compute_cell_metrics(
             config.fonts.size,
@@ -348,6 +387,12 @@ impl Screen<'_> {
             mouse: Mouse::new(config.scroll.multiplier, config.scroll.divider),
             touchpurpose: TouchPurpose::default(),
             renderer,
+            host_store: crate::hosts::HostRepository::spawn(
+                crate::hosts::data_dir(),
+                host_wake,
+            ),
+            pending_host_select: None,
+            chrome,
             bindings,
             last_ime_cursor_pos: None,
             resize_state: None,
@@ -392,6 +437,194 @@ impl Screen<'_> {
             .renderable_content
             .pending_update
             .set_dirty();
+    }
+
+    // ---- Terminus chrome --------------------------------------------
+
+    /// Window size in logical pixels, the space `terminus_ui` lays out in.
+    fn chrome_viewport(&self) -> (f32, f32) {
+        let size = self.sugarloaf.window_size();
+        let scale = self.sugarloaf.scale_factor().max(1.0);
+        (size.width / scale, size.height / scale)
+    }
+
+    /// Apply anything the host worker has sent. Returns whether the
+    /// chrome changed and the window should repaint.
+    pub fn pump_chrome(&mut self) -> bool {
+        if !self.host_store.drain() {
+            return false;
+        }
+
+        let items: Vec<terminus_ui::sidebar::HostItem> = self
+            .host_store
+            .hosts()
+            .iter()
+            .map(|host| terminus_ui::sidebar::HostItem {
+                id: host.id.clone(),
+                name: host.name.clone(),
+                endpoint: host.endpoint(),
+            })
+            .collect();
+        self.chrome.set_hosts(items);
+
+        // `create` hands out no id, so the row inserted a moment ago is
+        // found by the label the worker echoed back.
+        if let Some(label) = self.pending_host_select.take() {
+            if let Some(index) = self
+                .chrome
+                .panel
+                .items
+                .iter()
+                .position(|item| item.name == label)
+            {
+                self.chrome.panel.selected = Some(index);
+            }
+        }
+
+        if let Some(notice) = self.host_store.take_notice() {
+            self.chrome.panel.notice = Some(format!("Added {notice}"));
+            self.chrome.panel.error = None;
+        }
+        // A store-level failure has nowhere else to show while the
+        // editor is closed; when it is open the error belongs on the
+        // dialog, not behind its scrim.
+        if !self.chrome.add_host_is_open() {
+            self.chrome.panel.error = self.host_store.error().map(str::to_string);
+        }
+        true
+    }
+
+    /// Route a mouse press given in logical pixels.
+    pub fn chrome_press(&mut self, x: f32, y: f32) -> terminus_ui::chrome::ChromeAction {
+        let (width, height) = self.chrome_viewport();
+        let reserved_before = self.chrome.reserved_width();
+        let action = self.chrome.handle_press(width, height, x, y);
+        // Collapsing the rail or toggling the panel changes how much of
+        // the window the terminal may use.
+        if self.chrome.reserved_width() != reserved_before {
+            self.reapply_chrome_inset();
+        }
+        action
+    }
+
+    /// Re-flow the grid after the chrome's reserved width changed.
+    ///
+    /// Every tab shares the window, so every grid needs the new margin
+    /// and a layout pass, not just the current one.
+    pub fn reapply_chrome_inset(&mut self) {
+        let scale = self.sugarloaf.scale_factor();
+        let left = (self.renderer.margin.left + self.chrome.reserved_width()) * scale;
+        for context_grid in self.context_manager.contexts_mut() {
+            let margin = context_grid.scaled_margin;
+            context_grid.update_scaled_margin(Margin::new(
+                margin.top,
+                margin.right,
+                margin.bottom,
+                left,
+            ));
+            context_grid.update_dimensions(&mut self.sugarloaf);
+        }
+        self.renderer.trail_cursor.snap();
+    }
+
+    /// Route a mouse move. Returns whether the chrome changed.
+    pub fn chrome_hover(&mut self, x: f32, y: f32) -> bool {
+        let (_, height) = self.chrome_viewport();
+        self.chrome.handle_hover(height, x, y)
+    }
+
+    /// Route a wheel notch. Returns whether the chrome consumed it.
+    pub fn chrome_wheel(&mut self, x: f32, y: f32, lines: f32) -> bool {
+        let (_, height) = self.chrome_viewport();
+        self.chrome.handle_wheel(height, x, y, lines)
+    }
+
+    /// Route a key to the add-host editor. `None` when it is closed.
+    ///
+    /// Committed IME text never arrives here — it has no key event; the
+    /// router forwards it through `Chrome::handle_form_input` directly.
+    pub fn chrome_key_input(
+        &mut self,
+        key_event: &rio_window::event::KeyEvent,
+    ) -> Option<terminus_ui::add_host::FormOutcome> {
+        use rio_window::event::ElementState;
+        use rio_window::keyboard::{Key, NamedKey};
+        use terminus_ui::add_host::{FormInput, FormOutcome};
+
+        if !self.chrome.add_host_is_open() {
+            return None;
+        }
+        if key_event.state != ElementState::Pressed {
+            // Swallow releases as well: a key held while the editor
+            // opens must not leak its release to the shell.
+            return Some(FormOutcome::Consumed);
+        }
+
+        let input = match &key_event.logical_key {
+            Key::Named(NamedKey::Backspace) => FormInput::Backspace,
+            Key::Named(NamedKey::Delete) => FormInput::Delete,
+            Key::Named(NamedKey::Enter) => FormInput::Enter,
+            Key::Named(NamedKey::Escape) => FormInput::Escape,
+            Key::Named(NamedKey::Tab) => {
+                if self.modifiers.state().shift_key() {
+                    FormInput::Previous
+                } else {
+                    FormInput::Next
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => FormInput::Left,
+            Key::Named(NamedKey::ArrowRight) => FormInput::Right,
+            Key::Named(NamedKey::ArrowUp) => FormInput::Previous,
+            Key::Named(NamedKey::ArrowDown) => FormInput::Next,
+            Key::Named(NamedKey::Home) => FormInput::Home,
+            Key::Named(NamedKey::End) => FormInput::End,
+            Key::Character(_) => FormInput::Text,
+            // Every other key is consumed and ignored: the editor is a
+            // text sink, so nothing may reach the PTY behind it.
+            _ => return Some(FormOutcome::Consumed),
+        };
+
+        let text = if input == FormInput::Text {
+            key_event.text.as_deref().unwrap_or_default()
+        } else {
+            ""
+        };
+        self.chrome.handle_form_input(input, text)
+    }
+
+    /// Forward composed (IME) text to the editor.
+    pub fn chrome_commit_text(&mut self, text: &str) -> bool {
+        if !self.chrome.add_host_is_open() {
+            return false;
+        }
+        self.chrome
+            .handle_form_input(terminus_ui::add_host::FormInput::Text, text);
+        true
+    }
+
+    /// Persist the editor's fields.
+    ///
+    /// The store is the only validator, so a rejection comes back as the
+    /// dialog's error line and the form stays open with its text.
+    pub fn submit_host_form(&mut self) {
+        let values = self.chrome.form.values();
+        let draft = crate::hosts::HostDraft {
+            name: values.name,
+            hostname: values.hostname,
+            username: values.username,
+            port: values.port,
+        };
+        match self.host_store.create(&draft) {
+            Ok(()) => {
+                // `create` normalises as it stores; the same call here
+                // gives the label the worker will echo, so the new row
+                // can be highlighted when the list comes back.
+                self.pending_host_select = draft.normalize().ok().map(|d| d.name);
+                self.chrome.panel.error = None;
+                self.chrome.form.close();
+            }
+            Err(message) => self.chrome.form.set_error(message),
+        }
     }
 
     /// Window-level IME preedit update, with the side effects composing
@@ -570,7 +803,7 @@ impl Screen<'_> {
                 padding_y_top * scale,
                 config.margin.right * scale,
                 padding_y_bottom * scale,
-                config.margin.left * scale,
+                (config.margin.left + self.chrome.reserved_width()) * scale,
             ));
 
             // Update per-panel font size and line height BEFORE
@@ -3876,6 +4109,13 @@ impl Screen<'_> {
     }
 
     pub(crate) fn render(&mut self) -> Option<crate::context::renderable::WindowUpdate> {
+        // Host-list answers from the worker thread land here, at the top
+        // of the frame, so the painter below always sees this frame's
+        // list rather than the previous one.
+        if self.pump_chrome() {
+            self.mark_dirty();
+        }
+
         self.update_close_button_hover(self.mouse.x, self.mouse.y);
 
         let is_search_active = self.search_active();
@@ -3913,9 +4153,11 @@ impl Screen<'_> {
             }
         }
 
-        let (window_update, any_panel_dirty) = self
-            .renderer
-            .run(&mut self.sugarloaf, &mut self.context_manager);
+        let (window_update, any_panel_dirty) = self.renderer.run(
+            &mut self.sugarloaf,
+            &mut self.context_manager,
+            &self.chrome,
+        );
 
         if self.renderer.custom_mouse_cursor {
             let scale = self.sugarloaf.scale_factor();

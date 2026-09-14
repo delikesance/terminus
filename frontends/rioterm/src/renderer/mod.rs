@@ -6,16 +6,27 @@ pub(crate) fn is_printable_text(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|c| !c.is_control())
 }
 
+/// The RGB triplet behind a config color, for the chrome palette.
+///
+/// Config colors are linear-ish `[f32; 4]`; the chrome wants plain
+/// bytes so it can do its own arithmetic on them.
+#[inline]
+pub(crate) fn rgb_u8(color: [f32; 4]) -> [u8; 3] {
+    [
+        (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+    ]
+}
+
 pub mod assistant;
+pub mod chrome;
 pub mod command_palette;
 pub mod confirm_quit;
 pub mod custom_cursor;
 pub mod helpers;
 pub mod island;
 pub mod scrollbar;
-pub mod activity_bar;
-pub mod sidebar;
-pub mod sftp_pane;
 pub mod search;
 pub mod trail_cursor;
 pub mod utils;
@@ -204,6 +215,9 @@ pub struct Renderer {
     pub custom_mouse_cursor: bool,
     pub trail_cursor_enabled: bool,
     pub trail_cursor: trail_cursor::TrailCursor,
+    /// Colors for the Terminus chrome, derived from the terminal
+    /// palette so the rail and the host panel follow the user's theme.
+    pub chrome_theme: terminus_ui::theme::ChromeTheme,
 }
 
 impl Renderer {
@@ -287,6 +301,11 @@ impl Renderer {
                 decay_slow: config.effects.trail_cursor_decay[1] as f32 / 1000.0,
                 start_threshold: config.effects.trail_cursor_start_threshold as f32,
             }),
+            chrome_theme: terminus_ui::theme::ChromeTheme::from_terminal(
+                crate::renderer::rgb_u8(config.colors.foreground),
+                crate::renderer::rgb_u8(config.colors.background.0),
+                crate::renderer::rgb_u8(config.colors.cursor),
+            ),
         }
     }
 
@@ -450,6 +469,7 @@ impl Renderer {
         &mut self,
         sugarloaf: &mut Sugarloaf,
         context_manager: &mut ContextManager<EventProxy>,
+        chrome: &terminus_ui::chrome::Chrome,
     ) -> (Option<crate::context::renderable::WindowUpdate>, bool) {
         let mut any_panel_dirty = false;
         let grid = context_manager.current_grid_mut();
@@ -863,6 +883,18 @@ impl Renderer {
         self.confirm_quit.render(
             sugarloaf,
             (window_size.width, window_size.height, scale_factor),
+        );
+
+        // Terminus chrome (activity rail, host panel, add-host editor).
+        // Painted from the same rectangles the mouse hit-tests against;
+        // its orders (4..7, and 30 for the editor) put it above the grid
+        // and the panel chrome, below the command palette.
+        chrome::render(
+            sugarloaf,
+            chrome,
+            &self.chrome_theme,
+            window_size.width / scale_factor,
+            window_size.height / scale_factor,
         );
 
         // Render scrollbars for each panel

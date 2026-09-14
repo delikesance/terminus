@@ -143,9 +143,7 @@ impl Inner {
         }
         self.eof.store(true, Ordering::SeqCst);
         self.arm_readable();
-        let _ = self
-            .child_ready
-            .set_readiness(Ready::readable());
+        let _ = self.child_ready.set_readiness(Ready::readable());
     }
 
     fn send(&self, command: Command) -> bool {
@@ -337,10 +335,7 @@ impl Write for SshTransport {
             return Ok(0);
         }
         if !self.inner.send(Command::Write(buf.to_vec())) {
-            return Err(io::Error::new(
-                ErrorKind::BrokenPipe,
-                "ssh session is gone",
-            ));
+            return Err(io::Error::new(ErrorKind::BrokenPipe, "ssh session is gone"));
         }
         Ok(buf.len())
     }
@@ -377,10 +372,7 @@ impl ProcessReadWrite for SshTransport {
         let rows = u32::from(winsize.rows);
         debug!(cols, rows, "ssh: window change");
         if !self.inner.send(Command::Resize { cols, rows }) {
-            return Err(io::Error::new(
-                ErrorKind::BrokenPipe,
-                "ssh session is gone",
-            ));
+            return Err(io::Error::new(ErrorKind::BrokenPipe, "ssh session is gone"));
         }
         Ok(())
     }
@@ -419,9 +411,12 @@ impl ProcessReadWrite for SshTransport {
         )?;
 
         // Child events (session over) are always interesting.
-        self.inner
-            .child_reg
-            .register(poll, self.child_token, Ready::readable(), poll_opts)?;
+        self.inner.child_reg.register(
+            poll,
+            self.child_token,
+            Ready::readable(),
+            poll_opts,
+        )?;
 
         // Writes are queued, never blocking: as soon as the event loop asks for
         // write interest the registration can fire.
@@ -616,19 +611,24 @@ mod tests {
         let mut events = corcovado::Events::with_capacity(8);
         poll.poll(&mut events, Some(Duration::from_millis(50)))
             .expect("poll");
-        assert!(!events
-            .iter()
-            .any(|e| e.token() == transport.write_token()));
+        assert!(!events.iter().any(|e| e.token() == transport.write_token()));
 
         transport
-            .reregister(&poll, Ready::readable() | Ready::writable(), PollOpt::level())
+            .reregister(
+                &poll,
+                Ready::readable() | Ready::writable(),
+                PollOpt::level(),
+            )
             .expect("reregister");
         events.clear();
         poll.poll(&mut events, Some(Duration::from_millis(200)))
             .expect("poll");
-        assert!(events
-            .iter()
-            .any(|e| e.token() == transport.write_token() && e.readiness().is_writable()));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.token() == transport.write_token()
+                    && e.readiness().is_writable())
+        );
 
         // The event loop writes, then drops the interest again.
         let written = transport.write(b"\r").expect("write");

@@ -244,7 +244,12 @@ impl SessionManager {
 
     /// Registers a session under a known id (session recall after restart).
     /// Returns `false` when the id is already taken.
-    pub fn register(&self, id: Uuid, spec: SessionSpec, title: impl Into<String>) -> bool {
+    pub fn register(
+        &self,
+        id: Uuid,
+        spec: SessionSpec,
+        title: impl Into<String>,
+    ) -> bool {
         let now = Utc::now();
         let session = ManagedSession {
             id,
