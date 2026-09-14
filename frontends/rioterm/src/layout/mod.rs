@@ -123,9 +123,23 @@ pub struct ContextGrid<T: EventListener> {
     border_config: BorderConfig,
 }
 
+/// The kind of content displayed in a grid item pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneKind {
+    Terminal,
+    Sftp,
+}
+
+/// Sidebar and activity bar layout constants (physical pixels).
+pub const ACTIVITY_BAR_WIDTH: f32 = 48.0;
+pub const SIDEBAR_WIDTH: f32 = 260.0;
+pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
+pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
+
 pub struct ContextGridItem<T: EventListener> {
     pub val: Context<T>,
     pub layout_rect: [f32; 4],
+    pub pane_kind: PaneKind,
 }
 
 impl<T: rio_backend::event::EventListener> ContextGridItem<T> {
@@ -133,6 +147,7 @@ impl<T: rio_backend::event::EventListener> ContextGridItem<T> {
         Self {
             val: context,
             layout_rect: [0.0; 4],
+            pane_kind: PaneKind::Terminal,
         }
     }
 

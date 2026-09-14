@@ -9,6 +9,20 @@ use crate::event::sync::FairMutex;
 use crate::event::{Msg, RioEvent};
 pub use crate::layout::{ContextDimension, ContextGrid, ContextGridItem};
 use crate::messenger::Messenger;
+
+/// Specifies the kind of session a context should open.
+#[derive(Debug, Clone)]
+pub enum SessionSpec {
+    /// Launch a local shell via teletypewriter PTY.
+    Local {
+        shell: Vec<String>,
+        working_dir: Option<String>,
+    },
+    /// Connect to a remote host via SSH (from terminus-core store).
+    Ssh {
+        host_id: String,
+    },
+}
 use crate::performer::{self, Machine};
 use renderable::Cursor;
 use renderable::RenderableContent;
