@@ -11,6 +11,7 @@ mod constants;
 mod context;
 mod global_hotkey;
 mod hints;
+mod hosts;
 mod ime;
 mod layout;
 mod messenger;

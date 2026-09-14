@@ -84,7 +84,10 @@ impl SyncConfig {
 
     /// True when a remote endpoint has been set.
     pub fn has_remote(&self) -> bool {
-        self.remote_url.as_deref().map(str::trim).is_some_and(|u| !u.is_empty())
+        self.remote_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|u| !u.is_empty())
     }
 }
 
@@ -370,9 +373,7 @@ impl SyncEngine {
 
         let remote = self.remote.lock().await;
         if remote.is_none() {
-            return Err(Error::SyncError(
-                "no remote backend attached".to_string(),
-            ));
+            return Err(Error::SyncError("no remote backend attached".to_string()));
         }
 
         let secrets = self.can_sync_secrets().await;
@@ -398,9 +399,7 @@ impl SyncEngine {
 
         let remote = self.remote.lock().await;
         if remote.is_none() {
-            return Err(Error::SyncError(
-                "no remote backend attached".to_string(),
-            ));
+            return Err(Error::SyncError("no remote backend attached".to_string()));
         }
 
         let secrets = self.can_sync_secrets().await;
@@ -429,9 +428,7 @@ impl SyncEngine {
             if self.config.has_remote() {
                 self.mark_error("no remote backend attached").await.ok();
             }
-            return Err(Error::SyncError(
-                "no remote backend attached".to_string(),
-            ));
+            return Err(Error::SyncError("no remote backend attached".to_string()));
         }
 
         if let Err(err) = self.transition_to(SyncStatus::Syncing).await {
@@ -526,7 +523,10 @@ mod tests {
 
         // Recovery is a valid transition.
         engine.clear_error().await;
-        engine.transition_to(SyncStatus::Idle).await.expect("recover");
+        engine
+            .transition_to(SyncStatus::Idle)
+            .await
+            .expect("recover");
         assert_eq!(engine.status().await, SyncStatus::Idle);
     }
 
@@ -535,7 +535,8 @@ mod tests {
         let engine = SyncEngine::default();
         assert!(!engine.can_sync_secrets().await);
 
-        let (_header, vault) = crate::vault::create_with_key("passphrase").expect("vault");
+        let (_header, vault) =
+            crate::vault::create_with_key("passphrase").expect("vault");
         engine.attach_vault(Arc::new(vault)).await;
         assert!(engine.vault().await.is_some());
         // Config has `sync_secrets = false` by default, so still gated.

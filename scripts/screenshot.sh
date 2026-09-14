@@ -21,8 +21,17 @@
 #   --out PATH          output PNG (default .dev/shots/<timestamp>.png)
 #   --wait SECONDS      settle time before capturing (default 12)
 #   --default-config    ignore .dev/config, use rio's defaults
-#   --send KEYS         xdotool key spec to send before capturing (repeatable)
-#   --type TEXT         type TEXT then press Return, before capturing (repeatable)
+#   --send KEYS         xdotool key spec, e.g. 'ctrl+shift+e' (repeatable)
+#   --type TEXT         type TEXT then press Return, before capturing
+#   --text TEXT         type TEXT without pressing Return, for filling form
+#                       fields one Tab at a time
+#   --click X,Y         move the pointer to X,Y (window-relative) and click
+#   --move X,Y          move the pointer without clicking, to capture a
+#                       hover state
+#
+# --send, --type, --text, --click and --move are replayed in the order you
+# write them, so a --click that opens a dialog can precede the --text that
+# fills it.
 #   --no-resize         keep the window at its configured size
 #   --hot-config TEXT   add TEXT to .dev/config/config.toml, wait, capture again
 #   --keep              leave Xvfb + the app running after the capture
@@ -51,8 +60,7 @@ WAIT_S=12
 USE_CONFIG=1
 KEEP=0
 RESIZE=1
-declare -a SEND=()
-declare -a TYPE=()
+declare -a INPUT=()
 HOT_CONFIG=""
 declare -a APP_ARGS=()
 
@@ -62,13 +70,16 @@ while [[ $# -gt 0 ]]; do
         --out) OUT="$2"; shift 2 ;;
         --wait) WAIT_S="$2"; shift 2 ;;
         --default-config) USE_CONFIG=0; shift ;;
-        --send) SEND+=("$2"); shift 2 ;;
-        --type) TYPE+=("$2"); shift 2 ;;
+        --send) INPUT+=(send "$2"); shift 2 ;;
+        --type) INPUT+=(type "$2"); shift 2 ;;
+        --text) INPUT+=(text "$2"); shift 2 ;;
+        --click) INPUT+=(click "$2"); shift 2 ;;
+        --move) INPUT+=(move "$2"); shift 2 ;;
         --no-resize) RESIZE=0; shift ;;
         --hot-config) HOT_CONFIG="$2"; shift 2 ;;
         --keep) KEEP=1; shift ;;
         --) shift; APP_ARGS=("$@"); break ;;
-        -h|--help) sed -n '2,40p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,52p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "screenshot.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
@@ -78,15 +89,25 @@ if [[ "${TERMINUS_DEV_NO_NIX:-0}" != "1" && "${TERMINUS_DEV_SHELL:-0}" != "1" ]]
     # Rebuild the argument list as an array. Building it as a string and letting
     # it word-split mangles any value containing a space ("--type 'echo hi'"),
     # so nothing here goes through $(...) interpolation.
-    reexec=(nix develop "$ROOT" --command env TERMINUS_DEV_SHELL=1 bash "$SCRIPT_PATH"
-            --size "$SIZE" --wait "$WAIT_S")
+    reexec=(nix develop "$ROOT" --command env TERMINUS_DEV_SHELL=1)
+    # An isolated data dir, so a verification run cannot touch the real
+    # host database. Quoted into its own argv entry: a path with a space
+    # must not word-split.
+    [[ -n "${TERMINUS_DATA_DIR:-}" ]] &&
+        reexec+=("TERMINUS_DATA_DIR=$TERMINUS_DATA_DIR")
+    reexec+=(bash "$SCRIPT_PATH" --size "$SIZE" --wait "$WAIT_S")
     [[ -n "$OUT" ]] && reexec+=(--out "$OUT")
     [[ "$USE_CONFIG" == "0" ]] && reexec+=(--default-config)
     [[ "$RESIZE" == "0" ]] && reexec+=(--no-resize)
     [[ "$KEEP" == "1" ]] && reexec+=(--keep)
     [[ -n "$HOT_CONFIG" ]] && reexec+=(--hot-config "$HOT_CONFIG")
-    for k in "${SEND[@]+"${SEND[@]}"}"; do reexec+=(--send "$k"); done
-    for t in "${TYPE[@]+"${TYPE[@]}"}"; do reexec+=(--type "$t"); done
+    # Replay the input steps in their original order: a click that opens
+    # a dialog has to precede the keys that fill it.
+    i=0
+    while [[ $i -lt ${#INPUT[@]} ]]; do
+        reexec+=("--${INPUT[$i]}" "${INPUT[$((i + 1))]}")
+        i=$((i + 2))
+    done
     reexec+=(--)
     exec "${reexec[@]}" ${APP_ARGS[@]+"${APP_ARGS[@]}"}
 fi
@@ -197,25 +218,54 @@ if [[ "$RESIZE" == "1" ]]; then
     fi
 fi
 
-# Keys and text go in through XTEST. windowfocus is XSetInputFocus, which the
-# app honours; XSendEvent (xdotool's --window flag) is silently dropped.
-if [[ ${#SEND[@]} -gt 0 || ${#TYPE[@]} -gt 0 ]]; then
+# Keys, clicks and text go in through XTEST, in the order they were given on
+# the command line. windowfocus is XSetInputFocus, which the app honours;
+# XSendEvent (xdotool's --window flag) is silently dropped.
+if [[ ${#INPUT[@]} -gt 0 ]]; then
     win="$(pick_window)"
     if [[ -z "$win" ]]; then
         echo "screenshot.sh: no rio window — cannot send input" >&2
     else
         xdotool windowfocus "$win" 2>/dev/null || true
         sleep 1
-        for keys in "${SEND[@]+"${SEND[@]}"}"; do
-            xdotool key --clearmodifiers $keys 2>/dev/null || true
-            echo "  sent keys: $keys"
-            sleep 1.5
-        done
-        for text in "${TYPE[@]+"${TYPE[@]}"}"; do
-            xdotool type --delay 60 "$text" 2>/dev/null || true
-            xdotool key Return 2>/dev/null || true
-            echo "  typed: $text"
-            sleep 2
+        i=0
+        while [[ $i -lt ${#INPUT[@]} ]]; do
+            step="${INPUT[$i]}"
+            value="${INPUT[$((i + 1))]}"
+            i=$((i + 2))
+            case "$step" in
+                send)
+                    xdotool key --clearmodifiers $value 2>/dev/null || true
+                    echo "  sent keys: $value"
+                    sleep 1.5
+                    ;;
+                click)
+                    # Coordinates are window-relative, so a --size that moved
+                    # the window doesn't shift the target; `mousemove --window`
+                    # does that translation.
+                    xdotool mousemove --window "$win" "${value%,*}" "${value#*,}" 2>/dev/null || true
+                    sleep 0.3
+                    xdotool click 1 2>/dev/null || true
+                    echo "  clicked: $value"
+                    sleep 1.5
+                    ;;
+                move)
+                    xdotool mousemove --window "$win" "${value%,*}" "${value#*,}" 2>/dev/null || true
+                    echo "  moved to: $value"
+                    sleep 1
+                    ;;
+                type)
+                    xdotool type --delay 60 "$value" 2>/dev/null || true
+                    xdotool key Return 2>/dev/null || true
+                    echo "  typed: $value"
+                    sleep 2
+                    ;;
+                text)
+                    xdotool type --delay 60 "$value" 2>/dev/null || true
+                    echo "  text: $value"
+                    sleep 1
+                    ;;
+            esac
         done
     fi
 fi

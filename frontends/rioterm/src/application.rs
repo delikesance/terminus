@@ -29,6 +29,7 @@ use rio_window::window::WindowId;
 use rio_window::window::{CursorIcon, Fullscreen};
 use std::error::Error;
 use std::time::{Duration, Instant};
+use terminus_ui::chrome::ChromeAction;
 
 pub struct Application<'a> {
     config: rio_backend::config::Config,
@@ -1307,6 +1308,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         let chrome_press = route.window.screen.take_chrome_press();
 
                         if let MouseButton::Left = button {
+                            // The add-host editor is modal: while it is
+                            // open every press belongs to it — a click on
+                            // the dialog is swallowed, a click on the
+                            // scrim dismisses — and nothing behind it
+                            // (panel borders, tabs, the shell) may react.
+                            if route.window.screen.chrome.add_host_is_open() {
+                                let scale = route.window.screen.sugarloaf.scale_factor();
+                                let mx = route.window.screen.mouse.x as f32 / scale;
+                                let my = route.window.screen.mouse.y as f32 / scale;
+                                let _ = route.window.screen.chrome_press(mx, my);
+                                route.request_overlay_redraw();
+                                return;
+                            }
+
                             // Check if clicking on a panel border to start resize
                             {
                                 let mx = route.window.screen.mouse.x as f32;
@@ -1358,6 +1373,42 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             {
                                 route.request_redraw();
                                 return;
+                            }
+
+                            // Terminus chrome: the activity rail, the host
+                            // rows and the add-host row. After the overlays
+                            // so a palette or search hit still wins, and
+                            // before the island so the rail's own strip is
+                            // never mistaken for part of the tab strip.
+                            {
+                                let scale = route.window.screen.sugarloaf.scale_factor();
+                                let mx = route.window.screen.mouse.x as f32 / scale;
+                                let my = route.window.screen.mouse.y as f32 / scale;
+                                match route.window.screen.chrome_press(mx, my) {
+                                    ChromeAction::Ignored => {}
+                                    ChromeAction::AddHost => {
+                                        route.window.screen.chrome.open_add_host();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    // Selecting the row is the whole effect
+                                    // for now: opening a session is a later
+                                    // milestone, and pretending otherwise
+                                    // would leave a dead "connecting" state
+                                    // on screen.
+                                    ChromeAction::OpenHost(_) => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    // Toggling the panel changes the margin
+                                    // `chrome_press` already re-applied; the
+                                    // grid re-layout marks itself dirty, but a
+                                    // pure section switch does not.
+                                    ChromeAction::Consumed => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                }
                             }
 
                             let handled_by_island =
@@ -1712,6 +1763,26 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     }
                 }
 
+                // Terminus chrome hover: the host rows and the add-host
+                // button highlight under the pointer. Only the highlight
+                // is UI-side, but the panel reflows nothing, so a plain
+                // overlay redraw does.
+                if !route.window.screen.renderer.command_palette.is_enabled()
+                    && !route.window.screen.renderer.search.is_active()
+                {
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    if route
+                        .window
+                        .screen
+                        .chrome_hover(x as f32 / scale, y as f32 / scale)
+                    {
+                        // UI-only change: `request_redraw` alone leaves the
+                        // framebuffer untouched, because the renderer gates
+                        // on the context being dirty.
+                        route.request_overlay_redraw();
+                    }
+                }
+
                 if route.window.screen.mouse.left_button_state == ElementState::Pressed
                     && route
                         .window
@@ -1934,6 +2005,19 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
 
                 match delta {
                     MouseScrollDelta::LineDelta(columns, lines) => {
+                        // The chrome's host list owns the wheel while the
+                        // pointer is over it; the terminal never sees
+                        // those notches.
+                        {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            if route.window.screen.chrome_wheel(mx, my, lines) {
+                                route.request_overlay_redraw();
+                                return;
+                            }
+                        }
+
                         // One wheel notch is one line/column. Convert
                         // with the cell size: scroll() divides the
                         // accumulated pixels by it, and converting

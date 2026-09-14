@@ -290,7 +290,12 @@ pub struct SshConnectOptions {
 
 impl SshConnectOptions {
     /// Options for `hostname:port` with password auth and TOFU policy.
-    pub fn password(hostname: impl Into<String>, port: u16, username: impl Into<String>, password: impl Into<String>) -> Self {
+    pub fn password(
+        hostname: impl Into<String>,
+        port: u16,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
         Self {
             hostname: hostname.into(),
             port,
@@ -424,7 +429,13 @@ impl client::Handler for ClientHandler {
             } else {
                 let expected = recorded
                     .first()
-                    .map(|e| format!("{}:{}", e.algorithm, e.key.chars().take(24).collect::<String>()))
+                    .map(|e| {
+                        format!(
+                            "{}:{}",
+                            e.algorithm,
+                            e.key.chars().take(24).collect::<String>()
+                        )
+                    })
                     .unwrap_or_default();
                 HostKeyOutcome::Changed {
                     expected,
@@ -436,12 +447,21 @@ impl client::Handler for ClientHandler {
         let accepted = decision.accepted();
         if accepted {
             if let HostKeyOutcome::Recorded { .. } = decision {
-                if let Err(err) = self.known_hosts.record(&self.host, self.port, server_public_key) {
+                if let Err(err) =
+                    self.known_hosts
+                        .record(&self.host, self.port, server_public_key)
+                {
                     warn!(error = %err, host = %self.host, "could not persist host key");
                 }
             }
-            if matches!(decision, HostKeyOutcome::Approved { .. } | HostKeyOutcome::Recorded { .. }) {
-                if let Err(err) = self.known_hosts.record(&self.host, self.port, server_public_key) {
+            if matches!(
+                decision,
+                HostKeyOutcome::Approved { .. } | HostKeyOutcome::Recorded { .. }
+            ) {
+                if let Err(err) =
+                    self.known_hosts
+                        .record(&self.host, self.port, server_public_key)
+                {
                     warn!(error = %err, host = %self.host, "could not persist approved host key");
                 }
             }
@@ -627,8 +647,15 @@ impl SshSession {
 async fn authenticate(handle: &mut Handle<ClientHandler>, auth: &SshAuth) -> Result<()> {
     if let Some(path) = &auth.identity_path {
         let key = russh::keys::load_secret_key(path, auth.identity_passphrase.as_deref())
-            .map_err(|e| Error::SshError(format!("cannot load key {}: {e}", path.display())))?;
-        let hash_alg = handle.best_supported_rsa_hash().await.ok().flatten().flatten();
+            .map_err(|e| {
+                Error::SshError(format!("cannot load key {}: {e}", path.display()))
+            })?;
+        let hash_alg = handle
+            .best_supported_rsa_hash()
+            .await
+            .ok()
+            .flatten()
+            .flatten();
         let result = handle
             .authenticate_publickey(
                 auth.username.clone(),
@@ -671,7 +698,10 @@ async fn authenticate(handle: &mut Handle<ClientHandler>, auth: &SshAuth) -> Res
 
 /// Turns a russh handshake error into a message that names the host-key
 /// decision when that is what stopped the connection.
-fn host_key_aware_error(err: Error, outcome: &Arc<Mutex<Option<HostKeyOutcome>>>) -> Error {
+fn host_key_aware_error(
+    err: Error,
+    outcome: &Arc<Mutex<Option<HostKeyOutcome>>>,
+) -> Error {
     let decision = outcome.lock().ok().and_then(|o| o.clone());
     match decision {
         Some(HostKeyOutcome::Changed { expected, presented }) => Error::SshError(format!(
@@ -690,10 +720,8 @@ mod tests {
     use super::*;
 
     fn temp_known_hosts(tag: &str) -> KnownHosts {
-        let path = std::env::temp_dir().join(format!(
-            "terminus-known-hosts-{tag}-{}",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir()
+            .join(format!("terminus-known-hosts-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         KnownHosts::at(path)
     }
@@ -701,7 +729,10 @@ mod tests {
     #[test]
     fn entry_name_matches_openssh_convention() {
         assert_eq!(KnownHosts::entry_name("example.com", 22), "example.com");
-        assert_eq!(KnownHosts::entry_name("example.com", 2222), "[example.com]:2222");
+        assert_eq!(
+            KnownHosts::entry_name("example.com", 2222),
+            "[example.com]:2222"
+        );
     }
 
     #[test]
@@ -716,7 +747,10 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].algorithm, "ssh-ed25519");
         assert_eq!(entries[1].key, "BBBBKEY");
-        assert!(kh.lookup("10.0.0.1", 22).is_empty() || kh.lookup("10.0.0.1", 22)[0].key == "BBBBKEY");
+        assert!(
+            kh.lookup("10.0.0.1", 22).is_empty()
+                || kh.lookup("10.0.0.1", 22)[0].key == "BBBBKEY"
+        );
         let _ = std::fs::remove_file(kh.path());
     }
 

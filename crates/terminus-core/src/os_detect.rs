@@ -173,8 +173,14 @@ pub fn canonical_os_id(raw: &str) -> String {
         "steamos" | "steam_os" => "steamos",
 
         // --- Red Hat family ------------------------------------------------
-        "rhel" | "redhat" | "red_hat" | "red_hat_enterprise_linux" | "ol" | "oracle"
-        | "oraclelinux" | "oracle_linux" => "rhel",
+        "rhel"
+        | "redhat"
+        | "red_hat"
+        | "red_hat_enterprise_linux"
+        | "ol"
+        | "oracle"
+        | "oraclelinux"
+        | "oracle_linux" => "rhel",
         "centos" | "centos_linux" | "centos_stream" => "centos",
         "rocky" | "rockylinux" | "rocky_linux" => "rockylinux",
         "almalinux" | "alma" | "almalinux_deb" => "almalinux",
@@ -183,8 +189,15 @@ pub fn canonical_os_id(raw: &str) -> String {
         "scientific" | "scientific_linux" | "sles_sap" => "rhel",
 
         // --- SUSE ----------------------------------------------------------
-        "opensuse" | "opensuse_leap" | "opensuse_tumbleweed" | "opensuseleap" | "opensuse_tumbleweed"
-        | "suse" | "sles" | "sled" | "suse_linux_enterprise_server" => "opensuse",
+        "opensuse"
+        | "opensuse_leap"
+        | "opensuse_tumbleweed"
+        | "opensuseleap"
+        | "opensuse_tumbleweed"
+        | "suse"
+        | "sles"
+        | "sled"
+        | "suse_linux_enterprise_server" => "opensuse",
 
         // --- Independent distros ------------------------------------------
         "nixos" | "nix" => "nixos",
@@ -289,7 +302,8 @@ fn local_uname_hint() -> String {
     let platform = std::env::consts::OS;
 
     #[cfg(target_os = "linux")]
-    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let kernel =
+        std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
     #[cfg(not(target_os = "linux"))]
     let kernel = String::new();
 
@@ -342,8 +356,14 @@ PRETTY_NAME="Alpine Linux v3.20"
 
         // Nothing usable -> uname fallback.
         assert_eq!(parse_os_id("", "Darwin MacBook-Pro 23.5.0 arm64"), "macos");
-        assert_eq!(parse_os_id("", "Linux 5.15.153.1-microsoft-standard-WSL2"), "wsl");
-        assert_eq!(parse_os_id("", "MINGW64_NT-10.0-22631 runner 3.4.10"), "windows");
+        assert_eq!(
+            parse_os_id("", "Linux 5.15.153.1-microsoft-standard-WSL2"),
+            "wsl"
+        );
+        assert_eq!(
+            parse_os_id("", "MINGW64_NT-10.0-22631 runner 3.4.10"),
+            "windows"
+        );
         assert_eq!(parse_os_id("", "FreeBSD host 14.1-RELEASE"), "freebsd");
         assert_eq!(parse_os_id("", ""), UNKNOWN_OS);
     }
@@ -418,6 +438,9 @@ PRETTY_NAME="Alpine Linux v3.20"
     async fn local_detection_returns_a_known_key() {
         let detected = detect_local_os().await;
         assert!(!detected.is_empty());
-        assert_ne!(detected, UNKNOWN_OS, "linux/macos/windows hosts must resolve");
+        assert_ne!(
+            detected, UNKNOWN_OS,
+            "linux/macos/windows hosts must resolve"
+        );
     }
 }
