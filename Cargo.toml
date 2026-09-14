@@ -115,3 +115,15 @@ split-debuginfo = "unpacked"
 lto = false
 opt-level = 0
 incremental = true
+# Line tables only: keeps backtraces readable while cutting the debug info that
+# dominates link time on the binary. Use `debug = 2` locally if you need to
+# inspect variables in a debugger.
+debug = 1
+
+# Dependencies are compiled once and then rarely touched, so paying for
+# optimization there costs a one-off compile and buys a debug binary that is
+# actually usable: GPU rendering, Argon2id and VT parsing all crawl at
+# opt-level 0. Workspace crates stay at opt-level 0 (see above) so the
+# edit/rebuild loop remains fast.
+[profile.dev.package."*"]
+opt-level = 2
