@@ -1,0 +1,21 @@
+[package]
+name = "terminus-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Async facade bridging terminus-core services to Rio's event loop"
+
+[dependencies]
+terminus-core = { workspace = true }
+teletypewriter = { workspace = true }
+corcovado = { workspace = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

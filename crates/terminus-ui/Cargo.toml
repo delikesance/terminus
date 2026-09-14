@@ -1,0 +1,9 @@
+[package]
+name = "terminus-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminus UI renderers (ActivityBar, Sidebar, SFTP pane) on top of Sugarloaf"
+
+[dependencies]
+terminus-core = { workspace = true }
+terminus-bridge = { workspace = true }
