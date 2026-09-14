@@ -5,8 +5,11 @@
 #
 # Full reference: https://rioterm.com/docs/config
 
-# Padding around the terminal grid, in logical pixels.
-margin = { top = 12, right = 12, bottom = 12, left = 12 }
+# Padding around the terminal grid, in logical pixels. A sequence, CSS-style:
+# one value (all sides), two (top/bottom, left/right) or four
+# (top, right, bottom, left). A `{ top = ..., left = ... }` table is rejected —
+# rio's Margin deserializer only accepts a sequence.
+margin = [12, 12, 12, 12]
 
 [fonts]
 size = 16
