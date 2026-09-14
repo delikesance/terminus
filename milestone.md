@@ -39,7 +39,42 @@ members = [
 
 ---
 
+## 📈 État d'avancement
+
+### Fait
+
+| # | Jalon | État |
+| :--- | :--- | :--- |
+| 1.1 | Intégration `terminus-core` | ✅ Store SQLite, migrations, 44 tests |
+| 1.2 | `terminus-bridge` | ✅ `SshTransport` `EventedPty` + tests |
+| 1.3 | `SshTransport` | ✅ transport + tests corcovado |
+| 1.5a | **Sidebar Hosts — liste + ajout d'hôte** | ✅ voir ci-dessous |
+
+**1.5a — première tranche du jalon 1.5** (le reste du jalon reste à faire) :
+
+* `crates/terminus-ui` n'est plus un squelette : il porte l'état, la géométrie
+  et le hit-testing du chrome (rail d'activité, panneau d'hôtes, éditeur
+  d'hôte), sans dépendance de rendu — 59 tests sans GPU.
+* `frontends/rioterm/src/renderer/chrome.rs` peint ce que `terminus-ui` décrit ;
+  `frontends/rioterm/src/hosts.rs` fait vivre SQLite derrière un thread dédié,
+  le thread UI n'attend jamais.
+* Le chrome **réserve sa bande dans la marge de la grille** : le terminal se
+  reflow à côté au lieu d'être recouvert, et `reapply_chrome_inset` réagit à un
+  hot-reload de config.
+* Ajout d'hôte de bout en bout : clic sur « + Add host », formulaire (4 champs,
+  Tab/Shift+Tab, flèches, Home/End, suppression), Entrée enregistre — la ligne
+  apparaît dans la liste, persistée dans `terminus.db`. Échap annule.
+* Icônes = géométrie réelle des sources Lucide, décomposée hors ligne par
+  `scripts/gen-lucide-icons.py` (sugarloaf n'a pas de renderer SVG).
+
+Reste pour clore 1.5 : arborescence Groups/Hôtes, pastilles d'état
+(`connected`/`connecting`/`error`), badges OS, redimensionnement de la sidebar,
+et le câblage du clic sur un hôte vers `SessionSpec::Ssh`.
+
+---
+
 ## 🎯 Phase 1 — Fondations & Shell MVP
+
 **Objectif** : Prouver la valeur ajoutée sur Rio — hôtes vivants, vault, opérations keyboard-first.
 
 | # | Jalon | Détails | Livrables |

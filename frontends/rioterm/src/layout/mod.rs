@@ -130,11 +130,10 @@ pub enum PaneKind {
     Sftp,
 }
 
-/// Sidebar and activity bar layout constants (physical pixels).
-pub const ACTIVITY_BAR_WIDTH: f32 = 48.0;
-pub const SIDEBAR_WIDTH: f32 = 260.0;
-pub const SIDEBAR_MIN_WIDTH: f32 = 180.0;
-pub const SIDEBAR_MAX_WIDTH: f32 = 400.0;
+/// Sidebar and activity-bar metrics live in `terminus_ui` — see
+/// `terminus_ui::activity_bar::WIDTH` / `terminus_ui::sidebar::WIDTH`.
+/// Duplicating them here would let the reserved margin and the painted
+/// panel drift apart.
 
 pub struct ContextGridItem<T: EventListener> {
     pub val: Context<T>,

@@ -299,7 +299,10 @@ impl SftpSession {
             Ok(metadata) if metadata.is_dir() => {
                 self.op("remove_dir", self.inner.remove_dir(resolved)).await
             }
-            _ => self.op("remove_file", self.inner.remove_file(resolved)).await,
+            _ => {
+                self.op("remove_file", self.inner.remove_file(resolved))
+                    .await
+            }
         }
     }
 
@@ -310,19 +313,25 @@ impl SftpSession {
     }
 
     /// Creates `path` and every missing parent, like `mkdir -p`.
-    pub fn mkdir_all<'a>(&'a self, path: &'a str) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    pub fn mkdir_all<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let resolved = self.resolve(path)?;
             if resolved == "/" {
                 return Ok(());
             }
 
-            match self.op("stat", self.inner.symlink_metadata(resolved.clone())).await {
+            match self
+                .op("stat", self.inner.symlink_metadata(resolved.clone()))
+                .await
+            {
                 Ok(metadata) if metadata.is_dir() => return Ok(()),
                 Ok(_) => {
                     return Err(Error::SshError(format!(
-                        "cannot create directory {resolved:?}: a file with that name exists"
-                    )))
+                    "cannot create directory {resolved:?}: a file with that name exists"
+                )))
                 }
                 Err(_) => {}
             }
@@ -333,13 +342,18 @@ impl SftpSession {
                 }
             }
 
-            match self.op("mkdir", self.inner.create_dir(resolved.clone())).await {
+            match self
+                .op("mkdir", self.inner.create_dir(resolved.clone()))
+                .await
+            {
                 Ok(()) => Ok(()),
                 // Lost a race with a concurrent creator: fine if it is a directory now.
-                Err(err) => match self.op("stat", self.inner.symlink_metadata(resolved)).await {
-                    Ok(metadata) if metadata.is_dir() => Ok(()),
-                    _ => Err(err),
-                },
+                Err(err) => {
+                    match self.op("stat", self.inner.symlink_metadata(resolved)).await {
+                        Ok(metadata) if metadata.is_dir() => Ok(()),
+                        _ => Err(err),
+                    }
+                }
             }
         })
     }
@@ -372,7 +386,9 @@ impl SftpSession {
         };
 
         if !metadata.is_dir() {
-            return self.op("remove_file", self.inner.remove_file(resolved)).await;
+            return self
+                .op("remove_file", self.inner.remove_file(resolved))
+                .await;
         }
 
         let entries = self.list(&resolved).await?;
@@ -391,10 +407,7 @@ impl SftpSession {
     /// Whether `path` exists on the remote.
     pub async fn exists(&self, path: &str) -> Result<bool> {
         let resolved = self.resolve(path)?;
-        match self
-            .op("stat", self.inner.symlink_metadata(resolved))
-            .await
-        {
+        match self.op("stat", self.inner.symlink_metadata(resolved)).await {
             Ok(_) => Ok(true),
             Err(Error::SshError(_)) | Err(Error::TimeoutError(_)) => Ok(false),
             Err(err) => Err(err),

@@ -23,6 +23,11 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"]
 wgpu = { workspace = true }
 rio-backend = { workspace = true }
 rio-grid = { workspace = true }
+terminus-core = { workspace = true }
+terminus-ui = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

@@ -216,10 +216,8 @@ mod tests {
 
     /// Unique scratch directory for a test.
     async fn scratch_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "terminus-core-{name}-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("terminus-core-{name}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).await.expect("create scratch dir");
         dir
     }
@@ -274,7 +272,9 @@ mod tests {
         assert!(!entry.is_dir);
         assert_eq!(entry.size, 7);
 
-        remove_local_path(&nested, false).await.expect("remove file");
+        remove_local_path(&nested, false)
+            .await
+            .expect("remove file");
         let err = local_entry(&nested).await.expect_err("gone");
         assert!(matches!(err, Error::NotFoundError(_)));
 
@@ -286,12 +286,16 @@ mod tests {
         let dir = scratch_dir("rmdir").await;
         let inner = dir.join("inner");
         create_dir_all(&inner).await.expect("mkdir");
-        write_local_file(inner.join("keep.txt"), b"keep").await.unwrap();
+        write_local_file(inner.join("keep.txt"), b"keep")
+            .await
+            .unwrap();
 
         let err = remove_local_path(&dir, false).await.expect_err("must fail");
         assert!(matches!(err, Error::FileSystemError(_)));
 
-        remove_local_path(&dir, true).await.expect("recursive removal");
+        remove_local_path(&dir, true)
+            .await
+            .expect("recursive removal");
         assert!(!dir.exists());
     }
 
