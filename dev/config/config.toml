@@ -1,0 +1,17 @@
+# Terminus development config — copied into .dev/config/ by scripts/dev.sh on a
+# fresh checkout (delete .dev/ to start over from this baseline).
+#
+# This file is hot-reloaded: saving it re-paints the running window, no restart.
+#
+# Full reference: https://rioterm.com/docs/config
+
+# Padding around the terminal grid, in logical pixels.
+margin = { top = 12, right = 12, bottom = 12, left = 12 }
+
+[fonts]
+size = 16
+
+[colors]
+background = "#101014"
+foreground = "#e8e8e8"
+cursor = "#7aa2f7"

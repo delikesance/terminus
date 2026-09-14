@@ -33,3 +33,6 @@ sugarloaf/src/**/*.spv
 
 # Claude Code worktrees/session data
 .claude/
+
+# Local dev-loop state (generated): config playground, logs, pid, watch stamps
+.dev/
