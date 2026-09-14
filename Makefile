@@ -38,6 +38,18 @@ dev-watch:
 	#cargo install cargo-watch
 	cargo watch -- cargo run -p rioterm
 
+# Terminus: hot-reload dev loop. Runs inside the project nix devshell, rebuilds
+# on save, restarts the app and points it at .dev/config, which the app
+# hot-reloads live. See DEVELOPMENT.md.
+dev-hot:
+	scripts/dev.sh
+
+dev-hot-once:
+	scripts/dev.sh --once
+
+dev-hot-win:
+	scripts/dev-win.sh
+
 install:
 	cargo fetch
 
