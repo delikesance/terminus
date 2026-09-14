@@ -103,3 +103,35 @@ process running, so you can sit in one terminal and see `cargo` diagnostics.
 Upstream's `bacon.toml` / `cargo-watch` recipes are not wired up here: both
 would need the devshell environment that `scripts/dev.sh` establishes, and
 neither deploys or restarts the app.
+
+## Seeing the UI without a desktop
+
+`scripts/screenshot.sh` runs the app against Xvfb (a virtual X server with a real
+framebuffer), reads that framebuffer back with `xwd`, and writes a PNG — so the
+front end can be developed and checked with no visible display.
+
+```sh
+scripts/screenshot.sh                                  # capture the current UI
+scripts/screenshot.sh --size 1200x760                  # pick the viewport
+scripts/screenshot.sh --type 'ls -la'                  # type into the terminal first
+scripts/screenshot.sh --send 'ctrl+shift+e'            # press keys first
+scripts/screenshot.sh --hot-config 'margin = [60, 60, 60, 60]'
+```
+
+`--hot-config` captures, applies the assignment to `.dev/config/config.toml`,
+waits, captures again and reports the changed-pixel count — a pass/fail signal
+for config reloading that does not depend on reading a log.
+
+Three things to know:
+
+* **`WAYLAND_DISPLAY` must be cleared** or the app connects to WSLg's Wayland
+  compositor instead of Xvfb. The X display then stays empty and every capture is
+  solid black, with no error anywhere — the script does this for you.
+* **Input has to go through XTEST.** `xdotool key --window …` uses XSendEvent,
+  which the winit backend drops silently; the script focuses the window
+  (`XSetInputFocus`) and lets XTEST deliver the keys.
+* **No window manager runs here**, so the script resizes the window itself with
+  `xdotool windowsize`. Window decorations, drag, and multi-window behaviour
+  cannot be exercised this way, and rendering is software (lavapipe): good enough
+  to judge layout and logic, not animation or GPU performance. For how it really
+  looks, run `scripts/dev-win.sh` and launch the exe on Windows.
