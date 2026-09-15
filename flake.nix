@@ -36,11 +36,14 @@
         mkDevShell = rust-toolchain: let
           runtimeDeps = self'.packages.rio.runtimeDependencies;
           tools =
-            self'.packages.rio.nativeBuildInputs ++ self'.packages.rio.buildInputs ++ [rust-toolchain];
+            self'.packages.rio.nativeBuildInputs
+            ++ self'.packages.rio.buildInputs
+            ++ [rust-toolchain]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.krb5 pkgs.pkg-config];
         in
           pkgs.mkShell {
             packages = [self'.formatter] ++ tools;
-            LD_LIBRARY_PATH = "${lib.makeLibraryPath runtimeDeps}";
+            LD_LIBRARY_PATH = "${lib.makeLibraryPath (runtimeDeps ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.krb5.lib])}";
           };
         toolchains = rec {
           msrv = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;

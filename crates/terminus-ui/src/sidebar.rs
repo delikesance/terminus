@@ -621,6 +621,9 @@ impl HostPanel {
     }
 
     /// Painted card box inside a host/group/session slot (excludes the gap).
+    ///
+    /// Nested hosts/sessions inside a group tray are inset by [`CARD_PAD`] on
+    /// **both** sides so the child card does not flush against the tray edge.
     pub fn card_rect(&self, origin_y: f32, index: usize) -> Rect {
         let slot = self.item_rect(origin_y, index);
         let h = self
@@ -628,19 +631,26 @@ impl HostPanel {
             .get(index)
             .map(Row::card_height)
             .unwrap_or(ITEM_HEIGHT);
-        let nest = match self.rows.get(index) {
-            Some(Row::Host(host)) if host.nested => CARD_PAD,
+        let (nest_left, nest_right) = match self.rows.get(index) {
+            Some(Row::Host(host)) if host.nested => (CARD_PAD, CARD_PAD),
             Some(Row::Session(session)) => {
                 let parent_nested = self
                     .rows
                     .iter()
                     .find_map(|r| r.host().filter(|h| h.id == session.host_id))
                     .is_some_and(|h| h.nested);
-                SESSION_INDENT + if parent_nested { CARD_PAD } else { 0.0 }
+                let left = SESSION_INDENT + if parent_nested { CARD_PAD } else { 0.0 };
+                let right = if parent_nested { CARD_PAD } else { 0.0 };
+                (left, right)
             }
-            _ => 0.0,
+            _ => (0.0, 0.0),
         };
-        Rect::new(slot.x + nest, slot.y, (slot.width - nest).max(0.0), h.min(slot.height))
+        Rect::new(
+            slot.x + nest_left,
+            slot.y,
+            (slot.width - nest_left - nest_right).max(0.0),
+            h.min(slot.height),
+        )
     }
 
     /// Close × hit box on a session row.
@@ -848,7 +858,7 @@ impl HostPanel {
                 Some(crate::geom::Rect::new(
                     tray.x + nest,
                     y,
-                    (tray.width - nest - 4.0).max(40.0),
+                    (tray.width - 2.0 * nest).max(40.0),
                     ITEM_HEIGHT,
                 ))
             }
@@ -1979,6 +1989,19 @@ mod tests {
         assert!(
             tray.bottom() < solo.y,
             "tray must not swallow the next ungrouped host"
+        );
+        // Nested host must keep CARD_PAD gutter on both sides of the tray.
+        assert!(
+            (nested.x - tray.x - CARD_PAD).abs() < 0.5,
+            "left nest pad: nested.x={} tray.x={}",
+            nested.x,
+            tray.x
+        );
+        assert!(
+            (tray.right() - nested.right() - CARD_PAD).abs() < 0.5,
+            "right nest pad: tray.right={} nested.right={}",
+            tray.right(),
+            nested.right()
         );
         assert_eq!(panel.group_nested_host_indices(0), vec![1]);
 

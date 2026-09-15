@@ -629,4 +629,72 @@ impl Store {
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
         Ok(())
     }
+
+    /// Fetch one credential by id.
+    pub async fn get_credential(&self, id: Uuid) -> Result<Option<Credential>> {
+        let row = sqlx::query(
+            "SELECT id, kind, owner_kind, owner_id, envelope, key_id, created_at, updated_at, deleted_at FROM credentials WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        Ok(row.map(|r| Credential {
+            id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+            kind: r.get("kind"),
+            owner_kind: r.get("owner_kind"),
+            owner_id: Uuid::parse_str(&r.get::<String, _>("owner_id")).unwrap_or_default(),
+            envelope: r.get("envelope"),
+            key_id: r.get("key_id"),
+            created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at"))
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at"))
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
+                DateTime::parse_from_rfc3339(&s)
+                    .ok()
+                    .map(|d| d.with_timezone(&Utc))
+            }),
+        }))
+    }
+
+    /// Credentials owned by `(owner_kind, owner_id)`.
+    pub async fn list_credentials_for_owner(
+        &self,
+        owner_kind: &str,
+        owner_id: Uuid,
+    ) -> Result<Vec<Credential>> {
+        let rows = sqlx::query(
+            "SELECT id, kind, owner_kind, owner_id, envelope, key_id, created_at, updated_at, deleted_at FROM credentials WHERE owner_kind = ? AND owner_id = ? AND deleted_at IS NULL",
+        )
+        .bind(owner_kind)
+        .bind(owner_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| Credential {
+                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
+                kind: r.get("kind"),
+                owner_kind: r.get("owner_kind"),
+                owner_id: Uuid::parse_str(&r.get::<String, _>("owner_id")).unwrap_or_default(),
+                envelope: r.get("envelope"),
+                key_id: r.get("key_id"),
+                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at"))
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at"))
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|d| d.with_timezone(&Utc))
+                }),
+            })
+            .collect())
+    }
 }

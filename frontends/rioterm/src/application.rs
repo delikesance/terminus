@@ -1425,6 +1425,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::SubmitHostForm => {
+                                        route.window.screen.submit_host_form();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::NewGroup => {
                                         route.request_overlay_redraw();
                                         return;
@@ -1552,6 +1557,39 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::DismissSettings => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::UnlockVault => {
+                                        let passphrase = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .sql_passphrase
+                                            .clone();
+                                        route
+                                            .window
+                                            .screen
+                                            .host_store
+                                            .unlock_vault(&passphrase);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::TestSync => {
+                                        let uri = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .sql_uri
+                                            .clone();
+                                        route.window.screen.host_store.test_sync(&uri);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::FocusSqlUri
+                                    | ChromeAction::FocusSqlPassphrase => {
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1975,6 +2013,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     } else if route.window.screen.chrome_hover(lx, ly) {
                         chrome_dirty = true;
                     }
+                    if let Some(icon) = route.window.screen.chrome_cursor_at(lx, ly) {
+                        route.window.winit_window.set_cursor(icon);
+                    }
                     if chrome_dirty {
                         // UI-only change: `request_redraw` alone leaves the
                         // framebuffer untouched, because the renderer gates
@@ -2153,10 +2194,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
 
                 if !is_selecting {
                     let hint_changed = route.window.screen.update_highlighted_hints();
-                    route
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    let lx = x as f32 / scale;
+                    let ly = y as f32 / scale;
+                    let icon = route
                         .window
-                        .winit_window
-                        .set_cursor(route.window.screen.mouse_cursor_icon());
+                        .screen
+                        .chrome_cursor_at(lx, ly)
+                        .unwrap_or_else(|| route.window.screen.mouse_cursor_icon());
+                    route.window.winit_window.set_cursor(icon);
 
                     if hint_changed {
                         route.window.screen.context_manager.request_render();

@@ -7,11 +7,22 @@
 //! with a hit-test.
 
 use crate::activity_bar::{self, ActivityBarState, RailAction, RailHit, Section};
-use crate::add_host::{AddHostForm, FormInput, FormOutcome};
+use crate::add_host::{AddHostForm, AddHostHit, Field, FormInput, FormOutcome};
 use crate::connection::{ConnectionHit, ConnectionSequence};
 use crate::settings::{SettingsHit, SettingsModal, SettingsTab};
 use crate::sidebar::{HostItem, HostPanel, PanelHit, Row};
 use crate::snippets::{SnippetHit, SnippetsPanel};
+
+/// Mouse cursor affordance for chrome hit targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChromeCursor {
+    #[default]
+    Default,
+    /// Buttons, rows, tabs, links.
+    Pointer,
+    /// Editable text fields.
+    Text,
+}
 
 /// What a mouse press on the chrome did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +53,16 @@ pub enum ChromeAction {
     CloseSession(usize),
     /// "+" on a host: open another session for that host.
     AddHostSession(String),
+    /// Footer Connect on the add-host dialog (same as Enter).
+    SubmitHostForm,
+    /// Settings: unlock / create vault with the SQL Sync passphrase field.
+    UnlockVault,
+    /// Settings: persist remote URI and run SyncEngine::sync_now.
+    TestSync,
+    /// Settings: focus the connection URI field.
+    FocusSqlUri,
+    /// Settings: focus the vault passphrase field.
+    FocusSqlPassphrase,
     /// Expand/collapse sessions under a host.
     ToggleHost(String),
     /// Move a stored host into a group (`Some`) or out to the root list (`None`).
@@ -72,6 +93,8 @@ pub struct Chrome {
     pub top_inset: f32,
     /// Whether the panel is expanded beside the rail.
     pub panel_visible: bool,
+    /// Last known window width (logical), for settings hover/cursor geometry.
+    pub last_window_width: f32,
 }
 
 impl Default for Chrome {
@@ -85,6 +108,7 @@ impl Default for Chrome {
             connection: None,
             top_inset: 0.0,
             panel_visible: true,
+            last_window_width: 1200.0,
         }
     }
 }
@@ -220,14 +244,43 @@ impl Chrome {
                     ChromeAction::DismissSettings
                 }
                 SettingsHit::Tab(tab) => {
-                    self.settings.tab = tab;
+                    self.settings.close_engine_menu();
+                    self.settings.open_tab(tab);
                     ChromeAction::Consumed
                 }
-                SettingsHit::NewKey
-                | SettingsHit::DeleteKey(_)
-                | SettingsHit::TogglePassphrase
-                | SettingsHit::TestSync
-                | SettingsHit::Consume => ChromeAction::Consumed,
+                SettingsHit::FocusUri => {
+                    self.settings.focus_uri();
+                    ChromeAction::FocusSqlUri
+                }
+                SettingsHit::FocusPassphrase => {
+                    self.settings.focus_passphrase();
+                    ChromeAction::FocusSqlPassphrase
+                }
+                SettingsHit::TogglePassphrase => {
+                    self.settings.toggle_passphrase_visible();
+                    ChromeAction::Consumed
+                }
+                SettingsHit::ToggleEngineMenu => {
+                    self.settings.toggle_engine_menu();
+                    ChromeAction::Consumed
+                }
+                SettingsHit::SelectEngine(index) => {
+                    self.settings.select_engine(index);
+                    ChromeAction::Consumed
+                }
+                SettingsHit::UnlockVault => {
+                    self.settings.close_engine_menu();
+                    ChromeAction::UnlockVault
+                }
+                SettingsHit::TestSync => {
+                    self.settings.close_engine_menu();
+                    ChromeAction::TestSync
+                }
+                SettingsHit::NewKey | SettingsHit::DeleteKey(_) | SettingsHit::Consume => {
+                    self.settings.close_engine_menu();
+                    self.settings.clear_sql_focus();
+                    ChromeAction::Consumed
+                }
             };
         }
 
@@ -254,11 +307,32 @@ impl Chrome {
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let dialog = layout.rect(self.form.height());
-            if dialog.contains(x, y) {
+            if !dialog.contains(x, y) {
+                self.form.close();
                 return ChromeAction::Consumed;
             }
-            self.form.close();
-            return ChromeAction::Consumed;
+            return match layout.hit_test(&self.form, x, y) {
+                AddHostHit::Field(field) => {
+                    match field {
+                        Field::AuthMethod => {
+                            self.form.cycle_auth_method(1);
+                            self.form.focus_field(Field::AuthMethod);
+                        }
+                        Field::Identity => {
+                            self.form.cycle_identity(1);
+                            self.form.focus_field(Field::Identity);
+                        }
+                        other => self.form.focus_field(other),
+                    }
+                    ChromeAction::Consumed
+                }
+                AddHostHit::Cancel => {
+                    self.form.close();
+                    ChromeAction::Consumed
+                }
+                AddHostHit::Connect => ChromeAction::SubmitHostForm,
+                AddHostHit::Consume => ChromeAction::Consumed,
+            };
         }
 
         if self.activity.collapsed {
@@ -426,11 +500,22 @@ impl Chrome {
 
     /// Route a mouse move; returns whether anything needs repainting.
     pub fn handle_hover(&mut self, window_height: f32, x: f32, y: f32) -> bool {
-        if self.connection.is_some()
-            || self.form.is_open()
-            || self.settings.open
-            || self.activity.collapsed
-        {
+        let window_width = {
+            // Callers pass height only today; settings hover uses dialog
+            // geometry that also needs width. Reconstruct from dialog
+            // centering using a wide-enough stand-in when unknown —
+            // the screen passes both via cursor_at. For hover highlight
+            // on the dropdown we need the real width from the dialog
+            // math which depends on window_width. Use a side channel:
+            // store last known width on Chrome.
+            self.last_window_width
+        };
+        if self.settings.open {
+            return self
+                .settings
+                .handle_hover(window_width, window_height, x, y);
+        }
+        if self.connection.is_some() || self.form.is_open() || self.activity.collapsed {
             return false;
         }
         let origin_y = self.origin_y();
@@ -444,6 +529,59 @@ impl Chrome {
         }
         let hover = self.panel.hover_at(origin_y, height, x, y);
         self.panel.set_hover(hover)
+    }
+
+    /// Remember the last layout width so hover/cursor can rebuild dialog rects.
+    pub fn set_window_size(&mut self, width: f32, _height: f32) {
+        self.last_window_width = width;
+    }
+
+    /// Cursor affordance under `(x, y)`.
+    pub fn cursor_at(&self, window_width: f32, window_height: f32, x: f32, y: f32) -> ChromeCursor {
+        if self.settings.open {
+            return self.settings.cursor_at(window_width, window_height, x, y);
+        }
+        if let Some(conn) = self.connection.as_ref() {
+            return match conn.hit_test(window_width, window_height, x, y) {
+                ConnectionHit::Close | ConnectionHit::ToggleLogs => ChromeCursor::Pointer,
+                ConnectionHit::Consume => ChromeCursor::Default,
+            };
+        }
+        if self.form.is_open() {
+            let layout = self.dialog_layout(window_width, window_height);
+            let dialog = layout.rect(self.form.height());
+            if !dialog.contains(x, y) {
+                return ChromeCursor::Pointer; // scrim dismiss
+            }
+            return match layout.hit_test(&self.form, x, y) {
+                AddHostHit::Field(Field::AuthMethod | Field::Identity) => ChromeCursor::Pointer,
+                AddHostHit::Field(_) => ChromeCursor::Text,
+                AddHostHit::Connect | AddHostHit::Cancel => ChromeCursor::Pointer,
+                AddHostHit::Consume => ChromeCursor::Default,
+            };
+        }
+        if self.activity.collapsed {
+            return ChromeCursor::Default;
+        }
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        if activity_bar::hit_test(origin_y, height, x, y).is_some() {
+            return ChromeCursor::Pointer;
+        }
+        if self.snippets_visible() {
+            return match self.snippets.hit_test(origin_y, height, x, y) {
+                Some(SnippetHit::Item(_)) => ChromeCursor::Pointer,
+                Some(SnippetHit::Background) | None => ChromeCursor::Default,
+            };
+        }
+        if self.hosts_visible() {
+            return match self.panel.hit_test(origin_y, height, x, y) {
+                Some(PanelHit::Search) | Some(PanelHit::NewGroupField) => ChromeCursor::Text,
+                Some(PanelHit::Background) | None => ChromeCursor::Default,
+                Some(_) => ChromeCursor::Pointer,
+            };
+        }
+        ChromeCursor::Default
     }
 
     /// Update an armed host drag while the primary button is held.
@@ -829,11 +967,27 @@ mod tests {
         let mut chrome = chrome_with_hosts(2);
         chrome.open_add_host();
         let layout = chrome.dialog_layout(1200.0, 800.0);
-        let field = layout.field_rect(Field::Hostname);
+        let input = layout.input_rect(&chrome.form, Field::Hostname).unwrap();
 
         assert_eq!(
-            chrome.handle_press(1200.0, 800.0, field.x + 5.0, field.y + 5.0),
+            chrome.handle_press(1200.0, 800.0, input.x + 5.0, input.y + 5.0),
             ChromeAction::Consumed
+        );
+        assert!(chrome.add_host_is_open());
+        assert_eq!(chrome.form.focused_field(), Field::Hostname);
+
+        let cancel = layout.cancel_button_rect(chrome.form.height());
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, cancel.x + 4.0, cancel.y + 4.0),
+            ChromeAction::Consumed
+        );
+        assert!(!chrome.add_host_is_open());
+
+        chrome.open_add_host();
+        let connect = layout.connect_button_rect(chrome.form.height());
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, connect.x + 4.0, connect.y + 4.0),
+            ChromeAction::SubmitHostForm
         );
         assert!(chrome.add_host_is_open());
 

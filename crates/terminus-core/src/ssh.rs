@@ -18,7 +18,10 @@ use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::{Channel, ChannelMsg, Pty};
 use tracing::{debug, info, warn};
 
+use crate::auth_method::HostAuthMethod;
 use crate::error::{Error, Result};
+use crate::gssapi;
+use crate::models::{Host, Identity};
 
 /// Default keepalive interval: matches `ServerAliveInterval 30`.
 pub const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
@@ -263,10 +266,14 @@ pub struct SshAuth {
     pub username: String,
     /// Password, when the host uses password auth.
     pub password: Option<String>,
-    /// Private key file, when the host uses key auth.
+    /// Private key file, when the host uses key auth from disk.
     pub identity_path: Option<PathBuf>,
-    /// Passphrase protecting `identity_path`, when it is encrypted.
+    /// Passphrase protecting `identity_path` / PEM, when encrypted.
     pub identity_passphrase: Option<String>,
+    /// In-memory OpenSSH private key PEM (from a saved [`Identity`]).
+    pub identity_pem: Option<String>,
+    /// Explicit auth method. When unset, falls back to capability order.
+    pub method: Option<HostAuthMethod>,
 }
 
 /// Everything needed to open an SSH session.
@@ -487,6 +494,137 @@ pub struct SshSession {
     disconnected: bool,
 }
 
+/// Typed failure from [`probe_ssh_auth`] — mapped to add-host error copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeError {
+    /// TCP / DNS / timeout before auth.
+    Unreachable(String),
+    /// Server rejected the credentials.
+    AuthFailed,
+    /// Key auth requested but no usable private key was available.
+    NoKey,
+    /// Kerberos ticket cache missing / expired.
+    GssapiNoTicket,
+    /// GSSAPI not available on this platform.
+    GssapiUnsupported,
+    /// Anything else (host key, protocol, …).
+    Other(String),
+}
+
+impl ProbeError {
+    /// User-facing message for the add-host error line.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Unreachable(detail) => {
+                if detail.is_empty() {
+                    "Host unreachable".into()
+                } else {
+                    format!("Host unreachable: {detail}")
+                }
+            }
+            Self::AuthFailed => {
+                "Authentication failed (wrong password, username, or key)".into()
+            }
+            Self::NoKey => {
+                "No SSH private key selected. Save a key in Settings, then try again.".into()
+            }
+            Self::GssapiNoTicket => Error::GssapiNoTicket.to_string(),
+            Self::GssapiUnsupported => Error::GssapiUnsupported.to_string(),
+            Self::Other(msg) => msg.clone(),
+        }
+    }
+
+    /// Map a core [`Error`] from connect/auth into a probe failure.
+    pub fn from_error(err: Error) -> Self {
+        match err {
+            Error::GssapiNoTicket => Self::GssapiNoTicket,
+            Error::GssapiUnsupported => Self::GssapiUnsupported,
+            Error::TimeoutError(msg) => Self::Unreachable(msg),
+            Error::IoError(msg) => Self::Unreachable(msg),
+            Error::SshError(msg) => classify_ssh_message(&msg),
+            Error::Message(msg) => classify_ssh_message(&msg),
+            Error::IdentityKeyInvalid { reason } => Self::Other(format!("invalid SSH key: {reason}")),
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+fn classify_ssh_message(msg: &str) -> ProbeError {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("connection refused")
+        || lower.contains("network is unreachable")
+        || lower.contains("name or service not known")
+        || lower.contains("no route to host")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("could not resolve")
+    {
+        return ProbeError::Unreachable(msg.to_string());
+    }
+    if lower.contains("no ssh private key")
+        || lower.contains("cannot load key")
+        || lower.contains("no usable credentials")
+    {
+        return ProbeError::NoKey;
+    }
+    if lower.contains("authentication refused")
+        || lower.contains("auth failed")
+        || lower.contains("public key rejected")
+        || lower.contains("password auth failed")
+        || lower.contains("authentication failed")
+    {
+        return ProbeError::AuthFailed;
+    }
+    ProbeError::Other(msg.to_string())
+}
+
+/// Build connect options for an add-host probe (accept any host key).
+pub fn probe_options_from_host(host: &Host, identity: Option<&Identity>) -> SshConnectOptions {
+    let method = crate::auth_method::parse_host_auth_method(&host.auth_method)
+        .map(|ok| ok.method)
+        .unwrap_or(HostAuthMethod::Password);
+
+    let mut auth = SshAuth {
+        username: host.username.clone(),
+        method: Some(method),
+        ..SshAuth::default()
+    };
+
+    match method {
+        HostAuthMethod::Password => {
+            auth.password = host.password.clone();
+        }
+        HostAuthMethod::Key => {
+            if let Some(ident) = identity {
+                auth.identity_pem = ident.private_key.clone();
+                auth.identity_passphrase = ident.passphrase.clone();
+            }
+        }
+        HostAuthMethod::Gssapi => {}
+    }
+
+    SshConnectOptions {
+        hostname: host.hostname.clone(),
+        port: host.port,
+        auth,
+        policy: HostKeyPolicy::AcceptAll,
+        known_hosts: KnownHosts::default(),
+        connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+        keepalive_interval: Some(DEFAULT_KEEPALIVE_INTERVAL),
+    }
+}
+
+/// TCP + auth only — no PTY. Used by add-host Connect before save.
+pub async fn probe_ssh_auth(opts: &SshConnectOptions) -> std::result::Result<(), ProbeError> {
+    match SshSession::connect(opts).await {
+        Ok(mut session) => {
+            let _ = session.disconnect().await;
+            Ok(())
+        }
+        Err(err) => Err(ProbeError::from_error(err)),
+    }
+}
+
 impl SshSession {
     /// Connects to `opts.hostname:opts.port`, verifies the host key and
     /// authenticates. The channel is left open but no PTY is requested yet —
@@ -519,7 +657,7 @@ impl SshSession {
             Ok(Err(err)) => return Err(host_key_aware_error(err, &outcome)),
         };
 
-        authenticate(&mut handle, &opts.auth).await?;
+        authenticate(&mut handle, &opts.hostname, opts.port, &opts.auth).await?;
         let channel = handle
             .channel_open_session()
             .await
@@ -641,57 +779,112 @@ impl SshSession {
     }
 }
 
-/// Runs the authentication chain: identity file first (when configured), then
-/// password, then the `none` method (some servers accept it for `authorized_keys`
-/// based setups).
-async fn authenticate(handle: &mut Handle<ClientHandler>, auth: &SshAuth) -> Result<()> {
-    if let Some(path) = &auth.identity_path {
-        let key = russh::keys::load_secret_key(path, auth.identity_passphrase.as_deref())
-            .map_err(|e| {
-                Error::SshError(format!("cannot load key {}: {e}", path.display()))
-            })?;
-        let hash_alg = handle
-            .best_supported_rsa_hash()
-            .await
-            .ok()
-            .flatten()
-            .flatten();
-        let result = handle
-            .authenticate_publickey(
-                auth.username.clone(),
-                PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
-            )
-            .await
-            .map_err(|e| Error::SshError(format!("public key auth failed: {e}")))?;
-        if result.success() {
-            return Ok(());
+/// Runs authentication for the selected method. GSSAPI never falls through
+/// to password; key never falls through either.
+async fn authenticate(
+    handle: &mut Handle<ClientHandler>,
+    hostname: &str,
+    port: u16,
+    auth: &SshAuth,
+) -> Result<()> {
+    let method = auth.method.unwrap_or_else(|| {
+        if auth.identity_pem.is_some() || auth.identity_path.is_some() {
+            HostAuthMethod::Key
+        } else if auth.password.is_some() {
+            HostAuthMethod::Password
+        } else {
+            HostAuthMethod::Password
         }
-        debug!("public key rejected, falling back to password/none");
-    }
+    });
 
-    if let Some(password) = &auth.password {
-        let result = handle
-            .authenticate_password(auth.username.clone(), password.clone())
-            .await
-            .map_err(|e| Error::SshError(format!("password auth failed: {e}")))?;
-        if result.success() {
-            return Ok(());
+    match method {
+        HostAuthMethod::Gssapi => {
+            let host = Host {
+                id: uuid::Uuid::nil(),
+                name: hostname.to_string(),
+                hostname: hostname.to_string(),
+                port,
+                username: auth.username.clone(),
+                auth_method: HostAuthMethod::Gssapi.as_str().to_string(),
+                password: None,
+                identity_id: None,
+                group_id: None,
+                tags: Vec::new(),
+                notes: String::new(),
+                os_id: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                deleted_at: None,
+            };
+            let ok = gssapi::authenticate(handle, &host).await?;
+            if ok {
+                return Ok(());
+            }
+            return Err(Error::SshError(format!(
+                "authentication refused for user {}",
+                auth.username
+            )));
         }
-        return Err(Error::SshError(format!(
-            "authentication refused for user {}",
-            auth.username
-        )));
+        HostAuthMethod::Key => authenticate_key(handle, auth).await,
+        HostAuthMethod::Password => authenticate_password(handle, auth).await,
     }
+}
 
-    let result = handle
-        .authenticate_none(auth.username.clone())
+async fn authenticate_key(handle: &mut Handle<ClientHandler>, auth: &SshAuth) -> Result<()> {
+    let key = if let Some(pem) = auth.identity_pem.as_deref() {
+        russh::keys::decode_secret_key(pem, auth.identity_passphrase.as_deref()).map_err(|e| {
+            Error::IdentityKeyInvalid {
+                reason: e.to_string(),
+            }
+        })?
+    } else if let Some(path) = &auth.identity_path {
+        russh::keys::load_secret_key(path, auth.identity_passphrase.as_deref()).map_err(|e| {
+            Error::SshError(format!("cannot load key {}: {e}", path.display()))
+        })?
+    } else {
+        return Err(Error::SshError(
+            "no SSH private key found (save a key in Settings, then try again)".into(),
+        ));
+    };
+
+    let hash_alg = handle
+        .best_supported_rsa_hash()
         .await
-        .map_err(|e| Error::SshError(format!("authentication failed: {e}")))?;
+        .ok()
+        .flatten()
+        .flatten();
+    let result = handle
+        .authenticate_publickey(
+            auth.username.clone(),
+            PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
+        )
+        .await
+        .map_err(|e| Error::SshError(format!("public key auth failed: {e}")))?;
     if result.success() {
         return Ok(());
     }
     Err(Error::SshError(format!(
-        "no usable credentials for user {} (configure a password or an identity)",
+        "authentication refused for user {}",
+        auth.username
+    )))
+}
+
+async fn authenticate_password(handle: &mut Handle<ClientHandler>, auth: &SshAuth) -> Result<()> {
+    let Some(password) = auth.password.as_ref() else {
+        return Err(Error::SshError(format!(
+            "authentication refused for user {}",
+            auth.username
+        )));
+    };
+    let result = handle
+        .authenticate_password(auth.username.clone(), password.clone())
+        .await
+        .map_err(|e| Error::SshError(format!("password auth failed: {e}")))?;
+    if result.success() {
+        return Ok(());
+    }
+    Err(Error::SshError(format!(
+        "authentication refused for user {}",
         auth.username
     )))
 }
@@ -783,5 +976,57 @@ mod tests {
         };
         assert!(!refused.accepted());
         assert_eq!(refused.fingerprint(), None);
+    }
+
+    #[test]
+    fn probe_error_messages_cover_each_variant() {
+        assert!(ProbeError::Unreachable(String::new())
+            .user_message()
+            .contains("unreachable"));
+        assert!(ProbeError::AuthFailed
+            .user_message()
+            .contains("Authentication failed"));
+        assert!(ProbeError::NoKey.user_message().contains("private key"));
+        assert_eq!(
+            ProbeError::GssapiNoTicket.user_message(),
+            Error::GssapiNoTicket.to_string()
+        );
+        assert_eq!(
+            ProbeError::GssapiUnsupported.user_message(),
+            Error::GssapiUnsupported.to_string()
+        );
+        assert_eq!(ProbeError::Other("x".into()).user_message(), "x");
+    }
+
+    #[test]
+    fn classify_ssh_message_maps_common_failures() {
+        assert!(matches!(
+            classify_ssh_message("Connection refused"),
+            ProbeError::Unreachable(_)
+        ));
+        assert!(matches!(
+            classify_ssh_message("authentication refused for user root"),
+            ProbeError::AuthFailed
+        ));
+        assert!(matches!(
+            classify_ssh_message("no SSH private key found"),
+            ProbeError::NoKey
+        ));
+    }
+
+    #[test]
+    fn probe_error_from_typed_errors() {
+        assert_eq!(
+            ProbeError::from_error(Error::GssapiNoTicket),
+            ProbeError::GssapiNoTicket
+        );
+        assert_eq!(
+            ProbeError::from_error(Error::GssapiUnsupported),
+            ProbeError::GssapiUnsupported
+        );
+        assert!(matches!(
+            ProbeError::from_error(Error::TimeoutError("boom".into())),
+            ProbeError::Unreachable(_)
+        ));
     }
 }
