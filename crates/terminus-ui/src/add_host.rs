@@ -1,24 +1,50 @@
 //! The add-host editor: a small form with one focused field.
 //!
 //! The form owns the text, the focus and the caret, and nothing else —
-//! no validation and no storage. Submitting hands the raw values to the
-//! host repository, which is the single place that decides whether a
-//! host is storable; a rejection comes back as [`AddHostForm::set_error`]
-//! so the form stays open with its text intact.
+//! no storage. Submitting hands the raw values to the host repository,
+//! which is the single place that decides whether a host is storable; a
+//! rejection comes back as [`AddHostForm::set_error`] so the form stays
+//! open with its text intact.
+//!
+//! Auth methods are plain strings (`"key"` | `"password"` | `"gssapi"`)
+//! so this crate stays independent of terminus-core's typed enum.
 
 use crate::geom::Rect;
 
-/// The fields, in tab order.
+/// Canonical auth-method wire values, in cycle order.
+pub const AUTH_METHODS: [&str; 3] = ["key", "password", "gssapi"];
+
+/// Human label for an auth-method wire value.
+pub fn auth_method_label(method: &str) -> &'static str {
+    match method {
+        "password" => "Password Authentication",
+        "gssapi" => "Kerberos (GSSAPI)",
+        _ => "SSH Cryptographic Key",
+    }
+}
+
+/// The fields, in tab order when all are visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Name,
     Hostname,
     Username,
     Port,
+    AuthMethod,
+    Identity,
+    Password,
 }
 
-pub const FIELDS: [Field; 4] =
-    [Field::Name, Field::Hostname, Field::Username, Field::Port];
+/// Always-visible text fields before the auth block.
+pub const BASE_FIELDS: [Field; 4] = [
+    Field::Name,
+    Field::Hostname,
+    Field::Username,
+    Field::Port,
+];
+
+/// Back-compat alias: base text fields only (auth rows are conditional).
+pub const FIELDS: [Field; 4] = BASE_FIELDS;
 
 impl Field {
     pub const fn label(self) -> &'static str {
@@ -27,6 +53,9 @@ impl Field {
             Field::Hostname => "IP Address or Hostname",
             Field::Username => "Username",
             Field::Port => "Port",
+            Field::AuthMethod => "Authentication Method",
+            Field::Identity => "Select Saved SSH Key",
+            Field::Password => "SSH Password",
         }
     }
 
@@ -36,20 +65,43 @@ impl Field {
             Field::Hostname => "192.168.1.50",
             Field::Username => "root",
             Field::Port => "22",
+            Field::AuthMethod => "",
+            Field::Identity => "No SSH keys saved",
+            Field::Password => "Enter secure password",
         }
     }
 
+    /// Index among the four base text fields, or `None` for auth rows.
+    pub const fn base_index(self) -> Option<usize> {
+        match self {
+            Field::Name => Some(0),
+            Field::Hostname => Some(1),
+            Field::Username => Some(2),
+            Field::Port => Some(3),
+            Field::AuthMethod | Field::Identity | Field::Password => None,
+        }
+    }
+
+    pub const fn is_text(self) -> bool {
+        matches!(
+            self,
+            Field::Name | Field::Hostname | Field::Username | Field::Port | Field::Password
+        )
+    }
+
+    /// Legacy index into the base text array (auth fields map to 0).
     pub const fn index(self) -> usize {
         match self {
             Field::Name => 0,
             Field::Hostname => 1,
             Field::Username => 2,
             Field::Port => 3,
+            Field::AuthMethod | Field::Identity | Field::Password => 0,
         }
     }
 
     pub const fn from_index(index: usize) -> Self {
-        FIELDS[index % FIELDS.len()]
+        BASE_FIELDS[index % BASE_FIELDS.len()]
     }
 }
 
@@ -69,25 +121,49 @@ pub const HINT_HEIGHT: f32 = 44.0;
 pub const DIALOG_RADIUS: f32 = 16.0;
 /// Input corner radius (`rounded-xl`).
 pub const INPUT_RADIUS: f32 = 12.0;
+/// Footer Cancel / Connect button height.
+pub const BUTTON_HEIGHT: f32 = 32.0;
+pub const CONNECT_BUTTON_WIDTH: f32 = 84.0;
+pub const CANCEL_BUTTON_WIDTH: f32 = 72.0;
+pub const BUTTON_GAP: f32 = 8.0;
 
-impl AddHostForm {
-    /// Total dialog height, including a hint/error line.
-    pub fn height(&self) -> f32 {
-        PAD + TITLE_HEIGHT
-            + FIELDS.len() as f32 * FIELD_HEIGHT
-            + (FIELDS.len() - 1) as f32 * FIELD_GAP
-            + PAD
-            + HINT_HEIGHT
-    }
+/// What a mouse press on the open add-host dialog hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddHostHit {
+    /// An input box — focus that field (AuthMethod / Identity also cycle).
+    Field(Field),
+    /// Dismiss without saving.
+    Cancel,
+    /// Persist the draft (same as Enter).
+    Connect,
+    /// Dialog chrome / padding — swallow, keep open.
+    Consume,
 }
 
 /// What the form collected.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostFormValues {
     pub name: String,
     pub hostname: String,
     pub username: String,
     pub port: String,
+    pub auth_method: String,
+    pub identity_id: Option<String>,
+    pub password: String,
+}
+
+impl Default for HostFormValues {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            hostname: String::new(),
+            username: String::new(),
+            port: String::new(),
+            auth_method: "key".to_string(),
+            identity_id: None,
+            password: String::new(),
+        }
+    }
 }
 
 /// One keyboard input, platform-neutral.
@@ -125,9 +201,14 @@ pub enum FormOutcome {
 pub struct AddHostForm {
     open: bool,
     values: [String; 4],
-    /// Caret position, in characters (not bytes), per field.
+    /// Caret position, in characters (not bytes), per base text field.
     carets: [usize; 4],
-    focus: usize,
+    auth_method: String,
+    identity_id: Option<String>,
+    identities: Vec<(String, String)>,
+    password: String,
+    password_caret: usize,
+    focus: Field,
     error: Option<String>,
 }
 
@@ -137,13 +218,49 @@ impl Default for AddHostForm {
             open: false,
             values: Default::default(),
             carets: [0; 4],
-            focus: 0,
+            auth_method: "key".to_string(),
+            identity_id: None,
+            identities: Vec::new(),
+            password: String::new(),
+            password_caret: 0,
+            focus: Field::Name,
             error: None,
         }
     }
 }
 
 impl AddHostForm {
+    /// Fields currently in the tab order / paint order.
+    pub fn visible_fields(&self) -> Vec<Field> {
+        let mut fields = Vec::with_capacity(6);
+        fields.extend_from_slice(&BASE_FIELDS);
+        fields.push(Field::AuthMethod);
+        match self.auth_method.as_str() {
+            "password" => fields.push(Field::Password),
+            "gssapi" => {}
+            _ => fields.push(Field::Identity),
+        }
+        fields
+    }
+
+    pub fn shows_identity(&self) -> bool {
+        self.auth_method != "password" && self.auth_method != "gssapi"
+    }
+
+    pub fn shows_password(&self) -> bool {
+        self.auth_method == "password"
+    }
+
+    /// Total dialog height, including a hint/error line.
+    pub fn height(&self) -> f32 {
+        let n = self.visible_fields().len() as f32;
+        PAD + TITLE_HEIGHT
+            + n * FIELD_HEIGHT
+            + (n - 1.0) * FIELD_GAP
+            + PAD
+            + HINT_HEIGHT
+    }
+
     /// Show the form, empty, focused on the first field.
     ///
     /// Always a fresh form: a half-typed host from a previous attempt
@@ -151,7 +268,11 @@ impl AddHostForm {
     pub fn open(&mut self) {
         self.values = Default::default();
         self.carets = [0; 4];
-        self.focus = 0;
+        self.auth_method = "key".to_string();
+        self.password.clear();
+        self.password_caret = 0;
+        self.identity_id = self.identities.first().map(|(id, _)| id.clone());
+        self.focus = Field::Name;
         self.error = None;
         self.open = true;
     }
@@ -174,20 +295,75 @@ impl AddHostForm {
         self.error = Some(message.into());
     }
 
-    pub fn focused_field(&self) -> Field {
-        Field::from_index(self.focus)
+    /// Replace the identity picker options (id, display name).
+    pub fn set_identities(&mut self, identities: Vec<(String, String)>) {
+        self.identities = identities;
+        let still_valid = self
+            .identity_id
+            .as_ref()
+            .is_some_and(|id| self.identities.iter().any(|(i, _)| i == id));
+        if !still_valid {
+            self.identity_id = self.identities.first().map(|(id, _)| id.clone());
+        }
     }
 
-    pub fn focus(&self) -> usize {
+    pub fn identities(&self) -> &[(String, String)] {
+        &self.identities
+    }
+
+    pub fn auth_method(&self) -> &str {
+        &self.auth_method
+    }
+
+    pub fn identity_id(&self) -> Option<&str> {
+        self.identity_id.as_deref()
+    }
+
+    pub fn selected_identity_name(&self) -> Option<&str> {
+        let id = self.identity_id.as_ref()?;
+        self.identities
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, name)| name.as_str())
+    }
+
+    pub fn password(&self) -> &str {
+        &self.password
+    }
+
+    pub fn focused_field(&self) -> Field {
         self.focus
     }
 
+    /// Index of the focused field in [`Self::visible_fields`].
+    pub fn focus(&self) -> usize {
+        self.visible_fields()
+            .iter()
+            .position(|&f| f == self.focus)
+            .unwrap_or(0)
+    }
+
     pub fn value(&self, field: Field) -> &str {
-        &self.values[field.index()]
+        match field {
+            Field::Name => &self.values[0],
+            Field::Hostname => &self.values[1],
+            Field::Username => &self.values[2],
+            Field::Port => &self.values[3],
+            Field::AuthMethod => &self.auth_method,
+            Field::Identity => self
+                .identity_id
+                .as_deref()
+                .unwrap_or(""),
+            Field::Password => &self.password,
+        }
     }
 
     pub fn cursor(&self, field: Field) -> usize {
-        self.carets[field.index()]
+        match field {
+            Field::Password => self.password_caret,
+            f if f.base_index().is_some() => self.carets[f.index()],
+            _ => 0,
+        }
     }
 
     /// The caret's byte offset inside `field`'s value.
@@ -203,8 +379,9 @@ impl AddHostForm {
 
     /// Text before / after the caret, for painting the caret inline.
     pub fn split_at_cursor(&self) -> (&str, &str) {
-        let value = self.value(self.focused_field());
-        let byte = self.cursor_byte(self.focused_field());
+        let field = self.focused_field();
+        let value = self.value(field);
+        let byte = self.cursor_byte(field);
         value.split_at(byte)
     }
 
@@ -214,7 +391,65 @@ impl AddHostForm {
             hostname: self.values[1].clone(),
             username: self.values[2].clone(),
             port: self.values[3].clone(),
+            auth_method: self.auth_method.clone(),
+            identity_id: self.identity_id.clone(),
+            password: self.password.clone(),
         }
+    }
+
+    /// Auth-only readiness (host fields still belong to the repository).
+    pub fn auth_validation_error(&self) -> Option<&'static str> {
+        match self.auth_method.as_str() {
+            "key" if self.identity_id.is_none() => Some("Select an SSH key"),
+            "password" if self.password.is_empty() => Some("Enter a password"),
+            "key" | "password" | "gssapi" => None,
+            _ => Some("Unknown authentication method"),
+        }
+    }
+
+    /// Cycle key → password → gssapi → key.
+    pub fn cycle_auth_method(&mut self, delta: isize) {
+        let i = AUTH_METHODS
+            .iter()
+            .position(|&m| m == self.auth_method)
+            .unwrap_or(0);
+        let next = (i as isize + delta).rem_euclid(AUTH_METHODS.len() as isize) as usize;
+        self.auth_method = AUTH_METHODS[next].to_string();
+        self.clamp_focus_to_visible();
+        self.error = None;
+    }
+
+    /// Cycle through saved identities (no-op when empty).
+    pub fn cycle_identity(&mut self, delta: isize) {
+        if self.identities.is_empty() {
+            return;
+        }
+        let i = self
+            .identity_id
+            .as_ref()
+            .and_then(|id| self.identities.iter().position(|(i, _)| i == id))
+            .unwrap_or(0);
+        let next = (i as isize + delta).rem_euclid(self.identities.len() as isize) as usize;
+        self.identity_id = Some(self.identities[next].0.clone());
+        self.error = None;
+    }
+
+    fn clamp_focus_to_visible(&mut self) {
+        let visible = self.visible_fields();
+        if visible.contains(&self.focus) {
+            return;
+        }
+        self.focus = visible
+            .iter()
+            .copied()
+            .find(|f| matches!(f, Field::Identity | Field::Password))
+            .or_else(|| {
+                visible
+                    .iter()
+                    .copied()
+                    .find(|f| *f == Field::AuthMethod)
+            })
+            .unwrap_or(Field::Name);
     }
 
     /// Insert text at the caret. Empty or control-bearing text is
@@ -224,9 +459,20 @@ impl AddHostForm {
             return false;
         }
         let field = self.focused_field();
+        if !field.is_text() {
+            return false;
+        }
         let byte = self.cursor_byte(field);
-        self.values[field.index()].insert_str(byte, text);
-        self.carets[field.index()] += text.chars().count();
+        match field {
+            Field::Password => {
+                self.password.insert_str(byte, text);
+                self.password_caret += text.chars().count();
+            }
+            _ => {
+                self.values[field.index()].insert_str(byte, text);
+                self.carets[field.index()] += text.chars().count();
+            }
+        }
         self.error = None;
         true
     }
@@ -236,15 +482,28 @@ impl AddHostForm {
     /// or the caller repaints on every stray keypress).
     pub fn backspace(&mut self) -> bool {
         let field = self.focused_field();
+        if !field.is_text() {
+            return false;
+        }
         let chars = self.cursor(field);
         if chars == 0 {
             return false;
         }
-        let value = &mut self.values[field.index()];
-        let start = char_byte_offset(value, chars - 1);
-        let end = char_byte_offset(value, chars);
-        value.replace_range(start..end, "");
-        self.carets[field.index()] = chars - 1;
+        match field {
+            Field::Password => {
+                let start = char_byte_offset(&self.password, chars - 1);
+                let end = char_byte_offset(&self.password, chars);
+                self.password.replace_range(start..end, "");
+                self.password_caret = chars - 1;
+            }
+            _ => {
+                let value = &mut self.values[field.index()];
+                let start = char_byte_offset(value, chars - 1);
+                let end = char_byte_offset(value, chars);
+                value.replace_range(start..end, "");
+                self.carets[field.index()] = chars - 1;
+            }
+        }
         self.error = None;
         true
     }
@@ -252,41 +511,83 @@ impl AddHostForm {
     /// Delete the character after the caret.
     pub fn delete(&mut self) -> bool {
         let field = self.focused_field();
+        if !field.is_text() {
+            return false;
+        }
         let chars = self.cursor(field);
         let len = self.value(field).chars().count();
         if chars >= len {
             return false;
         }
-        let value = &mut self.values[field.index()];
-        let start = char_byte_offset(value, chars);
-        let end = char_byte_offset(value, chars + 1);
-        value.replace_range(start..end, "");
+        match field {
+            Field::Password => {
+                let start = char_byte_offset(&self.password, chars);
+                let end = char_byte_offset(&self.password, chars + 1);
+                self.password.replace_range(start..end, "");
+            }
+            _ => {
+                let value = &mut self.values[field.index()];
+                let start = char_byte_offset(value, chars);
+                let end = char_byte_offset(value, chars + 1);
+                value.replace_range(start..end, "");
+            }
+        }
         self.error = None;
         true
     }
 
     pub fn move_cursor(&mut self, delta: isize) {
         let field = self.focused_field();
+        if !field.is_text() {
+            return;
+        }
         let len = self.value(field).chars().count();
-        let next = (self.carets[field.index()] as isize + delta).clamp(0, len as isize);
-        self.carets[field.index()] = next as usize;
+        let next = (self.cursor(field) as isize + delta).clamp(0, len as isize) as usize;
+        match field {
+            Field::Password => self.password_caret = next,
+            _ => self.carets[field.index()] = next,
+        }
     }
 
     pub fn cursor_home(&mut self) {
         let field = self.focused_field();
-        self.carets[field.index()] = 0;
+        match field {
+            Field::Password => self.password_caret = 0,
+            f if f.base_index().is_some() => self.carets[f.index()] = 0,
+            _ => {}
+        }
     }
 
     pub fn cursor_end(&mut self) {
         let field = self.focused_field();
-        self.carets[field.index()] = self.value(field).chars().count();
+        match field {
+            Field::Password => self.password_caret = self.password.chars().count(),
+            f if f.base_index().is_some() => {
+                self.carets[f.index()] = self.value(f).chars().count();
+            }
+            _ => {}
+        }
     }
 
-    /// Move focus `delta` fields forward, wrapping.
+    /// Move focus `delta` fields forward, wrapping across visible rows.
     pub fn focus_by(&mut self, delta: isize) {
-        let len = FIELDS.len() as isize;
-        self.focus = (((self.focus as isize + delta) % len + len) % len) as usize;
+        let fields = self.visible_fields();
+        let len = fields.len() as isize;
+        let i = fields
+            .iter()
+            .position(|&f| f == self.focus)
+            .unwrap_or(0) as isize;
+        let next = (i + delta).rem_euclid(len) as usize;
+        self.focus = fields[next];
         self.error = None;
+    }
+
+    /// Focus a specific field (mouse click into an input).
+    pub fn focus_field(&mut self, field: Field) {
+        if self.visible_fields().contains(&field) {
+            self.focus = field;
+            self.error = None;
+        }
     }
 
     /// Route one input. `text` is only read for [`FormInput::Text`].
@@ -294,13 +595,8 @@ impl AddHostForm {
         use FormOutcome::{Cancel, Consumed, Submit};
         match input {
             FormInput::Text => {
-                if self.insert(text) {
-                    Consumed
-                } else {
-                    // An open text sink swallows even rejected text,
-                    // so a stray control character never reaches the PTY.
-                    Consumed
-                }
+                let _ = self.insert(text);
+                Consumed
             }
             FormInput::Backspace => {
                 self.backspace();
@@ -318,14 +614,34 @@ impl AddHostForm {
                 self.focus_by(-1);
                 Consumed
             }
-            FormInput::Left => {
-                self.move_cursor(-1);
-                Consumed
-            }
-            FormInput::Right => {
-                self.move_cursor(1);
-                Consumed
-            }
+            FormInput::Left => match self.focused_field() {
+                Field::AuthMethod => {
+                    self.cycle_auth_method(-1);
+                    Consumed
+                }
+                Field::Identity => {
+                    self.cycle_identity(-1);
+                    Consumed
+                }
+                _ => {
+                    self.move_cursor(-1);
+                    Consumed
+                }
+            },
+            FormInput::Right => match self.focused_field() {
+                Field::AuthMethod => {
+                    self.cycle_auth_method(1);
+                    Consumed
+                }
+                Field::Identity => {
+                    self.cycle_identity(1);
+                    Consumed
+                }
+                _ => {
+                    self.move_cursor(1);
+                    Consumed
+                }
+            },
             FormInput::Home => {
                 self.cursor_home();
                 Consumed
@@ -374,25 +690,34 @@ impl AddHostLayout {
         Rect::new(self.x + PAD, self.y + PAD, WIDTH - 2.0 * PAD, TITLE_HEIGHT)
     }
 
-    /// The input box of `field`.
-    pub fn field_rect(&self, field: Field) -> Rect {
-        let top = self.y
-            + PAD
-            + TITLE_HEIGHT
-            + field.index() as f32 * (FIELD_HEIGHT + FIELD_GAP);
-        Rect::new(self.x + PAD, top, WIDTH - 2.0 * PAD, FIELD_HEIGHT)
+    fn row_top(&self, row: usize) -> f32 {
+        self.y + PAD + TITLE_HEIGHT + row as f32 * (FIELD_HEIGHT + FIELD_GAP)
+    }
+
+    /// The field row for `field`, or `None` when that auth detail is hidden.
+    pub fn field_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
+        let row = form
+            .visible_fields()
+            .iter()
+            .position(|&f| f == field)?;
+        Some(Rect::new(
+            self.x + PAD,
+            self.row_top(row),
+            WIDTH - 2.0 * PAD,
+            FIELD_HEIGHT,
+        ))
     }
 
     /// The bordered input box inside a field row, below its caption.
-    pub fn input_rect(&self, field: Field) -> Rect {
-        let row = self.field_rect(field);
-        Rect::new(row.x, row.y + INPUT_TOP, row.width, INPUT_HEIGHT)
+    pub fn input_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
+        let row = self.field_rect(form, field)?;
+        Some(Rect::new(row.x, row.y + INPUT_TOP, row.width, INPUT_HEIGHT))
     }
 
     /// The caption line above a field's input box.
-    pub fn caption_rect(&self, field: Field) -> Rect {
-        let row = self.field_rect(field);
-        Rect::new(row.x + 2.0, row.y, row.width - 4.0, INPUT_TOP)
+    pub fn caption_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
+        let row = self.field_rect(form, field)?;
+        Some(Rect::new(row.x + 2.0, row.y, row.width - 4.0, INPUT_TOP))
     }
 
     /// The hint / error line under the fields.
@@ -403,6 +728,54 @@ impl AddHostLayout {
             WIDTH - 2.0 * PAD,
             HINT_HEIGHT,
         )
+    }
+
+    /// Y of the Cancel / Connect row (shared by paint + hit-test).
+    pub fn button_y(&self, dialog_height: f32) -> f32 {
+        self.hint_rect(dialog_height).y + 6.0
+    }
+
+    pub fn connect_button_rect(&self, dialog_height: f32) -> Rect {
+        let dialog = self.rect(dialog_height);
+        Rect::new(
+            dialog.right() - PAD - CONNECT_BUTTON_WIDTH,
+            self.button_y(dialog_height),
+            CONNECT_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+        )
+    }
+
+    pub fn cancel_button_rect(&self, dialog_height: f32) -> Rect {
+        let connect = self.connect_button_rect(dialog_height);
+        Rect::new(
+            connect.x - BUTTON_GAP - CANCEL_BUTTON_WIDTH,
+            connect.y,
+            CANCEL_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+        )
+    }
+
+    /// Hit-test inside an open dialog. Coordinates are logical pixels.
+    pub fn hit_test(&self, form: &AddHostForm, x: f32, y: f32) -> AddHostHit {
+        let dialog_height = form.height();
+        let dialog = self.rect(dialog_height);
+        if !dialog.contains(x, y) {
+            return AddHostHit::Consume;
+        }
+        if self.connect_button_rect(dialog_height).contains(x, y) {
+            return AddHostHit::Connect;
+        }
+        if self.cancel_button_rect(dialog_height).contains(x, y) {
+            return AddHostHit::Cancel;
+        }
+        for field in form.visible_fields() {
+            if let Some(input) = self.input_rect(form, field) {
+                if input.contains(x, y) {
+                    return AddHostHit::Field(field);
+                }
+            }
+        }
+        AddHostHit::Consume
     }
 }
 
@@ -439,15 +812,38 @@ mod tests {
     }
 
     #[test]
-    fn tab_wraps_around_the_fields() {
+    fn tab_wraps_around_the_visible_fields() {
         let mut form = open_form();
-        for _ in 0..FIELDS.len() {
+        let n = form.visible_fields().len();
+        for _ in 0..n {
             form.handle_input(FormInput::Next, "");
         }
         assert_eq!(form.focused_field(), Field::Name);
 
         form.handle_input(FormInput::Previous, "");
-        assert_eq!(form.focused_field(), Field::Port);
+        assert_eq!(form.focused_field(), Field::Identity);
+    }
+
+    #[test]
+    fn tab_order_includes_auth_and_conditional_detail() {
+        let mut form = open_form();
+        form.focus_field(Field::Port);
+        form.handle_input(FormInput::Next, "");
+        assert_eq!(form.focused_field(), Field::AuthMethod);
+        form.handle_input(FormInput::Next, "");
+        assert_eq!(form.focused_field(), Field::Identity);
+
+        form.cycle_auth_method(1); // password
+        assert_eq!(form.auth_method(), "password");
+        assert!(form.visible_fields().contains(&Field::Password));
+        assert!(!form.visible_fields().contains(&Field::Identity));
+        assert_eq!(form.focused_field(), Field::Password);
+
+        form.cycle_auth_method(1); // gssapi
+        assert_eq!(form.auth_method(), "gssapi");
+        assert!(!form.shows_identity());
+        assert!(!form.shows_password());
+        assert_eq!(form.focused_field(), Field::AuthMethod);
     }
 
     #[test]
@@ -560,10 +956,24 @@ mod tests {
         let mut form = open_form();
         type_into(&mut form, "stale");
         form.set_error("boom");
+        form.cycle_auth_method(1);
         form.open();
         assert_eq!(form.values(), HostFormValues::default());
         assert_eq!(form.focused_field(), Field::Name);
         assert_eq!(form.error(), None);
+        assert_eq!(form.auth_method(), "key");
+    }
+
+    #[test]
+    fn open_selects_the_first_identity_when_any() {
+        let mut form = AddHostForm::default();
+        form.set_identities(vec![
+            ("id-a".into(), "Alpha".into()),
+            ("id-b".into(), "Beta".into()),
+        ]);
+        form.open();
+        assert_eq!(form.identity_id(), Some("id-a"));
+        assert_eq!(form.selected_identity_name(), Some("Alpha"));
     }
 
     #[test]
@@ -578,6 +988,7 @@ mod tests {
     #[test]
     fn values_round_trip_every_field() {
         let mut form = open_form();
+        form.set_identities(vec![("k1".into(), "Prod".into())]);
         type_into(&mut form, "web-01");
         form.focus_by(1);
         type_into(&mut form, "web-01.example.com");
@@ -585,6 +996,9 @@ mod tests {
         type_into(&mut form, "deploy");
         form.focus_by(1);
         type_into(&mut form, "2222");
+        form.cycle_auth_method(1);
+        form.focus_field(Field::Password);
+        type_into(&mut form, "s3cret");
 
         assert_eq!(
             form.values(),
@@ -593,7 +1007,68 @@ mod tests {
                 hostname: "web-01.example.com".to_string(),
                 username: "deploy".to_string(),
                 port: "2222".to_string(),
+                auth_method: "password".to_string(),
+                identity_id: Some("k1".to_string()),
+                password: "s3cret".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn left_right_cycle_auth_and_identity() {
+        let mut form = open_form();
+        form.set_identities(vec![
+            ("a".into(), "A".into()),
+            ("b".into(), "B".into()),
+        ]);
+        form.focus_field(Field::AuthMethod);
+        form.handle_input(FormInput::Right, "");
+        assert_eq!(form.auth_method(), "password");
+        form.handle_input(FormInput::Right, "");
+        assert_eq!(form.auth_method(), "gssapi");
+        form.handle_input(FormInput::Right, "");
+        assert_eq!(form.auth_method(), "key");
+
+        form.focus_field(Field::Identity);
+        form.handle_input(FormInput::Right, "");
+        assert_eq!(form.identity_id(), Some("b"));
+        form.handle_input(FormInput::Left, "");
+        assert_eq!(form.identity_id(), Some("a"));
+    }
+
+    #[test]
+    fn auth_validation_helpers() {
+        let mut form = open_form();
+        assert_eq!(form.auth_validation_error(), Some("Select an SSH key"));
+        form.set_identities(vec![("k".into(), "Key".into())]);
+        assert_eq!(form.auth_validation_error(), None);
+
+        form.cycle_auth_method(1);
+        assert_eq!(form.auth_validation_error(), Some("Enter a password"));
+        form.focus_field(Field::Password);
+        type_into(&mut form, "x");
+        assert_eq!(form.auth_validation_error(), None);
+
+        form.cycle_auth_method(1);
+        assert_eq!(form.auth_method(), "gssapi");
+        assert_eq!(form.auth_validation_error(), None);
+    }
+
+    #[test]
+    fn height_changes_per_auth_method() {
+        let mut form = open_form();
+        let key_h = form.height();
+        form.cycle_auth_method(1);
+        let password_h = form.height();
+        form.cycle_auth_method(1);
+        let gssapi_h = form.height();
+
+        assert_eq!(key_h, password_h, "key and password both show a detail row");
+        assert!(gssapi_h < key_h, "gssapi has no detail row");
+        assert_eq!(
+            key_h - gssapi_h,
+            FIELD_HEIGHT + FIELD_GAP,
+            "one field row difference"
         );
     }
 
@@ -602,22 +1077,23 @@ mod tests {
         let form = open_form();
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
         let dialog = layout.rect(form.height());
+        let visible = form.visible_fields();
 
-        for field in FIELDS {
-            let rect = layout.field_rect(field);
+        for &field in &visible {
+            let rect = layout.field_rect(&form, field).expect("visible");
             assert!(rect.x >= dialog.x && rect.right() <= dialog.right());
             assert!(rect.y >= dialog.y && rect.bottom() <= dialog.bottom());
         }
 
-        for pair in FIELDS.windows(2) {
-            let a = layout.field_rect(pair[0]);
-            let b = layout.field_rect(pair[1]);
+        for pair in visible.windows(2) {
+            let a = layout.field_rect(&form, pair[0]).unwrap();
+            let b = layout.field_rect(&form, pair[1]).unwrap();
             assert!(a.bottom() <= b.y, "{:?} overlaps {:?}", pair[0], pair[1]);
         }
 
-        // The hint line sits below the last field, inside the dialog.
+        let last = *visible.last().unwrap();
         let hint = layout.hint_rect(form.height());
-        assert!(hint.y >= layout.field_rect(Field::Port).bottom());
+        assert!(hint.y >= layout.field_rect(&form, last).unwrap().bottom());
         assert!(hint.bottom() <= dialog.bottom());
     }
 
@@ -636,5 +1112,72 @@ mod tests {
         let layout = AddHostLayout::centered(100.0, 60.0, form.height());
         assert_eq!(layout.x, 0.0);
         assert_eq!(layout.y, 0.0);
+    }
+
+    #[test]
+    fn hit_test_finds_fields_and_footer_buttons() {
+        let form = open_form();
+        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+
+        let name = layout.input_rect(&form, Field::Name).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, name.x + 2.0, name.y + 2.0),
+            AddHostHit::Field(Field::Name)
+        );
+
+        let auth = layout.input_rect(&form, Field::AuthMethod).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, auth.x + 2.0, auth.y + 2.0),
+            AddHostHit::Field(Field::AuthMethod)
+        );
+
+        let identity = layout.input_rect(&form, Field::Identity).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, identity.x + 2.0, identity.y + 2.0),
+            AddHostHit::Field(Field::Identity)
+        );
+
+        let h = form.height();
+        let cancel = layout.cancel_button_rect(h);
+        assert_eq!(
+            layout.hit_test(&form, cancel.x + 2.0, cancel.y + 2.0),
+            AddHostHit::Cancel
+        );
+
+        let connect = layout.connect_button_rect(h);
+        assert_eq!(
+            layout.hit_test(&form, connect.x + 2.0, connect.y + 2.0),
+            AddHostHit::Connect
+        );
+
+        let title = layout.title_rect();
+        assert_eq!(
+            layout.hit_test(&form, title.x + 2.0, title.y + 2.0),
+            AddHostHit::Consume
+        );
+    }
+
+    #[test]
+    fn hit_test_finds_password_when_selected() {
+        let mut form = open_form();
+        form.cycle_auth_method(1);
+        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let password = layout.input_rect(&form, Field::Password).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, password.x + 2.0, password.y + 2.0),
+            AddHostHit::Field(Field::Password)
+        );
+        assert!(layout.input_rect(&form, Field::Identity).is_none());
+    }
+
+    #[test]
+    fn focus_field_jumps_without_wrapping() {
+        let mut form = open_form();
+        form.focus_field(Field::Port);
+        assert_eq!(form.focused_field(), Field::Port);
+        form.focus_field(Field::Hostname);
+        assert_eq!(form.focused_field(), Field::Hostname);
+        form.focus_field(Field::AuthMethod);
+        assert_eq!(form.focused_field(), Field::AuthMethod);
     }
 }

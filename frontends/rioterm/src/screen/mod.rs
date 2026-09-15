@@ -549,25 +549,58 @@ impl Screen<'_> {
         // `create` hands out no id, so the row inserted a moment ago is
         // found by the label the worker echoed back.
         if store_changed {
-            if let Some(label) = self.pending_host_select.take() {
-                if let Some(index) = self.chrome.panel.rows.iter().position(|row| {
-                    row.host()
-                        .is_some_and(|item| item.name == label && item.badge == Badge::Ssh)
-                }) {
-                    self.chrome.panel.selected = Some(index);
-                }
-            }
+            // Keep Settings keys + add-host picker in sync with the store.
+            let key_items: Vec<terminus_ui::settings::SshKeyItem> = self
+                .host_store
+                .identities()
+                .iter()
+                .map(|(id, name, fingerprint)| terminus_ui::settings::SshKeyItem {
+                    id: id.clone(),
+                    name: name.clone(),
+                    fingerprint: fingerprint.clone(),
+                    created: String::new(),
+                })
+                .collect();
+            self.chrome.settings.set_keys(key_items.clone());
+            self.chrome.form.set_identities(
+                key_items
+                    .into_iter()
+                    .map(|k| (k.id, k.name))
+                    .collect(),
+            );
 
             if let Some(notice) = self.host_store.take_notice() {
                 self.chrome.panel.notice = Some(notice);
                 self.chrome.panel.error = None;
+                if let Some(label) = self.pending_host_select.take() {
+                    if let Some(index) = self.chrome.panel.rows.iter().position(|row| {
+                        row.host().is_some_and(|item| {
+                            item.name == label && item.badge == Badge::Ssh
+                        })
+                    }) {
+                        self.chrome.panel.selected = Some(index);
+                    }
+                }
+                if self.chrome.add_host_is_open() {
+                    self.chrome.form.close();
+                }
             }
-            // A store-level failure has nowhere else to show while the
-            // editor is closed; when it is open the error belongs on the
-            // dialog, not behind its scrim.
-            if !self.chrome.add_host_is_open() {
-                self.chrome.panel.error = self.host_store.error().map(str::to_string);
+            if let Some(message) = self.host_store.error().map(str::to_string) {
+                if self.chrome.add_host_is_open() {
+                    self.chrome.form.set_error(message);
+                } else {
+                    self.chrome.panel.error = Some(message);
+                }
             }
+            if let Some(msg) = self.host_store.take_vault_message() {
+                self.chrome.panel.notice = Some(msg);
+            }
+            self.chrome.settings.apply_sync_status(terminus_ui::SyncUiStatus {
+                uri: self.host_store.sync_uri().to_string(),
+                connected: self.host_store.sync_connected(),
+                vault_unlocked: self.host_store.vault_unlocked(),
+                status_line: self.host_store.sync_status_line().to_string(),
+            });
         }
         true
     }
@@ -619,7 +652,8 @@ impl Screen<'_> {
 
     /// Route a mouse move. Returns whether the chrome changed.
     pub fn chrome_hover(&mut self, x: f32, y: f32) -> bool {
-        let (_, height) = self.chrome_viewport();
+        let (width, height) = self.chrome_viewport();
+        self.chrome.set_window_size(width, height);
         self.chrome.handle_hover(height, x, y)
     }
 
@@ -763,15 +797,16 @@ impl Screen<'_> {
             hostname: values.hostname,
             username: values.username,
             port: values.port,
+            auth_method: values.auth_method,
+            identity_id: values.identity_id,
+            password: values.password,
         };
-        match self.host_store.create(&draft) {
+        match self.host_store.probe_and_create(&draft) {
             Ok(()) => {
-                // `create` normalises as it stores; the same call here
-                // gives the label the worker will echo, so the new row
-                // can be highlighted when the list comes back.
+                // Stay open until the worker reports Stored or Failed.
                 self.pending_host_select = draft.normalize().ok().map(|d| d.name);
                 self.chrome.panel.error = None;
-                self.chrome.form.close();
+                self.chrome.form.set_error("Connecting…");
             }
             Err(message) => self.chrome.form.set_error(message),
         }
@@ -3207,6 +3242,25 @@ impl Screen<'_> {
         } else {
             CursorIcon::Text
         }
+    }
+
+    /// Chrome-aware cursor under logical `(x, y)`. `None` means the
+    /// pointer is over the terminal grid and [`Self::mouse_cursor_icon`]
+    /// should decide.
+    pub fn chrome_cursor_at(&self, x: f32, y: f32) -> Option<CursorIcon> {
+        let (width, height) = self.chrome_viewport();
+        let over_modal = self.chrome.settings_is_open()
+            || self.chrome.add_host_is_open()
+            || self.chrome.connection.is_some();
+        let over_rail = !self.chrome.activity.collapsed && x < self.chrome.reserved_width();
+        if !over_modal && !over_rail {
+            return None;
+        }
+        Some(match self.chrome.cursor_at(width, height, x, y) {
+            terminus_ui::ChromeCursor::Pointer => CursorIcon::Pointer,
+            terminus_ui::ChromeCursor::Text => CursorIcon::Text,
+            terminus_ui::ChromeCursor::Default => CursorIcon::Default,
+        })
     }
 
     /// Execute a hint latched at press time. The latched match is the

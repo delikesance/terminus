@@ -42,6 +42,49 @@ pub enum Error {
     /// Serialization/deserialization failures (JSON payloads stored in the vault).
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    /// Generic message (GSSAPI / probe helpers). Prefer typed variants when possible.
+    #[error("{0}")]
+    Message(String),
+
+    /// Private key material could not be parsed. Never includes raw secret.
+    #[error("invalid SSH identity key: {reason}")]
+    IdentityKeyInvalid { reason: String },
+
+    /// No TGT / expired ccache for GSSAPI (Unix). Exact UI copy.
+    #[error("No Kerberos ticket found. Run kinit, then try again.")]
+    GssapiNoTicket,
+
+    /// GSSAPI not implemented on this OS (Windows v1). Exact UI copy.
+    #[error("Kerberos (GSSAPI) is not supported on Windows.")]
+    GssapiUnsupported,
+
+    /// Vault unlock failed (wrong passphrase).
+    #[error("vault unlock failed")]
+    VaultUnlockFailed,
+
+    /// Vault decrypt failed (tamper / wrong AAD).
+    #[error("vault decrypt failed")]
+    VaultDecryptFailed,
+
+    /// Vault is locked — cannot seal or open secrets.
+    #[error("vault is locked")]
+    VaultLocked,
+
+    /// No vault header configured yet.
+    #[error("vault is not configured")]
+    VaultNotConfigured,
+
+    /// Passphrase rejected by policy.
+    #[error("invalid vault passphrase")]
+    InvalidPassphrase,
+}
+
+impl Error {
+    /// Build a generic [`Error::Message`].
+    pub fn msg(msg: impl Into<String>) -> Self {
+        Self::Message(msg.into())
+    }
 }
 
 impl From<std::io::Error> for Error {
@@ -71,6 +114,12 @@ impl From<russh::Error> for Error {
 impl From<russh::keys::Error> for Error {
     fn from(err: russh::keys::Error) -> Self {
         Error::SshError(err.to_string())
+    }
+}
+
+impl From<russh::SendError> for Error {
+    fn from(_: russh::SendError) -> Self {
+        Error::SshError("SSH send error".into())
     }
 }
 

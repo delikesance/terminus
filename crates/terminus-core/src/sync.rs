@@ -89,6 +89,51 @@ impl SyncConfig {
             .map(str::trim)
             .is_some_and(|u| !u.is_empty())
     }
+
+    /// Serialize for the local settings table.
+    pub fn to_json(&self) -> Result<String> {
+        serde_json::to_string(self).map_err(|e| Error::SyncError(e.to_string()))
+    }
+
+    /// Parse from the local settings table.
+    pub fn from_json(raw: &str) -> Result<Self> {
+        serde_json::from_str(raw).map_err(|e| Error::SyncError(e.to_string()))
+    }
+}
+
+/// Open a sqlite pool for the sync remote URI.
+pub async fn open_remote_sqlite_pool(uri: &str) -> Result<SqlitePool> {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+
+    let uri = uri.trim();
+    if uri.is_empty() {
+        return Err(Error::SyncError("Connection URI is empty".into()));
+    }
+    let lower = uri.to_ascii_lowercase();
+    if lower.starts_with("postgres://") || lower.starts_with("postgresql://") {
+        return Err(Error::SyncError(
+            "PostgreSQL remote sync is not available yet — use a sqlite: URI".into(),
+        ));
+    }
+
+    let options = if lower.starts_with("sqlite:") {
+        SqliteConnectOptions::from_str(uri)
+            .map_err(|e| Error::DatabaseError(e.to_string()))?
+            .create_if_missing(true)
+            .foreign_keys(true)
+    } else {
+        SqliteConnectOptions::new()
+            .filename(uri)
+            .create_if_missing(true)
+            .foreign_keys(true)
+    };
+
+    SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(options)
+        .await
+        .map_err(|e| Error::DatabaseError(format!("Could not open remote database: {e}")))
 }
 
 /// Sync engine state machine.
@@ -301,6 +346,16 @@ impl SyncEngine {
     pub async fn set_remote(&self, pool: SqlitePool) -> Result<()> {
         *self.remote.lock().await = Some(pool);
         self.transition_to(SyncStatus::Idle).await
+    }
+
+    /// Opens a sqlite remote from a connection URI and attaches it.
+    ///
+    /// `postgres://` / `postgresql://` URIs are rejected until the Postgres
+    /// transport lands. Bare filesystem paths are accepted as create-if-missing
+    /// sqlite files.
+    pub async fn attach_remote_uri(&self, uri: &str) -> Result<()> {
+        let pool = open_remote_sqlite_pool(uri).await?;
+        self.set_remote(pool).await
     }
 
     /// Detaches the remote backend pool and moves back to `Unconfigured`.
@@ -544,6 +599,23 @@ mod tests {
 
         engine.detach_vault().await;
         assert!(engine.vault().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_remote_rejects_postgres_and_opens_sqlite() {
+        let err = open_remote_sqlite_pool("postgres://user:pass@localhost/db")
+            .await
+            .expect_err("postgres not wired");
+        assert!(err.to_string().contains("PostgreSQL"));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("remote.db");
+        let uri = format!("sqlite:{}", path.display());
+        let pool = open_remote_sqlite_pool(&uri).await.expect("sqlite open");
+        let engine = SyncEngine::new(SyncConfig::remote(&uri));
+        engine.set_remote(pool).await.expect("attach");
+        let report = engine.sync_now().await.expect("sync stub");
+        assert!(report.finished_at.is_some());
     }
 
     #[test]

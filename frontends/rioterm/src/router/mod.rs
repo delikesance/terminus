@@ -53,6 +53,8 @@ pub enum Modal {
     VaultUnlock,
     /// Host editor (add/edit host configuration).
     HostEditor,
+    /// Settings modal (SQL Sync text fields).
+    Settings,
     /// SFTP dual-pane browser overlay.
     SftpPane,
 }
@@ -196,6 +198,9 @@ impl Route<'_> {
         if self.window.screen.chrome.add_host_is_open() {
             return Some(Modal::HostEditor);
         }
+        if self.window.screen.chrome.settings_is_open() {
+            return Some(Modal::Settings);
+        }
         if self.path != RoutePath::Terminal {
             return Some(Modal::Route);
         }
@@ -259,6 +264,18 @@ impl Route<'_> {
             }
             Some(Modal::HostEditor) => {
                 if self.window.screen.chrome_commit_text(text) {
+                    self.request_overlay_redraw();
+                }
+                true
+            }
+            Some(Modal::Settings) => {
+                if self
+                    .window
+                    .screen
+                    .chrome
+                    .settings
+                    .insert_sql_text(text)
+                {
                     self.request_overlay_redraw();
                 }
                 true
@@ -523,6 +540,82 @@ impl Route<'_> {
                     self.window.screen.chrome_key_input(key_event)
                 {
                     self.window.screen.submit_host_form();
+                }
+                self.request_overlay_redraw();
+                true
+            }
+
+            Modal::Settings => {
+                use rio_window::event::ElementState;
+                use terminus_ui::SqlSyncFocus;
+
+                if key_event.state == ElementState::Pressed {
+                    match &key_event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.window.screen.chrome.settings.close();
+                            self.request_overlay_redraw();
+                            return true;
+                        }
+                        Key::Named(NamedKey::Tab) => {
+                            let next = match self.window.screen.chrome.settings.sql_focus {
+                                SqlSyncFocus::None | SqlSyncFocus::Passphrase => {
+                                    SqlSyncFocus::Uri
+                                }
+                                SqlSyncFocus::Uri => SqlSyncFocus::Passphrase,
+                            };
+                            match next {
+                                SqlSyncFocus::Uri => {
+                                    self.window.screen.chrome.settings.focus_uri()
+                                }
+                                SqlSyncFocus::Passphrase => {
+                                    self.window.screen.chrome.settings.focus_passphrase()
+                                }
+                                SqlSyncFocus::None => {}
+                            }
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            let _ = self.window.screen.chrome.settings.sql_backspace();
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            match self.window.screen.chrome.settings.sql_focus {
+                                SqlSyncFocus::Passphrase => {
+                                    let passphrase = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .sql_passphrase
+                                        .clone();
+                                    self.window
+                                        .screen
+                                        .host_store
+                                        .unlock_vault(&passphrase);
+                                }
+                                SqlSyncFocus::Uri | SqlSyncFocus::None => {
+                                    let uri = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .sql_uri
+                                        .clone();
+                                    self.window.screen.host_store.test_sync(&uri);
+                                }
+                            }
+                        }
+                        Key::Character(ch) => {
+                            let text = key_event.text.as_deref().unwrap_or(ch.as_str());
+                            if crate::renderer::is_printable_text(text) {
+                                let _ = self
+                                    .window
+                                    .screen
+                                    .chrome
+                                    .settings
+                                    .insert_sql_text(text);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 self.request_overlay_redraw();
                 true
