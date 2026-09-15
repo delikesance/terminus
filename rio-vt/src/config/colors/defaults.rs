@@ -4,7 +4,7 @@ use crate::config::colors::{ColorArray, ColorBuilder, ColorComposition, Format};
 
 #[inline]
 pub fn background() -> ColorComposition {
-    let color = ColorBuilder::from_hex(String::from("#0F0D0E"), Format::SRGB0_1)
+    let color = ColorBuilder::from_hex(String::from("#18181b"), Format::SRGB0_1)
         .unwrap()
         .to_arr();
     (
@@ -20,7 +20,7 @@ pub fn background() -> ColorComposition {
 
 #[inline]
 pub fn cursor() -> ColorArray {
-    ColorBuilder::from_hex(String::from("#F712FF"), Format::SRGB0_1)
+    ColorBuilder::from_hex(String::from("#0A84FF"), Format::SRGB0_1)
         .unwrap()
         .to_arr()
 }
@@ -34,7 +34,7 @@ pub fn vi_cursor() -> ColorArray {
 
 #[inline]
 pub fn tabs() -> ColorArray {
-    ColorBuilder::from_hex(String::from("#424040"), Format::SRGB0_1)
+    ColorBuilder::from_hex(String::from("#2F2F35"), Format::SRGB0_1)
         .unwrap()
         .to_arr()
 }

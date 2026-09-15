@@ -174,8 +174,28 @@ sleep 2
 # just for the app: without it every window lookup silently finds nothing.
 export DISPLAY="$DISP"
 
+# `nix develop` puts nixpkgs' build-time bash first in PATH and points SHELL at
+# it. That bash has no readline, so a shell spawned here loses Tab completion,
+# history and Ctrl-R while every other key keeps working — see the longer note
+# in dev.sh. Hand the spawned shell a bash that carries the `bind` builtin.
+find_readline_shell() {
+    local candidate
+    for candidate in "${TERMINUS_SHELL:-}" "$(command -v bashInteractive || true)" \
+        /run/current-system/sw/bin/bash /usr/bin/bash /bin/bash; do
+        [[ -n "$candidate" && -x "$candidate" ]] || continue
+        if "$candidate" -c 'type -t bind' >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 app_env=(DISPLAY="$DISP" RIO_LOG_LEVEL="${RIO_LOG_LEVEL:-info}")
 [[ "$USE_CONFIG" == "1" ]] && app_env+=(RIO_CONFIG_HOME="$CONFIG_DIR")
+if shell_bin="$(find_readline_shell)"; then
+    app_env+=(SHELL="$shell_bin")
+fi
 (
     cd "$ROOT"
     exec env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET "${app_env[@]}" "$BIN" ${APP_ARGS[@]+"${APP_ARGS[@]}"}

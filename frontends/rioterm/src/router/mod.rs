@@ -209,6 +209,33 @@ impl Route<'_> {
     /// consumed (an open text sink swallows even rejected text, the
     /// way `has_key_wait` blocks all keys for it).
     pub fn overlay_commit_text(&mut self, text: &str) -> bool {
+        if self.window.screen.chrome.hosts_visible()
+            && !self.window.screen.chrome.add_host_is_open()
+        {
+            if self.window.screen.chrome.panel.filter_focused {
+                if crate::renderer::is_printable_text(text) {
+                    self.window.screen.chrome.panel.filter.push_str(text);
+                    self.request_overlay_redraw();
+                }
+                return true;
+            }
+            if self.window.screen.chrome.panel.new_group_focused {
+                if crate::renderer::is_printable_text(text)
+                    && self.window.screen.chrome.panel.new_group_name.len()
+                        + text.len()
+                        <= 32
+                {
+                    self.window
+                        .screen
+                        .chrome
+                        .panel
+                        .new_group_name
+                        .push_str(text);
+                    self.request_overlay_redraw();
+                }
+                return true;
+            }
+        }
         match self.active_modal() {
             Some(Modal::IslandRename) => {
                 if let Some(ref mut island) = self.window.screen.renderer.island {
@@ -262,6 +289,18 @@ impl Route<'_> {
         clipboard: &mut Clipboard,
     ) -> bool {
         use rio_window::event::ElementState;
+
+        // Drawer text fields (filter / new-group) own keys while focused,
+        // even though they are not a full modal over the terminal.
+        if self.window.screen.chrome.hosts_visible()
+            && (self.window.screen.chrome.panel.filter_focused
+                || self.window.screen.chrome.panel.new_group_focused)
+            && !self.window.screen.chrome.add_host_is_open()
+        {
+            let _ = self.window.screen.chrome_key_input(key_event);
+            self.request_overlay_redraw();
+            return true;
+        }
 
         // One dispatch on THE modal roster; each arm keeps its
         // existing handling. `active_modal` already checked each

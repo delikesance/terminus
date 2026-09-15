@@ -30,6 +30,8 @@ pub mod scrollbar;
 pub mod search;
 pub mod trail_cursor;
 pub mod utils;
+#[cfg(target_os = "windows")]
+pub mod window_controls;
 
 use rio_backend::event::TerminalDamage;
 
@@ -55,7 +57,12 @@ const TOOLTIP_PADDING_Y: f32 = 5.0;
 const TOOLTIP_MARGIN: f32 = 6.0;
 const TOOLTIP_CORNER_RADIUS: f32 = 5.0;
 const TOOLTIP_MAX_WIDTH_RATIO: f32 = 0.6;
-const TOOLTIP_BG_COLOR: [f32; 4] = [0.12, 0.12, 0.12, 0.96];
+const TOOLTIP_BG_COLOR: [f32; 4] = [
+    0x22 as f32 / 255.0,
+    0x22 as f32 / 255.0,
+    0x26 as f32 / 255.0,
+    0.98,
+];
 const TOOLTIP_TEXT_COLOR: [u8; 4] = [237, 237, 237, 255];
 const TOOLTIP_DEPTH_BG: f32 = 0.1;
 const TOOLTIP_ORDER: u8 = 20;
@@ -142,6 +149,85 @@ fn draw_hint_tooltip(
         &label,
         &opts,
     );
+}
+
+/// Thin top band: host · session title (no horizontal tab pills).
+fn render_context_bar<T: rio_backend::event::EventListener + Clone + Send + 'static>(
+    sugarloaf: &mut Sugarloaf,
+    dimensions: (f32, f32, f32),
+    context_manager: &ContextManager<T>,
+    _bg: [f32; 4],
+    window_maximized: bool,
+) {
+    use crate::renderer::island::CONTEXT_BAR_HEIGHT;
+
+    let (window_width, _window_height, scale_factor) = dimensions;
+    let logical_w = window_width / scale_factor;
+
+    let strip = [
+        0x11 as f32 / 255.0,
+        0x11 as f32 / 255.0,
+        0x13 as f32 / 255.0,
+        1.0,
+    ];
+    let strip_border = [
+        0x2f as f32 / 255.0,
+        0x2f as f32 / 255.0,
+        0x35 as f32 / 255.0,
+        1.0,
+    ];
+    sugarloaf.rect(None, 0.0, 0.0, logical_w, CONTEXT_BAR_HEIGHT, strip, 0.04, 0);
+    sugarloaf.rect(
+        None,
+        0.0,
+        CONTEXT_BAR_HEIGHT - 1.0,
+        logical_w,
+        1.0,
+        strip_border,
+        0.041,
+        0,
+    );
+
+    let idx = context_manager.current_index();
+    let host = context_manager
+        .current()
+        .host_id
+        .as_deref()
+        .unwrap_or(crate::hosts::LOCAL_ID);
+    let session = context_manager
+        .custom_title(idx)
+        .map(str::to_string)
+        .or_else(|| {
+            context_manager
+                .title(idx)
+                .map(|t| t.content.clone())
+        })
+        .unwrap_or_else(|| "Terminal".to_string());
+    let label = format!("● {host} · {session}");
+    let opts = DrawOpts {
+        font_size: 12.0,
+        color: [0xed, 0xed, 0xed, 0xff],
+        ..DrawOpts::default()
+    };
+    let text_y = (CONTEXT_BAR_HEIGHT - 12.0) * 0.5;
+    sugarloaf.text_mut().draw(16.0, text_y, &label, &opts);
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window_maximized;
+        crate::renderer::window_controls::render(
+            sugarloaf,
+            logical_w,
+            scale_factor,
+            window_maximized,
+            None,
+            [0.9, 0.9, 0.9, 1.0],
+        );
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window_maximized;
+    }
 }
 
 /// The window-bg clear alpha that flows into sugarloaf's
@@ -244,16 +330,7 @@ impl Renderer {
             dynamic_background.2 = true;
         }
 
-        let island = if config.navigation.is_enabled() {
-            Some(island::Island::new(
-                named_colors.tabs,
-                named_colors.tabs_active,
-                config.navigation.hide_if_single,
-                config.navigation.max_tab_width,
-            ))
-        } else {
-            None
-        };
+        let island = None;
 
         Renderer {
             unfocused_split_opacity: config.navigation.unfocused_split_opacity,
@@ -301,11 +378,7 @@ impl Renderer {
                 decay_slow: config.effects.trail_cursor_decay[1] as f32 / 1000.0,
                 start_threshold: config.effects.trail_cursor_start_threshold as f32,
             }),
-            chrome_theme: terminus_ui::theme::ChromeTheme::from_terminal(
-                crate::renderer::rgb_u8(config.colors.foreground),
-                crate::renderer::rgb_u8(config.colors.background.0),
-                crate::renderer::rgb_u8(config.colors.cursor),
-            ),
+            chrome_theme: terminus_ui::theme::ChromeTheme::apple_hig(),
         }
     }
 
@@ -470,6 +543,9 @@ impl Renderer {
         sugarloaf: &mut Sugarloaf,
         context_manager: &mut ContextManager<EventProxy>,
         chrome: &terminus_ui::chrome::Chrome,
+        connecting_phase: Option<f32>,
+        #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+        window_maximized: bool,
     ) -> (Option<crate::context::renderable::WindowUpdate>, bool) {
         let mut any_panel_dirty = false;
         let grid = context_manager.current_grid_mut();
@@ -844,6 +920,17 @@ impl Renderer {
                 (window_size.width, window_size.height, scale_factor),
                 context_manager,
                 island_bg,
+                window_maximized,
+            );
+        } else if self.navigation.is_enabled() {
+            render_context_bar(
+                sugarloaf,
+                (window_size.width, window_size.height, scale_factor),
+                context_manager,
+                self.last_window_bg
+                    .map(|c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32])
+                    .unwrap_or(self.named_colors.background.0),
+                window_maximized,
             );
         }
 
@@ -895,6 +982,8 @@ impl Renderer {
             &self.chrome_theme,
             window_size.width / scale_factor,
             window_size.height / scale_factor,
+            scale_factor,
+            connecting_phase,
         );
 
         // Render scrollbars for each panel

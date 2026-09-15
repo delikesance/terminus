@@ -31,6 +31,57 @@ pub struct TextInstance {
 // 36 bytes (4-aligned). f32 pos (vs grid's u16 grid_pos) adds 4 bytes.
 const _: () = assert!(std::mem::size_of::<TextInstance>() == 36);
 
+/// Font-id namespace reserved for caller-rasterized coverage masks.
+/// Real faces are resolved by the font library and never reach
+/// `u32::MAX`, so masks can share the glyph atlas without colliding.
+pub const MASK_FONT_ID: u32 = u32::MAX;
+
+/// A CPU-rasterized coverage mask: `size` x `size` bytes of 8-bit
+/// alpha, row-major, no row stride.
+///
+/// This is how vector artwork reaches the atlas. The glyph pipeline
+/// only knows fonts, and paint-time primitives (`rect`, `line`) can
+/// only approximate a curve — a mask instead carries the rasterizer's
+/// own per-pixel coverage, so an outline stays smooth and anti-aliased
+/// instead of being flattened into snapped quads.
+///
+/// Square by construction: the atlas key carries a single dimension
+/// (`size_bucket`), and icon artwork is square.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoverageMask {
+    /// Side of the mask, in device pixels.
+    pub size: u16,
+    /// `size * size` R8 alpha values.
+    pub bytes: Vec<u8>,
+}
+
+impl CoverageMask {
+    /// A mask over `bytes`, or `None` when they aren't `size * size`.
+    pub fn new(size: u16, bytes: Vec<u8>) -> Option<Self> {
+        if bytes.len() == size as usize * size as usize {
+            Some(Self { size, bytes })
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.size == 0 || self.bytes.is_empty()
+    }
+
+    /// The atlas sees every mask as a bearingless, whole-mask glyph.
+    fn raster(&self) -> crate::grid::RasterizedGlyph<'_> {
+        crate::grid::RasterizedGlyph {
+            width: self.size,
+            height: self.size,
+            bearing_x: 0,
+            bearing_y: 0,
+            bytes: &self.bytes,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct DrawOpts {
     // unscaled font size. Text multiplies by its
@@ -266,6 +317,66 @@ impl Text {
             .unwrap_or(0.0)
     }
 
+    /// Draw a caller-rasterized icon, tinted with `color`.
+    ///
+    /// `size` is the side of the artwork in device pixels; it is drawn
+    /// 1:1 at the device pixel nearest logical `(x, y)`. The text shader
+    /// fetches atlas texels directly (`textureLoad`, no filtering), so
+    /// the artwork lands exactly as the rasterizer wrote it and keeps
+    /// its own sub-pixel coverage. That is what makes an outline
+    /// genuinely anti-aliased: paint-time primitives have to approximate
+    /// a curve with quads whose edges fall between pixels, and no amount
+    /// of snapping recovers the coverage they lose.
+    ///
+    /// `rasterize` is called only on the first draw of a given
+    /// `(artwork_id, size)` pair — the atlas then holds the coverage
+    /// mask, so later frames are a lookup plus one quad.
+    ///
+    /// `artwork_id` names the artwork in the caller's namespace; mask
+    /// keys live in [`MASK_FONT_ID`], which real faces cannot occupy.
+    ///
+    /// Returns `false` when the rasterizer returns no ink, or when no
+    /// atlas has room for the mask.
+    pub fn draw_mask<F>(
+        &mut self,
+        x: f32,
+        y: f32,
+        artwork_id: u64,
+        size: u16,
+        color: [u8; 4],
+        rasterize: F,
+    ) -> bool
+    where
+        F: FnOnce(u16) -> Option<CoverageMask>,
+    {
+        if size == 0 {
+            return false;
+        }
+        let key = crate::grid::GlyphKey {
+            font_id: MASK_FONT_ID,
+            glyph_id: artwork_id as u32,
+            size_bucket: size,
+        };
+        let Some(slot) = self.mask_slot(key, size, rasterize) else {
+            return false;
+        };
+        if slot.w == 0 || slot.h == 0 {
+            return false;
+        }
+        let scale = self.scale_factor;
+        self.instances.push(TextInstance {
+            pos: [(x * scale).round(), (y * scale).round()],
+            glyph_pos: [slot.x as u32, slot.y as u32],
+            glyph_size: [slot.w as u32, slot.h as u32],
+            bearings: [0, 0],
+            color,
+            atlas: 0,
+            page: slot.page,
+            _pad: [0; 2],
+        });
+        true
+    }
+
     fn shape_for(&mut self, text: &str, opts: &DrawOpts) -> Option<ShapedRun> {
         use crate::{Attributes, SpanStyle, Stretch, Style as FontStyle, Weight};
 
@@ -465,8 +576,18 @@ impl Text {
                 color
             };
 
+            // Snap the glyph origin to the device pixel grid. The atlas
+            // is read texel for texel (`textureLoad`, no filter) while
+            // the quad is built from a whole-pixel glyph size and integer
+            // bearings — so an integer origin samples 1:1, and a
+            // fractional one samples a shifted neighbourhood, which is
+            // what makes UI text read as soft next to the grid. Only UI
+            // text comes through this path (the terminal grid has its own
+            // shader), so cell positioning is untouched.
+            let origin_x = (pen_x + glyph.x).round();
+            let origin_y = (py + glyph.y.max(0.0)).round();
             self.instances.push(TextInstance {
-                pos: [pen_x + glyph.x, py + glyph.y.max(0.0)],
+                pos: [origin_x, origin_y],
                 glyph_pos: [slot.x as u32, slot.y as u32],
                 glyph_size: [slot.w as u32, slot.h as u32],
                 bearings: [slot.bearing_x, slot.bearing_y],
@@ -764,6 +885,89 @@ impl Text {
             })?
         };
         Some((slot, raw_is_color))
+    }
+
+    /// Lookup, or rasterize-and-upload, the atlas slot for a coverage
+    /// mask.
+    ///
+    /// Same backend precedence as `rasterize_slot` — software atlas
+    /// first, then Metal / Vulkan / wgpu — but no font data is needed:
+    /// `rasterize` produces the coverage bytes, and it runs only after
+    /// both the grayscale lookup misses.
+    fn mask_slot<F>(
+        &mut self,
+        key: crate::grid::GlyphKey,
+        size: u16,
+        rasterize: F,
+    ) -> Option<crate::grid::atlas::AtlasSlot>
+    where
+        F: FnOnce(u16) -> Option<CoverageMask>,
+    {
+        if self.cpu.is_some() {
+            let state = self.cpu.as_mut()?;
+            if let Some(slot) = state.atlas_grayscale.lookup(key) {
+                return Some(slot);
+            }
+            let Some(mask) = rasterize(size) else {
+                return None;
+            };
+            let raster = mask.raster();
+            return state.atlas_grayscale.insert(key, raster).or_else(|| {
+                if state.atlas_grayscale.grow() {
+                    state.atlas_grayscale.insert(key, raster)
+                } else {
+                    None
+                }
+            });
+        }
+
+        #[cfg(target_os = "macos")]
+        if self.metal.is_some() {
+            let state = self.metal.as_mut()?;
+            if let Some(slot) = state.atlas_grayscale.lookup(key) {
+                return Some(slot);
+            }
+            let Some(mask) = rasterize(size) else {
+                return None;
+            };
+            let raster = mask.raster();
+            return state.atlas_grayscale.insert(key, raster).or_else(|| {
+                if state
+                    .atlas_grayscale
+                    .grow(&state.device, &state.command_queue)
+                {
+                    state.atlas_grayscale.insert(key, raster)
+                } else {
+                    None
+                }
+            });
+        }
+
+        #[cfg(target_os = "linux")]
+        if self.vulkan.is_some() {
+            let state = self.vulkan.as_mut()?;
+            if let Some(slot) = state.atlas_grayscale.lookup(key) {
+                return Some(slot);
+            }
+            let Some(mask) = rasterize(size) else {
+                return None;
+            };
+            return state.atlas_grayscale.insert(key, mask.raster());
+        }
+
+        #[cfg(all(feature = "wgpu", not(target_os = "macos")))]
+        if self.wgpu.is_some() {
+            let state = self.wgpu.as_mut()?;
+            if let Some(slot) = state.atlas_grayscale.lookup(key) {
+                return Some(slot);
+            }
+            let Some(mask) = rasterize(size) else {
+                return None;
+            };
+            return state.atlas_grayscale.insert(key, mask.raster());
+        }
+
+        None
     }
 
     /// Paint the queued UI text instances into the caller-supplied

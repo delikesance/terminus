@@ -22,7 +22,7 @@ fn color_u8(c: [f32; 4]) -> [u8; 4] {
 // Layout
 const OVERLAY_WIDTH: f32 = 320.0;
 const OVERLAY_HEIGHT: f32 = 36.0;
-const OVERLAY_CORNER_RADIUS: f32 = 8.0;
+const OVERLAY_CORNER_RADIUS: f32 = 12.0;
 const OVERLAY_MARGIN_TOP: f32 = 8.0;
 const OVERLAY_MARGIN_RIGHT: f32 = 8.0;
 const OVERLAY_PADDING_X: f32 = 10.0;
@@ -38,13 +38,43 @@ const BUTTONS_AREA_WIDTH: f32 = BUTTON_SIZE * 3.0 + BUTTON_GAP * 2.0;
 const CARET_WIDTH: f32 = 1.5;
 const CARET_BLINK_MS: u128 = 500;
 
-// Colors
-const BG_COLOR: [f32; 4] = [0.12, 0.12, 0.12, 0.98];
-const INPUT_BG_COLOR: [f32; 4] = [0.16, 0.16, 0.16, 1.0];
-const TEXT_COLOR: [f32; 4] = [0.93, 0.93, 0.93, 1.0];
-const DIM_TEXT_COLOR: [f32; 4] = [0.50, 0.50, 0.50, 1.0];
-const BUTTON_TEXT_COLOR: [f32; 4] = [0.70, 0.70, 0.70, 1.0];
-const BUTTON_HOVER_BG: [f32; 4] = [0.25, 0.25, 0.28, 1.0];
+// Colors — Apple HIG flat dark
+const BG_COLOR: [f32; 4] = [
+    0x22 as f32 / 255.0,
+    0x22 as f32 / 255.0,
+    0x26 as f32 / 255.0,
+    1.0,
+];
+const INPUT_BG_COLOR: [f32; 4] = [
+    0x1b as f32 / 255.0,
+    0x1b as f32 / 255.0,
+    0x1e as f32 / 255.0,
+    1.0,
+];
+const TEXT_COLOR: [f32; 4] = [
+    0xf1 as f32 / 255.0,
+    0xf5 as f32 / 255.0,
+    0xf9 as f32 / 255.0,
+    1.0,
+];
+const DIM_TEXT_COLOR: [f32; 4] = [
+    0x94 as f32 / 255.0,
+    0xa3 as f32 / 255.0,
+    0xb8 as f32 / 255.0,
+    1.0,
+];
+const BUTTON_TEXT_COLOR: [f32; 4] = [
+    0xcb as f32 / 255.0,
+    0xd5 as f32 / 255.0,
+    0xe1 as f32 / 255.0,
+    1.0,
+];
+const BUTTON_HOVER_BG: [f32; 4] = [
+    0x2a as f32 / 255.0,
+    0x2a as f32 / 255.0,
+    0x30 as f32 / 255.0,
+    1.0,
+];
 
 // Depth / order
 const DEPTH_BG: f32 = 0.1;

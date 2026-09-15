@@ -114,6 +114,8 @@ pub struct ContextGrid<T: EventListener> {
     pub custom_title: Option<String>,
     // custom_color is the tab's background override (tab color picker).
     pub custom_color: Option<[f32; 4]>,
+    /// Home "This computer" tab — cannot be closed (survives splits).
+    pub pinned: bool,
     scale: f32,
     inner: FxHashMap<NodeId, ContextGridItem<T>>,
     pub root: Option<NodeId>,
@@ -243,6 +245,7 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
             scaled_margin,
             custom_title: None,
             custom_color: None,
+            pinned: false,
             scale,
             width,
             height,

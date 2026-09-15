@@ -15,6 +15,20 @@ margin = [12, 12, 12, 12]
 size = 16
 
 [colors]
-background = "#101014"
+background = "#141416"
 foreground = "#e8e8e8"
 cursor = "#7aa2f7"
+
+# rio starts the terminal's shell as a *login* shell (`bash --login`), which
+# bootstraps from /etc/profile. Inside the sandbox this dev loop runs in,
+# /etc/profile is the sandbox's own file (the FHS environment bwrap-mounts it
+# over NixOS's), so a login shell lands on the sandbox prompt —
+# `hermes-fhs-fhsenv:nixos@nixos:~$` — and never reads /etc/bashrc: no
+# bash-completion, no NixOS aliases, and the sandbox's PATH wins.
+#
+# Empty args makes the shell interactive non-login, which boots the way a
+# terminal opened from the desktop session does (~/.bashrc → /etc/bashrc) and
+# gives the real session prompt and Tab completion. Only the dev loop needs
+# this: launched from a normal session, rio's login-shell default is correct.
+[shell]
+args = []
