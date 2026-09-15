@@ -150,6 +150,19 @@ pub fn update_title<T: rio_backend::event::EventListener>(
                         new_template = new_template.replace(to_replace_str, &program);
                         matched = true;
                     }
+                    // ConPTY has no foreground-process probe yet. Still clear
+                    // the placeholder when this is the last fallback so the
+                    // raw `{{ TITLE || PROGRAM }}` template never leaks into
+                    // the tab strip.
+                    #[cfg(not(unix))]
+                    {
+                        let is_only_one = variables.len() == 1;
+                        let is_last = i == variables.len() - 1;
+                        if is_only_one || is_last {
+                            new_template = new_template.replace(to_replace_str, "");
+                            matched = true;
+                        }
+                    }
                 }
                 "absolute_path" => {
                     {
@@ -190,6 +203,16 @@ pub fn update_title<T: rio_backend::event::EventListener>(
                             matched = true;
                         }
                     }
+
+                    #[cfg(not(unix))]
+                    {
+                        let is_only_one = variables.len() == 1;
+                        let is_last = i == variables.len() - 1;
+                        if is_only_one || is_last {
+                            new_template = new_template.replace(to_replace_str, "");
+                            matched = true;
+                        }
+                    }
                 }
                 "relative_path" => {
                     {
@@ -227,9 +250,25 @@ pub fn update_title<T: rio_backend::event::EventListener>(
                             matched = true;
                         }
                     }
+
+                    #[cfg(not(unix))]
+                    {
+                        let is_only_one = variables.len() == 1;
+                        let is_last = i == variables.len() - 1;
+                        if is_only_one || is_last {
+                            new_template = new_template.replace(to_replace_str, "");
+                            matched = true;
+                        }
+                    }
                 }
                 _ => {}
             }
+        }
+
+        // Unknown variables or empty fallback chains must not leave the
+        // raw `{{ … }}` markup in the tab title.
+        if !matched {
+            new_template = new_template.replace(to_replace_str, "");
         }
     }
 
@@ -387,6 +426,51 @@ pub mod test {
             update_title("{{ relative_path || title }}", &context),
             String::from("/rio-sandbox-test-dir"),
         );
+    }
+
+    #[test]
+    fn unresolved_placeholders_never_leak_raw_markup() {
+        let context_dimension = ContextDimension::build(
+            1200.0,
+            800.0,
+            TextDimensions {
+                scale: 2.,
+                width: 18.,
+                height: 9.,
+            },
+            rio_backend::sugarloaf::layout::CellMetrics {
+                cell_width: 18,
+                cell_height: 9,
+                cell_baseline: 0,
+                face_width: 18.0,
+                face_height: 9.0,
+                face_y: 0.0,
+            },
+            1.0,
+            14.0,
+            Margin::default(),
+        );
+
+        let context = create_mock_context(
+            VoidListener {},
+            WindowId::from(0),
+            0,
+            context_dimension,
+        );
+
+        // Windows default template: TITLE empty, PROGRAM unavailable on
+        // non-unix / empty on mock — must not leave the mustache markup.
+        let resolved = update_title("{{ TITLE || PROGRAM }}", &context);
+        assert!(
+            !resolved.contains("{{") && !resolved.contains("}}"),
+            "raw template leaked: {resolved:?}"
+        );
+
+        let unknown = update_title("{{ NOPE }}", &context);
+        assert_eq!(unknown, "");
+
+        let mixed = update_title("hi {{ UNKNOWN }} there", &context);
+        assert_eq!(mixed, "hi  there");
     }
 
     #[test]

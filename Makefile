@@ -50,6 +50,9 @@ dev-hot-once:
 dev-hot-win:
 	scripts/dev-win.sh
 
+dev-hot-win-once:
+	scripts/dev-win.sh --once
+
 install:
 	cargo fetch
 

@@ -1,6 +1,7 @@
 pub mod error;
 pub mod forward_runtime;
 pub mod local_fs;
+pub mod machine;
 pub mod models;
 pub mod os_detect;
 pub mod session;
@@ -9,6 +10,7 @@ pub mod ssh;
 pub mod store;
 pub mod sync;
 pub mod vault;
+pub mod wsl;
 
 pub use error::{Error, Result};
 pub use forward_runtime::ForwardRuntime;

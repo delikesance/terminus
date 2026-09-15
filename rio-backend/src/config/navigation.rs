@@ -222,29 +222,17 @@ impl Navigation {
         self.mode == NavigationMode::Tab
     }
 
-    /// Whether the rio-rendered tab strip ("island") is actually painted
-    /// this frame. Mirrors the gate at `island.rs:358` — input layers
-    /// (click routing, cursor override) must agree with the renderer so
-    /// the empty band over a hidden island doesn't intercept events.
+    /// Whether the rio-rendered tab strip ("island") is painted this frame.
+    /// Always on in Tab mode — every PTY is a pill, including the lone home tab.
     #[inline]
-    pub fn island_visible(&self, num_tabs: usize) -> bool {
-        self.is_enabled() && !(self.hide_if_single && num_tabs == 1)
+    pub fn island_visible(&self, _num_tabs: usize) -> bool {
+        self.is_enabled()
     }
 
-    /// Whether the top band is reserved as custom window chrome this
-    /// frame, painted island or not. On macOS the full-size content
-    /// view keeps the band whenever Tab navigation is enabled, even
-    /// with `hide-if-single` hiding the strip; other platforms render
-    /// the terminal from the top when the island is hidden. Must agree
-    /// with `padding_top_from_config`, which reserves the band's
-    /// height under the same condition.
+    /// Whether the top band is reserved as custom window chrome this frame.
     #[inline]
-    pub fn chrome_band_reserved(&self, num_tabs: usize) -> bool {
-        if cfg!(target_os = "macos") {
-            self.is_enabled()
-        } else {
-            self.island_visible(num_tabs)
-        }
+    pub fn chrome_band_reserved(&self, _num_tabs: usize) -> bool {
+        self.is_enabled()
     }
 }
 
@@ -260,15 +248,11 @@ mod tests {
             ..Navigation::default()
         };
 
-        // Visible island: band reserved everywhere.
+        // Tab mode always paints/reserves the band, even with one tab.
+        assert!(nav.island_visible(1));
         assert!(nav.island_visible(2));
+        assert!(nav.chrome_band_reserved(1));
         assert!(nav.chrome_band_reserved(2));
-
-        // Hidden island (single tab): macOS keeps the band as chrome,
-        // other platforms hand it to the terminal, matching
-        // padding_top_from_config.
-        assert!(!nav.island_visible(1));
-        assert_eq!(nav.chrome_band_reserved(1), cfg!(target_os = "macos"));
 
         // Non-Tab modes never reserve the band.
         nav.mode = NavigationMode::Plain;
@@ -294,33 +278,26 @@ mod tests {
         navigation: Navigation,
     }
 
-    /// The default is platform-split: macOS hides the strip for a lone
-    /// tab, Linux/Windows keep it as a centred title with no island
-    /// behind it.
+    /// Config default for hide-if-single stays platform-split, but the
+    /// strip is always visible in Tab mode.
     #[test]
     fn hide_if_single_platform_default() {
         let decoded = toml::from_str::<Root>("[navigation]\nmode = 'Tab'\n").unwrap();
         assert_eq!(decoded.navigation.hide_if_single, cfg!(target_os = "macos"));
-        assert_eq!(
-            decoded.navigation.island_visible(1),
-            !cfg!(target_os = "macos")
-        );
-        assert_eq!(
-            Navigation::default().island_visible(1),
-            !cfg!(target_os = "macos")
-        );
-        // More than one tab always shows the strip.
+        assert!(decoded.navigation.island_visible(1));
+        assert!(Navigation::default().island_visible(1));
         assert!(decoded.navigation.island_visible(2));
     }
 
-    /// Both explicit values must override the platform default.
+    /// `hide-if-single` is retained for config compatibility but no longer
+    /// hides the strip — Tab mode always shows pills.
     #[test]
     fn hide_if_single_explicit_override() {
         let on =
             toml::from_str::<Root>("[navigation]\nmode = 'Tab'\nhide-if-single = true\n")
                 .unwrap();
         assert!(on.navigation.hide_if_single);
-        assert!(!on.navigation.island_visible(1));
+        assert!(on.navigation.island_visible(1));
         assert!(on.navigation.island_visible(2));
 
         let off = toml::from_str::<Root>(

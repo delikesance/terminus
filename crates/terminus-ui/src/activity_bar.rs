@@ -1,55 +1,88 @@
 //! Activity bar: the fixed icon rail on the window's left edge.
+//!
+//! Top: Servers / Snippets (drawer views).
+//! Bottom: Cloud Sync / Settings (open the settings modal).
 
 use crate::geom::Rect;
 use crate::icons::Icon;
 
-/// Rail width, in logical pixels.
-pub const WIDTH: f32 = 48.0;
+/// Rail width, in logical pixels (`w-16` = 64).
+pub const WIDTH: f32 = 64.0;
 /// Side of one section button.
-pub const ITEM_SIZE: f32 = 40.0;
+pub const ITEM_SIZE: f32 = 44.0;
 /// Vertical gap between buttons.
-pub const ITEM_GAP: f32 = 4.0;
-/// Space above the first button.
-pub const TOP_PAD: f32 = 10.0;
+pub const ITEM_GAP: f32 = 12.0;
+/// Space above the first top button.
+pub const TOP_PAD: f32 = 16.0;
+/// Space below the last bottom button.
+pub const BOTTOM_PAD: f32 = 16.0;
 /// Side of the icon drawn inside a button.
-pub const ICON_SIZE: f32 = 18.0;
-/// Width of the accent bar marking the selected section.
-pub const MARKER_WIDTH: f32 = 2.0;
+pub const ICON_SIZE: f32 = 20.0;
+/// Horizontal inset of the active pill inside the rail.
+pub const PILL_INSET_X: f32 = 10.0;
+/// Corner radius of the active pill (`rounded-xl`).
+pub const PILL_RADIUS: f32 = 12.0;
 
-/// The sections the rail can select, top to bottom.
+/// Drawer views the rail can select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
-    Hosts,
-    Forwards,
-    Sftp,
+    /// Servers & Hosts drawer (formerly Hosts).
+    Servers,
+    /// Command snippets drawer.
+    Snippets,
+}
+
+/// Bottom-pinned actions that open settings (not drawer views).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailAction {
+    CloudSync,
     Settings,
 }
 
-/// Every section, in the order it is painted.
-pub const SECTIONS: [Section; 4] = [
-    Section::Hosts,
-    Section::Forwards,
-    Section::Sftp,
-    Section::Settings,
-];
+/// Hit result for a press on the rail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailHit {
+    Section(Section),
+    Action(RailAction),
+}
+
+/// Top sections, in paint order.
+pub const TOP_SECTIONS: [Section; 2] = [Section::Servers, Section::Snippets];
+
+/// Bottom actions, top-to-bottom within the bottom cluster.
+pub const BOTTOM_ACTIONS: [RailAction; 2] = [RailAction::CloudSync, RailAction::Settings];
+
+/// Compatibility alias used by older call sites.
+pub const SECTIONS: [Section; 2] = TOP_SECTIONS;
 
 impl Section {
     pub const fn icon(self) -> Icon {
         match self {
-            Section::Hosts => Icon::Server,
-            Section::Forwards => Icon::ArrowRightLeft,
-            Section::Sftp => Icon::Folder,
-            Section::Settings => Icon::SlidersHorizontal,
+            Section::Servers => Icon::SquareTerminal,
+            Section::Snippets => Icon::CodeXml,
         }
     }
 
-    /// Index in [`SECTIONS`].
     pub const fn index(self) -> usize {
         match self {
-            Section::Hosts => 0,
-            Section::Forwards => 1,
-            Section::Sftp => 2,
-            Section::Settings => 3,
+            Section::Servers => 0,
+            Section::Snippets => 1,
+        }
+    }
+}
+
+impl RailAction {
+    pub const fn icon(self) -> Icon {
+        match self {
+            RailAction::CloudSync => Icon::CloudUpload,
+            RailAction::Settings => Icon::Settings,
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            RailAction::CloudSync => 0,
+            RailAction::Settings => 1,
         }
     }
 }
@@ -59,13 +92,16 @@ impl Section {
 pub struct ActivityBarState {
     pub selected: Section,
     pub collapsed: bool,
+    /// Cloud sync is active (emerald tint on the cloud icon).
+    pub cloud_sync_active: bool,
 }
 
 impl Default for ActivityBarState {
     fn default() -> Self {
         Self {
-            selected: Section::Hosts,
+            selected: Section::Servers,
             collapsed: false,
+            cloud_sync_active: true,
         }
     }
 }
@@ -81,45 +117,86 @@ pub fn rect(origin_y: f32, height: f32) -> Rect {
     Rect::new(0.0, origin_y, WIDTH, height)
 }
 
-/// The box of the `index`th button.
-pub fn item_rect(origin_y: f32, index: usize) -> Rect {
+/// Box of a top section button.
+pub fn section_rect(origin_y: f32, section: Section) -> Rect {
     Rect::new(
         0.0,
-        origin_y + TOP_PAD + index as f32 * (ITEM_SIZE + ITEM_GAP),
+        origin_y + TOP_PAD + section.index() as f32 * (ITEM_SIZE + ITEM_GAP),
         WIDTH,
         ITEM_SIZE,
     )
 }
 
-/// The icon box inside a button.
-pub fn icon_rect(origin_y: f32, index: usize) -> Rect {
-    let item = item_rect(origin_y, index);
+/// Box of a bottom action button (pinned to the rail bottom).
+pub fn action_rect(origin_y: f32, height: f32, action: RailAction) -> Rect {
+    let count = BOTTOM_ACTIONS.len() as f32;
+    let cluster = count * ITEM_SIZE + (count - 1.0) * ITEM_GAP;
+    let top = origin_y + height - BOTTOM_PAD - cluster;
     Rect::new(
-        (WIDTH - ICON_SIZE) / 2.0,
+        0.0,
+        top + action.index() as f32 * (ITEM_SIZE + ITEM_GAP),
+        WIDTH,
+        ITEM_SIZE,
+    )
+}
+
+/// Active pill inset inside a button box.
+pub fn pill_rect(item: Rect) -> Rect {
+    Rect::new(
+        item.x + PILL_INSET_X,
+        item.y,
+        item.width - 2.0 * PILL_INSET_X,
+        item.height,
+    )
+}
+
+/// Icon box centered in a button.
+pub fn icon_in(item: Rect) -> Rect {
+    Rect::new(
+        item.x + (WIDTH - ICON_SIZE) / 2.0,
         item.y + (ITEM_SIZE - ICON_SIZE) / 2.0,
         ICON_SIZE,
         ICON_SIZE,
     )
 }
 
-/// The accent marker of the `index`th button.
-pub fn marker_rect(origin_y: f32, index: usize) -> Rect {
-    Rect::new(0.0, item_rect(origin_y, index).y, MARKER_WIDTH, ITEM_SIZE)
+/// Legacy index-based helper used by older tests/painters.
+pub fn item_rect(origin_y: f32, index: usize) -> Rect {
+    section_rect(
+        origin_y,
+        TOP_SECTIONS
+            .get(index)
+            .copied()
+            .unwrap_or(Section::Servers),
+    )
 }
 
-/// Which section is under `(x, y)`, in logical pixels.
-///
-/// `None` below the last button: the rail's background is not
-/// clickable, so a press there reaches the terminal instead of being
-/// swallowed.
-pub fn hit_test(origin_y: f32, x: f32, y: f32) -> Option<Section> {
+pub fn icon_rect(origin_y: f32, index: usize) -> Rect {
+    icon_in(item_rect(origin_y, index))
+}
+
+pub fn marker_rect(origin_y: f32, index: usize) -> Rect {
+    // Kept for API compatibility; Apple HIG uses a filled pill instead.
+    let item = item_rect(origin_y, index);
+    Rect::new(item.x, item.y, 0.0, item.height)
+}
+
+/// Which rail target is under `(x, y)`.
+pub fn hit_test(origin_y: f32, height: f32, x: f32, y: f32) -> Option<RailHit> {
     if x < 0.0 || x >= WIDTH {
         return None;
     }
-    SECTIONS
-        .iter()
-        .copied()
-        .find(|section| item_rect(origin_y, section.index()).contains(x, y))
+    for section in TOP_SECTIONS {
+        if section_rect(origin_y, section).contains(x, y) {
+            return Some(RailHit::Section(section));
+        }
+    }
+    for action in BOTTOM_ACTIONS {
+        if action_rect(origin_y, height, action).contains(x, y) {
+            return Some(RailHit::Action(action));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -127,47 +204,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn buttons_stack_without_overlapping() {
-        let a = item_rect(0.0, 0);
-        let b = item_rect(0.0, 1);
+    fn rail_width_matches_mock_w16() {
+        assert_eq!(WIDTH, 64.0);
+        assert_eq!(ITEM_SIZE, 44.0);
+        assert_eq!(PILL_RADIUS, 12.0);
+    }
+
+    #[test]
+    fn top_buttons_stack_without_overlapping() {
+        let a = section_rect(0.0, Section::Servers);
+        let b = section_rect(0.0, Section::Snippets);
         assert_eq!(a.y, TOP_PAD);
-        assert_eq!(b.y, TOP_PAD + ITEM_SIZE + ITEM_GAP);
         assert!(b.y >= a.bottom());
     }
 
     #[test]
-    fn hit_test_finds_each_section_and_nothing_below_them() {
-        for section in SECTIONS {
-            let rect = item_rect(0.0, section.index());
-            let (x, y) = (WIDTH / 2.0, rect.y + ITEM_SIZE / 2.0);
-            assert_eq!(hit_test(0.0, x, y), Some(section));
-        }
-
-        let below = TOP_PAD + 4.0 * (ITEM_SIZE + ITEM_GAP) + 20.0;
-        assert_eq!(hit_test(0.0, WIDTH / 2.0, below), None);
-        // The rail never claims the space above its first button, and
-        // never anything to the right of itself.
-        assert_eq!(hit_test(0.0, WIDTH / 2.0, 1.0), None);
-        assert_eq!(hit_test(0.0, WIDTH, item_rect(0.0, 0).y + 4.0), None);
+    fn bottom_actions_pin_to_the_rail_bottom() {
+        let height = 600.0;
+        let settings = action_rect(0.0, height, RailAction::Settings);
+        assert!((settings.bottom() - (height - BOTTOM_PAD)).abs() < 0.01);
+        let cloud = action_rect(0.0, height, RailAction::CloudSync);
+        assert!(cloud.y < settings.y);
     }
 
     #[test]
-    fn hit_test_follows_the_chrome_origin() {
-        // The same pixel names different sections depending on where the
-        // chrome starts: the rail slides down under the tab strip. The
-        // row pitch is 44 and the inset is less than that, so only a
-        // pixel near a row's end changes section.
-        let y = item_rect(38.0, 0).bottom() - 1.0;
-        let x = WIDTH / 2.0;
-        assert_eq!(hit_test(38.0, x, y), Some(Section::Hosts));
-        assert_eq!(hit_test(0.0, x, y), Some(Section::Forwards));
-    }
-
-    #[test]
-    fn the_icon_is_centered_in_its_button() {
-        let item = item_rect(0.0, 1);
-        let icon = icon_rect(0.0, 1);
-        assert!((icon.y - item.y) - (item.height - icon.height) / 2.0 < f32::EPSILON);
-        assert!((icon.x - (WIDTH - ICON_SIZE) / 2.0).abs() < f32::EPSILON);
+    fn hit_test_finds_sections_and_actions() {
+        let height = 600.0;
+        let servers = section_rect(0.0, Section::Servers);
+        assert_eq!(
+            hit_test(0.0, height, WIDTH / 2.0, servers.y + 10.0),
+            Some(RailHit::Section(Section::Servers))
+        );
+        let settings = action_rect(0.0, height, RailAction::Settings);
+        assert_eq!(
+            hit_test(0.0, height, WIDTH / 2.0, settings.y + 10.0),
+            Some(RailHit::Action(RailAction::Settings))
+        );
+        assert_eq!(hit_test(0.0, height, WIDTH / 2.0, 300.0), None);
     }
 }

@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terminus Pro - Interface macOS HIG</title>
+    <!-- Tailwind CSS pour un design conforme aux HIG d'Apple (Flat Design pur, sans effets lumineux) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        appleBg: '#18181b',
+                        appleSidebar: '#111113',
+                        appleCard: '#222226',
+                        appleCardHover: '#2a2a30',
+                        appleBorder: '#2f2f35',
+                        appleInput: '#1b1b1e',
+                        appleAccent: '#0a84ff',
+                        appleAccentHover: '#0071e3'
+                    },
+                    fontFamily: {
+                        sans: ['-apple-system', 'BlinkMacSystemFont', "SF Pro Text", "SF Pro Display", "Segoe UI", "Roboto", "sans-serif"],
+                        mono: ['SF Mono', 'Menlo', 'Monaco', 'Courier New', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 9999px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+        
+        @keyframes appleModalIn {
+            0% { opacity: 0; transform: scale(0.98); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+        .animate-apple-modal {
+            animation: appleModalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        .flat-panel {
+            background: #111113;
+        }
+    </style>
+</head>
+<body class="bg-appleBg text-slate-100 h-screen w-screen flex flex-col overflow-hidden font-sans select-none">
+
+    <header class="h-11 flat-panel border-b border-appleBorder flex items-center justify-between px-3.5 shrink-0 select-none z-30">
+        <div class="flex items-center space-x-3 overflow-x-auto w-full">
+            <!-- macOS Traffic Lights -->
+            <div class="flex items-center space-x-2 pl-0.5 pr-1 shrink-0">
+                <span class="w-3 h-3 rounded-full bg-[#ff5f56] inline-block cursor-pointer hover:opacity-80 transition border border-[#e0443e]"></span>
+                <span class="w-3 h-3 rounded-full bg-[#ffbd2e] inline-block cursor-pointer hover:opacity-80 transition border border-[#dea123]"></span>
+                <span class="w-3 h-3 rounded-full bg-[#27c93f] inline-block cursor-pointer hover:opacity-80 transition border border-[#1aab29]"></span>
+            </div>
+            <div class="h-4 w-px bg-appleBorder shrink-0"></div>
+            <!-- Terminal Tabs Aligned Left (Apple style pill tabs) -->
+            <div id="terminalTabs" class="flex items-center space-x-2 overflow-x-auto py-1">
+                <!-- Dynamically injected tabs -->
+            </div>
+        </div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden relative">
+        
+        <nav class="w-16 appleSidebar border-r border-appleBorder flex flex-col items-center py-4 shrink-0 z-20 justify-between">
+            <div class="flex flex-col items-center space-y-3">
+                <button onclick="switchSecondaryView('servers')" id="navServersBtn" class="p-3 rounded-xl text-appleAccent bg-appleAccent/15 transition group relative" title="Servers & Hosts">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    <span class="absolute left-16 bg-appleCard text-[11px] px-2.5 py-1 rounded-lg border border-appleBorder opacity-0 group-hover:opacity-100 transition pointer-events-none whitespace-nowrap z-50 font-medium">Servers</span>
+                </button>
+                <button onclick="switchSecondaryView('snippets')" id="navSnippetsBtn" class="p-3 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-appleCard transition group relative" title="Command Snippets">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                    <span class="absolute left-16 bg-appleCard text-[11px] px-2.5 py-1 rounded-lg border border-appleBorder opacity-0 group-hover:opacity-100 transition pointer-events-none whitespace-nowrap z-50 font-medium">Snippets</span>
+                </button>
+            </div>
+
+            <div class="flex flex-col items-center space-y-3">
+                <!-- Cloud Sync Status Icon -->
+                <button onclick="openSettingsModal(); switchSettingsTab('sql');" id="navCloudBtn" class="p-3 rounded-xl text-emerald-400 hover:bg-appleCard transition group relative" title="Cloud Sync Active">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M3 15a4 4 0 004 4h10a4 4 0 004-4M7 10l5-5 5 5M12 5v12"/></svg>
+                    <span class="absolute left-16 bg-appleCard text-[11px] px-2.5 py-1 rounded-lg border border-appleBorder opacity-0 group-hover:opacity-100 transition pointer-events-none whitespace-nowrap z-50 font-medium flex items-center space-x-1.5">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
+                        <span>Cloud Sync Active</span>
+                    </span>
+                </button>
+                <!-- Settings Button -->
+                <button onclick="openSettingsModal()" id="navSettingsBtn" class="p-3 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-appleCard transition group relative" title="Settings">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    <span class="absolute left-16 bg-appleCard text-[11px] px-2.5 py-1 rounded-lg border border-appleBorder opacity-0 group-hover:opacity-100 transition pointer-events-none whitespace-nowrap z-50 font-medium">Settings</span>
+                </button>
+            </div>
+        </nav>
+
+        <div id="secondaryDrawer" class="w-72 appleSidebar border-r border-appleBorder flex flex-col shrink-0 z-10">
+            <div id="drawerHeaderArea" class="p-4 border-b border-appleBorder flex items-center justify-between">
+                <span id="drawerTitle" class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Servers & Hosts</span>
+            </div>
+            <div id="drawerSearchBox" class="p-3 border-b border-appleBorder">
+                <input type="text" id="drawerFilterInput" oninput="handleDrawerFilter()" placeholder="Filter servers..." class="w-full bg-appleCard border border-appleBorder text-xs rounded-xl px-3.5 py-2.5 focus:outline-none focus:border-appleAccent text-slate-200 placeholder-slate-500 transition">
+            </div>
+            <div id="drawerContentList" class="flex-1 overflow-y-auto p-3 space-y-2">
+                <!-- Injected via JS -->
+            </div>
+        </div>
+
+        <main class="flex-1 flex flex-col bg-appleBg overflow-hidden relative">
+            <div id="viewTerminal" class="flex-1 flex flex-col overflow-hidden">
+                <div class="flex-1 relative overflow-hidden flex flex-col" id="terminalWorkspace">
+                    <!-- Active terminal session injected via JS -->
+                </div>
+            </div>
+        </main>
+
+    </div>
+
+    <div id="settingsModal" class="fixed inset-0 bg-black/60 hidden items-center justify-center z-50 p-4 transition-all">
+        <div class="bg-appleSidebar border border-appleBorder w-full max-w-3xl rounded-2xl overflow-hidden animate-apple-modal flex flex-col h-[78vh] shadow-2xl">
+            
+            <!-- Modal Header -->
+            <div class="px-6 py-4 border-b border-appleBorder flex items-center justify-between bg-appleCard">
+                <div class="flex items-center space-x-3">
+                    <div class="p-2 rounded-xl bg-appleAccent/15 text-appleAccent border border-appleAccent/20">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    </div>
+                    <div>
+                        <h2 class="text-sm font-semibold text-white tracking-wide">Settings</h2>
+                        <p class="text-[11px] text-slate-400">Cryptographic identities and remote database synchronization.</p>
+                    </div>
+                </div>
+                <button onclick="closeSettingsModal()" class="w-7 h-7 rounded-full bg-appleCard hover:bg-appleBorder flex items-center justify-center text-slate-400 hover:text-white transition border border-appleBorder">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+
+            <!-- Settings Layout: macOS Native Split View -->
+            <div class="flex flex-1 overflow-hidden">
+                <!-- Settings Sidebar -->
+                <div class="w-56 bg-appleCard border-r border-appleBorder p-3 space-y-1 shrink-0">
+                    <button onclick="switchSettingsTab('keys')" id="settingsTabKeysBtn" class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-appleAccent bg-appleAccent/15 transition text-left">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9 z"/></svg>
+                        <span>SSH Keys</span>
+                    </button>
+                    <button onclick="switchSettingsTab('sql')" id="settingsTabSqlBtn" class="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-appleCardHover transition text-left">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/></svg>
+                        <span>Remote SQL Sync</span>
+                    </button>
+                </div>
+
+                <!-- Settings Content Panel with Harmonized Spacing -->
+                <div class="flex-1 p-6 overflow-y-auto bg-appleBg space-y-6">
+                    
+                    <!-- Tab 1: SSH Keys -->
+                    <div id="settingsContentKeys" class="space-y-4">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h3 class="text-xs font-semibold text-white tracking-wide">Managed SSH Keys</h3>
+                                <p class="text-[11px] text-slate-400 mt-0.5">Secure local keys for passwordless authentication.</p>
+                            </div>
+                        </div>
+                        <div id="modalKeysList" class="space-y-3">
+                            <!-- Injected via JS -->
+                        </div>
+                    </div>
+
+                    <!-- Tab 2: Remote SQL Sync -->
+                    <div id="settingsContentSql" class="hidden space-y-4">
+                        <div class="flex items-start justify-between">
+                            <div class="space-y-0.5">
+                                <div class="flex items-center space-x-2.5">
+                                    <h3 class="text-xs font-semibold text-white tracking-wide">Remote Database Sync</h3>
+                                    <div class="flex items-center space-x-1.5 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-lg shrink-0">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+                                        <span class="text-[10px] font-medium text-emerald-400" id="syncStatusBadge">Connected</span>
+                                    </div>
+                                </div>
+                                <p class="text-[11px] text-slate-400">Configure your remote database engine and encrypted connection string.</p>
+                            </div>
+                        </div>
+
+                        <!-- Structured Cards with Absolute Symmetry & Harmonized Spacing -->
+                        <div class="space-y-3">
+                            <!-- Database Engine Card -->
+                            <div class="bg-appleCard border border-appleBorder rounded-xl p-4 space-y-2">
+                                <label class="text-[11px] font-medium text-slate-400 block">Database Engine</label>
+                                <select id="sqlEngine" class="w-full bg-appleInput border border-appleBorder rounded-lg px-3.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition">
+                                    <option value="postgresql">PostgreSQL</option>
+                                    <option value="mysql">MySQL / MariaDB</option>
+                                    <option value="sqlite">SQLite Cloud</option>
+                                    <option value="turso">Turso / LibSQL</option>
+                                </select>
+                            </div>
+
+                            <!-- Connection URI Card -->
+                            <div class="bg-appleCard border border-appleBorder rounded-xl p-4 space-y-2">
+                                <label class="text-[11px] font-medium text-slate-400 block">Connection URI / String</label>
+                                <input type="text" id="sqlConnectionString" value="postgres://user:password@aws-cluster.db.internal:5432/terminus" class="w-full bg-appleInput border border-appleBorder rounded-lg px-3.5 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-appleAccent transition">
+                            </div>
+
+                            <!-- Encryption Passphrase Card with Eye Toggle -->
+                            <div class="bg-appleCard border border-appleBorder rounded-xl p-4 space-y-2">
+                                <label class="text-[11px] font-medium text-slate-400 block">Encryption Passphrase</label>
+                                <div class="relative flex items-center">
+                                    <input type="password" id="sqlPassphrase" value="supersecretpassphrase123" class="w-full bg-appleInput border border-appleBorder rounded-lg px-3.5 py-2 pr-10 text-xs font-mono text-slate-200 focus:outline-none focus:border-appleAccent transition">
+                                    <button type="button" onclick="togglePassphraseVisibility()" class="absolute right-3 text-slate-400 hover:text-slate-200 transition focus:outline-none">
+                                        <svg id="passphraseEyeIcon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Action Footer Integrated Inside Compact Card with Perfectly Centered Vertical Alignment -->
+                            <div class="bg-appleCard border border-appleBorder rounded-xl px-4 py-3 flex items-center justify-between">
+                                <div class="text-[11px] text-slate-400 font-medium leading-none flex items-center h-full" id="syncStatusText">
+                                    Last synced just now
+                                </div>
+                                <button onclick="testAndSaveSqlSync()" class="px-4 py-2 bg-appleAccent hover:bg-appleAccentHover text-white text-xs font-medium rounded-lg transition leading-none">Test & Synchronize</button>
+                            </div>
+                        </div>
+
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Modal Footer -->
+            <div class="px-6 py-3 border-t border-appleBorder bg-appleCard flex justify-end">
+                <button onclick="closeSettingsModal()" class="px-4 py-1.5 text-xs font-medium bg-appleCard hover:bg-appleBorder text-slate-200 rounded-xl transition border border-appleBorder">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="newHostModal" class="fixed inset-0 bg-black/60 hidden items-center justify-center z-50 p-4 transition-all">
+        <div class="bg-appleSidebar border border-appleBorder w-full max-w-md rounded-2xl p-6 space-y-4 animate-apple-modal shadow-2xl">
+            <h3 class="text-sm font-semibold text-white tracking-wide">Configure New Remote Host</h3>
+            <div class="space-y-3">
+                <div>
+                    <label class="text-[11px] font-medium text-slate-300 block mb-1">Host Name / Label</label>
+                    <input type="text" id="inputName" placeholder="e.g. AWS Production Cluster" class="w-full bg-appleCard border border-appleBorder rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition">
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                    <div class="col-span-2">
+                        <label class="text-[11px] font-medium text-slate-300 block mb-1">IP Address or Hostname</label>
+                        <input type="text" id="inputAddress" placeholder="192.168.1.50" class="w-full bg-appleCard border border-appleBorder rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition font-mono">
+                    </div>
+                    <div>
+                        <label class="text-[11px] font-medium text-slate-300 block mb-1">Port</label>
+                        <input type="number" id="inputPort" value="22" class="w-full bg-appleCard border border-appleBorder rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition font-mono">
+                    </div>
+                </div>
+                <div>
+                    <label class="text-[11px] font-medium text-slate-300 block mb-1">Username</label>
+                    <input type="text" id="inputUser" value="root" class="w-full bg-appleCard border border-appleBorder rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition font-mono">
+                </div>
+                <div>
+                    <label class="text-[11px] font-medium text-slate-300 block mb-1">Authentication Method</label>
+                    <select id="inputAuthMethod" onchange="toggleAuthMethodSelector()" class="w-full bg-appleCard border border-appleBorder rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition">
+                        <option value="key">SSH Cryptographic Key</option>
+                        <option value="password">Password Authentication</option>
+                    </select>
+                </div>
+                <div id="sshKeySelectWrapper">
+                    <label class="text-[11px] font-medium text-slate-300 block mb-1">Select Saved SSH Key</label>
+                    <select id="inputSshKey" class="w-full bg-appleCard border border-appleBorder rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition font-mono">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+                <div id="passwordInputWrapper" class="hidden">
+                    <label class="text-[11px] font-medium text-slate-300 block mb-1">SSH Password</label>
+                    <input type="password" id="inputPassword" placeholder="Enter secure password" class="w-full bg-appleCard border border-appleBorder rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-appleAccent transition font-mono">
+                </div>
+            </div>
+            <div class="flex justify-end space-x-2 pt-3 border-t border-appleBorder">
+                <button onclick="closeNewHostModal()" class="px-4 py-2 text-xs bg-appleCard hover:bg-appleBorder text-slate-300 rounded-xl transition border border-appleBorder">Cancel</button>
+                <button onclick="saveNewHost()" class="px-4 py-2 text-xs bg-appleAccent hover:bg-appleAccentHover text-white rounded-xl transition font-medium">Connect</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Application State
+        const state = {
+            secondaryView: 'servers', // 'servers' or 'snippets'
+            hosts: [
+                { id: 1, name: "Production Gateway", address: "192.168.1.10", port: 22, user: "root", type: "nixos", status: "Online", os: "NixOS 25.11 x86_64" },
+                { id: 2, name: "Ubuntu Web Cluster", address: "10.0.4.15", port: 22, user: "ubuntu", type: "ubuntu", status: "Online", os: "Ubuntu 24.04 LTS" },
+                { id: 3, name: "Local Development", address: "localhost", port: 22, user: "jeremy", type: "local", status: "Connected", os: "macOS Sonoma 14.5" },
+                { id: 4, name: "Database Replica 01", address: "192.168.2.100", port: 22, user: "postgres", type: "debian", status: "Online", os: "Debian 12 Bookworm" }
+            ],
+            sessions: [],
+            activeSessionId: null,
+            sshKeys: [
+                { id: 101, name: "Production RSA 4096", fingerprint: "SHA256:mKp9xQ2vL8...d1s9", created: "2026-01-15" },
+                { id: 102, name: "Deploy Ed25519", fingerprint: "SHA256:9vL2aB4xW1...8f3c", created: "2026-03-02" }
+            ],
+            snippets: [
+                { name: "Docker Full Cleanup", cmd: "docker system prune -a --volumes -f", desc: "Remove all unused containers, networks and images." },
+                { name: "System Update & Clean", cmd: "sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y", desc: "Fully update system packages and clean caches." },
+                { name: "Check Disk I/O & Load", cmd: "htop && iostat -xz 1", desc: "Monitor live resource usage and disk bottlenecks." },
+                { name: "Nginx Reload Config", cmd: "sudo nginx -t && sudo systemctl reload nginx", desc: "Test configuration syntax and gracefully reload nginx." }
+            ]
+        };
+
+        // Official Minimal OS Icons via CDN (Devicon)
+        function getOsIconHtml(type) {
+            if (type === 'local') {
+                return `<img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/apple/apple-original.svg" class="w-4 h-4 shrink-0 filter invert opacity-90 transition" alt="macOS" />`;
+            } else if (type === 'ubuntu') {
+                return `<img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/ubuntu/ubuntu-plain.svg" class="w-4 h-4 shrink-0 transition" alt="Ubuntu" />`;
+            } else if (type === 'nixos') {
+                return `<img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/nixos/nixos-original.svg" class="w-4 h-4 shrink-0 transition" alt="NixOS" />`;
+            } else {
+                return `<img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/debian/debian-plain.svg" class="w-4 h-4 shrink-0 transition" alt="Debian" />`;
+            }
+        }
+
+        // Switch Secondary Drawer View (Servers vs Snippets)
+        function switchSecondaryView(view) {
+            state.secondaryView = view;
+            const serversBtn = document.getElementById('navServersBtn');
+            const snippetsBtn = document.getElementById('navSnippetsBtn');
+            const titleEl = document.getElementById('drawerTitle');
+            const searchBox = document.getElementById('drawerSearchBox');
+
+            if (view === 'servers') {
+                serversBtn.className = "p-3 rounded-xl text-appleAccent bg-appleAccent/15 transition group relative";
+                snippetsBtn.className = "p-3 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-appleCard transition group relative";
+                titleEl.textContent = "Servers & Hosts";
+                searchBox.classList.remove('hidden');
+                renderDrawerServers();
+            } else {
+                snippetsBtn.className = "p-3 rounded-xl text-appleAccent bg-appleAccent/15 transition group relative";
+                serversBtn.className = "p-3 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-appleCard transition group relative";
+                titleEl.textContent = "Command Snippets";
+                searchBox.classList.add('hidden');
+                renderDrawerSnippets();
+            }
+        }
+
+        // Render Secondary Drawer Content (Servers with Dotted Placeholder CTA)
+        function renderDrawerServers(filter = "") {
+            const container = document.getElementById('drawerContentList');
+            if (!container) return;
+            container.innerHTML = "";
+
+            // Dotted Placeholder CTA matching exact card & input styling
+            const ctaItem = document.createElement('div');
+            ctaItem.className = "p-3 rounded-xl border border-dashed border-appleBorder hover:border-appleAccent bg-appleCard/40 hover:bg-appleCard cursor-pointer transition flex items-center space-x-3 group";
+            ctaItem.onclick = () => openNewHostModal();
+            ctaItem.innerHTML = `
+                <div class="w-8 h-8 rounded-lg bg-appleInput border border-appleBorder text-appleAccent flex items-center justify-center shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                </div>
+                <div class="overflow-hidden">
+                    <h4 class="text-xs font-semibold text-white group-hover:text-appleAccent transition">New Host</h4>
+                    <p class="text-[10px] text-slate-400 truncate">Configure SSH connection</p>
+                </div>
+            `;
+            container.appendChild(ctaItem);
+
+            const filtered = state.hosts.filter(h => h.name.toLowerCase().includes(filter.toLowerCase()) || h.address.includes(filter));
+            filtered.forEach(host => {
+                const item = document.createElement('div');
+                item.className = "p-3 rounded-xl border border-appleBorder bg-appleCard hover:bg-appleCardHover cursor-pointer transition flex items-center justify-between group";
+                item.onclick = () => openNewSession(host.id);
+
+                item.innerHTML = `
+                    <div class="flex items-center space-x-3 overflow-hidden">
+                        <div class="p-1.5 rounded-lg bg-appleInput border border-appleBorder shrink-0">
+                            ${getOsIconHtml(host.type)}
+                        </div>
+                        <div class="overflow-hidden">
+                            <h4 class="text-xs font-semibold text-slate-200 group-hover:text-white transition truncate">${host.name}</h4>
+                            <p class="text-[10px] text-slate-400 font-mono truncate">${host.user}@${host.address}</p>
+                        </div>
+                    </div>
+                    <span class="opacity-0 group-hover:opacity-100 transition text-[10px] text-appleAccent bg-appleAccent/10 px-2 py-0.5 rounded-lg font-semibold whitespace-nowrap">Open</span>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        // Render Snippets in Secondary Drawer
+        function renderDrawerSnippets() {
+            const container = document.getElementById('drawerContentList');
+            if (!container) return;
+            container.innerHTML = "";
+
+            state.snippets.forEach(snip => {
+                const item = document.createElement('div');
+                item.className = "p-3 rounded-xl border border-appleBorder bg-appleCard hover:bg-appleCardHover cursor-pointer transition flex flex-col space-y-2 group";
+                item.onclick = () => executeSnippetInActiveTerminal(snip.cmd);
+                item.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-white group-hover:text-appleAccent transition">${snip.name}</span>
+                        <span class="text-[10px] font-mono text-cyan-400 px-2 py-0.5 rounded-lg bg-appleInput border border-appleBorder group-hover:border-appleAccent transition">Run ↵</span>
+                    </div>
+                    <p class="text-[11px] font-mono text-slate-400 truncate bg-appleInput p-2 rounded-lg border border-appleBorder">${snip.cmd}</p>
+                `;
+                container.appendChild(item);
+            });
+        }
+
+        function handleDrawerFilter() {
+            const query = document.getElementById('drawerFilterInput').value;
+            renderDrawerServers(query);
+        }
+
+        // Session & Terminal Management
+        function openNewSession(hostId) {
+            const host = state.hosts.find(h => h.id === hostId);
+            if (!host) return;
+
+            const newSession = {
+                id: Date.now() + Math.random(),
+                hostId: host.id,
+                title: `${host.user}@${host.address}`,
+                output: [
+                    `Last login: ${new Date().toUTCString()} from 192.168.1.99`,
+                    `Establishing secure SSH session with ${host.user}@${host.address}:${host.port}...`,
+                    `Authentication successful. Connected to ${host.os}`,
+                    ``
+                ]
+            };
+            state.sessions.push(newSession);
+            switchSession(newSession.id);
+        }
+
+        function switchSession(sessionId) {
+            state.activeSessionId = sessionId;
+            renderTerminalTabs();
+            renderActiveTerminal();
+        }
+
+        function closeSession(sessionId, event) {
+            event.stopPropagation();
+            state.sessions = state.sessions.filter(s => s.id !== sessionId);
+            if (state.activeSessionId === sessionId) {
+                state.activeSessionId = state.sessions.length > 0 ? state.sessions[0].id : null;
+            }
+            renderTerminalTabs();
+            renderActiveTerminal();
+        }
+
+        function renderTerminalTabs() {
+            const container = document.getElementById('terminalTabs');
+            if (!container) return;
+            container.innerHTML = "";
+
+            state.sessions.forEach(session => {
+                const isActive = session.id === state.activeSessionId;
+                const tab = document.createElement('div');
+                tab.className = `flex items-center space-x-2.5 px-3.5 py-1.5 rounded-xl text-xs cursor-pointer transition border ${isActive ? 'bg-appleCard border-appleBorder text-white' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-appleCard/50'}`;
+                tab.onclick = () => switchSession(session.id);
+                tab.innerHTML = `
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
+                    <span class="font-mono font-medium">${session.title}</span>
+                    <button onclick="closeSession(${session.id}, event)" class="w-4 h-4 rounded-md hover:bg-appleBorder flex items-center justify-center text-slate-400 hover:text-white transition shrink-0 ml-1" title="Close tab">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                `;
+                container.appendChild(tab);
+            });
+        }
+
+        function renderActiveTerminal() {
+            const workspace = document.getElementById('terminalWorkspace');
+            const session = state.sessions.find(s => s.id === state.activeSessionId);
+            if (!session) {
+                workspace.innerHTML = `
+                    <div class="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs space-y-3 p-6 text-center">
+                        <div class="p-6 rounded-2xl bg-appleCard border border-appleBorder">
+                            <svg class="w-10 h-10 text-appleAccent mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                            <p class="font-semibold text-slate-200">No active terminal session</p>
+                            <p class="text-[11px] text-slate-400 mt-0.5">Select a server from the sidebar or click 'New Host'.</p>
+                        </div>
+                        <button onclick="openNewSession(3)" class="bg-appleAccent hover:bg-appleAccentHover text-white px-5 py-2.5 rounded-xl text-xs font-semibold transition">Open Local Zsh Shell</button>
+                    </div>`;
+                return;
+            }
+
+            const host = state.hosts.find(h => h.id === session.hostId);
+            workspace.innerHTML = `
+                <div class="flex-1 p-5 font-mono text-xs overflow-y-auto space-y-1.5 bg-[#141416]" id="terminalOutput">
+                    ${session.output.map(line => `<div>${line}</div>`).join('')}
+                </div>
+                <div class="p-3 bg-appleSidebar border-t border-appleBorder flex items-center space-x-3 shrink-0">
+                    <span class="text-red-400 font-mono font-bold text-xs shrink-0">[${host ? host.user + '@' + host.address : 'root@local'} ~]#</span>
+                    <input type="text" id="terminalInput" onkeydown="handleTerminalKey(event, ${session.id})" placeholder="Type command (e.g. fastfetch, htop, ls, clear)..." class="flex-1 bg-transparent text-slate-100 font-mono text-xs focus:outline-none placeholder-slate-600">
+                </div>
+            `;
+            const out = document.getElementById('terminalOutput');
+            out.scrollTop = out.scrollHeight;
+            const inputField = document.getElementById('terminalInput');
+            if (inputField) inputField.focus();
+        }
+
+        function handleTerminalKey(event, sessionId) {
+            if (event.key === 'Enter') {
+                const input = event.target;
+                const cmd = input.value.trim();
+                if (!cmd) return;
+
+                const session = state.sessions.find(s => s.id === sessionId);
+                const host = state.hosts.find(h => h.id === session.hostId);
+                session.output.push(`<span class="text-red-400 font-bold">[${host.user}@${host.address} ~]#</span> <span class="text-slate-100">${cmd}</span>`);
+
+                if (cmd === 'clear') {
+                    session.output = [];
+                } else if (cmd === 'fastfetch' || cmd === 'neofetch') {
+                    session.output.push(`<span class="text-cyan-400 font-bold">OS:</span> ${host.os}`);
+                    session.output.push(`<span class="text-cyan-400 font-bold">Host:</span> ${host.name}`);
+                    session.output.push(`<span class="text-cyan-400 font-bold">Uptime:</span> 3 days, 12 hours`);
+                    session.output.push(`<span class="text-cyan-400 font-bold">Memory:</span> 4.2 GiB / 16.0 GiB`);
+                } else if (cmd === 'htop') {
+                    session.output.push(`Tasks: 124, 2 thr; 1 running | Load average: 0.12 0.22 0.18`);
+                    session.output.push(`CPU[||||||||||||                          ] 24.2% | Mem[||||||||||                  ] 4.2G/16G`);
+                } else {
+                    session.output.push(`zsh: command not found: ${cmd}. Type 'fastfetch' or 'htop' for simulated outputs.`);
+                }
+                session.output.push("");
+                renderActiveTerminal();
+            }
+        }
+
+        function executeSnippetInActiveTerminal(cmd) {
+            if (!state.activeSessionId) {
+                openNewSession(3);
+            }
+            const session = state.sessions.find(s => s.id === state.activeSessionId);
+            if (!session) return;
+            const host = state.hosts.find(h => h.id === session.hostId);
+            session.output.push(`<span class="text-red-400 font-bold">[${host.user}@${host.address} ~]#</span> <span class="text-yellow-400">${cmd}</span>`);
+            session.output.push(`Successfully executed snippet command.`);
+            session.output.push("");
+            renderActiveTerminal();
+        }
+
+        // Settings Modal Management
+        function openSettingsModal() {
+            document.getElementById('settingsModal').classList.remove('hidden');
+            document.getElementById('settingsModal').classList.add('flex');
+            renderModalKeys();
+        }
+
+        function closeSettingsModal() {
+            document.getElementById('settingsModal').classList.remove('flex');
+            document.getElementById('settingsModal').classList.add('hidden');
+        }
+
+        function switchSettingsTab(tab) {
+            const keysBtn = document.getElementById('settingsTabKeysBtn');
+            const sqlBtn = document.getElementById('settingsTabSqlBtn');
+            const keysContent = document.getElementById('settingsContentKeys');
+            const sqlContent = document.getElementById('settingsContentSql');
+
+            if (tab === 'keys') {
+                keysBtn.className = "w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-appleAccent bg-appleAccent/15 transition text-left";
+                sqlBtn.className = "w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-appleCardHover transition text-left";
+                keysContent.classList.remove('hidden');
+                sqlContent.classList.add('hidden');
+            } else {
+                sqlBtn.className = "w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-appleAccent bg-appleAccent/15 transition text-left";
+                keysBtn.className = "w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-appleCardHover transition text-left";
+                sqlContent.classList.remove('hidden');
+                keysContent.classList.add('hidden');
+            }
+        }
+
+        function renderModalKeys() {
+            const list = document.getElementById('modalKeysList');
+            if (!list) return;
+            list.innerHTML = "";
+
+            // Dotted Placeholder CTA matching exact servers style
+            const ctaKeyItem = document.createElement('div');
+            ctaKeyItem.className = "p-3.5 rounded-xl border border-dashed border-appleBorder hover:border-appleAccent bg-appleCard/40 hover:bg-appleCard cursor-pointer transition flex items-center space-x-3 group";
+            ctaKeyItem.onclick = () => addNewSshKey();
+            ctaKeyItem.innerHTML = `
+                <div class="w-8 h-8 rounded-lg bg-appleInput border border-appleBorder text-appleAccent flex items-center justify-center shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                </div>
+                <div class="overflow-hidden">
+                    <h4 class="text-xs font-semibold text-white group-hover:text-appleAccent transition">New SSH Key</h4>
+                    <p class="text-[10px] text-slate-400 truncate">Generate or import cryptographic identity</p>
+                </div>
+            `;
+            list.appendChild(ctaKeyItem);
+
+            state.sshKeys.forEach((key, index) => {
+                const item = document.createElement('div');
+                item.className = "bg-appleCard border border-appleBorder rounded-xl p-3.5 flex items-center justify-between";
+                item.innerHTML = `
+                    <div class="space-y-1">
+                        <div class="flex items-center space-x-2.5">
+                            <svg class="w-4 h-4 text-appleAccent" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9 z"/></svg>
+                            <span class="text-xs font-semibold text-white">${key.name}</span>
+                        </div>
+                        <p class="text-[11px] font-mono text-slate-400">${key.fingerprint}</p>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <span class="text-[10px] text-slate-500">Added: ${key.created}</span>
+                        <button onclick="deleteSshKey(${index})" class="text-slate-400 hover:text-red-400 text-xs transition p-1 rounded-lg">Delete</button>
+                    </div>
+                `;
+                list.appendChild(item);
+            });
+        }
+
+        function addNewSshKey() {
+            const name = prompt("Enter SSH Key Label (e.g. MacBook Pro M3):");
+            if (!name) return;
+            state.sshKeys.push({
+                id: Date.now(),
+                name,
+                fingerprint: "SHA256:" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15),
+                created: new Date().toISOString().split('T')[0]
+            });
+            renderModalKeys();
+        }
+
+        function deleteSshKey(index) {
+            state.sshKeys.splice(index, 1);
+            renderModalKeys();
+        }
+
+        // Toggle Passphrase Visibility with Eye Icon
+        function togglePassphraseVisibility() {
+            const input = document.getElementById('sqlPassphrase');
+            const icon = document.getElementById('passphraseEyeIcon');
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a10.05 10.05 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.542 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>`;
+            } else {
+                input.type = 'password';
+                icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>`;
+            }
+        }
+
+        function testAndSaveSqlSync() {
+            const statusText = document.getElementById('syncStatusText');
+            const badge = document.getElementById('syncStatusBadge');
+            statusText.textContent = "Testing connection & saving...";
+            badge.textContent = "Connecting...";
+            setTimeout(() => {
+                statusText.textContent = "Last synced just now";
+                badge.textContent = "Connected";
+            }, 800);
+        }
+
+        // New Host Modal Management
+        function openNewHostModal() {
+            document.getElementById('newHostModal').classList.remove('hidden');
+            document.getElementById('newHostModal').classList.add('flex');
+            populateSshKeyDropdown();
+        }
+
+        function closeNewHostModal() {
+            document.getElementById('newHostModal').classList.remove('flex');
+            document.getElementById('newHostModal').classList.add('hidden');
+        }
+
+        function populateSshKeyDropdown() {
+            const select = document.getElementById('inputSshKey');
+            select.innerHTML = "";
+            state.sshKeys.forEach(k => {
+                const opt = document.createElement('option');
+                opt.value = k.name;
+                opt.textContent = `${k.name} (${k.fingerprint.substring(0, 16)}...)`;
+                select.appendChild(opt);
+            });
+            toggleAuthMethodSelector();
+        }
+
+        function toggleAuthMethodSelector() {
+            const method = document.getElementById('inputAuthMethod').value;
+            const keyWrapper = document.getElementById('sshKeySelectWrapper');
+            const pwdWrapper = document.getElementById('passwordInputWrapper');
+            if (method === 'key') {
+                keyWrapper.classList.remove('hidden');
+                pwdWrapper.classList.add('hidden');
+            } else {
+                keyWrapper.classList.add('hidden');
+                pwdWrapper.classList.remove('hidden');
+            }
+        }
+
+        function saveNewHost() {
+            const name = document.getElementById('inputName').value.trim();
+            const address = document.getElementById('inputAddress').value.trim();
+            const port = parseInt(document.getElementById('inputPort').value) || 22;
+            const user = document.getElementById('inputUser').value.trim() || 'root';
+
+            if (!name || !address) return;
+
+            const newHost = {
+                id: Date.now(),
+                name, address, port, user,
+                type: 'ubuntu',
+                status: 'Online',
+                os: 'Ubuntu 24.04 LTS x86_64'
+            };
+
+            state.hosts.push(newHost);
+            closeNewHostModal();
+            renderDrawerServers();
+            openNewSession(newHost.id);
+        }
+
+        // Initialize App on Load
+        window.onload = () => {
+            renderDrawerServers();
+            openNewSession(3);
+        };
+    </script>
+</body>
+</html>

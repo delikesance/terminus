@@ -22,7 +22,6 @@ fn color_u8(c: [f32; 4]) -> [u8; 4] {
 
 // Layout
 const PALETTE_WIDTH: f32 = 480.0;
-const PALETTE_CORNER_RADIUS: f32 = 8.0;
 const PALETTE_MARGIN_TOP: f32 = 80.0;
 const PALETTE_PADDING: f32 = 4.0;
 
@@ -51,14 +50,45 @@ const RESULTS_MARGIN_TOP: f32 = 2.0;
 const CARET_WIDTH: f32 = 1.5;
 const CARET_BLINK_MS: u128 = 500;
 
-// Colors — dark minimalist
-const BACKDROP_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.50];
-const BG_COLOR: [f32; 4] = [0.08, 0.08, 0.08, 0.98];
-const SELECTED_BG_COLOR: [f32; 4] = [0.15, 0.15, 0.15, 1.0];
-const TEXT_COLOR: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
-const DIM_TEXT_COLOR: [f32; 4] = [0.35, 0.35, 0.35, 1.0];
-const SHORTCUT_TEXT_COLOR: [f32; 4] = [0.30, 0.30, 0.32, 1.0];
-const SEPARATOR_COLOR: [f32; 4] = [0.15, 0.15, 0.15, 1.0];
+// Colors — Apple HIG flat dark (match terminus chrome theme)
+const BACKDROP_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.60];
+const BG_COLOR: [f32; 4] = [
+    0x11 as f32 / 255.0,
+    0x11 as f32 / 255.0,
+    0x13 as f32 / 255.0,
+    1.0,
+];
+const SELECTED_BG_COLOR: [f32; 4] = [
+    0x0a as f32 / 255.0,
+    0x84 as f32 / 255.0,
+    1.0,
+    0.15,
+];
+const TEXT_COLOR: [f32; 4] = [
+    0xf1 as f32 / 255.0,
+    0xf5 as f32 / 255.0,
+    0xf9 as f32 / 255.0,
+    1.0,
+];
+const DIM_TEXT_COLOR: [f32; 4] = [
+    0x94 as f32 / 255.0,
+    0xa3 as f32 / 255.0,
+    0xb8 as f32 / 255.0,
+    1.0,
+];
+const SHORTCUT_TEXT_COLOR: [f32; 4] = [
+    0x64 as f32 / 255.0,
+    0x74 as f32 / 255.0,
+    0x8b as f32 / 255.0,
+    1.0,
+];
+const SEPARATOR_COLOR: [f32; 4] = [
+    0x2f as f32 / 255.0,
+    0x2f as f32 / 255.0,
+    0x35 as f32 / 255.0,
+    1.0,
+];
+const PALETTE_CORNER_RADIUS: f32 = 12.0;
 
 // Depth / order
 const DEPTH_BACKDROP: f32 = 0.0;

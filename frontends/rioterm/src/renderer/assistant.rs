@@ -42,14 +42,39 @@ const MAX_VISIBLE_LINES: usize = 16;
 const DOCS_URL: &str = "rioterm.com/docs/config";
 
 // Colors
-const BACKDROP_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.35];
-const BG_COLOR: [f32; 4] = [0.12, 0.12, 0.12, 0.98];
+const BACKDROP_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.60];
+const BG_COLOR: [f32; 4] = [
+    0x11 as f32 / 255.0,
+    0x11 as f32 / 255.0,
+    0x13 as f32 / 255.0,
+    0.98,
+];
 const HEADING_COLOR_ERROR: [f32; 4] = [1.0, 0.07, 0.38, 1.0];
 const HEADING_COLOR_WARNING: [f32; 4] = [0.99, 0.73, 0.16, 1.0];
-const TEXT_COLOR: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
-const LINK_COLOR: [f32; 4] = [0.40, 0.60, 1.0, 1.0];
-const BUTTON_TEXT_COLOR: [f32; 4] = [0.70, 0.70, 0.70, 1.0];
-const BUTTON_HOVER_BG: [f32; 4] = [0.25, 0.25, 0.28, 1.0];
+const TEXT_COLOR: [f32; 4] = [
+    0xf1 as f32 / 255.0,
+    0xf5 as f32 / 255.0,
+    0xf9 as f32 / 255.0,
+    1.0,
+];
+const LINK_COLOR: [f32; 4] = [
+    0x0a as f32 / 255.0,
+    0x84 as f32 / 255.0,
+    1.0,
+    1.0,
+];
+const BUTTON_TEXT_COLOR: [f32; 4] = [
+    0x94 as f32 / 255.0,
+    0xa3 as f32 / 255.0,
+    0xb8 as f32 / 255.0,
+    1.0,
+];
+const BUTTON_HOVER_BG: [f32; 4] = [
+    0x2a as f32 / 255.0,
+    0x2a as f32 / 255.0,
+    0x30 as f32 / 255.0,
+    1.0,
+];
 
 // Depth / order
 const DEPTH_BACKDROP: f32 = 0.0;

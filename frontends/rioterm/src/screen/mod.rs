@@ -24,9 +24,10 @@ use crate::crosswords::{
     Mode,
 };
 use crate::hints::HintState;
+use crate::hosts;
 use crate::layout::ContextDimension;
 use crate::mouse::{calculate_mouse_position, Mouse};
-use crate::renderer::island::{self, TabStripLayout, ISLAND_HEIGHT};
+use crate::renderer::island::{self, TabStripLayout, CONTEXT_BAR_HEIGHT};
 use crate::renderer::{utils::padding_top_from_config, Renderer};
 use crate::screen::hint::HintMatches;
 use crate::selection::{Selection, SelectionType};
@@ -36,6 +37,7 @@ use rio_backend::clipboard::Clipboard;
 use rio_backend::clipboard::ClipboardType;
 use rio_backend::config::layout::Margin;
 use rio_backend::config::renderer::Backend;
+use rio_backend::config::Shell;
 use rio_backend::crosswords::pos::{Boundary, CursorState, Direction, Line};
 use rio_backend::crosswords::search::RegexSearch;
 use rio_backend::error::{RioError, RioErrorLevel, RioErrorType};
@@ -54,6 +56,7 @@ use rio_window::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use rio_window::window::CursorIcon;
 use std::error::Error;
 use std::ffi::OsStr;
+use terminus_ui::sidebar::Badge;
 use touch::TouchPurpose;
 
 /// Maximum number of lines for the blocking search while still typing the search regex.
@@ -61,6 +64,26 @@ const MAX_SEARCH_WHILE_TYPING: Option<usize> = Some(1000);
 
 /// Maximum number of search terms stored in the history.
 const MAX_SEARCH_HISTORY_SIZE: usize = 255;
+
+/// The shell that opens an SSH host: the system `ssh`, the way a terminal
+/// would run it.
+///
+/// The port is always passed, default included: the row shows a port and the
+/// command uses the same one, so a host that is *not* on 22 cannot silently
+/// connect somewhere else. A bare `ssh` is resolved on `PATH` by the spawn,
+/// exactly like the shell itself.
+fn ssh_shell(host: &hosts::HostRow) -> Shell {
+    let destination = if host.username.is_empty() {
+        host.hostname.clone()
+    } else {
+        format!("{}@{}", host.username, host.hostname)
+    };
+
+    Shell {
+        program: Some("ssh".to_string()),
+        args: vec!["-p".to_string(), host.port.to_string(), destination],
+    }
+}
 
 pub struct Screen<'screen> {
     bindings: crate::bindings::KeyBindings,
@@ -81,6 +104,16 @@ pub struct Screen<'screen> {
     /// worker. `create` hands out no id, so the row is matched by name
     /// on the next refresh instead of guessing an index.
     pending_host_select: Option<String>,
+    /// When the sidebar's connecting indicator started. Drives the orbit
+    /// phase and the clear-when-ready timer. Paired with
+    /// `chrome.panel.connecting_id` / `chrome.connection`.
+    connecting_started: Option<std::time::Instant>,
+    /// When the connection modal last advanced a step (or started).
+    connecting_step_at: Option<std::time::Instant>,
+    /// When the success state was entered — dismiss after a short hold.
+    connecting_success_at: Option<std::time::Instant>,
+    /// Last time host-drag snap animation was ticked (for `dt`).
+    host_drag_anim_at: Option<std::time::Instant>,
     pub sugarloaf: Sugarloaf<'screen>,
     pub context_manager: context::ContextManager<EventProxy>,
     /// IME state is per window, not per context: the platform IME
@@ -109,8 +142,11 @@ pub struct Screen<'screen> {
     /// still refreshes it. Reset on wheel scroll and highlight clears.
     last_hint_probe: Option<(Pos, rio_window::keyboard::ModifiersState)>,
     pub resize_state: Option<crate::layout::ResizeState>,
-    #[cfg(target_os = "macos")]
+    /// Whether Tab navigation may drag the window from the chrome band.
+    /// True whenever the custom title bar is active (Tab mode).
     pub allow_manual_dragging: bool,
+    /// Last known maximized state — drives the Windows caption restore icon.
+    pub window_maximized: bool,
     last_chrome_press: Option<ChromePress>,
     last_close_press: Option<(std::time::Instant, f32)>,
     pub grids: rustc_hash::FxHashMap<usize, rio_backend::sugarloaf::grid::GridRenderer>,
@@ -392,12 +428,16 @@ impl Screen<'_> {
                 host_wake,
             ),
             pending_host_select: None,
+            connecting_started: None,
+            connecting_step_at: None,
+            connecting_success_at: None,
+            host_drag_anim_at: None,
             chrome,
             bindings,
             last_ime_cursor_pos: None,
             resize_state: None,
-            #[cfg(target_os = "macos")]
             allow_manual_dragging: config.navigation.is_enabled(),
+            window_maximized: false,
             last_chrome_press: None,
             last_close_press: None,
             grids: rustc_hash::FxHashMap::default(),
@@ -448,48 +488,86 @@ impl Screen<'_> {
         (size.width / scale, size.height / scale)
     }
 
-    /// Apply anything the host worker has sent. Returns whether the
-    /// chrome changed and the window should repaint.
+    /// Apply anything the host worker has sent, and refresh session washes
+    /// from the open tabs. Returns whether the chrome changed.
     pub fn pump_chrome(&mut self) -> bool {
-        if !self.host_store.drain() {
+        let store_changed = self.host_store.drain();
+
+        let open_host_ids: Vec<String> = self
+            .context_manager
+            .contexts_mut()
+            .iter()
+            .filter_map(|tab| tab.current().host_id.clone())
+            .collect();
+        let current = self.context_manager.current_index();
+        let len = self.context_manager.len();
+        let sessions: Vec<hosts::OpenSession> = (0..len)
+            .map(|i| {
+                let host_id = self
+                    .context_manager
+                    .contexts_mut()
+                    .get(i)
+                    .and_then(|grid| grid.current().host_id.clone());
+                let title = self
+                    .context_manager
+                    .custom_title(i)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        self.context_manager
+                            .title(i)
+                            .map(|t| t.content.clone())
+                    })
+                    .unwrap_or_else(|| format!("Session {}", i + 1));
+                let closable = !self.context_manager.is_pinned(i);
+                hosts::OpenSession {
+                    tab_index: i,
+                    host_id,
+                    title,
+                    active: i == current,
+                    closable,
+                }
+            })
+            .collect();
+        let rows = hosts::sidebar_rows(
+            self.host_store.platform(),
+            self.host_store.hosts(),
+            self.host_store.groups(),
+            &self.chrome.panel.collapsed_groups,
+            &self.chrome.panel.collapsed_hosts,
+            &open_host_ids,
+            &sessions,
+        );
+        let rows_changed = rows != self.chrome.panel.rows;
+        if rows_changed {
+            self.chrome.set_rows(rows);
+        }
+
+        if !store_changed && !rows_changed {
             return false;
         }
 
-        let items: Vec<terminus_ui::sidebar::HostItem> = self
-            .host_store
-            .hosts()
-            .iter()
-            .map(|host| terminus_ui::sidebar::HostItem {
-                id: host.id.clone(),
-                name: host.name.clone(),
-                endpoint: host.endpoint(),
-            })
-            .collect();
-        self.chrome.set_hosts(items);
-
         // `create` hands out no id, so the row inserted a moment ago is
         // found by the label the worker echoed back.
-        if let Some(label) = self.pending_host_select.take() {
-            if let Some(index) = self
-                .chrome
-                .panel
-                .items
-                .iter()
-                .position(|item| item.name == label)
-            {
-                self.chrome.panel.selected = Some(index);
+        if store_changed {
+            if let Some(label) = self.pending_host_select.take() {
+                if let Some(index) = self.chrome.panel.rows.iter().position(|row| {
+                    row.host()
+                        .is_some_and(|item| item.name == label && item.badge == Badge::Ssh)
+                }) {
+                    self.chrome.panel.selected = Some(index);
+                }
             }
-        }
 
-        if let Some(notice) = self.host_store.take_notice() {
-            self.chrome.panel.notice = Some(format!("Added {notice}"));
-            self.chrome.panel.error = None;
-        }
-        // A store-level failure has nowhere else to show while the
-        // editor is closed; when it is open the error belongs on the
-        // dialog, not behind its scrim.
-        if !self.chrome.add_host_is_open() {
-            self.chrome.panel.error = self.host_store.error().map(str::to_string);
+            if let Some(notice) = self.host_store.take_notice() {
+                self.chrome.panel.notice = Some(notice);
+                self.chrome.panel.error = None;
+            }
+            // A store-level failure has nowhere else to show while the
+            // editor is closed; when it is open the error belongs on the
+            // dialog, not behind its scrim.
+            if !self.chrome.add_host_is_open() {
+                self.chrome.panel.error = self.host_store.error().map(str::to_string);
+            }
         }
         true
     }
@@ -505,6 +583,18 @@ impl Screen<'_> {
             self.reapply_chrome_inset();
         }
         action
+    }
+
+    /// Update host→group drag while the left button is held.
+    pub fn chrome_drag_move(&mut self, x: f32, y: f32) -> bool {
+        let (_, height) = self.chrome_viewport();
+        self.chrome.handle_drag_move(height, x, y)
+    }
+
+    /// Finish a host press/drag on left-button release.
+    pub fn chrome_release(&mut self, x: f32, y: f32) -> terminus_ui::chrome::ChromeAction {
+        let (_, height) = self.chrome_viewport();
+        self.chrome.handle_release(height, x, y)
     }
 
     /// Re-flow the grid after the chrome's reserved width changed.
@@ -550,6 +640,66 @@ impl Screen<'_> {
         use rio_window::event::ElementState;
         use rio_window::keyboard::{Key, NamedKey};
         use terminus_ui::add_host::{FormInput, FormOutcome};
+
+        // Host-list search field: type to filter, Esc clears focus.
+        if self.chrome.panel.filter_focused && !self.chrome.add_host_is_open() {
+            if key_event.state != ElementState::Pressed {
+                return Some(FormOutcome::Consumed);
+            }
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.chrome.panel.filter_focused = false;
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.chrome.panel.filter.pop();
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Character(ch) => {
+                    let text = key_event.text.as_deref().unwrap_or(ch.as_str());
+                    if crate::renderer::is_printable_text(text) {
+                        self.chrome.panel.filter.push_str(text);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                _ => return Some(FormOutcome::Consumed),
+            }
+        }
+
+        // Inline new-group name field.
+        if self.chrome.panel.new_group_focused && !self.chrome.add_host_is_open() {
+            if key_event.state != ElementState::Pressed {
+                return Some(FormOutcome::Consumed);
+            }
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.chrome.panel.close_new_group_form();
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Enter) => {
+                    let name = self.chrome.panel.new_group_name.trim().to_string();
+                    if !name.is_empty() {
+                        self.host_store.create_group(&name);
+                        self.chrome.panel.close_new_group_form();
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.chrome.panel.new_group_name.pop();
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Character(ch) => {
+                    let text = key_event.text.as_deref().unwrap_or(ch.as_str());
+                    if crate::renderer::is_printable_text(text)
+                        && self.chrome.panel.new_group_name.len() < 32
+                    {
+                        self.chrome.panel.new_group_name.push_str(text);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                _ => return Some(FormOutcome::Consumed),
+            }
+        }
 
         if !self.chrome.add_host_is_open() {
             return None;
@@ -760,6 +910,7 @@ impl Screen<'_> {
             config.window.macos_use_unified_titlebar,
         );
         let padding_y_bottom = config.margin.bottom;
+        self.chrome.top_inset = padding_y_top;
 
         if should_update_font_library {
             self.sugarloaf.update_font(font_library);
@@ -1724,11 +1875,7 @@ impl Screen<'_> {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.switch_to_next_split_or_tab();
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
+                        self.switch_visible_context(old_index, new_index);
                         self.mark_dirty();
                     }
                     Act::SelectPrevSplitOrTab => {
@@ -1737,22 +1884,14 @@ impl Screen<'_> {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.switch_to_prev_split_or_tab();
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
+                        self.switch_visible_context(old_index, new_index);
                         self.mark_dirty();
                     }
                     Act::SelectTab(tab_index) => {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.select_tab(*tab_index);
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
+                        self.switch_visible_context(old_index, new_index);
                         self.cancel_search(clipboard);
                         self.mark_dirty();
                     }
@@ -1761,11 +1900,7 @@ impl Screen<'_> {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.select_last_tab();
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
+                        self.switch_visible_context(old_index, new_index);
                         self.mark_dirty();
                     }
                     Act::SelectNextTab => {
@@ -1774,11 +1909,7 @@ impl Screen<'_> {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.switch_to_next();
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
+                        self.switch_visible_context(old_index, new_index);
                         self.mark_dirty();
                     }
                     Act::MoveCurrentTabToPrev => {
@@ -1787,13 +1918,9 @@ impl Screen<'_> {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.move_current_to_prev();
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
-                        let tab_width =
-                            self.island_tab_layout(self.context_manager.len()).tab_width;
+                        self.switch_visible_context(old_index, new_index);
+                        let layout = self.island_tab_layout(self.context_manager.len());
+                        let tab_width = layout.width_at(old_index).max(layout.width_at(new_index));
                         if let Some(ref mut island) = self.renderer.island {
                             island.remap_tab_swap(old_index, new_index, tab_width);
                         }
@@ -1805,13 +1932,9 @@ impl Screen<'_> {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.move_current_to_next();
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
-                        let tab_width =
-                            self.island_tab_layout(self.context_manager.len()).tab_width;
+                        self.switch_visible_context(old_index, new_index);
+                        let layout = self.island_tab_layout(self.context_manager.len());
+                        let tab_width = layout.width_at(old_index).max(layout.width_at(new_index));
                         if let Some(ref mut island) = self.renderer.island {
                             island.remap_tab_swap(old_index, new_index, tab_width);
                         }
@@ -1823,11 +1946,7 @@ impl Screen<'_> {
                         let old_index = self.context_manager.current_index();
                         self.context_manager.switch_to_prev();
                         let new_index = self.context_manager.current_index();
-                        self.context_manager.switch_context_visibility(
-                            &mut self.sugarloaf,
-                            old_index,
-                            new_index,
-                        );
+                        self.switch_visible_context(old_index, new_index);
                         self.mark_dirty();
                     }
                     Act::ReceiveChar | Act::None => (),
@@ -1921,6 +2040,34 @@ impl Screen<'_> {
     }
 
     pub fn create_tab(&mut self, clipboard: &mut Clipboard) {
+        let host_id = self
+            .context_manager
+            .current()
+            .host_id
+            .clone()
+            .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
+        let shell = match self.shell_for_row(&host_id) {
+            Ok(shell) => shell,
+            Err(err) => {
+                self.chrome.panel.error = Some(err);
+                return;
+            }
+        };
+        let _ = self.create_tab_with_shell(clipboard, shell, Some(host_id));
+    }
+
+    /// Create a tab whose session runs `shell` instead of the app's own.
+    ///
+    /// Everything else is `create_tab`: the tab still lands beside the
+    /// current one, and the margin is still recalculated first so the two
+    /// tabs agree on their grid. Only the shell differs — which is what
+    /// makes "open this distro" a session rather than a second local shell.
+    pub fn create_tab_with_shell(
+        &mut self,
+        clipboard: &mut Clipboard,
+        shell: Option<Shell>,
+        host_id: Option<String>,
+    ) -> Result<(), String> {
         let redirect = true;
 
         // We resize the current tab ahead to prepare the
@@ -1941,7 +2088,19 @@ impl Screen<'_> {
         let _ = self.renderer.margin.top
             + self.renderer.island.as_ref().map_or(0.0, |i| i.height());
         let rich_text_id = next_rich_text_id();
-        self.context_manager.add_context(redirect, rich_text_id);
+        // A shell that cannot spawn leaves the tab count as it was, so the
+        // resize above is undone rather than leaving a gap behind.
+        let opened = self.context_manager.add_context_with_shell(
+            redirect,
+            rich_text_id,
+            shell,
+            host_id,
+        );
+        if opened.is_err() {
+            self.resize_top_or_bottom_line(num_tabs);
+        }
+        opened?;
+
         let new_index = self.context_manager.current_index();
         self.context_manager.switch_context_visibility(
             &mut self.sugarloaf,
@@ -1950,7 +2109,427 @@ impl Screen<'_> {
         );
 
         self.cancel_search(clipboard);
+        // The tab that just came to the front decides which row is lit: a
+        // local tab clears a distro highlight, a distro keeps its own.
+        self.sync_sidebar_selection();
         self.mark_dirty();
+        Ok(())
+    }
+
+    /// Open the session a sidebar row stands for.
+    ///
+    /// Returns the message to show the user when it cannot open: the panel
+    /// has one error line, and a row that does nothing at all is the one
+    /// outcome this must never produce.
+    pub fn open_host_session(
+        &mut self,
+        id: &str,
+        clipboard: &mut Clipboard,
+    ) -> Result<(), String> {
+        // If this host already has open sessions, focus the last one (else first).
+        {
+            let len = self.context_manager.len();
+            let mut last: Option<usize> = None;
+            let mut first: Option<usize> = None;
+            for i in 0..len {
+                let host = self
+                    .context_manager
+                    .contexts_mut()
+                    .get(i)
+                    .and_then(|g| g.current().host_id.clone())
+                    .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
+                if host == id {
+                    if first.is_none() {
+                        first = Some(i);
+                    }
+                    last = Some(i);
+                }
+            }
+            if let Some(idx) = last.or(first) {
+                if idx != self.context_manager.current_index() {
+                    self.stop_hint_mode_if_active();
+                    self.cancel_search(clipboard);
+                    self.clear_selection();
+                    let old = self.context_manager.current_index();
+                    self.context_manager.set_current(idx);
+                    self.switch_visible_context(old, idx);
+                    self.mark_dirty();
+                }
+                self.sync_sidebar_selection();
+                return Ok(());
+            }
+        }
+
+        // Reuse the pinned home tab instead of opening a duplicate local.
+        if id == hosts::LOCAL_ID {
+            if let Some(idx) = self.context_manager.find_home_tab() {
+                if idx != self.context_manager.current_index() {
+                    self.stop_hint_mode_if_active();
+                    self.cancel_search(clipboard);
+                    self.clear_selection();
+                    let old = self.context_manager.current_index();
+                    self.context_manager.set_current(idx);
+                    self.switch_visible_context(old, idx);
+                    self.mark_dirty();
+                }
+                self.sync_sidebar_selection();
+                return Ok(());
+            }
+        }
+
+        let shell = self.shell_for_row(id)?;
+
+        let label = self
+            .chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|item| item.id == id)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| id.to_string());
+
+        // Local shells come up instantly; WSL distros and SSH hosts can
+        // sit on a blank PTY for a while, so they get the connecting
+        // animation until the session writes something (or times out).
+        let animate = id != hosts::LOCAL_ID;
+        if animate {
+            self.begin_session_connecting(id);
+        }
+
+        match self.create_tab_with_shell(clipboard, shell, Some(id.to_string())) {
+            Ok(()) => {
+                let tab_index = self.context_manager.current_index();
+                let os_id = self
+                    .chrome
+                    .panel
+                    .rows
+                    .iter()
+                    .filter_map(terminus_ui::sidebar::Row::host)
+                    .find(|item| item.id == id)
+                    .and_then(|item| item.os_id.clone());
+                self.context_manager
+                    .set_custom_title(tab_index, Some(label));
+                self.context_manager.set_tab_os_id(tab_index, os_id);
+                Ok(())
+            }
+            Err(err) => {
+                if animate {
+                    self.end_session_connecting();
+                }
+                Err(format!("{label}: {err}"))
+            }
+        }
+    }
+
+    fn begin_session_connecting(&mut self, id: &str) {
+        self.chrome.panel.begin_connecting(id);
+        let now = std::time::Instant::now();
+        self.connecting_started = Some(now);
+        self.connecting_step_at = Some(now);
+        self.connecting_success_at = None;
+
+        let host = self
+            .chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|item| item.id == id);
+
+        let (title, endpoint, kind) = match host {
+            Some(item) if item.badge == Badge::Wsl => (
+                item.name.clone(),
+                format!("WSL · {}", item.endpoint),
+                terminus_ui::ConnectKind::Wsl,
+            ),
+            Some(item) => (
+                item.name.clone(),
+                format!("SSH {}", item.endpoint),
+                terminus_ui::ConnectKind::Ssh,
+            ),
+            None if id.starts_with(hosts::WSL_PREFIX) => (
+                id.trim_start_matches(hosts::WSL_PREFIX).to_string(),
+                "WSL".to_string(),
+                terminus_ui::ConnectKind::Wsl,
+            ),
+            None => (id.to_string(), format!("SSH {id}"), terminus_ui::ConnectKind::Ssh),
+        };
+
+        self.chrome.connection = Some(match kind {
+            terminus_ui::ConnectKind::Wsl => {
+                terminus_ui::ConnectionSequence::start_wsl(id, title, endpoint)
+            }
+            terminus_ui::ConnectKind::Ssh => {
+                terminus_ui::ConnectionSequence::start_ssh(id, title, endpoint)
+            }
+        });
+    }
+
+    fn end_session_connecting(&mut self) {
+        self.chrome.panel.end_connecting();
+        self.chrome.connection = None;
+        self.connecting_started = None;
+        self.connecting_step_at = None;
+        self.connecting_success_at = None;
+    }
+
+    /// Public dismiss from the connection modal's Close button.
+    pub fn force_end_connecting(&mut self) {
+        self.end_session_connecting();
+    }
+
+    /// Advance / retire the connection modal for this frame.
+    ///
+    /// Returns whether the chrome still needs continuous redraws.
+    fn tick_session_connecting(&mut self) -> bool {
+        if self.chrome.connection.is_none() {
+            self.connecting_started = None;
+            return false;
+        }
+        let Some(started) = self.connecting_started else {
+            return false;
+        };
+
+        let elapsed = started.elapsed();
+        const STEP_MS: std::time::Duration = std::time::Duration::from_millis(850);
+        const SUCCESS_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
+        const MAX: std::time::Duration = std::time::Duration::from_secs(20);
+
+        // User closed the modal.
+        if self.chrome.connection.is_none() {
+            return false;
+        }
+
+        if elapsed >= MAX {
+            self.end_session_connecting();
+            return false;
+        }
+
+        // Hold the success frame, then dismiss.
+        if let Some(ok_at) = self.connecting_success_at {
+            if ok_at.elapsed() >= SUCCESS_HOLD {
+                self.end_session_connecting();
+                return false;
+            }
+            return true;
+        }
+
+        let id = self
+            .chrome
+            .connection
+            .as_ref()
+            .map(|c| c.host_id.clone())
+            .unwrap_or_default();
+
+        let ctx = self.context_manager.current();
+        if ctx.host_id.as_deref() != Some(id.as_str()) && elapsed.as_millis() > 200 {
+            self.end_session_connecting();
+            return false;
+        }
+
+        // Advance steps on a timer so the line fills like the mock.
+        let step_at = self.connecting_step_at.unwrap_or(started);
+        if step_at.elapsed() >= STEP_MS {
+            if let Some(conn) = self.chrome.connection.as_mut() {
+                if conn.advance() {
+                    self.connecting_step_at = Some(std::time::Instant::now());
+                }
+            }
+        }
+
+        // Ready when the PTY has spoken, or we've finished the last step
+        // and waited a beat for WSL shells that are slow to paint.
+        let on_last = self
+            .chrome
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.step + 1 >= terminus_ui::STEP_COUNT);
+        let ready = terminal_has_printable_output(ctx)
+            || (on_last && step_at.elapsed() >= STEP_MS);
+
+        if ready {
+            if let Some(conn) = self.chrome.connection.as_mut() {
+                conn.mark_success();
+            }
+            self.chrome.panel.end_connecting();
+            self.connecting_success_at = Some(std::time::Instant::now());
+        }
+
+        true
+    }
+
+    /// Looping `0..1` phase for the active-node pulse.
+    fn connecting_phase(&self) -> Option<f32> {
+        let started = self.connecting_started?;
+        if self.chrome.connection.is_none() {
+            return None;
+        }
+        Some(terminus_ui::loading_phase(started.elapsed().as_secs_f32()))
+    }
+
+    /// Point the sidebar highlight at the active session (and its host).
+    fn sync_sidebar_selection(&mut self) {
+        let tab_index = self.context_manager.current_index();
+        let id = self
+            .context_manager
+            .current()
+            .host_id
+            .clone()
+            .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
+
+        self.chrome.panel.follow_session(tab_index, &id);
+    }
+
+    /// Advance host→group snap tween; returns a persist action when done.
+    fn tick_host_drag_animation(&mut self) -> Option<terminus_ui::chrome::ChromeAction> {
+        if !self
+            .chrome
+            .panel
+            .host_drag
+            .as_ref()
+            .is_some_and(|d| d.is_snapping())
+        {
+            self.host_drag_anim_at = None;
+            return None;
+        }
+        let now = std::time::Instant::now();
+        let dt = self
+            .host_drag_anim_at
+            .map(|t| now.saturating_duration_since(t).as_secs_f32())
+            .unwrap_or(1.0 / 60.0)
+            .min(0.05);
+        self.host_drag_anim_at = Some(now);
+        self.chrome.tick_host_drag(dt)
+    }
+
+    fn apply_host_drag_action(&mut self, action: terminus_ui::chrome::ChromeAction) {
+        if let terminus_ui::chrome::ChromeAction::SetHostGroup { host_id, group_id } = action {
+            self.host_store
+                .set_host_group(&host_id, group_id.as_deref());
+            let _ = self.pump_chrome();
+        }
+    }
+
+    /// Focus an already-open session by tab index.
+    pub fn focus_session(&mut self, tab_index: usize, clipboard: &mut Clipboard) {
+        if tab_index >= self.context_manager.len() {
+            return;
+        }
+        if tab_index == self.context_manager.current_index() {
+            self.sync_sidebar_selection();
+            return;
+        }
+        self.stop_hint_mode_if_active();
+        self.cancel_search(clipboard);
+        self.clear_selection();
+        let old = self.context_manager.current_index();
+        self.context_manager.set_current(tab_index);
+        self.switch_visible_context(old, tab_index);
+        self.mark_dirty();
+    }
+
+    /// Open another session for a host (sidebar "+" control).
+    pub fn add_host_session(
+        &mut self,
+        id: &str,
+        clipboard: &mut Clipboard,
+    ) -> Result<(), String> {
+        let shell = self.shell_for_row(id)?;
+        let label = self
+            .chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|item| item.id == id)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| id.to_string());
+
+        let animate = id != hosts::LOCAL_ID;
+        if animate {
+            self.begin_session_connecting(id);
+        }
+
+        match self.create_tab_with_shell(clipboard, shell, Some(id.to_string())) {
+            Ok(()) => {
+                let tab_index = self.context_manager.current_index();
+                let os_id = self
+                    .chrome
+                    .panel
+                    .rows
+                    .iter()
+                    .filter_map(terminus_ui::sidebar::Row::host)
+                    .find(|item| item.id == id)
+                    .and_then(|item| item.os_id.clone());
+                self.context_manager
+                    .set_custom_title(tab_index, Some(label));
+                self.context_manager.set_tab_os_id(tab_index, os_id);
+                Ok(())
+            }
+            Err(err) => {
+                if animate {
+                    self.end_session_connecting();
+                }
+                Err(format!("{label}: {err}"))
+            }
+        }
+    }
+
+    /// Show tab `new_index`, hide `old_index`, and move the sidebar highlight
+    /// to whatever that tab came from.
+    ///
+    /// Every tab switch goes through here. Changing which tab is in front is
+    /// exactly when the highlight goes stale, and there are a dozen places
+    /// that switch — one of them is the reason this is a method and not a
+    /// line repeated at each call site.
+    fn switch_visible_context(&mut self, old_index: usize, new_index: usize) {
+        self.context_manager.switch_context_visibility(
+            &mut self.sugarloaf,
+            old_index,
+            new_index,
+        );
+        self.sync_sidebar_selection();
+    }
+
+    /// Resolve a row id into the shell its session should run.
+    ///
+    /// `None` means "the app's own shell", which is the local row and the
+    /// only case the terminal already knows how to start.
+    fn shell_for_row(&self, id: &str) -> Result<Option<Shell>, String> {
+        if id == hosts::LOCAL_ID {
+            return Ok(None);
+        }
+
+        if let Some(distro) = self.host_store.platform().distro_named(id) {
+            // A distro is a Windows process: starting one goes through
+            // `wsl.exe`, which needs WSL interop. Checking here rather than
+            // letting the spawn fail is what lets the panel name the reason
+            // — interop is missing for a reason worth reporting (a sandbox
+            // that replaced `/init`, a WSL build without interop enabled).
+            let exe = terminus_core::wsl::WindowsRoots::detect()
+                .and_then(|roots| roots.wsl_exe())
+                .ok_or_else(|| "No wsl.exe on the Windows drive".to_string())?;
+            if let Err(err) = terminus_core::wsl::interop_ready(&exe) {
+                // The panel has one line; the whole chain goes to the log.
+                tracing::warn!("cannot open {}: {err}", distro.name);
+                return Err(format!(
+                    "{}: WSL interop is off — {}",
+                    distro.display,
+                    terminus_core::wsl::interop_short_hint()
+                ));
+            }
+
+            return Ok(Some(Shell {
+                program: Some(exe.to_string_lossy().to_string()),
+                args: distro.launch_args(),
+            }));
+        }
+
+        match self.host_store.hosts().iter().find(|host| host.id == id) {
+            Some(host) => Ok(Some(ssh_shell(host))),
+            None => Err(format!("No session is configured for {id}")),
+        }
     }
 
     pub fn close_split_or_tab(&mut self, clipboard: &mut Clipboard) {
@@ -1965,27 +2544,33 @@ impl Screen<'_> {
     }
 
     pub fn close_tab(&mut self, clipboard: &mut Clipboard) {
+        self.close_tab_at(self.context_manager.current_index(), clipboard);
+    }
+
+    /// Close the tab at `index` (active or not). Refuses the pinned home tab.
+    pub fn close_tab_at(&mut self, index: usize, clipboard: &mut Clipboard) {
+        if index >= self.context_manager.len() {
+            return;
+        }
+        if self.context_manager.is_pinned(index) {
+            return;
+        }
         self.clear_selection();
+        if index != self.context_manager.current_index() {
+            self.context_manager.set_current(index);
+        }
         self.context_manager
             .close_current_context(&mut self.sugarloaf);
+        // Closing the last tab of a distro has to move the highlight off it:
+        // the row is re-derived from the tab now in front, which is the local
+        // one when no host tab is left.
+        self.sync_sidebar_selection();
         if let Some(ref mut island) = self.renderer.island {
             island.dismiss_color_picker();
+            let _ = island.set_tab_hover(None, false);
         }
 
         self.cancel_search(clipboard);
-        if self.ctx().len() <= 1 {
-            // Update the remaining tab's margin and position
-            // (on Linux/Windows when hide_if_single transitions to hidden)
-            #[cfg(not(target_os = "macos"))]
-            {
-                self.resize_top_or_bottom_line(1);
-                self.context_manager
-                    .current_grid_mut()
-                    .update_dimensions(&mut self.sugarloaf);
-                self.mark_dirty();
-            }
-            return;
-        }
         let num_tabs = self.ctx().len();
         self.resize_top_or_bottom_line(num_tabs);
         self.mark_dirty();
@@ -1999,6 +2584,10 @@ impl Screen<'_> {
             self.renderer.macos_use_unified_titlebar,
         );
         let padding_y_bottom = self.renderer.margin.bottom;
+
+        // Keep the rail/drawer under the tab strip. Stale top_inset lets the
+        // panel eat clicks on the islands (close / switch).
+        self.chrome.top_inset = padding_y_top;
 
         let scale = self.sugarloaf.scale_factor();
         let scaled_top = padding_y_top * scale;
@@ -3040,12 +3629,18 @@ impl Screen<'_> {
 
     #[inline]
     fn island_tab_layout(&self, num_tabs: usize) -> TabStripLayout {
-        let max_tab_width = self
-            .renderer
-            .island
-            .as_ref()
-            .map(|island| island.max_tab_width)
-            .unwrap_or_else(rio_backend::config::navigation::default_max_tab_width);
+        if let Some(island) = self.renderer.island.as_ref() {
+            if island.cached_layout().len() == num_tabs {
+                return island.cached_layout().clone();
+            }
+            return island::tab_strip_layout(
+                self.sugarloaf.window_size().width,
+                self.sugarloaf.scale_factor(),
+                num_tabs,
+                island.max_tab_width,
+            );
+        }
+        let max_tab_width = rio_backend::config::navigation::default_max_tab_width();
         island::tab_strip_layout(
             self.sugarloaf.window_size().width,
             self.sugarloaf.scale_factor(),
@@ -3054,7 +3649,6 @@ impl Screen<'_> {
         )
     }
 
-    #[cfg(target_os = "macos")]
     pub fn start_window_drag(&mut self, window: &rio_window::window::Window) {
         self.mouse.left_button_state = ElementState::Released;
         let _ = window.drag_window();
@@ -3071,6 +3665,7 @@ impl Screen<'_> {
         if double {
             let is_maximized = window.is_maximized();
             window.set_maximized(!is_maximized);
+            self.window_maximized = !is_maximized;
             return;
         }
 
@@ -3078,7 +3673,6 @@ impl Screen<'_> {
             window_origin,
             at: std::time::Instant::now(),
         });
-        #[cfg(target_os = "macos")]
         if self.allow_manual_dragging {
             self.start_window_drag(window);
         }
@@ -3097,37 +3691,102 @@ impl Screen<'_> {
         })
     }
 
-    fn apply_close_hover(&mut self, hover: bool) -> bool {
+    fn apply_tab_hover(&mut self, tab: Option<usize>, on_close: bool) -> bool {
         let changed = self
             .renderer
             .island
             .as_mut()
-            .is_some_and(|island| island.set_close_hover(hover));
+            .is_some_and(|island| island.set_tab_hover(tab, on_close));
         if changed {
             self.mark_dirty();
         }
         changed
     }
 
+    #[cfg(target_os = "windows")]
+    fn apply_window_control_hover(
+        &mut self,
+        hover: Option<crate::renderer::window_controls::WindowControl>,
+    ) -> bool {
+        let changed = self
+            .renderer
+            .island
+            .as_mut()
+            .is_some_and(|island| island.set_window_control_hover(hover));
+        if changed {
+            self.mark_dirty();
+        }
+        changed
+    }
+
+    #[cfg(target_os = "windows")]
+    fn apply_window_control(
+        &mut self,
+        window: &rio_window::window::Window,
+        control: crate::renderer::window_controls::WindowControl,
+    ) {
+        use crate::renderer::window_controls::WindowControl;
+        match control {
+            WindowControl::Minimize => {
+                window.set_minimized(true);
+            }
+            WindowControl::Maximize => {
+                let next = !window.is_maximized();
+                window.set_maximized(next);
+                self.window_maximized = next;
+            }
+            WindowControl::Close => {
+                // Post WM_CLOSE so the native confirm-before-quit path
+                // (MessageBoxW on the last window) still runs.
+                request_windows_close(window);
+            }
+        }
+    }
+
     pub fn update_close_button_hover(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
         let num_tabs = self.context_manager.len();
         let scale_factor = self.sugarloaf.scale_factor();
+        let x_unscaled = mouse_x as f32 / scale_factor;
+        let in_band = mouse_y <= (CONTEXT_BAR_HEIGHT * scale_factor) as f64;
 
-        let hovering = num_tabs > 1
+        #[cfg(target_os = "windows")]
+        let control_changed = {
+            let y_unscaled = mouse_y as f32 / scale_factor;
+            let hover = if self.renderer.navigation.is_enabled() && in_band {
+                let logical_w = self.sugarloaf.window_size().width / scale_factor;
+                crate::renderer::window_controls::hit_test(logical_w, x_unscaled, y_unscaled)
+            } else {
+                None
+            };
+            self.apply_window_control_hover(hover)
+        };
+        #[cfg(not(target_os = "windows"))]
+        let control_changed = false;
+
+        let layout = self.island_tab_layout(num_tabs);
+        let hovered_tab = if num_tabs >= 1
             && self.renderer.navigation.island_visible(num_tabs)
-            && mouse_y <= (ISLAND_HEIGHT * scale_factor) as f64
-            && island::close_button_hit(
-                &self.island_tab_layout(num_tabs),
-                self.context_manager.current_index(),
-                mouse_x as f32 / scale_factor,
-            );
+            && in_band
+        {
+            island::tab_index_at(&layout, x_unscaled, num_tabs)
+        } else {
+            None
+        };
+        let on_close = hovered_tab.is_some_and(|tab| {
+            !self.context_manager.is_pinned(tab)
+                && island::close_button_hit(&layout, tab, x_unscaled)
+        });
 
-        self.apply_close_hover(hovering)
+        self.apply_tab_hover(hovered_tab, on_close) || control_changed
     }
 
     #[inline]
     pub fn clear_close_button_hover(&mut self) -> bool {
-        self.apply_close_hover(false)
+        #[cfg(target_os = "windows")]
+        let control = self.apply_window_control_hover(None);
+        #[cfg(not(target_os = "windows"))]
+        let control = false;
+        self.apply_tab_hover(None, false) || control
     }
 
     pub fn handle_island_click(
@@ -3146,7 +3805,7 @@ impl Screen<'_> {
         let mouse_y = self.mouse.y;
 
         let scale_factor = self.sugarloaf.scale_factor();
-        let island_height_px = (ISLAND_HEIGHT * scale_factor) as f64;
+        let island_height_px = (CONTEXT_BAR_HEIGHT * scale_factor) as f64;
 
         let window_width = self.sugarloaf.window_size().width;
         let num_tabs = self.context_manager.len();
@@ -3183,11 +3842,58 @@ impl Screen<'_> {
 
         let mouse_x_unscaled = mouse_x as f32 / scale_factor;
 
-        // Island isn't painted (hide_if_single + single tab). On macOS the
-        // terminal still starts below this band, so it remains custom window
-        // chrome and must keep the same drag/double-click behavior as a
-        // visible island. Other platforms render the terminal from the top
-        // when the island is hidden, so their clicks keep falling through.
+        // Windows custom caption buttons own the right edge of the band —
+        // handle them before tab / chrome drag logic.
+        #[cfg(target_os = "windows")]
+        {
+            let mouse_y_unscaled = mouse_y as f32 / scale_factor;
+            let window_width_logical = window_width / scale_factor;
+            if let Some(control) = crate::renderer::window_controls::hit_test(
+                window_width_logical,
+                mouse_x_unscaled,
+                mouse_y_unscaled,
+            ) {
+                if !is_right_click {
+                    self.apply_window_control(window, control);
+                }
+                return true;
+            }
+        }
+
+        // Logo / + / search sit in the title bar outside the tab strip.
+        {
+            let mouse_y_unscaled = mouse_y as f32 / scale_factor;
+            let window_width_logical = window_width / scale_factor;
+            if let Some(action) = island::title_bar_hit(
+                window_width_logical,
+                mouse_x_unscaled,
+                mouse_y_unscaled,
+            ) {
+                if !is_right_click {
+                    match action {
+                        island::TitleBarAction::Logo => {}
+                        island::TitleBarAction::NewTab => {
+                            self.create_tab(clipboard);
+                        }
+                        island::TitleBarAction::Search => {
+                            self.chrome.panel.filter_focused = true;
+                            self.chrome.activity.selected =
+                                terminus_ui::Section::Servers;
+                            self.chrome.activity.collapsed = false;
+                            self.chrome.panel_visible = true;
+                        }
+                    }
+                    self.mark_dirty();
+                }
+                return true;
+            }
+        }
+
+        // Island isn't painted (hide_if_single + single tab). On macOS and
+        // Windows the terminal still starts below this band, so it remains
+        // custom window chrome and must keep drag / double-click (and on
+        // Windows, the system menu). Linux renders the terminal from the
+        // top when the island is hidden.
         if !island_visible {
             // …unless a ×-close just hid the strip (2 tabs → 1 with
             // hide-if-single): the tail press of a double-click on the
@@ -3203,7 +3909,14 @@ impl Screen<'_> {
                 // is consumed without an action. Letting a right-click
                 // fall through would act on the first terminal row
                 // while the pointer is over window chrome.
-                if !is_right_click {
+                if is_right_click {
+                    #[cfg(target_os = "windows")]
+                    {
+                        window.show_window_menu(
+                            rio_window::dpi::PhysicalPosition::new(mouse_x, mouse_y),
+                        );
+                    }
+                } else {
                     self.on_chrome_press(window, chrome_press);
                 }
                 return true;
@@ -3226,21 +3939,24 @@ impl Screen<'_> {
             return true;
         }
 
-        // A lone tab is drawn as a title centred across the strip rather than
-        // an island in the first slot, so the whole strip belongs to it and a
-        // right-click anywhere on it should reach that tab. The left margin
-        // (traffic lights on macOS) stays outside either way.
-        let past_last_tab = num_tabs > 1 && x_in_tabs >= layout.tabs_width;
+        // Left-aligned pills: empty band (and past the last pill) is window chrome.
+        let past_last_tab = x_in_tabs >= layout.tabs_width();
         if x_in_tabs < 0.0 || past_last_tab {
-            if !is_right_click {
+            if is_right_click {
+                #[cfg(target_os = "windows")]
+                {
+                    window.show_window_menu(
+                        rio_window::dpi::PhysicalPosition::new(mouse_x, mouse_y),
+                    );
+                }
+            } else {
                 self.on_chrome_press(window, chrome_press);
             }
             return true;
         }
 
-        // `.min` guards the float edge where x_in_tabs / tab_width
-        // lands exactly on num_tabs despite x_in_tabs < tabs_width.
-        let clicked_tab = ((x_in_tabs / layout.tab_width) as usize).min(num_tabs - 1);
+        let clicked_tab = island::tab_index_at(&layout, mouse_x_unscaled, num_tabs)
+            .unwrap_or(num_tabs.saturating_sub(1));
 
         #[cfg(target_os = "macos")]
         if !is_right_click && self.modifiers.state().super_key() {
@@ -3282,16 +3998,20 @@ impl Screen<'_> {
         }
 
         if num_tabs == 1 {
-            self.on_chrome_press(window, chrome_press);
+            // Pill is left-aligned; empty band still drags the window.
+            if island::tab_index_at(&layout, mouse_x_unscaled, 1).is_none() {
+                self.on_chrome_press(window, chrome_press);
+            }
             return true;
         }
 
-        if clicked_tab == self.context_manager.current_index()
-            && island::close_button_hit(&layout, clicked_tab, mouse_x_unscaled)
-        {
+        if island::close_button_hit(&layout, clicked_tab, mouse_x_unscaled) {
+            if self.context_manager.is_pinned(clicked_tab) {
+                return true;
+            }
             self.stop_hint_mode_if_active();
             self.last_close_press = Some((std::time::Instant::now(), mouse_x_unscaled));
-            self.close_tab(clipboard);
+            self.close_tab_at(clicked_tab, clipboard);
             return true;
         }
 
@@ -3302,11 +4022,7 @@ impl Screen<'_> {
             let old_index = self.context_manager.current_index();
             self.context_manager.set_current(clicked_tab);
             let new_index = self.context_manager.current_index();
-            self.context_manager.switch_context_visibility(
-                &mut self.sugarloaf,
-                old_index,
-                new_index,
-            );
+            self.switch_visible_context(old_index, new_index);
 
             self.mark_dirty();
         }
@@ -3318,13 +4034,10 @@ impl Screen<'_> {
             }
         }
 
-        #[cfg(target_os = "macos")]
         let can_reorder = self.allow_manual_dragging;
-        #[cfg(not(target_os = "macos"))]
-        let can_reorder = true;
         if num_tabs > 1 && can_reorder {
             if let Some(ref mut island) = self.renderer.island {
-                let tab_left = layout.left_margin + clicked_tab as f32 * layout.tab_width;
+                let tab_left = layout.slot_x(clicked_tab);
                 island.start_drag(
                     clicked_tab,
                     mouse_x_unscaled - tab_left,
@@ -3372,18 +4085,14 @@ impl Screen<'_> {
             return;
         }
 
-        let target = (((center - layout.left_margin) / layout.tab_width) as usize)
-            .min(num_tabs - 1);
+        let target = island::tab_index_at(&layout, center, num_tabs).unwrap_or(old_index);
         if target != old_index {
             self.context_manager.move_current_tab_to(target);
             let new_index = self.context_manager.current_index();
-            self.context_manager.switch_context_visibility(
-                &mut self.sugarloaf,
-                old_index,
-                new_index,
-            );
+            self.switch_visible_context(old_index, new_index);
             if let Some(ref mut island) = self.renderer.island {
-                island.remap_tab_move(old_index, new_index, layout.tab_width);
+                let moved_w = layout.width_at(old_index);
+                island.remap_tab_move(old_index, new_index, moved_w);
             }
         }
         self.mark_dirty();
@@ -4021,22 +4730,14 @@ impl Screen<'_> {
                 let old = self.context_manager.current_index();
                 self.context_manager.switch_to_next();
                 let new = self.context_manager.current_index();
-                self.context_manager.switch_context_visibility(
-                    &mut self.sugarloaf,
-                    old,
-                    new,
-                );
+                self.switch_visible_context(old, new);
             }
             PaletteAction::SelectPrevTab => {
                 self.clear_selection();
                 let old = self.context_manager.current_index();
                 self.context_manager.switch_to_prev();
                 let new = self.context_manager.current_index();
-                self.context_manager.switch_context_visibility(
-                    &mut self.sugarloaf,
-                    old,
-                    new,
-                );
+                self.switch_visible_context(old, new);
             }
             PaletteAction::SplitRight => self.split_right(),
             PaletteAction::SplitDown => self.split_down(),
@@ -4153,10 +4854,19 @@ impl Screen<'_> {
             }
         }
 
+        self.tick_session_connecting();
+        let host_drag_action = self.tick_host_drag_animation();
+        if let Some(action) = host_drag_action {
+            self.apply_host_drag_action(action);
+        }
+        let connecting_phase = self.connecting_phase();
+
         let (window_update, any_panel_dirty) = self.renderer.run(
             &mut self.sugarloaf,
             &mut self.context_manager,
             &self.chrome,
+            connecting_phase,
+            self.window_maximized,
         );
 
         if self.renderer.custom_mouse_cursor {
@@ -4221,7 +4931,10 @@ impl Screen<'_> {
         // movement can start animating in this same frame, and reading
         // it earlier would fail to schedule the continuation frame,
         // freezing the trail mid-flight until unrelated damage arrives.
-        let has_animation = self.renderer.needs_redraw();
+        let has_animation = self.renderer.needs_redraw()
+            || self.chrome.connection.is_some()
+            || self.chrome.panel.connecting_id.is_some()
+            || self.chrome.needs_animation_frames();
         let should_present = any_panel_dirty || has_animation;
 
         // Phase 2.2/2.3: per-panel CellBg + CellText emission with
@@ -5377,6 +6090,43 @@ fn post_process_hyperlink_uri(uri: &str) -> String {
     }
 
     chars.into_iter().take(end_idx + 1).collect()
+}
+
+/// True when the session's grid already shows something other than blank
+/// cells — the cue that the connecting overlay can retire.
+fn terminal_has_printable_output(ctx: &context::Context<EventProxy>) -> bool {
+    use crate::crosswords::pos::{Column, Line};
+    let terminal = ctx.terminal.lock();
+    let lines = terminal.screen_lines().min(16);
+    let cols = terminal.columns().min(120);
+    for row in 0..lines {
+        let line = Line(row as i32);
+        for col in 0..cols {
+            let c = terminal.grid[line][Column(col)].c();
+            if !c.is_whitespace() && c != '\0' {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Ask Windows to close the window via `WM_CLOSE`, so the native
+/// confirm-before-quit MessageBox still runs for the last window.
+#[cfg(target_os = "windows")]
+fn request_windows_close(window: &rio_window::window::Window) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return;
+    };
+    unsafe {
+        PostMessageW(win32.hwnd.get() as _, WM_CLOSE, 0, 0);
+    }
 }
 
 #[cfg(test)]

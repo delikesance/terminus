@@ -190,15 +190,40 @@ stop_app() {
     rm -f "$PID_FILE"
 }
 
+# `nix develop` puts nixpkgs' build-time bash first in PATH and points SHELL at
+# it. That bash is compiled without readline, so a shell spawned by the dev loop
+# answers every key *except* Tab, Up and Ctrl-R: the byte reaches the PTY, the
+# tty echoes it, and nothing completes, nothing recalls, because readline is not
+# there to interpret `\t` as complete. Editing, colours and Ctrl-C all keep
+# working, which makes it look like a terminal bug instead of a PATH accident.
+# Hand the spawned shell a bash that actually carries the `bind` builtin.
+find_readline_shell() {
+    local candidate
+    for candidate in "${TERMINUS_SHELL:-}" "$(command -v bashInteractive || true)" \
+        /run/current-system/sw/bin/bash /usr/bin/bash /bin/bash; do
+        [[ -n "$candidate" && -x "$candidate" ]] || continue
+        if "$candidate" -c 'type -t bind' >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 start_app() {
     if [[ ! -x "$BIN" ]]; then
         echo "dev.sh: $BIN is missing, skipping launch" >&2
         return 1
     fi
+    local -a shell_env=()
+    local shell_bin
+    if shell_bin="$(find_readline_shell)"; then
+        shell_env=(SHELL="$shell_bin")
+    fi
     : >"$RUN_LOG"
     (
         cd "$ROOT"
-        exec env \
+        exec env "${shell_env[@]}" \
             RIO_CONFIG_HOME="$CONFIG_DIR" \
             RIO_LOG_LEVEL="$LOG_LEVEL" \
             "$BIN" "${APP_ARGS[@]}"

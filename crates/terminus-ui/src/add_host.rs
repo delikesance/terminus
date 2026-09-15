@@ -23,17 +23,17 @@ pub const FIELDS: [Field; 4] =
 impl Field {
     pub const fn label(self) -> &'static str {
         match self {
-            Field::Name => "Label",
-            Field::Hostname => "Hostname",
-            Field::Username => "User",
+            Field::Name => "Host Name / Label",
+            Field::Hostname => "IP Address or Hostname",
+            Field::Username => "Username",
             Field::Port => "Port",
         }
     }
 
     pub const fn placeholder(self) -> &'static str {
         match self {
-            Field::Name => "web-01",
-            Field::Hostname => "web-01.example.com",
+            Field::Name => "e.g. AWS Production Cluster",
+            Field::Hostname => "192.168.1.50",
             Field::Username => "root",
             Field::Port => "22",
         }
@@ -53,18 +53,22 @@ impl Field {
     }
 }
 
-/// Dialog metrics, in logical pixels.
-pub const WIDTH: f32 = 380.0;
+/// Dialog metrics, in logical pixels (`max-w-md` ≈ 448).
+pub const WIDTH: f32 = 448.0;
 /// Height of one field row: a caption plus its input box.
-pub const FIELD_HEIGHT: f32 = 48.0;
+pub const FIELD_HEIGHT: f32 = 52.0;
 /// Top of the input box inside a field row.
 pub const INPUT_TOP: f32 = 18.0;
 /// Height of the input box itself.
-pub const INPUT_HEIGHT: f32 = 28.0;
-pub const FIELD_GAP: f32 = 8.0;
-pub const PAD: f32 = 20.0;
-pub const TITLE_HEIGHT: f32 = 34.0;
-pub const HINT_HEIGHT: f32 = 26.0;
+pub const INPUT_HEIGHT: f32 = 32.0;
+pub const FIELD_GAP: f32 = 12.0;
+pub const PAD: f32 = 24.0;
+pub const TITLE_HEIGHT: f32 = 28.0;
+pub const HINT_HEIGHT: f32 = 44.0;
+/// Corner radius (`rounded-2xl`).
+pub const DIALOG_RADIUS: f32 = 16.0;
+/// Input corner radius (`rounded-xl`).
+pub const INPUT_RADIUS: f32 = 12.0;
 
 impl AddHostForm {
     /// Total dialog height, including a hint/error line.

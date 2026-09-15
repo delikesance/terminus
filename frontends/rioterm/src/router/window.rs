@@ -86,7 +86,19 @@ pub fn create_window_builder(
     #[cfg(target_os = "windows")]
     {
         use rio_window::platform::windows::WindowAttributesExtWindows;
-        if let Some(use_undecorated_shadow) = config.window.windows_use_undecorated_shadow
+
+        // Tab mode uses a custom title bar (island + caption buttons), so
+        // drop the OS caption. Plain navigation keeps native decorations.
+        if config.navigation.is_enabled() {
+            window_builder = window_builder.with_decorations(false);
+            // DWM shadow looks wrong without it on a frameless window.
+            let use_shadow = config
+                .window
+                .windows_use_undecorated_shadow
+                .unwrap_or(true);
+            window_builder = window_builder.with_undecorated_shadow(use_shadow);
+        } else if let Some(use_undecorated_shadow) =
+            config.window.windows_use_undecorated_shadow
         {
             window_builder =
                 window_builder.with_undecorated_shadow(use_undecorated_shadow);
@@ -250,24 +262,26 @@ pub fn configure_window(winit_window: &Window, config: &Config) {
         use rio_backend::config::window::WindowsCornerPreference;
         use rio_window::platform::windows::WindowExtWindows;
 
-        if let Some(with_corner_preference) = &config.window.windows_corner_preference {
-            let preference = match with_corner_preference {
-                WindowsCornerPreference::Default => {
-                    rio_window::platform::windows::CornerPreference::Default
-                }
-                WindowsCornerPreference::DoNotRound => {
-                    rio_window::platform::windows::CornerPreference::DoNotRound
-                }
-                WindowsCornerPreference::Round => {
-                    rio_window::platform::windows::CornerPreference::Round
-                }
-                WindowsCornerPreference::RoundSmall => {
-                    rio_window::platform::windows::CornerPreference::RoundSmall
-                }
-            };
-
-            winit_window.set_corner_preference(preference);
-        }
+        let preference = match &config.window.windows_corner_preference {
+            Some(WindowsCornerPreference::Default) => {
+                rio_window::platform::windows::CornerPreference::Default
+            }
+            Some(WindowsCornerPreference::DoNotRound) => {
+                rio_window::platform::windows::CornerPreference::DoNotRound
+            }
+            Some(WindowsCornerPreference::Round) => {
+                rio_window::platform::windows::CornerPreference::Round
+            }
+            Some(WindowsCornerPreference::RoundSmall) => {
+                rio_window::platform::windows::CornerPreference::RoundSmall
+            }
+            // Tab mode's custom chrome looks right with Win11 rounded corners.
+            None if config.navigation.is_enabled() => {
+                rio_window::platform::windows::CornerPreference::Round
+            }
+            None => rio_window::platform::windows::CornerPreference::Default,
+        };
+        winit_window.set_corner_preference(preference);
     }
     if let Some(title) = &config.title.placeholder {
         winit_window.set_title(title);
