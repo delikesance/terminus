@@ -273,10 +273,8 @@ impl AssistantOverlay {
         let (ox, oy, ow, oh) = self.overlay_rect(window_width, scale_factor);
 
         // Backdrop
-        sugarloaf.rect(
-            None,
-            0.0,
-            0.0,
+        crate::renderer::chrome::paint_scrim(
+            sugarloaf,
             window_width / scale_factor,
             window_height / scale_factor,
             BACKDROP_COLOR,
@@ -285,16 +283,16 @@ impl AssistantOverlay {
         );
 
         // Background
-        sugarloaf.rounded_rect(
-            None,
-            ox,
-            oy,
-            ow,
-            oh,
+        crate::renderer::chrome::paint_surface_stroke(
+            sugarloaf,
+            &terminus_ui::Rect::new(ox, oy, ow, oh),
             BG_COLOR,
-            DEPTH_BG,
+            None,
             OVERLAY_CORNER_RADIUS,
+            1.0,
+            DEPTH_BG,
             ORDER,
+            false,
         );
 
         let error = self.error.clone().unwrap();
@@ -355,16 +353,16 @@ impl AssistantOverlay {
         let docs_hovered = self.hovered_button == Some(AssistantOverlayAction::OpenDocs);
 
         if docs_hovered {
-            sugarloaf.rounded_rect(
-                None,
-                dbx,
-                dby,
-                dbw,
-                dbh,
+            crate::renderer::chrome::paint_surface_stroke(
+                sugarloaf,
+                &terminus_ui::Rect::new(dbx, dby, dbw, dbh),
                 BUTTON_HOVER_BG,
-                DEPTH_ELEMENT,
+                None,
                 BUTTON_CORNER_RADIUS,
+                1.0,
+                DEPTH_ELEMENT,
                 ORDER,
+                false,
             );
         }
 
@@ -373,16 +371,16 @@ impl AssistantOverlay {
         let is_hovered = self.hovered_button == Some(AssistantOverlayAction::Close);
 
         if is_hovered {
-            sugarloaf.rounded_rect(
-                None,
-                bx,
-                by,
-                bw,
-                bh,
+            crate::renderer::chrome::paint_surface_stroke(
+                sugarloaf,
+                &terminus_ui::Rect::new(bx, by, bw, bh),
                 BUTTON_HOVER_BG,
-                DEPTH_ELEMENT,
+                None,
                 BUTTON_CORNER_RADIUS,
+                1.0,
+                DEPTH_ELEMENT,
                 ORDER,
+                false,
             );
         }
 

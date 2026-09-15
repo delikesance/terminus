@@ -47,7 +47,6 @@ const COPY_ICON_H: f32 = COPY_ICON_PAGE_H + COPY_ICON_OFFSET; // 15
 
 const SEPARATOR_HEIGHT: f32 = 1.0;
 const RESULTS_MARGIN_TOP: f32 = 2.0;
-const CARET_WIDTH: f32 = 1.5;
 const CARET_BLINK_MS: u128 = 500;
 
 // Colors — Apple HIG flat dark (match terminus chrome theme)
@@ -316,12 +315,7 @@ impl<'a> PaletteRow<'a> {
     }
 }
 
-/// Paint a rounded-rect outline by layering two filled rounded rects:
-/// the outer one in `stroke_color`, then a smaller one in `fill_color`
-/// inset by `stroke` on all sides to carve out the interior. Sugarloaf
-/// has no stroked-rect primitive, so this is how we get a 1px border
-/// effect. Nine params is the irreducible minimum here — grouping them
-/// into a struct would just shuffle the same fields.
+/// Paint a rounded-rect outline via the shared chrome [`paint_surface_stroke`].
 #[allow(clippy::too_many_arguments)]
 fn stroke_rounded_rect(
     sugarloaf: &mut Sugarloaf,
@@ -336,30 +330,16 @@ fn stroke_rounded_rect(
     depth: f32,
     order: u8,
 ) {
-    sugarloaf.rounded_rect(
-        None,
-        x,
-        y,
-        width,
-        height,
-        stroke_color,
-        depth,
-        radius,
-        order,
-    );
-    let inner_radius = (radius - stroke).max(0.0);
-    // Inset fill carves out the interior. Painted slightly deeper so
-    // it lands on top of the outer rect.
-    sugarloaf.rounded_rect(
-        None,
-        x + stroke,
-        y + stroke,
-        (width - stroke * 2.0).max(0.0),
-        (height - stroke * 2.0).max(0.0),
+    crate::renderer::chrome::paint_surface_stroke(
+        sugarloaf,
+        &terminus_ui::Rect::new(x, y, width, height),
         fill_color,
-        depth + 0.001,
-        inner_radius,
+        Some(stroke_color),
+        radius,
+        stroke,
+        depth,
         order,
+        false,
     );
 }
 
@@ -719,10 +699,8 @@ impl CommandPalette {
         let (palette_x, palette_y, palette_width, palette_height) =
             self.palette_rect(window_width, scale_factor);
 
-        sugarloaf.rect(
-            None,
-            0.0,
-            0.0,
+        crate::renderer::chrome::paint_scrim(
+            sugarloaf,
             window_width / scale_factor,
             window_height / scale_factor,
             BACKDROP_COLOR,
@@ -730,16 +708,16 @@ impl CommandPalette {
             ORDER,
         );
 
-        sugarloaf.rounded_rect(
-            None,
-            palette_x,
-            palette_y,
-            palette_width,
-            palette_height,
+        crate::renderer::chrome::paint_surface_stroke(
+            sugarloaf,
+            &terminus_ui::Rect::new(palette_x, palette_y, palette_width, palette_height),
             BG_COLOR,
-            DEPTH_BG,
+            None,
             PALETTE_CORNER_RADIUS,
+            1.0,
+            DEPTH_BG,
             ORDER,
+            false,
         );
 
         let input_x = palette_x + PALETTE_PADDING;
@@ -789,11 +767,10 @@ impl CommandPalette {
             let caret_height = INPUT_FONT_SIZE + 4.0;
             let caret_y = input_y + (INPUT_HEIGHT - caret_height) / 2.0 + 2.0;
 
-            sugarloaf.rect(
-                None,
+            crate::renderer::chrome::paint_caret(
+                sugarloaf,
                 caret_x,
                 caret_y,
-                CARET_WIDTH,
                 caret_height,
                 TEXT_COLOR,
                 DEPTH_ELEMENT,
@@ -802,12 +779,11 @@ impl CommandPalette {
         }
 
         let sep_y = input_y + INPUT_HEIGHT;
-        sugarloaf.rect(
-            None,
+        crate::renderer::chrome::paint_hairline_h(
+            sugarloaf,
             palette_x + PALETTE_PADDING,
             sep_y,
             palette_width - PALETTE_PADDING * 2.0,
-            SEPARATOR_HEIGHT,
             SEPARATOR_COLOR,
             DEPTH_ELEMENT,
             ORDER,
@@ -834,16 +810,21 @@ impl CommandPalette {
 
             // Selection highlight
             if is_selected {
-                sugarloaf.rounded_rect(
-                    None,
-                    input_x,
-                    item_y,
-                    input_width,
-                    RESULT_ITEM_HEIGHT,
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &terminus_ui::Rect::new(
+                        input_x,
+                        item_y,
+                        input_width,
+                        RESULT_ITEM_HEIGHT,
+                    ),
                     SELECTED_BG_COLOR,
-                    DEPTH_ELEMENT,
+                    None,
                     4.0,
+                    1.0,
+                    DEPTH_ELEMENT,
                     ORDER,
+                    false,
                 );
             }
 

@@ -37,7 +37,7 @@ pub use add_host::{
     auth_method_label, AddHostForm, AddHostHit, AddHostLayout, Field, FormInput, FormOutcome,
     HostFormValues, AUTH_METHODS, BASE_FIELDS,
 };
-pub use button::{centered_label_origin, ButtonKind, ButtonSpec};
+pub use button::{centered_label_origin, dashed_cta_badge, ButtonKind, ButtonSpec};
 pub use chrome::{Chrome, ChromeAction, ChromeCursor};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
