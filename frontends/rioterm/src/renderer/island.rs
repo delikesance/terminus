@@ -388,28 +388,66 @@ fn draw_island(
     punch: Option<[f32; 4]>,
     order: u8,
 ) {
+    let card = terminus_ui::Rect::new(x, y, w, h);
     match outline {
         Some(ring) => {
-            sugarloaf.rounded_rect(None, x, y, w, h, ring, 0.05, radius, order);
-            let fw = (w - 2.0).max(0.0);
-            let fh = (h - 2.0).max(0.0);
-            let fr = (radius - 1.0).clamp(0.0, fw.min(fh) / 2.0);
             if let Some(bg) = punch {
-                sugarloaf.rounded_rect(
-                    None,
+                // Punch under the fill so translucent fills keep a solid backing.
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &card,
+                    bg,
+                    Some(ring),
+                    radius,
+                    1.0,
+                    0.05,
+                    order,
+                    false,
+                );
+                let inner = terminus_ui::Rect::new(
                     x + 1.0,
                     y + 1.0,
-                    fw,
-                    fh,
-                    bg,
+                    (w - 2.0).max(0.0),
+                    (h - 2.0).max(0.0),
+                );
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &inner,
+                    fill,
+                    None,
+                    (radius - 1.0).clamp(0.0, inner.width.min(inner.height) / 2.0),
+                    1.0,
                     0.05,
-                    fr,
                     order,
+                    false,
+                );
+            } else {
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &card,
+                    fill,
+                    Some(ring),
+                    radius,
+                    1.0,
+                    0.05,
+                    order,
+                    false,
                 );
             }
-            sugarloaf.rounded_rect(None, x + 1.0, y + 1.0, fw, fh, fill, 0.05, fr, order);
         }
-        None => sugarloaf.rounded_rect(None, x, y, w, h, fill, 0.05, radius, order),
+        None => {
+            crate::renderer::chrome::paint_surface_stroke(
+                sugarloaf,
+                &card,
+                fill,
+                None,
+                radius,
+                1.0,
+                0.05,
+                order,
+                false,
+            );
+        }
     }
 }
 
@@ -896,12 +934,14 @@ impl Island {
                 let bar_width = width * progress;
 
                 if bar_width > 0.0 {
-                    sugarloaf.rect(
-                        None,
-                        0.0,
-                        y_position,
-                        bar_width,
-                        PROGRESS_BAR_HEIGHT,
+                    crate::renderer::chrome::paint_flat(
+                        sugarloaf,
+                        &terminus_ui::Rect::new(
+                            0.0,
+                            y_position,
+                            bar_width,
+                            PROGRESS_BAR_HEIGHT,
+                        ),
                         color,
                         0.0, // Same depth as other rects
                         0,
@@ -926,12 +966,14 @@ impl Island {
                 let bar_width = width * bar_fraction;
                 let x_pos = position * (width - bar_width);
 
-                sugarloaf.rect(
-                    None,
-                    x_pos,
-                    y_position,
-                    bar_width,
-                    PROGRESS_BAR_HEIGHT,
+                crate::renderer::chrome::paint_flat(
+                    sugarloaf,
+                    &terminus_ui::Rect::new(
+                        x_pos,
+                        y_position,
+                        bar_width,
+                        PROGRESS_BAR_HEIGHT,
+                    ),
                     color,
                     0.0,
                     0,
@@ -963,33 +1005,17 @@ impl Island {
         let logical_w = window_width / scale_factor;
 
         // Apple HIG title bar strip (#111113) + bottom hairline (#2f2f35).
+        // Strip under the pills (order 0). Pills / close / dots sit above
+        // it — painting pills at 0 left them invisible under this rect,
+        // so hover lift and × never showed (only the floating drag tab
+        // at order 11 did).
         let strip = [
             0x11 as f32 / 255.0,
             0x11 as f32 / 255.0,
             0x13 as f32 / 255.0,
             1.0,
         ];
-        let strip_border = [
-            0x2f as f32 / 255.0,
-            0x2f as f32 / 255.0,
-            0x35 as f32 / 255.0,
-            1.0,
-        ];
-        // Strip under the pills (order 0). Pills / close / dots sit above
-        // it — painting pills at 0 left them invisible under this rect,
-        // so hover lift and × never showed (only the floating drag tab
-        // at order 11 did).
-        sugarloaf.rect(None, 0.0, 0.0, logical_w, ISLAND_HEIGHT, strip, 0.04, 0);
-        sugarloaf.rect(
-            None,
-            0.0,
-            ISLAND_HEIGHT - 1.0,
-            logical_w,
-            1.0,
-            strip_border,
-            0.041,
-            0,
-        );
+        crate::renderer::chrome::paint_title_strip(sugarloaf, logical_w, ISLAND_HEIGHT);
 
         // Immediate-mode: no cached ids to hide. If we early-return
         // without drawing, the tabs just don't appear this frame.
@@ -1196,16 +1222,21 @@ impl Island {
             if show_close {
                 if let Some(cx) = close_button_center(ix, iw) {
                     if self.close_hover {
-                        sugarloaf.rounded_rect(
-                            None,
-                            cx - CLOSE_HOVER_HALF,
-                            ISLAND_HEIGHT / 2.0 - CLOSE_HOVER_HALF,
-                            CLOSE_HOVER_HALF * 2.0,
-                            CLOSE_HOVER_HALF * 2.0,
+                        crate::renderer::chrome::paint_surface_stroke(
+                            sugarloaf,
+                            &terminus_ui::Rect::new(
+                                cx - CLOSE_HOVER_HALF,
+                                ISLAND_HEIGHT / 2.0 - CLOSE_HOVER_HALF,
+                                CLOSE_HOVER_HALF * 2.0,
+                                CLOSE_HOVER_HALF * 2.0,
+                            ),
                             fills.close_hover,
-                            0.05,
+                            None,
                             CLOSE_HOVER_CORNER_RADIUS,
+                            1.0,
+                            0.05,
                             3,
+                            false,
                         );
                     }
                     draw_close_button(
@@ -1226,16 +1257,16 @@ impl Island {
                 let group_x = tab_x + TAB_GAP / 2.0 + TAB_PADDING_X;
                 let text_y = (ISLAND_HEIGHT / 2.0) - (TITLE_FONT_SIZE / 2.);
                 let dot_y = (ISLAND_HEIGHT - STATUS_DOT) / 2.0;
-                sugarloaf.rounded_rect(
-                    None,
-                    group_x,
-                    dot_y,
-                    STATUS_DOT,
-                    STATUS_DOT,
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &terminus_ui::Rect::new(group_x, dot_y, STATUS_DOT, STATUS_DOT),
                     [0.20, 0.83, 0.60, 1.0],
-                    0.06,
+                    None,
                     STATUS_DOT / 2.0,
+                    1.0,
+                    0.06,
                     5,
+                    false,
                 );
                 let icon_x = group_x + STATUS_DOT + STATUS_GAP;
                 let text_x = icon_x + icon_slot;
@@ -1266,16 +1297,16 @@ impl Island {
 
             // Soft elevation: a slightly inflated dark halo behind the
             // lifted island so it reads as floating over the strip.
-            sugarloaf.rounded_rect(
-                None,
-                ix - 2.0,
-                iy - 1.0,
-                iw + 4.0,
-                ih + 3.0,
+            crate::renderer::chrome::paint_surface_stroke(
+                sugarloaf,
+                &terminus_ui::Rect::new(ix - 2.0, iy - 1.0, iw + 4.0, ih + 3.0),
                 [0.0, 0.0, 0.0, 0.18],
-                0.05,
+                None,
                 radius + 2.0,
+                1.0,
+                0.05,
                 11,
+                false,
             );
 
             let fill = match context_manager.custom_color(drag_idx) {
@@ -1563,16 +1594,16 @@ impl Island {
         let content_x = bg_x + padding;
 
         // Background
-        sugarloaf.rounded_rect(
-            None,
-            bg_x,
-            bg_y,
-            bg_width,
-            PICKER_HEIGHT,
+        crate::renderer::chrome::paint_surface_stroke(
+            sugarloaf,
+            &terminus_ui::Rect::new(bg_x, bg_y, bg_width, PICKER_HEIGHT),
             [0.15, 0.15, 0.15, 1.0],
-            0.0,
+            None,
             4.0,
+            1.0,
+            0.0,
             10,
+            false,
         );
 
         // Swatches — aligned to content_x
@@ -1581,73 +1612,95 @@ impl Island {
             let sx = content_x + i as f32 * (PICKER_SWATCH_SIZE + PICKER_SWATCH_GAP);
             let is_selected = selected_color == Some(*color);
 
-            // Draw white border behind selected swatch
             if is_selected {
                 let border = 2.0;
-                sugarloaf.rounded_rect(
-                    None,
-                    sx - border,
-                    swatch_y - border,
-                    PICKER_SWATCH_SIZE + border * 2.0,
-                    PICKER_SWATCH_SIZE + border * 2.0,
-                    [1.0, 1.0, 1.0, 1.0],
-                    0.0,
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &terminus_ui::Rect::new(
+                        sx - border,
+                        swatch_y - border,
+                        PICKER_SWATCH_SIZE + border * 2.0,
+                        PICKER_SWATCH_SIZE + border * 2.0,
+                    ),
+                    *color,
+                    Some([1.0, 1.0, 1.0, 1.0]),
                     4.0,
+                    border,
+                    0.0,
                     10,
+                    false,
+                );
+            } else {
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &terminus_ui::Rect::new(
+                        sx,
+                        swatch_y,
+                        PICKER_SWATCH_SIZE,
+                        PICKER_SWATCH_SIZE,
+                    ),
+                    *color,
+                    None,
+                    3.0,
+                    1.0,
+                    0.0,
+                    10,
+                    false,
                 );
             }
-
-            sugarloaf.rounded_rect(
-                None,
-                sx,
-                swatch_y,
-                PICKER_SWATCH_SIZE,
-                PICKER_SWATCH_SIZE,
-                *color,
-                0.0,
-                3.0,
-                10,
-            );
         }
 
         // Reset swatch — neutral box with a diagonal slash, selected when no color is set
         let reset_x = content_x
             + PICKER_COLORS.len() as f32 * (PICKER_SWATCH_SIZE + PICKER_SWATCH_GAP);
         let reset_selected = selected_color.is_none();
+        let reset_fill = [0.22, 0.22, 0.22, 1.0];
         if reset_selected {
             let border = 2.0;
-            sugarloaf.rounded_rect(
-                None,
-                reset_x - border,
-                swatch_y - border,
-                PICKER_SWATCH_SIZE + border * 2.0,
-                PICKER_SWATCH_SIZE + border * 2.0,
-                [1.0, 1.0, 1.0, 1.0],
-                0.0,
+            crate::renderer::chrome::paint_surface_stroke(
+                sugarloaf,
+                &terminus_ui::Rect::new(
+                    reset_x - border,
+                    swatch_y - border,
+                    PICKER_SWATCH_SIZE + border * 2.0,
+                    PICKER_SWATCH_SIZE + border * 2.0,
+                ),
+                reset_fill,
+                Some([1.0, 1.0, 1.0, 1.0]),
                 4.0,
+                border,
+                0.0,
                 10,
+                false,
+            );
+        } else {
+            crate::renderer::chrome::paint_surface_stroke(
+                sugarloaf,
+                &terminus_ui::Rect::new(
+                    reset_x,
+                    swatch_y,
+                    PICKER_SWATCH_SIZE,
+                    PICKER_SWATCH_SIZE,
+                ),
+                reset_fill,
+                None,
+                3.0,
+                1.0,
+                0.0,
+                10,
+                false,
             );
         }
-        sugarloaf.rounded_rect(
-            None,
-            reset_x,
-            swatch_y,
-            PICKER_SWATCH_SIZE,
-            PICKER_SWATCH_SIZE,
-            [0.22, 0.22, 0.22, 1.0],
-            0.0,
-            3.0,
-            10,
-        );
         let slash_inset = 3.0;
-        sugarloaf.line(
+        crate::renderer::chrome::paint_line(
+            sugarloaf,
             reset_x + slash_inset,
             swatch_y + PICKER_SWATCH_SIZE - slash_inset,
             reset_x + PICKER_SWATCH_SIZE - slash_inset,
             swatch_y + slash_inset,
             1.5,
-            0.0,
             [0.86, 0.26, 0.27, 1.0],
+            0.0,
             10,
         );
 
@@ -1657,16 +1710,16 @@ impl Island {
         let input_width = inner_width;
 
         // Input background
-        sugarloaf.rounded_rect(
-            None,
-            input_x,
-            input_y,
-            input_width,
-            PICKER_INPUT_HEIGHT,
+        crate::renderer::chrome::paint_surface_stroke(
+            sugarloaf,
+            &terminus_ui::Rect::new(input_x, input_y, input_width, PICKER_INPUT_HEIGHT),
             [0.10, 0.10, 0.10, 1.0],
-            0.0,
+            None,
             3.0,
+            1.0,
+            0.0,
             10,
+            false,
         );
 
         let text_inset = 6.0;
@@ -1728,11 +1781,10 @@ impl Island {
         if show_caret {
             let caret_x = text_x + rendered_width;
             if caret_x <= input_x + input_width {
-                sugarloaf.rect(
-                    None,
+                crate::renderer::chrome::paint_caret(
+                    sugarloaf,
                     caret_x,
                     input_y + 4.0,
-                    1.5,
                     PICKER_INPUT_HEIGHT - 8.0,
                     [0.93, 0.93, 0.93, 1.0],
                     0.0,

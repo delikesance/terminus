@@ -155,22 +155,12 @@ fn render_rail(
     device_scale: f32,
 ) {
     let rail = activity_bar::rect(origin_y, height);
-    sugarloaf.rect(
-        None,
-        rail.x,
-        rail.y,
-        rail.width,
-        rail.height,
-        theme.rail_bg,
-        DEPTH_BG,
-        ORDER_RAIL,
-    );
+    paint_flat(sugarloaf, &rail, theme.rail_bg, DEPTH_BG, ORDER_RAIL);
     // Right hairline against the drawer.
-    sugarloaf.rect(
-        None,
+    paint_hairline_v(
+        sugarloaf,
         rail.right() - BORDER_WIDTH,
         rail.y,
-        BORDER_WIDTH,
         rail.height,
         theme.panel_border,
         DEPTH_BG + 0.005,
@@ -182,16 +172,15 @@ fn render_rail(
         let selected = section == chrome.activity.selected && chrome.panel_visible;
         if selected {
             let pill = activity_bar::pill_rect(item);
-            sugarloaf.rounded_rect(
-                None,
-                pill.x,
-                pill.y,
-                pill.width,
-                pill.height,
+            paint_surface(
+                sugarloaf,
+                &pill,
                 theme.rail_active_bg,
-                DEPTH_CONTENT,
+                None,
                 activity_bar::PILL_RADIUS,
+                DEPTH_CONTENT,
                 ORDER_CONTENT,
+                false,
             );
         }
         let icon_rect = activity_bar::icon_in(item);
@@ -239,22 +228,12 @@ fn render_panel(
     connecting_phase: Option<f32>,
 ) {
     let panel = chrome.panel.rect(origin_y, height);
-    sugarloaf.rect(
-        None,
-        panel.x,
-        panel.y,
-        panel.width,
-        panel.height,
-        theme.panel_bg,
-        DEPTH_BG,
-        ORDER_PANEL,
-    );
+    paint_flat(sugarloaf, &panel, theme.panel_bg, DEPTH_BG, ORDER_PANEL);
     // A hairline separator against the terminal, on the panel's right edge.
-    sugarloaf.rect(
-        None,
+    paint_hairline_v(
+        sugarloaf,
         panel.right() - BORDER_WIDTH,
         panel.y,
-        BORDER_WIDTH,
         panel.height,
         theme.panel_border,
         DEPTH_BG + 0.005,
@@ -274,12 +253,11 @@ fn render_panel(
             [0xcb, 0xd5, 0xe1, 255], // slate-300
             true,
         );
-        sugarloaf.rect(
-            None,
+        paint_hairline_h(
+            sugarloaf,
             title.x,
             title.bottom() - BORDER_WIDTH,
             title.width,
-            BORDER_WIDTH,
             theme.panel_border,
             DEPTH_CONTENT,
             ORDER_CONTENT,
@@ -295,12 +273,11 @@ fn render_panel(
                 DEPTH_CONTENT,
             );
             let band = chrome.panel.search_band_rect(origin_y);
-            sugarloaf.rect(
-                None,
+            paint_hairline_h(
+                sugarloaf,
                 band.x,
                 band.bottom() - BORDER_WIDTH,
                 band.width,
-                BORDER_WIDTH,
                 theme.panel_border,
                 DEPTH_CONTENT,
                 ORDER_CONTENT,
@@ -351,12 +328,9 @@ fn render_notice(
         return;
     };
     let is_error = chrome.panel.error.is_some();
-    sugarloaf.rect(
-        None,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
+    paint_flat(
+        sugarloaf,
+        &rect,
         theme.notice_bg,
         DEPTH_BG + 0.01,
         ORDER_PANEL,
@@ -404,12 +378,9 @@ fn render_sticky_drawer_chrome(
     let title = chrome.panel.title_rect(origin_y);
     let band = chrome.panel.search_band_rect(origin_y);
     let cover_bottom = band.bottom();
-    sugarloaf.rect(
-        None,
-        title.x,
-        title.y,
-        title.width,
-        cover_bottom - title.y,
+    paint_flat(
+        sugarloaf,
+        &Rect::new(title.x, title.y, title.width, cover_bottom - title.y),
         theme.panel_bg,
         DEPTH_STICKY,
         ORDER_CONTENT,
@@ -424,12 +395,11 @@ fn render_sticky_drawer_chrome(
         [0xcb, 0xd5, 0xe1, 255],
         true,
     );
-    sugarloaf.rect(
-        None,
+    paint_hairline_h(
+        sugarloaf,
         title.x,
         title.bottom() - BORDER_WIDTH,
         title.width,
-        BORDER_WIDTH,
         theme.panel_border,
         DEPTH_STICKY + 0.001,
         ORDER_CONTENT,
@@ -443,12 +413,11 @@ fn render_sticky_drawer_chrome(
         device_scale,
         DEPTH_STICKY + 0.002,
     );
-    sugarloaf.rect(
-        None,
+    paint_hairline_h(
+        sugarloaf,
         band.x,
         band.bottom() - BORDER_WIDTH,
         band.width,
-        BORDER_WIDTH,
         theme.panel_border,
         DEPTH_STICKY + 0.006,
         ORDER_CONTENT,
@@ -465,50 +434,32 @@ fn paint_search_field(
     depth: f32,
 ) {
     let search = chrome.panel.search_rect(origin_y);
-    sugarloaf.rounded_rect(
-        None,
-        search.x,
-        search.y,
-        search.width,
-        search.height,
-        theme.panel_border,
-        depth,
-        sidebar::CARD_RADIUS,
-        ORDER_CONTENT,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        search.x + BORDER_WIDTH,
-        search.y + BORDER_WIDTH,
-        search.width - 2.0 * BORDER_WIDTH,
-        search.height - 2.0 * BORDER_WIDTH,
+    paint_surface(
+        sugarloaf,
+        &search,
         theme.field_bg,
-        depth + 0.001,
-        sidebar::CARD_RADIUS - 1.0,
+        Some(theme.panel_border),
+        sidebar::CARD_RADIUS,
+        depth,
         ORDER_CONTENT,
+        false,
     );
     if chrome.panel.filter_focused {
-        sugarloaf.rounded_rect(
-            None,
+        let focus_shell = Rect::new(
             search.x - BORDER_WIDTH,
             search.y - BORDER_WIDTH,
             search.width + 2.0 * BORDER_WIDTH,
             search.height + 2.0 * BORDER_WIDTH,
-            theme.field_border_focus,
-            depth + 0.002,
-            sidebar::CARD_RADIUS + 1.0,
-            ORDER_CONTENT,
         );
-        sugarloaf.rounded_rect(
-            None,
-            search.x + BORDER_WIDTH,
-            search.y + BORDER_WIDTH,
-            search.width - 2.0 * BORDER_WIDTH,
-            search.height - 2.0 * BORDER_WIDTH,
+        paint_surface(
+            sugarloaf,
+            &focus_shell,
             theme.button_bg,
-            depth + 0.003,
-            sidebar::CARD_RADIUS - 1.0,
+            Some(theme.field_border_focus),
+            sidebar::CARD_RADIUS + 1.0,
+            depth + 0.002,
             ORDER_CONTENT,
+            false,
         );
     }
 
@@ -573,111 +524,32 @@ fn render_new_host_cta(
     } else {
         with_alpha(theme.button_bg, 0.40)
     };
-    sugarloaf.rounded_rect(
-        None,
-        cta.x,
-        cta.y,
-        cta.width,
-        cta.height,
-        bg,
-        DEPTH_CONTENT,
-        sidebar::CARD_RADIUS,
-        ORDER_CONTENT,
-    );
     let border = if chrome.panel.add_hover {
         theme.accent
     } else {
         theme.panel_border
     };
-    draw_dashed_rounded_rect(
+    let title_color = if chrome.panel.add_hover {
+        color_from_f32(theme.accent)
+    } else {
+        theme.text
+    };
+    paint_dashed_cta(
         sugarloaf,
-        cta.x,
-        cta.y,
-        cta.width,
-        cta.height,
+        theme,
+        &cta,
         sidebar::CARD_RADIUS,
+        bg,
         border,
-        DEPTH_CONTENT + 0.01,
-        ORDER_CONTENT,
-    );
-
-    let badge = Rect::new(
-        cta.x + sidebar::CARD_PAD,
-        cta.y + (cta.height - sidebar::BADGE_TILE) / 2.0,
-        sidebar::BADGE_TILE,
-        sidebar::BADGE_TILE,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        badge.x,
-        badge.y,
-        badge.width,
-        badge.height,
-        theme.field_bg,
-        DEPTH_CONTENT + 0.02,
-        8.0,
-        ORDER_CONTENT,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        badge.x,
-        badge.y,
-        badge.width,
-        badge.height,
-        theme.panel_border,
-        DEPTH_CONTENT + 0.021,
-        8.0,
-        ORDER_CONTENT,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        badge.x + BORDER_WIDTH,
-        badge.y + BORDER_WIDTH,
-        badge.width - 2.0 * BORDER_WIDTH,
-        badge.height - 2.0 * BORDER_WIDTH,
-        theme.field_bg,
-        DEPTH_CONTENT + 0.022,
-        7.0,
-        ORDER_CONTENT,
-    );
-    draw_icon(
-        sugarloaf,
+        "New Host",
+        "Configure SSH connection",
+        title_color,
         Icon::Plus,
-        IconPlacement::new(
-            badge.x + (sidebar::BADGE_TILE - ADD_ICON_SIZE) / 2.0,
-            badge.y + (sidebar::BADGE_TILE - ADD_ICON_SIZE) / 2.0,
-            ADD_ICON_SIZE,
-        ),
-        theme.accent,
         device_scale,
+        labels,
+        DEPTH_CONTENT,
+        ORDER_CONTENT,
     );
-
-    if labels {
-        let title_color = if chrome.panel.add_hover {
-            color_from_f32(theme.accent)
-        } else {
-            theme.text
-        };
-        let text_x = badge.right() + sidebar::ICON_GAP;
-        draw_text(
-            sugarloaf,
-            text_x,
-            cta.y + 16.0,
-            "New Host",
-            ROW_TITLE_SIZE,
-            title_color,
-            true,
-        );
-        draw_text(
-            sugarloaf,
-            text_x,
-            cta.y + 36.0,
-            "Configure SSH connection",
-            ROW_SUB_SIZE,
-            theme.text_muted,
-            false,
-        );
-    }
 }
 
 /// Approximate a CSS `border-dashed` rounded rectangle.
@@ -714,28 +586,26 @@ fn draw_dashed_rounded_rect(
             return;
         }
         if horizontal {
-            sugarloaf.rounded_rect(
-                None,
-                cx,
-                cy - pill_r,
-                len,
-                stroke,
+            paint_surface(
+                sugarloaf,
+                &Rect::new(cx, cy - pill_r, len, stroke),
                 color,
-                depth,
+                None,
                 pill_r,
+                depth,
                 order,
+                false,
             );
         } else {
-            sugarloaf.rounded_rect(
-                None,
-                cx - pill_r,
-                cy,
-                stroke,
-                len,
+            paint_surface(
+                sugarloaf,
+                &Rect::new(cx - pill_r, cy, stroke, len),
                 color,
-                depth,
+                None,
                 pill_r,
+                depth,
                 order,
+                false,
             );
         }
     };
@@ -781,16 +651,15 @@ fn draw_dashed_rounded_rect(
                 let a = (start + (end - start) * t).to_radians();
                 let px = cx + rr * a.cos();
                 let py = cy + rr * a.sin();
-                sugarloaf.rounded_rect(
-                    None,
-                    px - pill_r,
-                    py - pill_r,
-                    stroke,
-                    stroke,
+                paint_surface(
+                    sugarloaf,
+                    &Rect::new(px - pill_r, py - pill_r, stroke, stroke),
                     color,
-                    depth,
+                    None,
                     pill_r,
+                    depth,
                     order,
+                    false,
                 );
             }
         }
@@ -822,27 +691,15 @@ fn render_snippets(
         } else {
             theme.button_bg
         };
-        sugarloaf.rounded_rect(
-            None,
-            row.x,
-            row.y,
-            row.width,
-            row.height,
-            theme.panel_border,
-            DEPTH_CONTENT,
-            sidebar::CARD_RADIUS,
-            ORDER_CONTENT,
-        );
-        sugarloaf.rounded_rect(
-            None,
-            row.x + BORDER_WIDTH,
-            row.y + BORDER_WIDTH,
-            row.width - 2.0 * BORDER_WIDTH,
-            row.height - 2.0 * BORDER_WIDTH,
+        paint_surface(
+            sugarloaf,
+            &row,
             bg,
-            DEPTH_CONTENT + 0.01,
-            sidebar::CARD_RADIUS - 1.0,
+            Some(theme.panel_border),
+            sidebar::CARD_RADIUS,
+            DEPTH_CONTENT,
             ORDER_CONTENT,
+            false,
         );
         if labels {
             draw_text(
@@ -861,60 +718,36 @@ fn render_snippets(
             // Run chip — mock bordered pill.
             let chip_w = 48.0;
             let chip_h = 18.0;
-            let chip_x = row.right() - 14.0 - chip_w;
-            let chip_y = row.y + 12.0;
-            sugarloaf.rounded_rect(
-                None,
-                chip_x,
-                chip_y,
-                chip_w,
-                chip_h,
-                theme.panel_border,
-                DEPTH_CONTENT + 0.02,
-                8.0,
-                ORDER_CONTENT,
-            );
-            sugarloaf.rounded_rect(
-                None,
-                chip_x + BORDER_WIDTH,
-                chip_y + BORDER_WIDTH,
-                chip_w - 2.0 * BORDER_WIDTH,
-                chip_h - 2.0 * BORDER_WIDTH,
+            let chip = Rect::new(row.right() - 14.0 - chip_w, row.y + 12.0, chip_w, chip_h);
+            paint_surface(
+                sugarloaf,
+                &chip,
                 theme.field_bg,
-                DEPTH_CONTENT + 0.021,
-                7.0,
+                Some(theme.panel_border),
+                8.0,
+                DEPTH_CONTENT + 0.02,
                 ORDER_CONTENT,
+                false,
             );
             draw_text(
                 sugarloaf,
-                chip_x + 8.0,
-                chip_y + 3.0,
+                chip.x + 8.0,
+                chip.y + 3.0,
                 "Run ↵",
                 HINT_SIZE,
                 [0x22, 0xd3, 0xee, 255], // cyan-400
                 false,
             );
-            sugarloaf.rounded_rect(
-                None,
-                row.x + 12.0,
-                row.y + 40.0,
-                row.width - 24.0,
-                36.0,
-                theme.panel_border,
-                DEPTH_CONTENT + 0.02,
-                8.0,
-                ORDER_CONTENT,
-            );
-            sugarloaf.rounded_rect(
-                None,
-                row.x + 12.0 + BORDER_WIDTH,
-                row.y + 40.0 + BORDER_WIDTH,
-                row.width - 24.0 - 2.0 * BORDER_WIDTH,
-                36.0 - 2.0 * BORDER_WIDTH,
+            let cmd_box = Rect::new(row.x + 12.0, row.y + 40.0, row.width - 24.0, 36.0);
+            paint_surface(
+                sugarloaf,
+                &cmd_box,
                 theme.field_bg,
-                DEPTH_CONTENT + 0.021,
-                7.0,
+                Some(theme.panel_border),
+                8.0,
+                DEPTH_CONTENT + 0.02,
                 ORDER_CONTENT,
+                false,
             );
             let cmd = elide(
                 sugarloaf,
@@ -943,60 +776,47 @@ fn render_settings_modal(
     window_height: f32,
     device_scale: f32,
 ) {
-    sugarloaf.rect(
-        None,
-        0.0,
-        0.0,
+    let dialog = chrome.settings.dialog_rect(window_width, window_height);
+    paint_dialog_shell(
+        sugarloaf,
+        theme,
         window_width,
         window_height,
-        theme.scrim,
-        DEPTH_DIALOG_BG,
-        ORDER_DIALOG,
-    );
-
-    let dialog = chrome.settings.dialog_rect(window_width, window_height);
-    sugarloaf.rounded_rect(
-        None,
-        dialog.x,
-        dialog.y,
-        dialog.width,
-        dialog.height,
-        theme.dialog_border,
-        DEPTH_DIALOG,
+        &dialog,
         terminus_ui::settings::RADIUS,
+        DialogBorderMode::Inset,
+        DEPTH_DIALOG_BG,
+        DEPTH_DIALOG,
         ORDER_DIALOG,
-    );
-    sugarloaf.rounded_rect(
         None,
-        dialog.x + BORDER_WIDTH,
-        dialog.y + BORDER_WIDTH,
-        dialog.width - 2.0 * BORDER_WIDTH,
-        dialog.height - 2.0 * BORDER_WIDTH,
-        theme.dialog_bg,
-        DEPTH_DIALOG + 0.01,
-        terminus_ui::settings::RADIUS - 1.0,
-        ORDER_DIALOG,
     );
 
     // Header band
-    sugarloaf.rounded_rect(
-        None,
+    let header = Rect::new(
         dialog.x + BORDER_WIDTH,
         dialog.y + BORDER_WIDTH,
         dialog.width - 2.0 * BORDER_WIDTH,
         64.0,
+    );
+    paint_surface(
+        sugarloaf,
+        &header,
         theme.dialog_header,
-        DEPTH_DIALOG + 0.02,
+        None,
         terminus_ui::settings::RADIUS - 1.0,
+        DEPTH_DIALOG + 0.02,
         ORDER_DIALOG,
+        false,
     );
     // Square off header bottom corners
-    sugarloaf.rect(
-        None,
-        dialog.x + BORDER_WIDTH,
-        dialog.y + 40.0,
-        dialog.width - 2.0 * BORDER_WIDTH,
-        28.0,
+    paint_flat(
+        sugarloaf,
+        &Rect::new(
+            dialog.x + BORDER_WIDTH,
+            dialog.y + 40.0,
+            dialog.width - 2.0 * BORDER_WIDTH,
+            28.0,
+        ),
         theme.dialog_header,
         DEPTH_DIALOG + 0.021,
         ORDER_DIALOG,
@@ -1004,27 +824,21 @@ fn render_settings_modal(
 
     let badge = Rect::new(dialog.x + 20.0, dialog.y + 16.0, 36.0, 36.0);
     // Accent ring (`border-appleAccent/20`) then soft fill.
-    sugarloaf.rounded_rect(
-        None,
+    let badge_shell = Rect::new(
         badge.x - BORDER_WIDTH,
         badge.y - BORDER_WIDTH,
         badge.width + 2.0 * BORDER_WIDTH,
         badge.height + 2.0 * BORDER_WIDTH,
-        with_alpha(theme.accent, 0.20),
-        DEPTH_DIALOG + 0.029,
-        13.0,
-        ORDER_DIALOG,
     );
-    sugarloaf.rounded_rect(
-        None,
-        badge.x,
-        badge.y,
-        badge.width,
-        badge.height,
+    paint_surface(
+        sugarloaf,
+        &badge_shell,
         theme.accent_soft,
-        DEPTH_DIALOG + 0.03,
-        12.0,
+        Some(with_alpha(theme.accent, 0.20)),
+        13.0,
+        DEPTH_DIALOG + 0.029,
         ORDER_DIALOG,
+        false,
     );
     draw_icon(
         sugarloaf,
@@ -1056,27 +870,15 @@ fn render_settings_modal(
     let close = chrome
         .settings
         .close_button_rect(window_width, window_height);
-    sugarloaf.rounded_rect(
-        None,
-        close.x,
-        close.y,
-        close.width,
-        close.height,
-        theme.panel_border,
-        DEPTH_DIALOG + 0.03,
-        close.width * 0.5,
-        ORDER_DIALOG,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        close.x + BORDER_WIDTH,
-        close.y + BORDER_WIDTH,
-        close.width - 2.0 * BORDER_WIDTH,
-        close.height - 2.0 * BORDER_WIDTH,
+    paint_surface(
+        sugarloaf,
+        &close,
         theme.button_bg,
-        DEPTH_DIALOG + 0.031,
-        (close.width - 2.0) * 0.5,
+        Some(theme.panel_border),
+        close.width * 0.5,
+        DEPTH_DIALOG + 0.03,
         ORDER_DIALOG,
+        false,
     );
     draw_icon(
         sugarloaf,
@@ -1090,12 +892,14 @@ fn render_settings_modal(
     let side_x = dialog.x + BORDER_WIDTH;
     let side_y = dialog.y + 66.0;
     let side_h = dialog.height - 66.0 - 48.0;
-    sugarloaf.rect(
-        None,
-        side_x,
-        side_y,
-        terminus_ui::settings::SIDEBAR_WIDTH,
-        side_h,
+    paint_flat(
+        sugarloaf,
+        &Rect::new(
+            side_x,
+            side_y,
+            terminus_ui::settings::SIDEBAR_WIDTH,
+            side_h,
+        ),
         theme.dialog_header,
         DEPTH_DIALOG + 0.02,
         ORDER_DIALOG,
@@ -1110,16 +914,15 @@ fn render_settings_modal(
             .tab_rect(window_width, window_height, tab);
         let selected = chrome.settings.tab == tab;
         if selected {
-            sugarloaf.rounded_rect(
-                None,
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
+            paint_surface(
+                sugarloaf,
+                &rect,
                 theme.accent_soft,
-                DEPTH_DIALOG + 0.03,
+                None,
                 12.0,
+                DEPTH_DIALOG + 0.03,
                 ORDER_DIALOG,
+                false,
             );
         }
         let (icon, label) = match tab {
@@ -1156,12 +959,14 @@ fn render_settings_modal(
     let content_x = dialog.x + terminus_ui::settings::SIDEBAR_WIDTH + 24.0;
     let content_y = dialog.y + 80.0;
     // Settings content pane: mock `bg-appleBg` (#18181b).
-    sugarloaf.rect(
-        None,
-        dialog.x + terminus_ui::settings::SIDEBAR_WIDTH,
-        dialog.y + 66.0,
-        dialog.width - terminus_ui::settings::SIDEBAR_WIDTH - BORDER_WIDTH,
-        dialog.height - 66.0 - 48.0,
+    paint_flat(
+        sugarloaf,
+        &Rect::new(
+            dialog.x + terminus_ui::settings::SIDEBAR_WIDTH,
+            dialog.y + 66.0,
+            dialog.width - terminus_ui::settings::SIDEBAR_WIDTH - BORDER_WIDTH,
+            dialog.height - 66.0 - 48.0,
+        ),
         theme.shell_bg,
         DEPTH_DIALOG + 0.015,
         ORDER_DIALOG,
@@ -1189,100 +994,36 @@ fn render_settings_modal(
             let mut y = content_y + 48.0;
             let cta_w = dialog.right() - content_x - 24.0;
             let cta_h = 56.0;
-            // Dashed New SSH Key CTA (same language as drawer New Host).
-            sugarloaf.rounded_rect(
-                None,
-                content_x,
-                y,
-                cta_w,
-                cta_h,
+            let cta = Rect::new(content_x, y, cta_w, cta_h);
+            // Dashed New SSH Key CTA (same component as drawer New Host).
+            paint_dashed_cta(
+                sugarloaf,
+                theme,
+                &cta,
+                12.0,
                 with_alpha(theme.button_bg, 0.40),
-                DEPTH_DIALOG + 0.03,
-                12.0,
-                ORDER_DIALOG,
-            );
-            draw_dashed_rounded_rect(
-                sugarloaf,
-                content_x,
-                y,
-                cta_w,
-                cta_h,
-                12.0,
                 theme.panel_border,
-                DEPTH_DIALOG + 0.031,
-                ORDER_DIALOG,
-            );
-            let badge = Rect::new(content_x + 14.0, y + (cta_h - 32.0) / 2.0, 32.0, 32.0);
-            sugarloaf.rounded_rect(
-                None,
-                badge.x,
-                badge.y,
-                badge.width,
-                badge.height,
-                theme.panel_border,
-                DEPTH_DIALOG + 0.04,
-                8.0,
-                ORDER_DIALOG,
-            );
-            sugarloaf.rounded_rect(
-                None,
-                badge.x + BORDER_WIDTH,
-                badge.y + BORDER_WIDTH,
-                badge.width - 2.0 * BORDER_WIDTH,
-                badge.height - 2.0 * BORDER_WIDTH,
-                theme.field_bg,
-                DEPTH_DIALOG + 0.041,
-                7.0,
-                ORDER_DIALOG,
-            );
-            draw_icon(
-                sugarloaf,
-                Icon::Plus,
-                IconPlacement::new(badge.x + 8.5, badge.y + 8.5, 15.0),
-                theme.accent,
-                device_scale,
-            );
-            draw_text(
-                sugarloaf,
-                badge.right() + 12.0,
-                y + 16.0,
                 "New SSH Key",
-                ROW_TITLE_SIZE,
-                theme.text,
-                true,
-            );
-            draw_text(
-                sugarloaf,
-                badge.right() + 12.0,
-                y + 34.0,
                 "Generate or import cryptographic identity",
-                HINT_SIZE,
-                theme.text_muted,
-                false,
+                theme.text,
+                Icon::Plus,
+                device_scale,
+                true,
+                DEPTH_DIALOG + 0.03,
+                ORDER_DIALOG,
             );
             y += 68.0;
             for key in &chrome.settings.keys {
-                sugarloaf.rounded_rect(
-                    None,
-                    content_x,
-                    y,
-                    cta_w,
-                    56.0,
-                    theme.panel_border,
-                    DEPTH_DIALOG + 0.03,
-                    12.0,
-                    ORDER_DIALOG,
-                );
-                sugarloaf.rounded_rect(
-                    None,
-                    content_x + BORDER_WIDTH,
-                    y + BORDER_WIDTH,
-                    cta_w - 2.0 * BORDER_WIDTH,
-                    56.0 - 2.0 * BORDER_WIDTH,
+                let row = Rect::new(content_x, y, cta_w, 56.0);
+                paint_surface(
+                    sugarloaf,
+                    &row,
                     theme.button_bg,
-                    DEPTH_DIALOG + 0.031,
-                    11.0,
+                    Some(theme.panel_border),
+                    12.0,
+                    DEPTH_DIALOG + 0.03,
                     ORDER_DIALOG,
+                    false,
                 );
                 draw_icon(
                     sugarloaf,
@@ -1332,16 +1073,16 @@ fn render_settings_modal(
                 true,
             );
             if chrome.settings.sync_connected {
-                sugarloaf.rounded_rect(
-                    None,
-                    content_x + 168.0,
-                    content_y - 2.0,
-                    84.0,
-                    20.0,
+                let pill = Rect::new(content_x + 168.0, content_y - 2.0, 84.0, 20.0);
+                paint_surface(
+                    sugarloaf,
+                    &pill,
                     rgba_u8(0x10, 0xb9, 0x81, 0.10),
-                    DEPTH_DIALOG + 0.03,
+                    None,
                     8.0,
+                    DEPTH_DIALOG + 0.03,
                     ORDER_DIALOG,
+                    false,
                 );
                 draw_text(
                     sugarloaf,
@@ -1452,16 +1193,15 @@ fn render_settings_modal(
                 false,
             );
 
-            sugarloaf.rounded_rect(
-                None,
-                status_row.x,
-                status_row.y,
-                status_row.width,
-                status_row.height,
+            paint_surface(
+                sugarloaf,
+                &status_row,
                 theme.button_bg,
-                DEPTH_DIALOG + 0.03,
+                None,
                 12.0,
+                DEPTH_DIALOG + 0.03,
                 ORDER_DIALOG,
+                false,
             );
             let status_label = if chrome.settings.vault_unlocked
                 && !chrome.settings.sync_status.to_ascii_lowercase().contains("vault")
@@ -1499,6 +1239,8 @@ fn render_settings_modal(
                 terminus_ui::ButtonSpec::secondary(unlock),
                 "Unlock Vault",
                 ROW_SUB_SIZE,
+                DEPTH_DIALOG + 0.04,
+                ORDER_DIALOG,
             );
             paint_chrome_button(
                 sugarloaf,
@@ -1506,6 +1248,8 @@ fn render_settings_modal(
                 terminus_ui::ButtonSpec::primary(test),
                 "Test Sync",
                 ROW_SUB_SIZE,
+                DEPTH_DIALOG + 0.04,
+                ORDER_DIALOG,
             );
 
             // Engine dropdown: higher paint *order* than dialog cards.
@@ -1516,27 +1260,15 @@ fn render_settings_modal(
                 let menu = chrome
                     .settings
                     .engine_menu_rect(window_width, window_height);
-                sugarloaf.rounded_rect(
-                    None,
-                    menu.x,
-                    menu.y,
-                    menu.width,
-                    menu.height,
-                    theme.panel_border,
-                    DEPTH_DIALOG,
-                    10.0,
-                    ORDER_DIALOG_POPOVER,
-                );
-                sugarloaf.rounded_rect(
-                    None,
-                    menu.x + BORDER_WIDTH,
-                    menu.y + BORDER_WIDTH,
-                    menu.width - 2.0 * BORDER_WIDTH,
-                    menu.height - 2.0 * BORDER_WIDTH,
+                paint_surface(
+                    sugarloaf,
+                    &menu,
                     theme.button_bg,
-                    DEPTH_DIALOG + 0.001,
-                    9.0,
+                    Some(theme.panel_border),
+                    10.0,
+                    DEPTH_DIALOG,
                     ORDER_DIALOG_POPOVER,
+                    false,
                 );
                 for i in 0..terminus_ui::SQL_ENGINES.len() {
                     let opt = chrome
@@ -1545,20 +1277,19 @@ fn render_settings_modal(
                     let selected = chrome.settings.sql_engine == i;
                     let hovered = chrome.settings.engine_menu_hover == Some(i);
                     if selected || hovered {
-                        sugarloaf.rounded_rect(
-                            None,
-                            opt.x,
-                            opt.y,
-                            opt.width,
-                            opt.height,
+                        paint_surface(
+                            sugarloaf,
+                            &opt,
                             if hovered {
                                 theme.item_hover
                             } else {
                                 theme.accent_soft
                             },
-                            DEPTH_DIALOG + 0.002,
+                            None,
                             6.0,
+                            DEPTH_DIALOG + 0.002,
                             ORDER_DIALOG_POPOVER,
+                            false,
                         );
                     }
                     draw_text(
@@ -1591,12 +1322,14 @@ fn render_settings_modal(
     }
 
     // Footer
-    sugarloaf.rect(
-        None,
-        dialog.x + BORDER_WIDTH,
-        dialog.bottom() - 48.0,
-        dialog.width - 2.0 * BORDER_WIDTH,
-        47.0,
+    paint_flat(
+        sugarloaf,
+        &Rect::new(
+            dialog.x + BORDER_WIDTH,
+            dialog.bottom() - 48.0,
+            dialog.width - 2.0 * BORDER_WIDTH,
+            47.0,
+        ),
         theme.dialog_header,
         DEPTH_DIALOG + 0.02,
         ORDER_DIALOG,
@@ -1608,6 +1341,8 @@ fn render_settings_modal(
         terminus_ui::ButtonSpec::secondary(done),
         "Done",
         ROW_SUB_SIZE,
+        DEPTH_DIALOG + 0.04,
+        ORDER_DIALOG,
     );
 }
 
@@ -1729,16 +1464,21 @@ fn render_host_rows(
 
             // Header wash only on hover — the tray already provides the fill.
             if hovered {
-                sugarloaf.rounded_rect(
-                    None,
+                let wash = Rect::new(
                     card.x + 1.0,
                     card.y + 1.0,
                     (card.width - 2.0).max(0.0),
                     (card.height - 2.0).max(0.0),
+                );
+                paint_surface(
+                    sugarloaf,
+                    &wash,
                     theme.item_hover,
-                    DEPTH_CONTENT + 0.012,
+                    None,
                     (sidebar::CARD_RADIUS - 1.0).max(0.0),
+                    DEPTH_CONTENT + 0.012,
                     ORDER_CONTENT,
+                    false,
                 );
             }
 
@@ -1746,12 +1486,11 @@ fn render_host_rows(
             if !collapsed {
                 let sep_y = card.y + sidebar::ITEM_HEIGHT - 1.0;
                 if sep_y >= top && sep_y <= bottom {
-                    sugarloaf.rect(
-                        None,
+                    paint_hairline_h(
+                        sugarloaf,
                         card.x + sidebar::CARD_PAD,
                         sep_y,
                         (card.width - 2.0 * sidebar::CARD_PAD).max(0.0),
-                        1.0,
                         with_alpha(theme.panel_border, 0.85),
                         DEPTH_CONTENT + 0.013,
                         ORDER_CONTENT,
@@ -1763,27 +1502,20 @@ fn render_host_rows(
                 let badge_x = card.x + sidebar::CARD_PAD;
                 let badge_y =
                     card.y + (sidebar::ITEM_HEIGHT - sidebar::HOST_BADGE_TILE) / 2.0;
-                // Folder badge with soft accent ring (mock).
-                sugarloaf.rounded_rect(
-                    None,
+                let badge = Rect::new(
                     badge_x,
                     badge_y,
                     sidebar::HOST_BADGE_TILE,
                     sidebar::HOST_BADGE_TILE,
-                    theme.accent,
-                    DEPTH_CONTENT + 0.02,
-                    8.0,
-                    ORDER_CONTENT,
                 );
-                sugarloaf.rounded_rect(
-                    None,
-                    badge_x + BORDER_WIDTH,
-                    badge_y + BORDER_WIDTH,
-                    sidebar::HOST_BADGE_TILE - 2.0 * BORDER_WIDTH,
-                    sidebar::HOST_BADGE_TILE - 2.0 * BORDER_WIDTH,
+                // Folder badge with soft accent ring (mock).
+                paint_bordered_badge(
+                    sugarloaf,
+                    &badge,
                     theme.field_bg,
-                    DEPTH_CONTENT + 0.021,
-                    7.0,
+                    theme.accent,
+                    8.0,
+                    DEPTH_CONTENT + 0.02,
                     ORDER_CONTENT,
                 );
                 draw_icon(
@@ -1953,20 +1685,19 @@ fn render_host_rows(
                     sidebar::SESSION_RADIUS,
                 );
             } else if hovered || dragging_source {
-                sugarloaf.rounded_rect(
-                    None,
-                    card.x,
-                    card.y,
-                    card.width,
-                    card.height,
+                paint_surface(
+                    sugarloaf,
+                    &card,
                     if dragging_source {
                         with_alpha(theme.item_hover, 0.55)
                     } else {
                         theme.item_hover
                     },
-                    DEPTH_CONTENT + 0.014,
+                    None,
                     sidebar::SESSION_RADIUS,
+                    DEPTH_CONTENT + 0.014,
                     ORDER_CONTENT,
+                    false,
                 );
             }
         } else {
@@ -2163,16 +1894,16 @@ fn render_host_rows(
                     if sw > 8.0 {
                         let bar = shimmer_bar(sx, sy, sw, 2.0, phase);
                         let color = with_alpha(theme.accent, bar.alpha);
-                        sugarloaf.rounded_rect(
-                            None,
-                            bar.x,
-                            bar.y,
-                            bar.width,
-                            bar.height,
+                        let track = Rect::new(bar.x, bar.y, bar.width, bar.height);
+                        paint_surface(
+                            sugarloaf,
+                            &track,
                             color,
-                            DEPTH_CONTENT + 0.02,
+                            None,
                             1.0,
+                            DEPTH_CONTENT + 0.02,
                             ORDER_CONNECTING,
+                            false,
                         );
                     }
                 }
@@ -2228,55 +1959,46 @@ fn paint_host_drag_ghost(
     let fill = with_alpha(theme.button_bg, OPACITY);
     let border = with_alpha(theme.accent, OPACITY);
     // Full solid card (background + accent ring), not a soft wash.
-    sugarloaf.rounded_rect(
-        None,
-        card.x,
-        card.y,
-        card.width,
-        card.height,
-        border,
-        DEPTH_GHOST,
-        sidebar::CARD_RADIUS,
-        ORDER_GHOST,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        card.x + BORDER_WIDTH,
-        card.y + BORDER_WIDTH,
-        (card.width - 2.0 * BORDER_WIDTH).max(0.0),
-        (card.height - 2.0 * BORDER_WIDTH).max(0.0),
+    paint_surface(
+        sugarloaf,
+        &card,
         fill,
-        DEPTH_GHOST + 0.01,
-        (sidebar::CARD_RADIUS - 1.0).max(0.0),
+        Some(border),
+        sidebar::CARD_RADIUS,
+        DEPTH_GHOST,
         ORDER_GHOST,
+        false,
     );
 
     let badge_tile = sidebar::HOST_BADGE_TILE;
-    let badge_x = card.x + sidebar::CARD_PAD;
-    let badge_y = card.y + (card.height - badge_tile) * 0.5;
-    sugarloaf.rounded_rect(
-        None,
-        badge_x,
-        badge_y,
+    let badge = Rect::new(
+        card.x + sidebar::CARD_PAD,
+        card.y + (card.height - badge_tile) * 0.5,
         badge_tile,
         badge_tile,
+    );
+    paint_surface(
+        sugarloaf,
+        &badge,
         with_alpha(theme.field_bg, OPACITY),
-        DEPTH_GHOST + 0.02,
+        None,
         8.0,
+        DEPTH_GHOST + 0.02,
         ORDER_GHOST,
+        false,
     );
     draw_icon(
         sugarloaf,
         Icon::Server,
         IconPlacement::new(
-            badge_x + (badge_tile - sidebar::ICON_SIZE) * 0.5,
-            badge_y + (badge_tile - sidebar::ICON_SIZE) * 0.5,
+            badge.x + (badge_tile - sidebar::ICON_SIZE) * 0.5,
+            badge.y + (badge_tile - sidebar::ICON_SIZE) * 0.5,
             sidebar::ICON_SIZE,
         ),
         with_alpha(theme.accent, OPACITY),
         device_scale,
     );
-    let text_x = badge_x + badge_tile + sidebar::ICON_GAP;
+    let text_x = badge.right() + sidebar::ICON_GAP;
     let mut title = theme.text;
     title[3] = (255.0 * OPACITY).round() as u8;
     let mut sub = theme.text_muted;
@@ -2301,6 +2023,61 @@ fn paint_host_drag_ghost(
     );
 }
 
+/// How a dialog's 1px border is placed relative to the content rect.
+enum DialogBorderMode {
+    /// Stroke occupies `dialog`; fill is inset (settings modal).
+    Inset,
+    /// Stroke expands outside `dialog`; fill is the content rect (add-host / connection).
+    Outward,
+}
+
+/// Full-window scrim + bordered dialog panel.
+fn paint_dialog_shell(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    window_width: f32,
+    window_height: f32,
+    dialog: &Rect,
+    radius: f32,
+    mode: DialogBorderMode,
+    scrim_depth: f32,
+    panel_depth: f32,
+    order: u8,
+    scrim_alpha_clamp: Option<(f32, f32)>,
+) {
+    let mut scrim = theme.scrim;
+    if let Some((lo, hi)) = scrim_alpha_clamp {
+        scrim[3] = scrim[3].max(lo).min(hi);
+    }
+    paint_scrim(
+        sugarloaf,
+        window_width,
+        window_height,
+        scrim,
+        scrim_depth,
+        order,
+    );
+    let shell = match mode {
+        DialogBorderMode::Inset => *dialog,
+        DialogBorderMode::Outward => Rect::new(
+            dialog.x - BORDER_WIDTH,
+            dialog.y - BORDER_WIDTH,
+            dialog.width + 2.0 * BORDER_WIDTH,
+            dialog.height + 2.0 * BORDER_WIDTH,
+        ),
+    };
+    paint_surface(
+        sugarloaf,
+        &shell,
+        theme.dialog_bg,
+        Some(theme.dialog_border),
+        radius,
+        panel_depth,
+        order,
+        false,
+    );
+}
+
 /// Borderless floating card: soft fill, optional thin luminous ring.
 ///
 /// When a border is requested the outer shell is accent-colored; the fill
@@ -2313,8 +2090,58 @@ fn paint_floating_surface(
     border: Option<[f32; 4]>,
     radius: f32,
 ) {
-    let fill = if bg[3] < 0.999 {
-        // Composite over a dark card base so alpha washes stay soft, not neon.
+    paint_surface(
+        sugarloaf,
+        card,
+        bg,
+        border,
+        radius,
+        DEPTH_CONTENT,
+        ORDER_CONTENT,
+        true,
+    );
+}
+
+/// Shared bordered/plain rounded surface used by cards, chips, menus, badges.
+///
+/// `composite_alpha` matches [`paint_floating_surface`]: translucent fills are
+/// composited over a dark card base so washes stay soft.
+fn paint_surface(
+    sugarloaf: &mut Sugarloaf,
+    card: &Rect,
+    bg: [f32; 4],
+    border: Option<[f32; 4]>,
+    radius: f32,
+    depth: f32,
+    order: u8,
+    composite_alpha: bool,
+) {
+    paint_surface_stroke(
+        sugarloaf,
+        card,
+        bg,
+        border,
+        radius,
+        BORDER_WIDTH,
+        depth,
+        order,
+        composite_alpha,
+    );
+}
+
+/// Like [`paint_surface`], with an explicit border stroke width.
+pub(crate) fn paint_surface_stroke(
+    sugarloaf: &mut Sugarloaf,
+    card: &Rect,
+    bg: [f32; 4],
+    border: Option<[f32; 4]>,
+    radius: f32,
+    stroke: f32,
+    depth: f32,
+    order: u8,
+    composite_alpha: bool,
+) {
+    let fill = if composite_alpha && bg[3] < 0.999 {
         opaque_over([0.133, 0.133, 0.149, 1.0], bg) // ≈ button_bg
     } else {
         bg
@@ -2327,20 +2154,20 @@ fn paint_floating_surface(
             card.width,
             card.height,
             border_color,
-            DEPTH_CONTENT,
+            depth,
             radius,
-            ORDER_CONTENT,
+            order,
         );
         sugarloaf.rounded_rect(
             None,
-            card.x + BORDER_WIDTH,
-            card.y + BORDER_WIDTH,
-            (card.width - 2.0 * BORDER_WIDTH).max(0.0),
-            (card.height - 2.0 * BORDER_WIDTH).max(0.0),
+            card.x + stroke,
+            card.y + stroke,
+            (card.width - 2.0 * stroke).max(0.0),
+            (card.height - 2.0 * stroke).max(0.0),
             fill,
-            DEPTH_CONTENT + 0.01,
-            (radius - 1.0).max(0.0),
-            ORDER_CONTENT,
+            depth + 0.01,
+            (radius - stroke).max(0.0),
+            order,
         );
     } else {
         sugarloaf.rounded_rect(
@@ -2350,9 +2177,259 @@ fn paint_floating_surface(
             card.width,
             card.height,
             fill,
-            DEPTH_CONTENT,
+            depth,
             radius,
-            ORDER_CONTENT,
+            order,
+        );
+    }
+}
+
+/// Axis-aligned opaque fill (panels, rails, scrims, footers, notice bands).
+pub(crate) fn paint_flat(
+    sugarloaf: &mut Sugarloaf,
+    rect: &Rect,
+    color: [f32; 4],
+    depth: f32,
+    order: u8,
+) {
+    sugarloaf.rect(
+        None,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        color,
+        depth,
+        order,
+    );
+}
+
+/// 1px horizontal separator.
+pub(crate) fn paint_hairline_h(
+    sugarloaf: &mut Sugarloaf,
+    x: f32,
+    y: f32,
+    width: f32,
+    color: [f32; 4],
+    depth: f32,
+    order: u8,
+) {
+    paint_flat(
+        sugarloaf,
+        &Rect::new(x, y, width, BORDER_WIDTH),
+        color,
+        depth,
+        order,
+    );
+}
+
+/// 1px vertical separator.
+pub(crate) fn paint_hairline_v(
+    sugarloaf: &mut Sugarloaf,
+    x: f32,
+    y: f32,
+    height: f32,
+    color: [f32; 4],
+    depth: f32,
+    order: u8,
+) {
+    paint_flat(
+        sugarloaf,
+        &Rect::new(x, y, BORDER_WIDTH, height),
+        color,
+        depth,
+        order,
+    );
+}
+
+/// Blinking text caret used by search, palette, settings, and rename fields.
+pub(crate) fn paint_caret(
+    sugarloaf: &mut Sugarloaf,
+    x: f32,
+    y: f32,
+    height: f32,
+    color: [f32; 4],
+    depth: f32,
+    order: u8,
+) {
+    paint_flat(
+        sugarloaf,
+        &Rect::new(x, y, CARET_WIDTH, height),
+        color,
+        depth,
+        order,
+    );
+}
+
+/// Full-window modal/overlay scrim.
+pub(crate) fn paint_scrim(
+    sugarloaf: &mut Sugarloaf,
+    window_width: f32,
+    window_height: f32,
+    color: [f32; 4],
+    depth: f32,
+    order: u8,
+) {
+    paint_flat(
+        sugarloaf,
+        &Rect::new(0.0, 0.0, window_width, window_height),
+        color,
+        depth,
+        order,
+    );
+}
+
+/// Straight stroke (e.g. reset-swatch slash).
+pub(crate) fn paint_line(
+    sugarloaf: &mut Sugarloaf,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    stroke: f32,
+    color: [f32; 4],
+    depth: f32,
+    order: u8,
+) {
+    sugarloaf.line(x0, y0, x1, y1, stroke, depth, color, order);
+}
+
+/// Apple HIG title-bar strip + bottom hairline (island / context bar).
+pub(crate) fn paint_title_strip(
+    sugarloaf: &mut Sugarloaf,
+    logical_w: f32,
+    height: f32,
+) {
+    let strip = [
+        0x11 as f32 / 255.0,
+        0x11 as f32 / 255.0,
+        0x13 as f32 / 255.0,
+        1.0,
+    ];
+    let strip_border = [
+        0x2f as f32 / 255.0,
+        0x2f as f32 / 255.0,
+        0x35 as f32 / 255.0,
+        1.0,
+    ];
+    paint_flat(
+        sugarloaf,
+        &Rect::new(0.0, 0.0, logical_w, height),
+        strip,
+        0.04,
+        0,
+    );
+    paint_hairline_h(
+        sugarloaf,
+        0.0,
+        height - 1.0,
+        logical_w,
+        strip_border,
+        0.041,
+        0,
+    );
+}
+
+/// Bordered square icon badge (CTA / folder / key tiles).
+fn paint_bordered_badge(
+    sugarloaf: &mut Sugarloaf,
+    badge: &Rect,
+    fill: [f32; 4],
+    border: [f32; 4],
+    radius: f32,
+    depth: f32,
+    order: u8,
+) {
+    paint_surface(
+        sugarloaf,
+        badge,
+        fill,
+        Some(border),
+        radius,
+        depth,
+        order,
+        false,
+    );
+}
+
+/// Dashed CTA row: wash fill, dashed stroke, bordered badge, title + subtitle.
+fn paint_dashed_cta(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    cta: &Rect,
+    radius: f32,
+    bg: [f32; 4],
+    border: [f32; 4],
+    title: &str,
+    subtitle: &str,
+    title_color: [u8; 4],
+    icon: Icon,
+    device_scale: f32,
+    labels: bool,
+    depth: f32,
+    order: u8,
+) {
+    paint_surface(
+        sugarloaf,
+        cta,
+        bg,
+        None,
+        radius,
+        depth,
+        order,
+        false,
+    );
+    draw_dashed_rounded_rect(
+        sugarloaf,
+        cta.x,
+        cta.y,
+        cta.width,
+        cta.height,
+        radius,
+        border,
+        depth + 0.01,
+        order,
+    );
+    let badge = terminus_ui::dashed_cta_badge(*cta, sidebar::BADGE_TILE, sidebar::CARD_PAD);
+    paint_bordered_badge(
+        sugarloaf,
+        &badge,
+        theme.field_bg,
+        theme.panel_border,
+        8.0,
+        depth + 0.02,
+        order,
+    );
+    let icon_xy = (
+        badge.x + (sidebar::BADGE_TILE - ADD_ICON_SIZE) * 0.5,
+        badge.y + (sidebar::BADGE_TILE - ADD_ICON_SIZE) * 0.5,
+    );
+    draw_icon(
+        sugarloaf,
+        icon,
+        IconPlacement::new(icon_xy.0, icon_xy.1, ADD_ICON_SIZE),
+        theme.accent,
+        device_scale,
+    );
+    if labels {
+        let text_x = badge.right() + sidebar::ICON_GAP;
+        draw_text(
+            sugarloaf,
+            text_x,
+            cta.y + 16.0,
+            title,
+            ROW_TITLE_SIZE,
+            title_color,
+            true,
+        );
+        draw_text(
+            sugarloaf,
+            text_x,
+            cta.y + 36.0,
+            subtitle,
+            ROW_SUB_SIZE,
+            theme.text_muted,
+            false,
         );
     }
 }
@@ -2368,16 +2445,15 @@ fn paint_soft_badge_tile(
     size: f32,
     theme: &ChromeTheme,
 ) {
-    sugarloaf.rounded_rect(
-        None,
-        x,
-        y,
-        size,
-        size,
+    paint_surface(
+        sugarloaf,
+        &Rect::new(x, y, size, size),
         theme.field_bg,
-        DEPTH_CONTENT + 0.02,
+        None,
         HOST_BADGE_RADIUS,
+        DEPTH_CONTENT + 0.02,
         ORDER_CONTENT,
+        false,
     );
 }
 
@@ -2397,27 +2473,25 @@ fn paint_status_dot(
     let x = badge_x + badge_size - corner_inset - d * 0.5;
     let y = badge_y + badge_size - corner_inset - d * 0.5;
     // Dark halo so the dot reads on both light badges and brand fills.
-    sugarloaf.rounded_rect(
-        None,
-        x - 1.0,
-        y - 1.0,
-        d + 2.0,
-        d + 2.0,
+    paint_surface(
+        sugarloaf,
+        &Rect::new(x - 1.0, y - 1.0, d + 2.0, d + 2.0),
         [0.067, 0.067, 0.075, 1.0], // panel_bg
-        DEPTH_CONTENT + 0.03,
-        (d + 2.0) * 0.5,
-        ORDER_CONTENT,
-    );
-    sugarloaf.rounded_rect(
         None,
-        x,
-        y,
-        d,
-        d,
-        color,
-        DEPTH_CONTENT + 0.031,
-        d * 0.5,
+        (d + 2.0) * 0.5,
+        DEPTH_CONTENT + 0.03,
         ORDER_CONTENT,
+        false,
+    );
+    paint_surface(
+        sugarloaf,
+        &Rect::new(x, y, d, d),
+        color,
+        None,
+        d * 0.5,
+        DEPTH_CONTENT + 0.031,
+        ORDER_CONTENT,
+        false,
     );
 }
 
@@ -2435,16 +2509,15 @@ fn paint_new_group_button(
         return;
     }
     if chrome.panel.new_group_hover {
-        sugarloaf.rounded_rect(
-            None,
-            button.x,
-            button.y,
-            button.width,
-            button.height,
+        paint_surface(
+            sugarloaf,
+            &button,
             with_alpha([1.0, 1.0, 1.0, 1.0], 0.06),
-            DEPTH_CONTENT + 0.02,
+            None,
             6.0,
+            DEPTH_CONTENT + 0.02,
             ORDER_CONTENT,
+            false,
         );
     }
     if !labels {
@@ -2490,27 +2563,15 @@ fn paint_new_group_form(
     if bottom - top < 8.0 {
         return;
     }
-    sugarloaf.rounded_rect(
-        None,
-        form.x,
-        form.y,
-        form.width,
-        form.height,
-        theme.panel_border,
-        DEPTH_CONTENT + 0.02,
-        10.0,
-        ORDER_CONTENT,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        form.x + BORDER_WIDTH,
-        form.y + BORDER_WIDTH,
-        form.width - 2.0 * BORDER_WIDTH,
-        form.height - 2.0 * BORDER_WIDTH,
+    paint_surface(
+        sugarloaf,
+        &form,
         with_alpha([1.0, 1.0, 1.0, 1.0], 0.025),
-        DEPTH_CONTENT + 0.021,
-        9.0,
+        Some(theme.panel_border),
+        10.0,
+        DEPTH_CONTENT + 0.02,
         ORDER_CONTENT,
+        false,
     );
 
     let Some(field) = chrome.panel.new_group_field_rect(origin_y) else {
@@ -2523,51 +2584,37 @@ fn paint_new_group_form(
         return;
     };
 
-    sugarloaf.rounded_rect(
-        None,
-        field.x,
-        field.y,
-        field.width,
-        field.height,
-        theme.field_bg,
-        DEPTH_CONTENT + 0.03,
-        8.0,
-        ORDER_CONTENT,
-    );
     if chrome.panel.new_group_focused {
-        sugarloaf.rounded_rect(
-            None,
-            field.x,
-            field.y,
-            field.width,
-            field.height,
-            theme.field_border_focus,
-            DEPTH_CONTENT + 0.031,
-            8.0,
-            ORDER_CONTENT,
-        );
-        sugarloaf.rounded_rect(
-            None,
-            field.x + BORDER_WIDTH,
-            field.y + BORDER_WIDTH,
-            field.width - 2.0 * BORDER_WIDTH,
-            field.height - 2.0 * BORDER_WIDTH,
+        paint_surface(
+            sugarloaf,
+            &field,
             theme.field_bg,
-            DEPTH_CONTENT + 0.032,
-            7.0,
+            Some(theme.field_border_focus),
+            8.0,
+            DEPTH_CONTENT + 0.03,
             ORDER_CONTENT,
+            false,
+        );
+    } else {
+        paint_surface(
+            sugarloaf,
+            &field,
+            theme.field_bg,
+            None,
+            8.0,
+            DEPTH_CONTENT + 0.03,
+            ORDER_CONTENT,
+            false,
         );
     }
 
-    sugarloaf.rounded_rect(
-        None,
-        create.x,
-        create.y,
-        create.width,
-        create.height,
-        theme.accent,
+    paint_chrome_button(
+        sugarloaf,
+        theme,
+        terminus_ui::ButtonSpec::primary(create),
+        if labels { "Create" } else { "" },
+        11.0,
         DEPTH_CONTENT + 0.03,
-        8.0,
         ORDER_CONTENT,
     );
 
@@ -2593,15 +2640,6 @@ fn paint_new_group_form(
         ROW_SUB_SIZE,
         color,
         false,
-    );
-    draw_text(
-        sugarloaf,
-        create.x + 10.0,
-        create.y + (create.height - ROW_SUB_SIZE) * 0.5,
-        "Create",
-        ROW_SUB_SIZE,
-        [255, 255, 255, 255],
-        true,
     );
     draw_text(
         sugarloaf,
@@ -2635,12 +2673,14 @@ fn render_panel_scrollbar(
     let thumb_height = (body.height * (body.height / content)).max(24.0);
     let travel = body.height - thumb_height;
     let progress = (chrome.panel.scroll / max_scroll).clamp(0.0, 1.0);
-    sugarloaf.rect(
-        None,
-        body.right() - TRACK - 2.0,
-        body.y + travel * progress,
-        TRACK,
-        thumb_height,
+    paint_flat(
+        sugarloaf,
+        &Rect::new(
+            body.right() - TRACK - 2.0,
+            body.y + travel * progress,
+            TRACK,
+            thumb_height,
+        ),
         theme.panel_border,
         DEPTH_CONTENT + 0.01,
         ORDER_CONTENT,
@@ -2657,12 +2697,11 @@ fn render_footer(
     device_scale: f32,
 ) {
     let footer = chrome.panel.footer_rect(origin_y, height);
-    sugarloaf.rect(
-        None,
+    paint_hairline_h(
+        sugarloaf,
         footer.x,
         footer.y,
         footer.width,
-        BORDER_WIDTH,
         theme.panel_border,
         DEPTH_CONTENT,
         ORDER_CONTENT,
@@ -2703,20 +2742,19 @@ fn render_footer_button(
     if button.height <= 0.0 {
         return;
     }
-    sugarloaf.rounded_rect(
-        None,
-        button.x,
-        button.y,
-        button.width,
-        button.height,
+    paint_surface(
+        sugarloaf,
+        &button,
         if hovered {
             theme.item_hover
         } else {
             theme.button_bg
         },
-        DEPTH_CONTENT,
+        None,
         5.0,
+        DEPTH_CONTENT,
         ORDER_CONTENT,
+        false,
     );
 
     const LABEL_GAP: f32 = 8.0;
@@ -2763,47 +2801,23 @@ fn render_add_host(
     window_width: f32,
     window_height: f32,
 ) {
-    // Dim everything behind the dialog. The scrim is a quad, so it is
-    // painted over the grid and over the chrome's own backgrounds.
-    sugarloaf.rect(
-        None,
-        0.0,
-        0.0,
-        window_width,
-        window_height,
-        theme.scrim,
-        DEPTH_DIALOG,
-        ORDER_DIALOG,
-    );
-
     let form = &chrome.form;
     let layout = chrome.dialog_layout(window_width, window_height);
     let dialog = layout.rect(form.height());
 
-    // Border first, then the body inset by the border width, which is
-    // how a 1px outline is drawn with filled-only primitives.
     let radius = terminus_ui::add_host::DIALOG_RADIUS;
-    sugarloaf.rounded_rect(
-        None,
-        dialog.x - BORDER_WIDTH,
-        dialog.y - BORDER_WIDTH,
-        dialog.width + 2.0 * BORDER_WIDTH,
-        dialog.height + 2.0 * BORDER_WIDTH,
-        theme.dialog_border,
-        DEPTH_DIALOG_BG,
+    paint_dialog_shell(
+        sugarloaf,
+        theme,
+        window_width,
+        window_height,
+        &dialog,
         radius,
+        DialogBorderMode::Outward,
+        DEPTH_DIALOG,
+        DEPTH_DIALOG_BG,
         ORDER_DIALOG,
-    );
-    sugarloaf.rounded_rect(
         None,
-        dialog.x,
-        dialog.y,
-        dialog.width,
-        dialog.height,
-        theme.dialog_bg,
-        DEPTH_DIALOG_BG + 0.01,
-        radius - 1.0,
-        ORDER_DIALOG,
     );
 
     let title = layout.title_rect();
@@ -2824,32 +2838,26 @@ fn render_add_host(
         };
         let focused = form.focused_field() == field;
 
-        // Mock inputs: bg-appleCard (#222226) + border.
-        sugarloaf.rounded_rect(
-            None,
+        // Mock inputs: bg-appleCard (#222226) + border (outward stroke).
+        let shell = Rect::new(
             input.x - BORDER_WIDTH,
             input.y - BORDER_WIDTH,
             input.width + 2.0 * BORDER_WIDTH,
             input.height + 2.0 * BORDER_WIDTH,
-            if focused {
+        );
+        paint_surface(
+            sugarloaf,
+            &shell,
+            theme.button_bg,
+            Some(if focused {
                 theme.field_border_focus
             } else {
                 theme.field_border
-            },
-            DEPTH_DIALOG_BG + 0.015,
+            }),
             input_radius,
+            DEPTH_DIALOG_BG + 0.015,
             ORDER_DIALOG,
-        );
-        sugarloaf.rounded_rect(
-            None,
-            input.x,
-            input.y,
-            input.width,
-            input.height,
-            theme.button_bg,
-            DEPTH_DIALOG_BG + 0.02,
-            input_radius - 1.0,
-            ORDER_DIALOG,
+            false,
         );
 
         if let Some(caption) = layout.caption_rect(form, field) {
@@ -2913,11 +2921,10 @@ fn render_add_host(
                         &opts(INPUT_SIZE, theme.text, false),
                     );
                     if focused {
-                        sugarloaf.rect(
-                            None,
+                        paint_caret(
+                            sugarloaf,
                             text_x + drawn,
                             input.y + 6.0,
-                            CARET_WIDTH,
                             input.height - 12.0,
                             theme.accent,
                             DEPTH_DIALOG_BG + 0.03,
@@ -2962,11 +2969,10 @@ fn render_add_host(
                 if focused {
                     // Caret immediately after the text before it, so it lands
                     // on the true advance width rather than an estimate.
-                    sugarloaf.rect(
-                        None,
+                    paint_caret(
+                        sugarloaf,
                         text_x + drawn,
                         input.y + 6.0,
-                        CARET_WIDTH,
                         input.height - 12.0,
                         theme.accent,
                         DEPTH_DIALOG_BG + 0.03,
@@ -2987,12 +2993,11 @@ fn render_add_host(
 
     let hint = layout.hint_rect(form.height());
     // Hairline above the footer actions.
-    sugarloaf.rect(
-        None,
+    paint_hairline_h(
+        sugarloaf,
         dialog.x + terminus_ui::add_host::PAD,
         hint.y - 8.0,
         dialog.width - 2.0 * terminus_ui::add_host::PAD,
-        BORDER_WIDTH,
         theme.panel_border,
         DEPTH_DIALOG_BG + 0.02,
         ORDER_DIALOG,
@@ -3016,61 +3021,28 @@ fn render_add_host(
         );
     }
 
-    // Cancel + Connect footer — geometry owned by AddHostLayout.
+    // Cancel + Connect footer — shared ButtonSpec paint path.
     let cancel = layout.cancel_button_rect(form.height());
     let connect = layout.connect_button_rect(form.height());
-
-    sugarloaf.rounded_rect(
-        None,
-        cancel.x,
-        cancel.y,
-        cancel.width,
-        cancel.height,
-        theme.panel_border,
-        DEPTH_DIALOG_BG + 0.025,
-        input_radius,
-        ORDER_DIALOG,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        cancel.x + BORDER_WIDTH,
-        cancel.y + BORDER_WIDTH,
-        cancel.width - 2.0 * BORDER_WIDTH,
-        cancel.height - 2.0 * BORDER_WIDTH,
-        theme.button_bg,
-        DEPTH_DIALOG_BG + 0.026,
-        input_radius - 1.0,
-        ORDER_DIALOG,
-    );
-    draw_text(
+    paint_chrome_button(
         sugarloaf,
-        cancel.x + 18.0,
-        cancel.y + 8.0,
+        theme,
+        terminus_ui::ButtonSpec::secondary(cancel)
+            .with_radius(input_radius)
+            .muted(),
         "Cancel",
         HINT_SIZE,
-        theme.text_muted,
-        false,
-    );
-
-    sugarloaf.rounded_rect(
-        None,
-        connect.x,
-        connect.y,
-        connect.width,
-        connect.height,
-        theme.accent,
         DEPTH_DIALOG_BG + 0.025,
-        input_radius,
         ORDER_DIALOG,
     );
-    draw_text(
+    paint_chrome_button(
         sugarloaf,
-        connect.x + 18.0,
-        connect.y + 8.0,
+        theme,
+        terminus_ui::ButtonSpec::primary(connect).with_radius(input_radius),
         "Connect",
         HINT_SIZE,
-        [255, 255, 255, 255],
-        true,
+        DEPTH_DIALOG_BG + 0.025,
+        ORDER_DIALOG,
     );
 }
 
@@ -3118,16 +3090,15 @@ fn paint_settings_field_card(
     _selector: bool,
     paint_text: bool,
 ) {
-    sugarloaf.rounded_rect(
-        None,
-        card.x,
-        card.y,
-        card.width,
-        card.height,
+    paint_surface(
+        sugarloaf,
+        &card,
         theme.button_bg,
-        DEPTH_DIALOG + 0.03,
+        None,
         12.0,
+        DEPTH_DIALOG + 0.03,
         ORDER_DIALOG,
+        false,
     );
     if paint_text {
         draw_text(
@@ -3141,44 +3112,28 @@ fn paint_settings_field_card(
         );
     }
     let field_bg = theme.field_bg;
-    let input_x = card.x + 16.0;
-    let input_y = card.y + 30.0;
-    let input_w = card.width - 32.0;
-    let input_h = 26.0;
+    let input = Rect::new(card.x + 16.0, card.y + 30.0, card.width - 32.0, 26.0);
     if focused {
-        sugarloaf.rounded_rect(
-            None,
-            input_x,
-            input_y,
-            input_w,
-            input_h,
-            theme.field_border_focus,
-            DEPTH_DIALOG + 0.039,
-            8.0,
-            ORDER_DIALOG,
-        );
-        sugarloaf.rounded_rect(
-            None,
-            input_x + 1.0,
-            input_y + 1.0,
-            input_w - 2.0,
-            input_h - 2.0,
+        paint_surface(
+            sugarloaf,
+            &input,
             field_bg,
-            DEPTH_DIALOG + 0.041,
-            7.0,
+            Some(theme.field_border_focus),
+            8.0,
+            DEPTH_DIALOG + 0.039,
             ORDER_DIALOG,
+            false,
         );
     } else {
-        sugarloaf.rounded_rect(
-            None,
-            input_x,
-            input_y,
-            input_w,
-            input_h,
+        paint_surface(
+            sugarloaf,
+            &input,
             field_bg,
-            DEPTH_DIALOG + 0.04,
+            None,
             8.0,
+            DEPTH_DIALOG + 0.04,
             ORDER_DIALOG,
+            false,
         );
     }
     if paint_text {
@@ -3190,7 +3145,7 @@ fn paint_settings_field_card(
         let shown = elide(
             sugarloaf,
             value,
-            input_w - 16.0,
+            input.width - 16.0,
             &opts(ROW_SUB_SIZE, color, false),
         );
         draw_text(
@@ -3215,11 +3170,10 @@ fn paint_settings_caret(
     let advance = sugarloaf
         .text_mut()
         .measure(value, &opts(ROW_SUB_SIZE, theme.text, false));
-    sugarloaf.rect(
-        None,
+    paint_caret(
+        sugarloaf,
         text_x + advance,
         card.y + 34.0,
-        CARET_WIDTH,
         16.0,
         theme.accent,
         DEPTH_DIALOG + 0.05,
@@ -3234,45 +3188,34 @@ fn paint_chrome_button(
     spec: terminus_ui::ButtonSpec,
     label: &str,
     font_size: f32,
+    depth: f32,
+    order: u8,
 ) {
     let rect = spec.rect;
     if spec.has_border() {
-        sugarloaf.rounded_rect(
-            None,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            theme.panel_border,
-            DEPTH_DIALOG + 0.04,
-            spec.radius,
-            ORDER_DIALOG,
-        );
-        sugarloaf.rounded_rect(
-            None,
-            rect.x + BORDER_WIDTH,
-            rect.y + BORDER_WIDTH,
-            rect.width - 2.0 * BORDER_WIDTH,
-            rect.height - 2.0 * BORDER_WIDTH,
+        paint_surface(
+            sugarloaf,
+            &rect,
             spec.fill(theme.accent, theme.button_bg),
-            DEPTH_DIALOG + 0.041,
-            (spec.radius - 1.0).max(0.0),
-            ORDER_DIALOG,
+            Some(theme.panel_border),
+            spec.radius,
+            depth,
+            order,
+            false,
         );
     } else {
-        sugarloaf.rounded_rect(
-            None,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
+        paint_surface(
+            sugarloaf,
+            &rect,
             spec.fill(theme.accent, theme.button_bg),
-            DEPTH_DIALOG + 0.04,
+            None,
             spec.radius,
-            ORDER_DIALOG,
+            depth,
+            order,
+            false,
         );
     }
-    let color = spec.label_color([255, 255, 255, 255], theme.text);
+    let color = spec.label_color([255, 255, 255, 255], theme.text, theme.text_muted);
     let bold = matches!(spec.kind, terminus_ui::ButtonKind::Primary);
     let text_w = sugarloaf
         .text_mut()
@@ -3494,56 +3437,33 @@ fn render_connection_modal(
         return;
     };
 
-    // Full-window scrim — same stack as the add-host dialog.
-    let mut scrim = theme.scrim;
-    scrim[3] = scrim[3].max(0.55).min(0.70);
-    sugarloaf.rect(
-        None,
-        0.0,
-        0.0,
+    let dialog = conn.dialog_rect(window_width, window_height);
+    // Outer radius 13 → fill at 12 via paint_surface's inset shrink.
+    paint_dialog_shell(
+        sugarloaf,
+        theme,
         window_width,
         window_height,
-        scrim,
-        DEPTH_DIALOG,
-        ORDER_DIALOG,
-    );
-
-    let dialog = conn.dialog_rect(window_width, window_height);
-    sugarloaf.rounded_rect(
-        None,
-        dialog.x - BORDER_WIDTH,
-        dialog.y - BORDER_WIDTH,
-        dialog.width + 2.0 * BORDER_WIDTH,
-        dialog.height + 2.0 * BORDER_WIDTH,
-        theme.dialog_border,
-        DEPTH_DIALOG_BG,
+        &dialog,
         13.0,
+        DialogBorderMode::Outward,
+        DEPTH_DIALOG,
+        DEPTH_DIALOG_BG,
         ORDER_DIALOG,
-    );
-    sugarloaf.rounded_rect(
-        None,
-        dialog.x,
-        dialog.y,
-        dialog.width,
-        dialog.height,
-        theme.dialog_bg,
-        DEPTH_DIALOG_BG + 0.01,
-        12.0,
-        ORDER_DIALOG,
+        Some((0.55, 0.70)),
     );
 
     // Header: host badge + title + endpoint + Show logs.
     let header_icon = conn.header_icon_rect(dialog);
-    sugarloaf.rounded_rect(
-        None,
-        header_icon.x,
-        header_icon.y,
-        header_icon.width,
-        header_icon.height,
+    paint_surface(
+        sugarloaf,
+        &header_icon,
         with_alpha(theme.accent, 0.22),
-        DEPTH_DIALOG_BG + 0.02,
+        None,
         10.0,
+        DEPTH_DIALOG_BG + 0.02,
         ORDER_DIALOG,
+        false,
     );
     let header_glyph = match conn.kind {
         terminus_ui::ConnectKind::Ssh => Icon::Server,
@@ -3582,60 +3502,44 @@ fn render_connection_modal(
     );
 
     let logs_btn = conn.logs_button_rect(dialog);
-    sugarloaf.rounded_rect(
-        None,
-        logs_btn.x,
-        logs_btn.y,
-        logs_btn.width,
-        logs_btn.height,
-        theme.button_bg,
-        DEPTH_DIALOG_BG + 0.02,
-        8.0,
-        ORDER_DIALOG,
-    );
     let logs_label = if conn.logs_open {
         "Hide logs"
     } else {
         "Show logs"
     };
-    let logs_w = sugarloaf
-        .text_mut()
-        .measure(logs_label, &opts(HINT_SIZE, theme.text_muted, false));
-    draw_text(
+    paint_chrome_button(
         sugarloaf,
-        logs_btn.x + (logs_btn.width - logs_w) * 0.5,
-        logs_btn.y + 8.0,
+        theme,
+        terminus_ui::ButtonSpec::ghost(logs_btn).muted(),
         logs_label,
         HINT_SIZE,
-        theme.text_muted,
-        false,
+        DEPTH_DIALOG_BG + 0.02,
+        ORDER_DIALOG,
     );
 
     // Progress track.
     let track = conn.track_line_rect(dialog);
-    sugarloaf.rounded_rect(
-        None,
-        track.x,
-        track.y,
-        track.width,
-        track.height,
+    paint_surface(
+        sugarloaf,
+        &track,
         theme.panel_border,
-        DEPTH_DIALOG_BG + 0.02,
+        None,
         2.0,
+        DEPTH_DIALOG_BG + 0.02,
         ORDER_DIALOG,
+        false,
     );
     let fill = conn.progress_fill_rect(dialog);
     if fill.width > 0.5 {
-        sugarloaf.rounded_rect(
-            None,
-            fill.x,
-            fill.y,
-            fill.width,
-            fill.height,
+        paint_surface(
+            sugarloaf,
+            &fill,
             theme.accent,
-            DEPTH_DIALOG_BG + 0.03,
+            None,
             2.0,
+            DEPTH_DIALOG_BG + 0.03,
             ORDER_DIALOG,
+            false,
         );
     }
 
@@ -3657,40 +3561,40 @@ fn render_connection_modal(
         if state == NodeVisual::Active {
             let pulse = (phase * std::f32::consts::TAU).sin() * 0.5 + 0.5;
             let glow = 4.0 + 4.0 * pulse;
-            sugarloaf.rounded_rect(
-                None,
+            let glow_rect = Rect::new(
                 node.x - glow,
                 node.y - glow,
                 node.width + 2.0 * glow,
                 node.height + 2.0 * glow,
+            );
+            paint_surface(
+                sugarloaf,
+                &glow_rect,
                 with_alpha(theme.accent, 0.18 + 0.16 * pulse),
-                DEPTH_DIALOG_BG + 0.035,
+                None,
                 (node.width + 2.0 * glow) * 0.5,
+                DEPTH_DIALOG_BG + 0.035,
                 ORDER_DIALOG,
+                false,
             );
         }
 
-        sugarloaf.rounded_rect(
-            None,
+        let node_shell = Rect::new(
             node.x - 1.5,
             node.y - 1.5,
             node.width + 3.0,
             node.height + 3.0,
-            border_c,
-            DEPTH_DIALOG_BG + 0.04,
-            (node.width + 3.0) * 0.5,
-            ORDER_DIALOG,
         );
-        sugarloaf.rounded_rect(
-            None,
-            node.x,
-            node.y,
-            node.width,
-            node.height,
+        paint_surface_stroke(
+            sugarloaf,
+            &node_shell,
             fill_c,
-            DEPTH_DIALOG_BG + 0.05,
-            node.width * 0.5,
+            Some(border_c),
+            (node.width + 3.0) * 0.5,
+            1.5,
+            DEPTH_DIALOG_BG + 0.04,
             ORDER_DIALOG,
+            false,
         );
 
         let icon_size = 16.0;
@@ -3748,16 +3652,15 @@ fn render_connection_modal(
 
     // Collapsible logs drawer.
     if let Some(logs) = conn.logs_rect(dialog) {
-        sugarloaf.rounded_rect(
-            None,
-            logs.x,
-            logs.y,
-            logs.width,
-            logs.height,
+        paint_surface(
+            sugarloaf,
+            &logs,
             theme.field_bg,
-            DEPTH_DIALOG_BG + 0.02,
+            None,
             8.0,
+            DEPTH_DIALOG_BG + 0.02,
             ORDER_DIALOG,
+            false,
         );
         let mut y = logs.y + 8.0;
         let line_h = 14.0;
@@ -3788,29 +3691,14 @@ fn render_connection_modal(
 
     // Close button.
     let close = conn.close_button_rect(dialog);
-    sugarloaf.rounded_rect(
-        None,
-        close.x,
-        close.y,
-        close.width,
-        close.height,
-        theme.button_bg,
-        DEPTH_DIALOG_BG + 0.02,
-        10.0,
-        ORDER_DIALOG,
-    );
-    let close_label = "Close";
-    let cw = sugarloaf
-        .text_mut()
-        .measure(close_label, &opts(HINT_SIZE, theme.text, false));
-    draw_text(
+    paint_chrome_button(
         sugarloaf,
-        close.x + (close.width - cw) * 0.5,
-        close.y + 11.0,
-        close_label,
+        theme,
+        terminus_ui::ButtonSpec::ghost(close).with_radius(10.0),
+        "Close",
         HINT_SIZE,
-        theme.text,
-        false,
+        DEPTH_DIALOG_BG + 0.02,
+        ORDER_DIALOG,
     );
 }
 
@@ -3832,31 +3720,29 @@ fn draw_orbit_indicator(
     let ring = breath_ring(cx, cy, orbit_r + dot_r * 1.4, phase);
     let ring_color = with_alpha(theme.accent, ring.alpha);
     let diam = ring.radius * 2.0;
-    sugarloaf.rounded_rect(
-        None,
-        ring.x - ring.radius,
-        ring.y - ring.radius,
-        diam,
-        diam,
+    paint_surface(
+        sugarloaf,
+        &Rect::new(ring.x - ring.radius, ring.y - ring.radius, diam, diam),
         ring_color,
-        DEPTH_CONTENT + 0.05,
+        None,
         ring.radius,
+        DEPTH_CONTENT + 0.05,
         ORDER_CONNECTING,
+        false,
     );
 
     for dot in orbit_dots(cx, cy, orbit_r, dot_r, phase) {
         let color = with_alpha(theme.accent, dot.alpha);
         let d = dot.radius * 2.0;
-        sugarloaf.rounded_rect(
-            None,
-            dot.x - dot.radius,
-            dot.y - dot.radius,
-            d,
-            d,
+        paint_surface(
+            sugarloaf,
+            &Rect::new(dot.x - dot.radius, dot.y - dot.radius, d, d),
             color,
-            DEPTH_CONTENT + 0.06,
+            None,
             dot.radius,
+            DEPTH_CONTENT + 0.06,
             ORDER_CONNECTING,
+            false,
         );
     }
 }
@@ -3875,139 +3761,6 @@ fn opaque_over(bg: [f32; 4], fg: [f32; 4]) -> [f32; 4] {
         fg[2] * a + bg[2] * inv,
         1.0,
     ]
-}
-
-/// Soft left→right status wash inside a host card.
-///
-/// Retired from the live host chrome (status dots replaced washes). Kept
-/// for reference / potential settings accent surfaces.
-#[allow(dead_code)]
-fn paint_status_wash(
-    sugarloaf: &mut Sugarloaf,
-    card: &Rect,
-    color: [f32; 4],
-    device_scale: f32,
-) {
-    let inset = BORDER_WIDTH;
-    let x0 = card.x + inset;
-    let y0 = card.y + inset;
-    let w = (card.width - 2.0 * inset).max(0.0);
-    let h = (card.height - 2.0 * inset).max(0.0);
-    if w < 8.0 || h < 8.0 {
-        return;
-    }
-
-    // Match the inner fill radius used by the host card chrome.
-    let radius = (sidebar::CARD_RADIUS - 1.0).clamp(0.0, h * 0.5).min(w * 0.5);
-    let scale = device_scale.max(1.0);
-    let wash_w = (w * 0.40).max(24.0).min(w);
-    let cols = (wash_w * scale).round().max(1.0) as usize;
-    let ramp = status_wash_alpha_ramp(cols);
-    let col_w = wash_w / cols as f32;
-
-    for (i, &alpha) in ramp.iter().enumerate() {
-        // Peak opacity reduced ~20% vs the baked ramp.
-        let alpha = alpha * 0.35;
-        if alpha < 0.008 {
-            continue;
-        }
-        // i = 0 is the leftmost column (strongest in the ramp).
-        let x = x0 + col_w * i as f32;
-        let x_mid = x + col_w * 0.5;
-        let (top, bottom) = rounded_rect_column_y(x0, y0, w, h, radius, x_mid);
-        let col_h = bottom - top;
-        if col_h < 0.5 {
-            continue;
-        }
-        sugarloaf.rect(
-            None,
-            x,
-            top,
-            col_w + 0.35,
-            col_h,
-            with_alpha(color, alpha),
-            DEPTH_CONTENT + 0.015,
-            ORDER_CONTENT,
-        );
-    }
-}
-
-/// Vertical span of a rounded-rect interior at horizontal position `x_mid`.
-///
-/// Returns `(top, bottom)` clipped to the circular corners so a column fill
-/// stays inside the card's radius.
-fn rounded_rect_column_y(
-    x0: f32,
-    y0: f32,
-    w: f32,
-    h: f32,
-    radius: f32,
-    x_mid: f32,
-) -> (f32, f32) {
-    let mut top = y0;
-    let mut bottom = y0 + h;
-    if radius <= 0.5 {
-        return (top, bottom);
-    }
-
-    let left = x0 + radius;
-    let right = x0 + w - radius;
-    if x_mid < left {
-        let dx = (left - x_mid).min(radius);
-        let dy = radius - (radius * radius - dx * dx).max(0.0).sqrt();
-        top += dy;
-        bottom -= dy;
-    } else if x_mid > right {
-        let dx = (x_mid - right).min(radius);
-        let dy = radius - (radius * radius - dx * dx).max(0.0).sqrt();
-        top += dy;
-        bottom -= dy;
-    }
-    (top, bottom.max(top))
-}
-
-/// Horizontal alpha ramp via tiny-skia's linear gradient shader.
-///
-/// Index 0 = left edge (peak alpha), last = right of the wash (transparent).
-fn status_wash_alpha_ramp(cols: usize) -> Vec<f32> {
-    let w = cols.max(1) as u32;
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(w, 1) else {
-        return vec![0.0; cols.max(1)];
-    };
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = false;
-    // Gradient runs left → right: opaque at x=0, clear at x=w.
-    paint.shader = tiny_skia::LinearGradient::new(
-        tiny_skia::Point::from_xy(0.0, 0.5),
-        tiny_skia::Point::from_xy(w as f32, 0.5),
-        vec![
-            tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(255, 255, 255, 72)),
-            tiny_skia::GradientStop::new(0.55, tiny_skia::Color::from_rgba8(255, 255, 255, 28)),
-            tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(255, 255, 255, 0)),
-        ],
-        tiny_skia::SpreadMode::Pad,
-        tiny_skia::Transform::identity(),
-    )
-    .unwrap_or(tiny_skia::Shader::SolidColor(tiny_skia::Color::TRANSPARENT));
-
-    if let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, w as f32, 1.0) {
-        let path = tiny_skia::PathBuilder::from_rect(rect);
-        pixmap.fill_path(
-            &path,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            tiny_skia::Transform::identity(),
-            None,
-        );
-    }
-
-    let mut out = Vec::with_capacity(cols.max(1));
-    for x in 0..w {
-        // Premultiplied RGBA — alpha is in the last channel.
-        let px = pixmap.pixel(x, 0).unwrap_or(tiny_skia::PremultipliedColorU8::TRANSPARENT);
-        out.push(px.alpha() as f32 / 255.0);
-    }
-    out
 }
 
 fn as_u8(color: [f32; 4]) -> [u8; 4] {

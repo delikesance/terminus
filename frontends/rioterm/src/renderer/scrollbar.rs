@@ -118,7 +118,13 @@ pub fn draw_thumb(
         SCROLLBAR_COLOR
     };
     let color = [base[0], base[1], base[2], base[3] * opacity];
-    sugarloaf.rect(None, x, y, SCROLLBAR_WIDTH, height, color, depth, order);
+    crate::renderer::chrome::paint_flat(
+        sugarloaf,
+        &terminus_ui::Rect::new(x, y, SCROLLBAR_WIDTH, height),
+        color,
+        depth,
+        order,
+    );
 }
 
 /// Computed geometry of a scrollbar track and thumb in logical pixels.

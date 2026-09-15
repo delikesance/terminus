@@ -132,16 +132,16 @@ fn draw_hint_tooltip(
     let x = TOOLTIP_MARGIN;
     let y = (logical_height - height - TOOLTIP_MARGIN).max(0.0);
 
-    sugarloaf.rounded_rect(
-        None,
-        x,
-        y,
-        width,
-        height,
+    crate::renderer::chrome::paint_surface_stroke(
+        sugarloaf,
+        &terminus_ui::Rect::new(x, y, width, height),
         TOOLTIP_BG_COLOR,
-        TOOLTIP_DEPTH_BG,
+        None,
         TOOLTIP_CORNER_RADIUS,
+        1.0,
+        TOOLTIP_DEPTH_BG,
         TOOLTIP_ORDER,
+        false,
     );
     sugarloaf.text_mut().draw(
         x + TOOLTIP_PADDING_X,
@@ -164,29 +164,7 @@ fn render_context_bar<T: rio_backend::event::EventListener + Clone + Send + 'sta
     let (window_width, _window_height, scale_factor) = dimensions;
     let logical_w = window_width / scale_factor;
 
-    let strip = [
-        0x11 as f32 / 255.0,
-        0x11 as f32 / 255.0,
-        0x13 as f32 / 255.0,
-        1.0,
-    ];
-    let strip_border = [
-        0x2f as f32 / 255.0,
-        0x2f as f32 / 255.0,
-        0x35 as f32 / 255.0,
-        1.0,
-    ];
-    sugarloaf.rect(None, 0.0, 0.0, logical_w, CONTEXT_BAR_HEIGHT, strip, 0.04, 0);
-    sugarloaf.rect(
-        None,
-        0.0,
-        CONTEXT_BAR_HEIGHT - 1.0,
-        logical_w,
-        1.0,
-        strip_border,
-        0.041,
-        0,
-    );
+    crate::renderer::chrome::paint_title_strip(sugarloaf, logical_w, CONTEXT_BAR_HEIGHT);
 
     let idx = context_manager.current_index();
     let host = context_manager

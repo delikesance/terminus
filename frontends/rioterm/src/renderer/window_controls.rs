@@ -93,7 +93,13 @@ pub fn render(
             } else {
                 HOVER_IDLE
             };
-            sugarloaf.rect(None, x, y, w, h, fill, 0.0, 20);
+            chrome::paint_flat(
+                sugarloaf,
+                &terminus_ui::Rect::new(x, y, w, h),
+                fill,
+                0.0,
+                20,
+            );
         }
 
         let icon = match control {
