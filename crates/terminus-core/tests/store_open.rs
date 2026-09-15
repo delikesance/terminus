@@ -88,3 +88,41 @@ async fn deleting_a_host_hides_it_from_the_list() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn host_password_credential_roundtrips_without_plaintext_on_host() {
+    use terminus_core::{
+        create_with_key, open_host_password, seal_host_password, OWNER_KIND_HOST,
+    };
+
+    let dir = temp_dir("vault-cred");
+    let store = Store::open(dir.clone()).await.expect("open");
+    let mut host = sample_host("secret-box");
+    host.password = None;
+    store.upsert_host(&host).await.expect("upsert host");
+
+    let (_header, vault) = create_with_key("correct horse battery").expect("vault");
+    let cred = seal_host_password(&vault, host.id, "s3cret!!").expect("seal");
+    assert!(!cred.envelope.contains("s3cret!!"));
+    store.upsert_credential(&cred).await.expect("upsert cred");
+
+    let listed = store
+        .list_credentials_for_owner(OWNER_KIND_HOST, host.id)
+        .await
+        .expect("list");
+    assert_eq!(listed.len(), 1);
+    let got = store
+        .get_credential(cred.id)
+        .await
+        .expect("get")
+        .expect("present");
+    assert_eq!(
+        open_host_password(&vault, host.id, &got).expect("open"),
+        "s3cret!!"
+    );
+
+    let hosts = store.list_hosts().await.expect("hosts");
+    assert!(hosts[0].password.is_none());
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}

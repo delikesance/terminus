@@ -24,6 +24,7 @@
   withWayland ? !stdenv.isDarwin,
   wayland,
   shaderc,
+  krb5,
   ...
 }: let
   readTOML = f: builtins.fromTOML (builtins.readFile f);
@@ -40,6 +41,7 @@
       libGL
       libxkbcommon
       vulkan-loader
+      krb5
     ]
     ++ lib.optionals withX11 [
       libX11

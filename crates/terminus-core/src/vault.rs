@@ -153,8 +153,86 @@ impl UnlockedVault {
                     aad: aad.as_bytes(),
                 },
             )
-            .map_err(|e| Error::VaultError(format!("decrypt failed: {e}")))
+            .map_err(|_| Error::VaultDecryptFailed)
     }
+}
+
+/// Setting key for the persisted [`VaultHeader`] JSON.
+pub const VAULT_HEADER_SETTING: &str = "vault_header";
+
+/// Credential kind for a host SSH password envelope.
+pub const CREDENTIAL_KIND_HOST_PASSWORD: &str = "host_password";
+
+/// Owner kind for host-scoped credentials.
+pub const OWNER_KIND_HOST: &str = "host";
+
+/// Deterministic credential id for `(owner, kind)`.
+pub fn credential_id(owner_kind: &str, owner_id: &uuid::Uuid, kind: &str) -> uuid::Uuid {
+    // Stable UUIDv5-ish from namespaced bytes without pulling uuid v5 feature quirks:
+    // hash the triple and take the first 16 bytes as a UUID.
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    owner_kind.hash(&mut hasher);
+    owner_id.hash(&mut hasher);
+    kind.hash(&mut hasher);
+    let n = hasher.finish();
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&n.to_le_bytes());
+    bytes[8..].copy_from_slice(&n.to_be_bytes());
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// Seal a host password into a [`crate::models::Credential`] row.
+pub fn seal_host_password(
+    vault: &UnlockedVault,
+    host_id: uuid::Uuid,
+    password: &str,
+) -> Result<crate::models::Credential> {
+    let envelope = vault.encrypt(
+        OWNER_KIND_HOST,
+        &host_id.to_string(),
+        CREDENTIAL_KIND_HOST_PASSWORD,
+        password.as_bytes(),
+    )?;
+    let envelope_json = serde_json::to_string(&envelope)?;
+    let now = chrono::Utc::now();
+    Ok(crate::models::Credential {
+        id: credential_id(OWNER_KIND_HOST, &host_id, CREDENTIAL_KIND_HOST_PASSWORD),
+        kind: CREDENTIAL_KIND_HOST_PASSWORD.to_string(),
+        owner_kind: OWNER_KIND_HOST.to_string(),
+        owner_id: host_id,
+        envelope: envelope_json,
+        key_id: String::new(),
+        created_at: now,
+        updated_at: now,
+        deleted_at: None,
+    })
+}
+
+/// Open a host password credential envelope.
+pub fn open_host_password(
+    vault: &UnlockedVault,
+    host_id: uuid::Uuid,
+    cred: &crate::models::Credential,
+) -> Result<String> {
+    let envelope: SecretEnvelope = serde_json::from_str(&cred.envelope)?;
+    let bytes = vault.decrypt(
+        OWNER_KIND_HOST,
+        &host_id.to_string(),
+        CREDENTIAL_KIND_HOST_PASSWORD,
+        &envelope,
+    )?;
+    String::from_utf8(bytes).map_err(|e| Error::VaultError(format!("password utf8: {e}")))
+}
+
+/// Persist / load the vault header JSON via settings.
+pub fn parse_vault_header(raw: &str) -> Result<VaultHeader> {
+    serde_json::from_str(raw).map_err(|e| Error::VaultError(format!("bad vault header: {e}")))
+}
+
+pub fn encode_vault_header(header: &VaultHeader) -> Result<String> {
+    serde_json::to_string(header).map_err(|e| Error::VaultError(format!("encode vault header: {e}")))
 }
 
 /// Creates a new vault for `passphrase`, returning the header to persist and
@@ -174,4 +252,49 @@ fn derive_dek(passphrase: &str, salt: &[u8]) -> Result<Vec<u8>> {
         .hash_password_into(passphrase.as_bytes(), salt, &mut dek)
         .map_err(|e| Error::VaultError(format!("argon2 kdf: {e}")))?;
     Ok(dek)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_password_roundtrip_and_never_leaks_plaintext() {
+        let (_header, vault) = create_with_key("correct horse battery").unwrap();
+        let host_id = uuid::Uuid::new_v4();
+        let secret = "s3cret-password!!";
+        let cred = seal_host_password(&vault, host_id, secret).unwrap();
+        assert!(
+            !cred.envelope.contains(secret),
+            "envelope leaked plaintext"
+        );
+        assert_eq!(open_host_password(&vault, host_id, &cred).unwrap(), secret);
+    }
+
+    #[test]
+    fn decrypt_fails_when_owner_is_swapped() {
+        let (_header, vault) = create_with_key("correct horse battery").unwrap();
+        let host_id = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let cred = seal_host_password(&vault, host_id, "pw").unwrap();
+        let envelope: SecretEnvelope = serde_json::from_str(&cred.envelope).unwrap();
+        let err = vault
+            .decrypt(
+                OWNER_KIND_HOST,
+                &other.to_string(),
+                CREDENTIAL_KIND_HOST_PASSWORD,
+                &envelope,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::VaultDecryptFailed));
+    }
+
+    #[test]
+    fn credential_id_is_stable_for_same_owner_kind() {
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(
+            credential_id(OWNER_KIND_HOST, &id, CREDENTIAL_KIND_HOST_PASSWORD),
+            credential_id(OWNER_KIND_HOST, &id, CREDENTIAL_KIND_HOST_PASSWORD)
+        );
+    }
 }

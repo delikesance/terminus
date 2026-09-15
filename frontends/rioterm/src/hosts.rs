@@ -52,6 +52,9 @@ pub const WSL_PREFIX: &str = "wsl:";
 /// Default SSH port, applied when the editor's port field is left empty.
 pub const DEFAULT_PORT: u16 = 22;
 
+/// Settings key for the persisted [`terminus_core::sync::SyncConfig`] JSON.
+const SYNC_CONFIG_SETTING: &str = "sync_config";
+
 /// Directory holding `terminus.db`.
 ///
 /// `TERMINUS_DATA_DIR` overrides the platform default (mirrors rio's
@@ -436,6 +439,12 @@ pub struct HostDraft {
     pub username: String,
     /// Raw text, so an empty field can mean "the default port".
     pub port: String,
+    /// `key` | `password` | `gssapi`.
+    pub auth_method: String,
+    /// Selected identity id when `auth_method == "key"`.
+    pub identity_id: Option<String>,
+    /// Plaintext password (memory only) when `auth_method == "password"`.
+    pub password: String,
 }
 
 impl HostDraft {
@@ -458,11 +467,58 @@ impl HostDraft {
             user => user.to_string(),
         };
 
+        let method = match terminus_core::parse_host_auth_method(&self.auth_method) {
+            Ok(ok) => ok.method,
+            Err(_) => {
+                // Empty / unset defaults to key (mock HIG default).
+                if self.auth_method.trim().is_empty() {
+                    terminus_core::HostAuthMethod::Key
+                } else {
+                    return Err(format!(
+                        "Unknown authentication method '{}'",
+                        self.auth_method.trim()
+                    ));
+                }
+            }
+        };
+
+        let identity_id = match method {
+            terminus_core::HostAuthMethod::Key => {
+                let id = self
+                    .identity_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                if id.is_none() {
+                    return Err(
+                        "Select a saved SSH key (Settings → Managed SSH Keys)".to_string(),
+                    );
+                }
+                id
+            }
+            _ => None,
+        };
+
+        let password = match method {
+            terminus_core::HostAuthMethod::Password => {
+                let pw = self.password.clone();
+                if pw.is_empty() {
+                    return Err("Password is required".to_string());
+                }
+                pw
+            }
+            _ => String::new(),
+        };
+
         Ok(HostDraft {
             name,
             hostname: hostname.to_string(),
             username,
             port: port.to_string(),
+            auth_method: method.as_str().to_string(),
+            identity_id,
+            password,
         })
     }
 
@@ -482,18 +538,23 @@ pub fn parse_port(text: &str) -> Result<u16, String> {
         .map_err(|_| format!("'{text}' is not a valid port"))
 }
 
-/// Build the row the store will write.
+/// Build the row the store will write. Password is never stored on the host
+/// row — it is sealed into a credential after a successful probe.
 fn host_from_draft(draft: &HostDraft) -> Host {
     let now = Utc::now();
+    let identity_id = draft
+        .identity_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
     Host {
         id: Uuid::new_v4(),
         name: draft.name.clone(),
         hostname: draft.hostname.clone(),
         port: draft.resolved_port().unwrap_or(DEFAULT_PORT),
         username: draft.username.clone(),
-        auth_method: "password".to_string(),
+        auth_method: draft.auth_method.clone(),
         password: None,
-        identity_id: None,
+        identity_id,
         group_id: None,
         tags: Vec::new(),
         notes: String::new(),
@@ -506,12 +567,21 @@ fn host_from_draft(draft: &HostDraft) -> Host {
 
 enum Command {
     Refresh,
+    /// Persist without SSH probe (tests / legacy).
     Create(HostDraft),
+    /// Probe SSH, then persist (+ seal password) on success.
+    ProbeAndCreate(HostDraft),
     CreateGroup(String),
     /// Move a stored host into a group (`Some`) or out to the root list (`None`).
     SetHostGroup {
         host_id: String,
         group_id: Option<String>,
+    },
+    /// Unlock or create the vault with a passphrase (Settings).
+    UnlockVault(String),
+    /// Persist remote URI and run SyncEngine::sync_now.
+    TestSync {
+        uri: String,
     },
 }
 
@@ -520,6 +590,14 @@ enum Command {
 enum HostEvent {
     Loaded(Vec<HostRow>),
     GroupsLoaded(Vec<(String, String)>),
+    IdentitiesLoaded(Vec<(String, String, String)>),
+    /// Loaded sync URI + status for the Settings pane.
+    SyncStatus {
+        uri: String,
+        connected: bool,
+        vault_unlocked: bool,
+        status_line: String,
+    },
     /// This machine and the Windows-side distros. Sent per refresh, after
     /// `Loaded`, and deliberately not counted as an answer to a command:
     /// the list is what a pending command is waiting for.
@@ -527,6 +605,11 @@ enum HostEvent {
     /// A mutation succeeded; carries the label to report in the sidebar.
     Stored(String),
     Failed(String),
+    /// Vault unlock/create result for the Settings passphrase field.
+    VaultStatus {
+        unlocked: bool,
+        message: Option<String>,
+    },
 }
 
 /// UI-side handle to the host database.
@@ -535,12 +618,21 @@ pub struct HostRepository {
     events: Receiver<HostEvent>,
     hosts: Vec<HostRow>,
     groups: Vec<(String, String)>,
+    /// `(id, name, fingerprint)` for Settings + add-host picker.
+    identities: Vec<(String, String, String)>,
     platform: PlatformFacts,
     loading: bool,
     /// Commands sent but not yet answered.
     in_flight: usize,
     notice: Option<String>,
     error: Option<String>,
+    /// Last vault unlock status message (Settings).
+    vault_message: Option<String>,
+    vault_unlocked: bool,
+    /// Last known sync URI from the store.
+    sync_uri: String,
+    sync_connected: bool,
+    sync_status_line: String,
 }
 
 impl HostRepository {
@@ -565,11 +657,17 @@ impl HostRepository {
             events: event_rx,
             hosts: Vec::new(),
             groups: Vec::new(),
+            identities: Vec::new(),
             platform: PlatformFacts::default(),
             loading: true,
             in_flight: 1,
             notice: None,
             error: None,
+            vault_message: None,
+            vault_unlocked: false,
+            sync_uri: String::new(),
+            sync_connected: false,
+            sync_status_line: "Not configured".into(),
         }
     }
 
@@ -584,6 +682,48 @@ impl HostRepository {
 
     pub fn groups(&self) -> &[(String, String)] {
         &self.groups
+    }
+
+    pub fn identities(&self) -> &[(String, String, String)] {
+        &self.identities
+    }
+
+    pub fn vault_unlocked(&self) -> bool {
+        self.vault_unlocked
+    }
+
+    pub fn take_vault_message(&mut self) -> Option<String> {
+        self.vault_message.take()
+    }
+
+    pub fn vault_message(&self) -> Option<&str> {
+        self.vault_message.as_deref()
+    }
+
+    pub fn sync_uri(&self) -> &str {
+        &self.sync_uri
+    }
+
+    pub fn sync_connected(&self) -> bool {
+        self.sync_connected
+    }
+
+    pub fn sync_status_line(&self) -> &str {
+        &self.sync_status_line
+    }
+
+    /// Persist URI and run a sync test against SyncEngine.
+    pub fn test_sync(&mut self, uri: &str) {
+        // Not counted in `in_flight`: SyncStatus is also emitted on Refresh.
+        if self
+            .commands
+            .send(Command::TestSync {
+                uri: uri.to_string(),
+            })
+            .is_err()
+        {
+            self.error = Some("Host store is unavailable".to_string());
+        }
     }
 
     /// This machine and the Windows distros, as of the last refresh.
@@ -611,11 +751,6 @@ impl HostRepository {
         self.notice.take()
     }
 
-    /// Persist a new host.
-    ///
-    /// Validation lives here so no caller can store a host without a
-    /// hostname or with an unparsable port; the message is both returned (so
-    /// an editor can stay open) and kept for the sidebar to display.
     /// Persist a new empty group.
     pub fn create_group(&mut self, name: &str) {
         if self.commands.send(Command::CreateGroup(name.to_string())).is_err() {
@@ -631,10 +766,30 @@ impl HostRepository {
         });
     }
 
+    /// Unlock or create the vault (Settings passphrase).
+    pub fn unlock_vault(&mut self, passphrase: &str) {
+        self.send(Command::UnlockVault(passphrase.to_string()));
+    }
+
+    /// Persist without probing (tests). Prefer [`Self::probe_and_create`] in UI.
     pub fn create(&mut self, draft: &HostDraft) -> Result<(), String> {
         match draft.normalize() {
             Ok(normalized) => {
                 self.send(Command::Create(normalized));
+                Ok(())
+            }
+            Err(message) => {
+                self.error = Some(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    /// Probe SSH with the draft credentials, then persist on success.
+    pub fn probe_and_create(&mut self, draft: &HostDraft) -> Result<(), String> {
+        match draft.normalize() {
+            Ok(normalized) => {
+                self.send(Command::ProbeAndCreate(normalized));
                 Ok(())
             }
             Err(message) => {
@@ -654,10 +809,6 @@ impl HostRepository {
 
     /// Apply every answer that has arrived. Returns whether the caller should
     /// repaint.
-    ///
-    /// Every event counts as a repaint: events are only produced in response
-    /// to a command the app itself issued, and the first answer flips `loading`
-    /// even when the list comes back empty and unchanged.
     pub fn drain(&mut self) -> bool {
         let mut changed = false;
         loop {
@@ -671,6 +822,22 @@ impl HostRepository {
                 }
                 Ok(HostEvent::GroupsLoaded(groups)) => {
                     self.groups = groups;
+                    changed = true;
+                }
+                Ok(HostEvent::IdentitiesLoaded(identities)) => {
+                    self.identities = identities;
+                    changed = true;
+                }
+                Ok(HostEvent::SyncStatus {
+                    uri,
+                    connected,
+                    vault_unlocked,
+                    status_line,
+                }) => {
+                    self.sync_uri = uri;
+                    self.sync_connected = connected;
+                    self.vault_unlocked = vault_unlocked;
+                    self.sync_status_line = status_line;
                     changed = true;
                 }
                 Ok(HostEvent::Platform(platform)) => {
@@ -688,8 +855,13 @@ impl HostRepository {
                     self.error = Some(message);
                     changed = true;
                 }
+                Ok(HostEvent::VaultStatus { unlocked, message }) => {
+                    self.in_flight = self.in_flight.saturating_sub(1);
+                    self.vault_unlocked = unlocked;
+                    self.vault_message = message;
+                    changed = true;
+                }
                 Err(TryRecvError::Empty) => break,
-                // Worker gone: stop pretending a load is pending.
                 Err(TryRecvError::Disconnected) => {
                     self.in_flight = 0;
                     self.loading = false;
@@ -729,7 +901,7 @@ fn worker(
         }
     };
 
-    let store = match runtime.block_on(Store::open(data_dir)) {
+    let store = match runtime.block_on(Store::open(data_dir.clone())) {
         Ok(store) => store,
         Err(err) => {
             let _ = events.send(HostEvent::Failed(format!(
@@ -740,16 +912,48 @@ fn worker(
         }
     };
 
+    let mut vault: Option<Arc<terminus_core::UnlockedVault>> = None;
+    let mut sync_engine =
+        terminus_core::SyncEngine::new(terminus_core::sync::SyncConfig::default());
+
+    // Restore persisted sync config + detect vault header.
+    if let Ok(Some(raw)) = runtime.block_on(store.get_setting(SYNC_CONFIG_SETTING)) {
+        if let Ok(cfg) = terminus_core::sync::SyncConfig::from_json(&raw) {
+            let url = cfg.remote_url.clone();
+            sync_engine = terminus_core::SyncEngine::new(cfg);
+            if let Some(uri) = url.filter(|u| !u.trim().is_empty()) {
+                if let Err(err) = runtime.block_on(sync_engine.attach_remote_uri(&uri)) {
+                    tracing::warn!(%err, "could not reopen sync remote on startup");
+                }
+            }
+        }
+    }
+    if let Ok(Some(raw)) =
+        runtime.block_on(store.get_setting(terminus_core::VAULT_HEADER_SETTING))
+    {
+        if terminus_core::parse_vault_header(&raw).is_ok() {
+            let _ = events.send(HostEvent::VaultStatus {
+                unlocked: false,
+                message: None,
+            });
+        }
+    }
+
     while let Ok(command) = commands.recv() {
         match command {
             Command::Refresh => {
                 let _ = events.send(list(&runtime, &store));
                 let _ = events.send(list_groups(&runtime, &store));
-                // After the hosts, so the panel paints the stored list
-                // first and the platform rows follow a moment later.
+                let _ = events.send(list_identities(&runtime, &store));
+                let _ = events.send(sync_status_event(
+                    &runtime,
+                    &sync_engine,
+                    vault.is_some(),
+                ));
                 let _ = events.send(HostEvent::Platform(discover_platform()));
             }
             Command::Create(draft) => {
+                // Test / skip-probe path: no SSH round-trip.
                 let host = host_from_draft(&draft);
                 let label = host.name.clone();
                 match runtime.block_on(store.upsert_host(&host)) {
@@ -762,6 +966,18 @@ fn worker(
                         let _ = events.send(HostEvent::Failed(format!(
                             "Could not save the host: {err}"
                         )));
+                    }
+                }
+            }
+            Command::ProbeAndCreate(draft) => {
+                match probe_and_persist(&runtime, &store, &mut vault, draft) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(format!("Added {label}")));
+                        let _ = events.send(list(&runtime, &store));
+                        let _ = events.send(list_groups(&runtime, &store));
+                    }
+                    Err(message) => {
+                        let _ = events.send(HostEvent::Failed(message));
                     }
                 }
             }
@@ -798,8 +1014,308 @@ fn worker(
                     }
                 }
             }
+            Command::UnlockVault(passphrase) => {
+                match unlock_or_create_vault(&runtime, &store, &passphrase) {
+                    Ok(unlocked) => {
+                        let shared = Arc::new(unlocked);
+                        runtime.block_on(sync_engine.attach_vault(Arc::clone(&shared)));
+                        vault = Some(shared);
+                        let _ = events.send(HostEvent::VaultStatus {
+                            unlocked: true,
+                            message: Some("Vault unlocked".into()),
+                        });
+                        let _ = events.send(sync_status_event(
+                            &runtime,
+                            &sync_engine,
+                            true,
+                        ));
+                    }
+                    Err(message) => {
+                        let _ = events.send(HostEvent::VaultStatus {
+                            unlocked: false,
+                            message: Some(message),
+                        });
+                    }
+                }
+            }
+            Command::TestSync { uri } => {
+                let status = runtime.block_on(run_test_sync(
+                    &store,
+                    &mut sync_engine,
+                    vault.as_ref().map(Arc::clone),
+                    &uri,
+                ));
+                let _ = events.send(status);
+            }
         }
         wake();
+    }
+}
+
+fn unlock_or_create_vault(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    passphrase: &str,
+) -> Result<terminus_core::UnlockedVault, String> {
+    if passphrase.trim().len() < 8 {
+        return Err("Vault passphrase must be at least 8 characters".into());
+    }
+    let existing = runtime
+        .block_on(store.get_setting(terminus_core::VAULT_HEADER_SETTING))
+        .map_err(|e| e.to_string())?;
+    if let Some(raw) = existing {
+        let header = terminus_core::parse_vault_header(&raw)
+            .map_err(|e| format!("Corrupt vault header: {e}"))?;
+        terminus_core::UnlockedVault::unlock(passphrase, &header).map_err(|_| {
+            "vault unlock failed".to_string()
+        })
+    } else {
+        let (header, vault) =
+            terminus_core::create_with_key(passphrase).map_err(|e| e.to_string())?;
+        let json = terminus_core::encode_vault_header(&header).map_err(|e| e.to_string())?;
+        runtime
+            .block_on(store.set_setting(terminus_core::VAULT_HEADER_SETTING, &json))
+            .map_err(|e| e.to_string())?;
+        Ok(vault)
+    }
+}
+
+fn probe_and_persist(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: &mut Option<Arc<terminus_core::UnlockedVault>>,
+    draft: HostDraft,
+) -> Result<String, String> {
+    use terminus_core::{
+        probe_options_from_host, probe_ssh_auth, seal_host_password, HostAuthMethod,
+    };
+
+    let method = terminus_core::parse_host_auth_method(&draft.auth_method)
+        .map(|ok| ok.method)
+        .map_err(|e| format!("Unknown authentication method '{}'", e.raw))?;
+
+    if method == HostAuthMethod::Password && vault.is_none() {
+        return Err(
+            "Unlock the vault before saving a password (Settings → Remote SQL Sync passphrase)"
+                .into(),
+        );
+    }
+
+    let mut host = host_from_draft(&draft);
+    // Probe uses in-memory password when present.
+    if method == HostAuthMethod::Password {
+        host.password = Some(draft.password.clone());
+    }
+
+    let identity = match method {
+        HostAuthMethod::Key => {
+            let id = host
+                .identity_id
+                .ok_or_else(|| "Select a saved SSH key".to_string())?;
+            Some(
+                runtime
+                    .block_on(store.get_identity(id))
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "Selected SSH key was not found".to_string())?,
+            )
+        }
+        _ => None,
+    };
+
+    let opts = probe_options_from_host(&host, identity.as_ref());
+    if let Err(err) = runtime.block_on(probe_ssh_auth(&opts)) {
+        return Err(err.user_message());
+    }
+
+    // Never persist plaintext password on the host row.
+    host.password = None;
+    host.updated_at = Utc::now();
+
+    runtime
+        .block_on(store.upsert_host(&host))
+        .map_err(|e| format!("Could not save the host: {e}"))?;
+
+    if method == HostAuthMethod::Password {
+        let unlocked = vault
+            .as_ref()
+            .ok_or_else(|| "Unlock the vault before saving a password".to_string())?;
+        let cred = seal_host_password(unlocked.as_ref(), host.id, &draft.password)
+            .map_err(|e| format!("Could not encrypt the password: {e}"))?;
+        runtime
+            .block_on(store.upsert_credential(&cred))
+            .map_err(|e| format!("Could not store the encrypted password: {e}"))?;
+    }
+
+    Ok(host.name)
+}
+
+/// Snapshot the SyncEngine into a UI event.
+fn sync_status_event(
+    runtime: &tokio::runtime::Runtime,
+    engine: &terminus_core::SyncEngine,
+    vault_unlocked: bool,
+) -> HostEvent {
+    runtime.block_on(async {
+        let status = engine.status().await;
+        let last_error = engine.last_error().await;
+        let last_sync = engine.last_sync().await;
+        let configured = engine.is_configured().await;
+        let uri = engine.config.remote_url.clone().unwrap_or_default();
+
+        let connected = configured
+            && matches!(
+                status,
+                terminus_core::sync::SyncStatus::Idle | terminus_core::sync::SyncStatus::Syncing
+            );
+
+        let status_line = if let Some(err) = last_error {
+            err
+        } else if let Some(ts) = last_sync {
+            format!("Last synced {}", ts.format("%Y-%m-%d %H:%M UTC"))
+        } else if !engine.config.has_remote() {
+            "Not configured".to_string()
+        } else if !configured {
+            format!("Remote set but not attached ({})", status.as_str())
+        } else {
+            format!("Ready ({})", status.as_str())
+        };
+
+        HostEvent::SyncStatus {
+            uri,
+            connected,
+            vault_unlocked,
+            status_line,
+        }
+    })
+}
+
+async fn run_test_sync(
+    store: &Store,
+    engine: &mut terminus_core::SyncEngine,
+    vault: Option<Arc<terminus_core::UnlockedVault>>,
+    uri: &str,
+) -> HostEvent {
+    let uri = uri.trim().to_string();
+    let vault_unlocked = vault.is_some();
+
+    if let Some(v) = vault {
+        engine.attach_vault(v).await;
+    }
+
+    if uri.is_empty() {
+        engine.clear_remote().await;
+        engine.config.enabled = false;
+        engine.config.remote_url = None;
+        let _ = persist_sync_config(store, &engine.config).await;
+        return HostEvent::SyncStatus {
+            uri: String::new(),
+            connected: false,
+            vault_unlocked,
+            status_line: "Not configured".into(),
+        };
+    }
+
+    // Preserve device_id across reconfiguration.
+    let device_id = engine.config.device_id.clone();
+    engine.config = terminus_core::sync::SyncConfig {
+        enabled: true,
+        remote_url: Some(uri.clone()),
+        device_id,
+        interval_secs: engine.config.interval_secs,
+        sync_secrets: engine.config.sync_secrets,
+        last_sync: engine.config.last_sync,
+    };
+
+    if let Err(err) = persist_sync_config(store, &engine.config).await {
+        return HostEvent::SyncStatus {
+            uri: uri.clone(),
+            connected: false,
+            vault_unlocked,
+            status_line: err,
+        };
+    }
+
+    if let Err(err) = engine.attach_remote_uri(&uri).await {
+        engine.clear_remote().await;
+        let _ = engine.mark_error(err.to_string()).await;
+        return HostEvent::SyncStatus {
+            uri: uri.clone(),
+            connected: false,
+            vault_unlocked,
+            status_line: err.to_string(),
+        };
+    }
+
+    // Recover from a previous Error state so sync_now can run.
+    if engine.status().await == terminus_core::sync::SyncStatus::Error {
+        engine.clear_error().await;
+        let _ = engine
+            .transition_to(terminus_core::sync::SyncStatus::Idle)
+            .await;
+    }
+
+    let status_line = match engine.sync_now().await {
+        Ok(report) => {
+            engine.config.last_sync = report.finished_at;
+            let _ = persist_sync_config(store, &engine.config).await;
+            format!(
+                "Sync ok — pushed {}, pulled {}",
+                report.pushed, report.pulled
+            )
+        }
+        Err(err) => err.to_string(),
+    };
+
+    let connected = engine.is_configured().await
+        && matches!(
+            engine.status().await,
+            terminus_core::sync::SyncStatus::Idle | terminus_core::sync::SyncStatus::Syncing
+        );
+
+    HostEvent::SyncStatus {
+        uri,
+        connected,
+        vault_unlocked,
+        status_line,
+    }
+}
+
+async fn persist_sync_config(
+    store: &Store,
+    config: &terminus_core::sync::SyncConfig,
+) -> Result<(), String> {
+    let json = config.to_json().map_err(|e| e.to_string())?;
+    store
+        .set_setting(SYNC_CONFIG_SETTING, &json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn list_identities(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
+    match runtime.block_on(store.list_identities()) {
+        Ok(idents) => {
+            let rows: Vec<(String, String, String)> = idents
+                .into_iter()
+                .filter(|i| i.deleted_at.is_none())
+                .map(|i| {
+                    let fp = i
+                        .public_key
+                        .as_deref()
+                        .map(|pk| {
+                            let trimmed = pk.trim();
+                            if trimmed.len() > 24 {
+                                format!("{}…", &trimmed[..24])
+                            } else {
+                                trimmed.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "no public key".into());
+                    (i.id.to_string(), i.name, fp)
+                })
+                .collect();
+            HostEvent::IdentitiesLoaded(rows)
+        }
+        Err(err) => HostEvent::Failed(format!("Could not read identities: {err}")),
     }
 }
 
@@ -1161,6 +1677,8 @@ mod tests {
             hostname: " box.internal ".to_string(),
             username: String::new(),
             port: String::new(),
+            auth_method: "gssapi".to_string(),
+            ..HostDraft::default()
         }
         .normalize()
         .expect("hostname present");
@@ -1168,14 +1686,30 @@ mod tests {
         assert_eq!(draft.username, "root");
         assert_eq!(draft.hostname, "box.internal");
         assert_eq!(draft.resolved_port(), Ok(22));
+        assert_eq!(draft.auth_method, "gssapi");
 
         assert!(HostDraft::default().normalize().is_err());
         let bad_port = HostDraft {
             hostname: "box".to_string(),
             port: "not-a-port".to_string(),
+            auth_method: "gssapi".to_string(),
             ..HostDraft::default()
         };
         assert!(bad_port.normalize().is_err());
+
+        let key_missing = HostDraft {
+            hostname: "box".to_string(),
+            auth_method: "key".to_string(),
+            ..HostDraft::default()
+        };
+        assert!(key_missing.normalize().unwrap_err().contains("SSH key"));
+
+        let pw_missing = HostDraft {
+            hostname: "box".to_string(),
+            auth_method: "password".to_string(),
+            ..HostDraft::default()
+        };
+        assert!(pw_missing.normalize().unwrap_err().contains("Password"));
     }
 
     #[test]
@@ -1214,6 +1748,8 @@ mod tests {
             hostname: "web-01.example.com".to_string(),
             username: "deploy".to_string(),
             port: "2222".to_string(),
+            auth_method: "gssapi".to_string(),
+            ..HostDraft::default()
         })
         .expect("valid draft");
 
@@ -1228,7 +1764,10 @@ mod tests {
         assert_eq!(row.username, "deploy");
         assert_eq!(row.port, 2222);
         assert_eq!(row.endpoint(), "deploy@web-01.example.com:2222");
-        assert_eq!(repo.take_notice().as_deref(), Some("web-01.example.com"));
+        assert_eq!(
+            repo.take_notice().as_deref(),
+            Some("Added web-01.example.com")
+        );
 
         // A second repository over the same directory proves the row is on
         // disk, not just cached in the first connection.
@@ -1290,5 +1829,74 @@ mod tests {
         assert!(repo.error().is_some());
 
         let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn worker_test_sync_opens_sqlite_and_rejects_postgres() {
+        let dir = temp_dir("sync");
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+
+        // Wait for the initial SyncStatus from Refresh.
+        let _ = drain_until(&mut repo, Duration::from_secs(2), |repo| {
+            !repo.sync_status_line().is_empty()
+        });
+
+        repo.test_sync("postgres://localhost/terminus");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.sync_status_line().contains("PostgreSQL")
+        }));
+        assert!(!repo.sync_connected());
+
+        let remote = dir.join("remote.db");
+        let uri = format!("sqlite:{}", remote.display());
+        repo.test_sync(&uri);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.sync_connected() && repo.sync_status_line().contains("Sync ok")
+        }));
+        assert_eq!(repo.sync_uri(), uri);
+        assert!(remote.exists());
+
+        // Persist: reopen and see the URI restored.
+        drop(repo);
+        let mut reopened = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut reopened, Duration::from_secs(10), |repo| {
+            !repo.loading() && repo.sync_uri() == uri
+        }));
+        assert!(reopened.sync_connected());
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worker_unlock_vault_from_passphrase() {
+        let dir = temp_dir("vault");
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+
+        repo.unlock_vault("short");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.vault_message()
+                .is_some_and(|m| m.contains("at least 8"))
+        }));
+        assert!(!repo.vault_unlocked());
+        let _ = repo.take_vault_message();
+
+        repo.unlock_vault("long-enough-passphrase");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.vault_unlocked()
+        }));
+        assert_eq!(
+            repo.take_vault_message().as_deref(),
+            Some("Vault unlocked")
+        );
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
