@@ -35,7 +35,6 @@ const BUTTON_CORNER_RADIUS: f32 = 4.0;
 const BUTTON_GAP: f32 = 2.0;
 const BUTTONS_AREA_WIDTH: f32 = BUTTON_SIZE * 3.0 + BUTTON_GAP * 2.0;
 
-const CARET_WIDTH: f32 = 1.5;
 const CARET_BLINK_MS: u128 = 500;
 
 // Colors — Apple HIG flat dark
@@ -242,16 +241,16 @@ impl SearchOverlay {
         let (ox, oy, ow, oh) = self.overlay_rect(window_width, scale_factor);
 
         // Background
-        sugarloaf.rounded_rect(
-            None,
-            ox,
-            oy,
-            ow,
-            oh,
+        crate::renderer::chrome::paint_surface_stroke(
+            sugarloaf,
+            &terminus_ui::Rect::new(ox, oy, ow, oh),
             BG_COLOR,
-            DEPTH_BG,
+            None,
             OVERLAY_CORNER_RADIUS,
+            1.0,
+            DEPTH_BG,
             ORDER,
+            false,
         );
 
         // Input area background
@@ -260,16 +259,16 @@ impl SearchOverlay {
         let input_y = oy + 6.0;
         let input_height = oh - 12.0;
 
-        sugarloaf.rounded_rect(
-            None,
-            input_x,
-            input_y,
-            input_width,
-            input_height,
+        crate::renderer::chrome::paint_surface_stroke(
+            sugarloaf,
+            &terminus_ui::Rect::new(input_x, input_y, input_width, input_height),
             INPUT_BG_COLOR,
-            DEPTH_ELEMENT,
+            None,
             4.0,
+            1.0,
+            DEPTH_ELEMENT,
             ORDER,
+            false,
         );
 
         // Input text
@@ -334,11 +333,10 @@ impl SearchOverlay {
             };
             let caret_y = input_y + (input_height - INPUT_FONT_SIZE) / 2.0 + 1.0;
 
-            sugarloaf.rect(
-                None,
+            crate::renderer::chrome::paint_caret(
+                sugarloaf,
                 caret_x,
                 caret_y,
-                CARET_WIDTH,
                 INPUT_FONT_SIZE,
                 TEXT_COLOR,
                 DEPTH_ELEMENT,
@@ -365,16 +363,16 @@ impl SearchOverlay {
             let is_hovered = self.hovered_button == Some(actions[i]);
 
             if is_hovered {
-                sugarloaf.rounded_rect(
-                    None,
-                    *bx,
-                    *by,
-                    *bw,
-                    *bh,
+                crate::renderer::chrome::paint_surface_stroke(
+                    sugarloaf,
+                    &terminus_ui::Rect::new(*bx, *by, *bw, *bh),
                     BUTTON_HOVER_BG,
-                    DEPTH_ELEMENT,
+                    None,
                     BUTTON_CORNER_RADIUS,
+                    1.0,
+                    DEPTH_ELEMENT,
                     ORDER,
+                    false,
                 );
             }
 

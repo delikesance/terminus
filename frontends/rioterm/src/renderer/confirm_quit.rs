@@ -46,12 +46,9 @@ impl ConfirmQuit {
         let box_x = (win_w - box_w) / 2.0;
         let box_y = (win_h - box_h) / 2.0;
 
-        sugarloaf.rect(
-            None,
-            box_x,
-            box_y,
-            box_w,
-            box_h,
+        crate::renderer::chrome::paint_flat(
+            sugarloaf,
+            &terminus_ui::Rect::new(box_x, box_y, box_w, box_h),
             [0.0, 0.0, 0.0, 1.0],
             0.0,
             20,
