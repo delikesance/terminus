@@ -49,6 +49,37 @@
           rio = msrv;
           default = rio;
         };
+        # Cross-compile to Windows from WSL. Keep this out of the default
+        # shell so Linux `nix develop` / CI do not fetch rust-std-msvc.
+        rustToolchainToml = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);
+        windowsToolchain = pkgs.rust-bin.fromRustupToolchain {
+          channel = rustToolchainToml.toolchain.channel;
+          profile = rustToolchainToml.toolchain.profile or "minimal";
+          components = rustToolchainToml.toolchain.components or [];
+          targets = ["x86_64-pc-windows-msvc"];
+        };
+        windowsDevShell = pkgs.mkShell {
+          packages = [
+            self'.formatter
+            windowsToolchain
+            pkgs.cargo-xwin
+            pkgs.clang
+            pkgs.llvmPackages.clang-unwrapped
+            pkgs.llvmPackages.bintools
+            pkgs.llvmPackages.lld
+            pkgs.llvmPackages.llvm
+            pkgs.llvmPackages.libclang
+            pkgs.nasm
+            pkgs.cmake
+            pkgs.pkg-config
+            pkgs.shaderc
+          ];
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          shellHook = ''
+            export XWIN_CACHE_DIR="''${XWIN_CACHE_DIR:-$PWD/.dev/xwin-cache}"
+            mkdir -p "$XWIN_CACHE_DIR"
+          '';
+        };
       in {
         formatter = pkgs.alejandra;
         _module.args.pkgs = import inputs.nixpkgs {
@@ -69,8 +100,11 @@
             }
           )
           toolchains;
-        # Different devshells for different rust versions
-        devShells = lib.mapAttrs (_: v: mkDevShell v) toolchains;
+        # Different devshells for different rust versions, plus a Windows
+        # cross shell used by `scripts/dev-win.sh` (`nix develop .#windows`).
+        devShells =
+          (lib.mapAttrs (_: v: mkDevShell v) toolchains)
+          // {windows = windowsDevShell;};
       };
     };
 }

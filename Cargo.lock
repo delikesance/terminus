@@ -4942,6 +4942,7 @@ dependencies = [
  "teletypewriter",
  "terminus-core",
  "terminus-ui",
+ "tiny-skia 0.12.0",
  "tinyvec",
  "tokio",
  "tracing",

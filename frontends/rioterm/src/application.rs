@@ -1230,15 +1230,39 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 if route.path != RoutePath::Terminal
                     || route.window.screen.renderer.confirm_quit.is_active()
                 {
-                    #[cfg(target_os = "macos")]
                     if state == ElementState::Pressed
                         && button == MouseButton::Left
                         && route.window.screen.allow_manual_dragging
                     {
-                        use crate::renderer::island::ISLAND_HEIGHT;
+                        use crate::renderer::island::CONTEXT_BAR_HEIGHT;
                         let scale = route.window.screen.sugarloaf.scale_factor();
-                        if route.window.screen.mouse.y <= (ISLAND_HEIGHT * scale) as f64 {
-                            let _ = route.window.winit_window.drag_window();
+                        if route.window.screen.mouse.y <= (CONTEXT_BAR_HEIGHT * scale) as f64 {
+                            let start_drag = {
+                                let logical_w = route
+                                    .window
+                                    .screen
+                                    .sugarloaf
+                                    .window_size()
+                                    .width
+                                    / scale;
+                                let x = route.window.screen.mouse.x as f32 / scale as f32;
+                                let y = route.window.screen.mouse.y as f32 / scale as f32;
+                                let on_action = crate::renderer::island::title_bar_hit(
+                                    logical_w, x, y,
+                                )
+                                .is_some();
+                                #[cfg(target_os = "windows")]
+                                let on_caption = crate::renderer::window_controls::hit_test(
+                                    logical_w, x, y,
+                                )
+                                .is_some();
+                                #[cfg(not(target_os = "windows"))]
+                                let on_caption = false;
+                                !on_action && !on_caption
+                            };
+                            if start_drag {
+                                let _ = route.window.winit_window.drag_window();
+                            }
                         }
                     }
                     if state == ElementState::Pressed {
@@ -1385,18 +1409,155 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let mx = route.window.screen.mouse.x as f32 / scale;
                                 let my = route.window.screen.mouse.y as f32 / scale;
                                 match route.window.screen.chrome_press(mx, my) {
-                                    ChromeAction::Ignored => {}
+                                    ChromeAction::Ignored => {
+                                        // Click outside the drawer: drop search focus
+                                        // so keys reach the terminal again.
+                                        let panel = &mut route.window.screen.chrome.panel;
+                                        if panel.filter_focused || panel.new_group_focused
+                                        {
+                                            panel.filter_focused = false;
+                                            panel.new_group_focused = false;
+                                            route.request_overlay_redraw();
+                                        }
+                                    }
                                     ChromeAction::AddHost => {
                                         route.window.screen.chrome.open_add_host();
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    // Selecting the row is the whole effect
-                                    // for now: opening a session is a later
-                                    // milestone, and pretending otherwise
-                                    // would leave a dead "connecting" state
-                                    // on screen.
-                                    ChromeAction::OpenHost(_) => {
+                                    ChromeAction::NewGroup => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::CreateGroup => {
+                                        let name = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .panel
+                                            .new_group_name
+                                            .trim()
+                                            .to_string();
+                                        if !name.is_empty() {
+                                            route.window.screen.host_store.create_group(&name);
+                                            route
+                                                .window
+                                                .screen
+                                                .chrome
+                                                .panel
+                                                .close_new_group_form();
+                                        }
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::CancelNewGroup => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::FocusNewGroup => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::ToggleGroup(id) => {
+                                        route.window.screen.chrome.toggle_group_collapsed(&id);
+                                        let _ = route.window.screen.pump_chrome();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::FocusSearch => {
+                                        route.window.screen.chrome.panel.filter_focused = true;
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    // The row was already selected by
+                                    // `chrome_press`; this opens its
+                                    // session in a new tab. Anything that
+                                    // stops it (no `wsl.exe`, no interop,
+                                    // a shell that will not spawn) is
+                                    // reported on the panel's one error
+                                    // line rather than swallowed.
+                                    ChromeAction::OpenHost(id) => {
+                                        match route.window.screen.open_host_session(
+                                            &id,
+                                            &mut self.router.clipboard,
+                                        ) {
+                                            Ok(()) => {
+                                                route.window.screen.chrome.panel.error =
+                                                    None;
+                                                route.window.screen.chrome.panel.notice =
+                                                    None;
+                                            }
+                                            Err(err) => {
+                                                route.window.screen.chrome.panel.error =
+                                                    Some(err);
+                                            }
+                                        }
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::OpenSession(tab_index) => {
+                                        route.window.screen.focus_session(
+                                            tab_index,
+                                            &mut self.router.clipboard,
+                                        );
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::CloseSession(tab_index) => {
+                                        route.window.screen.close_tab_at(
+                                            tab_index,
+                                            &mut self.router.clipboard,
+                                        );
+                                        let _ = route.window.screen.pump_chrome();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::AddHostSession(id) => {
+                                        match route.window.screen.add_host_session(
+                                            &id,
+                                            &mut self.router.clipboard,
+                                        ) {
+                                            Ok(()) => {
+                                                route.window.screen.chrome.panel.error =
+                                                    None;
+                                                route.window.screen.chrome.panel.notice =
+                                                    None;
+                                            }
+                                            Err(err) => {
+                                                route.window.screen.chrome.panel.error =
+                                                    Some(err);
+                                            }
+                                        }
+                                        let _ = route.window.screen.pump_chrome();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::ToggleHost(_id) => {
+                                        let _ = route.window.screen.pump_chrome();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::SetHostGroup { host_id, group_id } => {
+                                        route.window.screen.host_store.set_host_group(
+                                            &host_id,
+                                            group_id.as_deref(),
+                                        );
+                                        let _ = route.window.screen.pump_chrome();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::DismissConnection => {
+                                        route.window.screen.force_end_connecting();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::DismissSettings => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::RunSnippet(cmd) => {
+                                        let line = format!("{cmd}\n");
+                                        route.window.screen.paste(&line, false);
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1424,12 +1585,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 return;
                             }
 
-                            #[cfg(target_os = "macos")]
                             if route.window.screen.allow_manual_dragging {
-                                use crate::renderer::island::ISLAND_HEIGHT;
+                                use crate::renderer::island::CONTEXT_BAR_HEIGHT;
                                 let scale = route.window.screen.sugarloaf.scale_factor();
                                 if route.window.screen.mouse.y
-                                    <= (ISLAND_HEIGHT * scale) as f64
+                                    <= (CONTEXT_BAR_HEIGHT * scale) as f64
                                 {
                                     route
                                         .window
@@ -1550,6 +1710,40 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             if started {
                                 route.request_redraw();
                                 return;
+                            }
+                        }
+
+                        // Host→group drag / deferred OpenHost on click.
+                        if button == MouseButton::Left
+                            && route.window.screen.chrome.panel.host_drag.is_some()
+                        {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            let action = route.window.screen.chrome_release(mx, my);
+                            match action {
+                                ChromeAction::OpenHost(id) => {
+                                    match route.window.screen.open_host_session(
+                                        &id,
+                                        &mut self.router.clipboard,
+                                    ) {
+                                        Ok(()) => {
+                                            route.window.screen.chrome.panel.error = None;
+                                            route.window.screen.chrome.panel.notice = None;
+                                        }
+                                        Err(err) => {
+                                            route.window.screen.chrome.panel.error = Some(err);
+                                        }
+                                    }
+                                    route.request_overlay_redraw();
+                                    return;
+                                }
+                                // Snap animation started (or cancelled): keep
+                                // redrawing until tick_host_drag persists.
+                                _ => {
+                                    route.request_overlay_redraw();
+                                    return;
+                                }
                             }
                         }
 
@@ -1771,11 +1965,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     && !route.window.screen.renderer.search.is_active()
                 {
                     let scale = route.window.screen.sugarloaf.scale_factor();
-                    if route
-                        .window
-                        .screen
-                        .chrome_hover(x as f32 / scale, y as f32 / scale)
+                    let lx = x as f32 / scale;
+                    let ly = y as f32 / scale;
+                    let mut chrome_dirty = false;
+                    if route.window.screen.chrome.panel.host_drag.is_some()
+                        && route.window.screen.mouse.left_button_state == ElementState::Pressed
                     {
+                        chrome_dirty = route.window.screen.chrome_drag_move(lx, ly);
+                    } else if route.window.screen.chrome_hover(lx, ly) {
+                        chrome_dirty = true;
+                    }
+                    if chrome_dirty {
                         // UI-only change: `request_redraw` alone leaves the
                         // framebuffer untouched, because the renderer gates
                         // on the context being dirty.
@@ -1800,15 +2000,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 }
 
                 if route.window.screen.update_close_button_hover(x, y) {
-                    route.request_redraw();
+                    route.request_overlay_redraw();
                 }
 
                 // The macOS full-size content view keeps this band as custom
                 // window chrome even when hide-if-single hides the island.
                 // Other platforms only reserve it while the island is drawn.
-                use crate::renderer::island::ISLAND_HEIGHT;
+                use crate::renderer::island::CONTEXT_BAR_HEIGHT;
                 let scale_factor = route.window.screen.sugarloaf.scale_factor();
-                let island_height_px = (ISLAND_HEIGHT * scale_factor) as f64;
+                let island_height_px = (CONTEXT_BAR_HEIGHT * scale_factor) as f64;
                 let num_tabs = route.window.screen.ctx().len();
                 let nav = &route.window.screen.renderer.navigation;
                 if nav.chrome_band_reserved(num_tabs) && y <= island_height_px {
@@ -2263,6 +2463,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
 
             WindowEvent::RedrawRequested => {
                 route.begin_render();
+                route.window.screen.window_maximized =
+                    route.window.winit_window.is_maximized();
 
                 match route.path {
                     RoutePath::Welcome => {

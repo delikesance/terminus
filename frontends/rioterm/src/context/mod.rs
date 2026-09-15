@@ -68,6 +68,17 @@ pub struct Context<T: EventListener> {
     pub rich_text_id: usize,
     pub dimension: ContextDimension,
     pub title: ContextTitle,
+    /// Sidebar row this tab was opened from, when it came from one.
+    ///
+    /// `None` is the app's own shell — a plain new tab. Kept per tab because
+    /// the sidebar highlight follows whichever tab is in front: closing the
+    /// last tab of a distro has to move the highlight off it, which is only
+    /// answerable if every tab remembers where it came from.
+    pub host_id: Option<String>,
+    /// OS / distro hint for the tab strip glyph (`nixos`, `ubuntu`, …).
+    pub os_id: Option<String>,
+    /// Home "This computer" tab — cannot be closed.
+    pub pinned: bool,
     _io_thread: Option<JoinHandle<(Machine<teletypewriter::Pty, T>, performer::State)>>,
 }
 
@@ -180,6 +191,9 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         rich_text_id,
         dimension,
         title: ContextTitle::default(),
+        host_id: None,
+        os_id: None,
+        pinned: false,
         _io_thread: None,
     }
 }
@@ -353,6 +367,9 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             renderable_content: RenderableContent::new(cursor_state.0.clone()),
             dimension,
             title: ContextTitle::default(),
+            host_id: None,
+            os_id: None,
+            pinned: false,
             _io_thread: io_thread,
         })
     }
@@ -370,7 +387,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         scaled_margin: Margin,
         sugarloaf_errors: Option<SugarloafErrors>,
     ) -> Result<Self, Box<dyn Error>> {
-        let initial_context = match ContextManager::create_context(
+        let mut initial_context = match ContextManager::create_context(
             cursor_state,
             event_proxy.clone(),
             window_id,
@@ -402,6 +419,20 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             }
         };
 
+        // Default home tab: local shell, titled like the drawer row,
+        // pinned so it cannot be closed.
+        initial_context.host_id = Some(crate::hosts::LOCAL_ID.to_string());
+        initial_context.pinned = true;
+        let os_id = terminus_core::machine::detect().os_id;
+        initial_context.os_id = {
+            let id = os_id.trim();
+            if id.is_empty() || id.eq_ignore_ascii_case("unknown") {
+                None
+            } else {
+                Some(id.to_string())
+            }
+        };
+
         // Sugarloaf has found errors and context need to notify it for the user
         if let Some(errors) = sugarloaf_errors {
             if !errors.fonts_not_found.is_empty() {
@@ -417,7 +448,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             }
         }
 
-        Ok(ContextManager {
+        let mut manager = ContextManager {
             current_index: 0,
             current_route: 0,
             contexts: smallvec![ContextGrid::new(
@@ -432,7 +463,12 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             window_id,
             config: ctx_config,
             last_title_update: None,
-        })
+        };
+        manager.set_custom_title(0, Some("This computer".to_string()));
+        if let Some(grid) = manager.contexts.get_mut(0) {
+            grid.pinned = true;
+        }
+        Ok(manager)
     }
 
     #[cfg(test)]
@@ -583,14 +619,21 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     pub fn close_unfocused_tabs(&mut self, sugarloaf: &mut Sugarloaf) {
         let current_route_id = self.current().route_id;
         self.contexts.retain(|ctx| {
-            let keep = ctx.current().route_id == current_route_id;
+            let keep = ctx.current().route_id == current_route_id || ctx.pinned;
             if !keep {
                 ctx.remove_from_sugarloaf(sugarloaf);
             }
             keep
         });
-        self.current_route = self.contexts[0].current().route_id;
-        self.set_current(0);
+        // Prefer keeping the previously-focused tab; fall back to home / 0.
+        let new_index = self
+            .contexts
+            .iter()
+            .position(|ctx| ctx.current().route_id == current_route_id)
+            .or_else(|| self.find_home_tab())
+            .unwrap_or(0);
+        self.current_route = self.contexts[new_index].current().route_id;
+        self.set_current(new_index);
     }
 
     #[inline]
@@ -753,6 +796,21 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
     }
 
+    /// OS / distro hint for the tab at `index`, if the session came from a host.
+    #[inline]
+    pub fn tab_os_id(&self, index: usize) -> Option<&str> {
+        self.contexts
+            .get(index)
+            .and_then(|grid| grid.current().os_id.as_deref())
+    }
+
+    #[inline]
+    pub fn set_tab_os_id(&mut self, index: usize, os_id: Option<String>) {
+        if let Some(grid) = self.contexts.get_mut(index) {
+            grid.current_mut().os_id = os_id;
+        }
+    }
+
     #[inline]
     pub fn custom_color(&self, index: usize) -> Option<[f32; 4]> {
         self.contexts.get(index).and_then(|grid| grid.custom_color)
@@ -875,14 +933,9 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
 
     #[inline]
     pub fn close_current_context(&mut self, sugarloaf: &mut Sugarloaf) {
-        if self.contexts.len() == 1 {
-            // MacOS: Close last tab will work, leading to hide and
-            // keep Rio running in background.
-            #[cfg(target_os = "macos")]
-            {
-                self.event_proxy
-                    .send_event(RioEvent::CloseWindow, self.window_id);
-            }
+        // Never close the pinned home tab, and never tear down the window
+        // when it is the only tab left.
+        if self.contexts.len() == 1 || self.is_pinned(self.current_index) {
             return;
         }
 
@@ -903,6 +956,25 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
 
         self.keep_only_active_context_visible(sugarloaf);
+    }
+
+    /// Whether the tab at `index` is the pinned home "This computer" tab.
+    #[inline]
+    pub fn is_pinned(&self, index: usize) -> bool {
+        self.contexts.get(index).is_some_and(|grid| grid.pinned)
+    }
+
+    /// Index of the pinned home tab, if any.
+    #[inline]
+    pub fn find_home_tab(&self) -> Option<usize> {
+        self.contexts
+            .iter()
+            .position(|grid| grid.pinned)
+            .or_else(|| {
+                self.contexts.iter().position(|grid| {
+                    grid.current().host_id.as_deref() == Some(crate::hosts::LOCAL_ID)
+                })
+            })
     }
 
     #[inline]
@@ -1127,6 +1199,23 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
 
     #[inline]
     pub fn add_context(&mut self, redirect: bool, rich_text_id: usize) {
+        let _ = self.add_context_with_shell(redirect, rich_text_id, None, None);
+    }
+
+    /// Add a context, optionally running a different shell than the app's own.
+    ///
+    /// `shell` is how a sidebar row becomes a session: the local row passes
+    /// nothing and gets the configured shell, a WSL distro passes `wsl.exe -d
+    /// <name>` and an SSH host passes `ssh`. The failure is returned rather
+    /// than only logged, because a row that silently does nothing is worse
+    /// than one that says why.
+    pub fn add_context_with_shell(
+        &mut self,
+        redirect: bool,
+        rich_text_id: usize,
+        shell: Option<Shell>,
+        host_id: Option<String>,
+    ) -> Result<(), String> {
         let mut working_dir = self.config.working_dir.clone();
         if self.config.cwd {
             #[cfg(not(target_os = "windows"))]
@@ -1153,26 +1242,34 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         if self.config.is_native {
             self.event_proxy
                 .send_event(RioEvent::CreateNativeTab(working_dir), self.window_id);
-            return;
+            return Ok(());
         }
 
         let size = self.contexts.len();
-        if size < self.capacity {
+        if size >= self.capacity {
+            return Err("This window has reached its tab limit".to_string());
+        }
+
+        {
             let last_index = self.contexts.len();
 
             let mut cloned_config = self.config.clone();
             if working_dir.is_some() {
                 cloned_config.working_dir = working_dir;
             }
+            if let Some(shell) = shell {
+                cloned_config.shell = shell;
+            }
 
             let current = self.current();
             let cursor = current.cursor_from_ref();
-            let mut dimension = current.dimension;
-
-            // If current has splits then shouldn't use that dimension
-            if self.current_grid().len() > 1 {
-                dimension = self.current_grid().grid_dimension();
-            }
+            // Always take window-sized dimensions from the grid. After a
+            // taffy pass the current panel's `dimension.width` is the
+            // content box (margins already applied, `dimension.margin`
+            // zeroed). Feeding that into `ContextGrid::new` would subtract
+            // `scaled_margin` a second time and collapse the new tab to
+            // `MIN_COLS` (2) — a one-glyph-wide terminal beside the chrome.
+            let dimension = self.current_grid().grid_dimension();
 
             match ContextManager::create_context(
                 (&cursor, current.renderable_content.has_blinking_enabled),
@@ -1182,7 +1279,10 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 dimension,
                 &cloned_config,
             ) {
-                Ok(new_context) => {
+                Ok(mut new_context) => {
+                    // The tab carries the row it came from so the sidebar can
+                    // follow the active tab instead of the last click.
+                    new_context.host_id = host_id;
                     let previous_scaled_margin =
                         self.contexts[self.current_index].scaled_margin;
                     self.contexts.push(ContextGrid::new(
@@ -1196,9 +1296,11 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                         self.current_index = last_index;
                         self.current_route = self.current().route_id;
                     }
+                    Ok(())
                 }
-                Err(..) => {
+                Err(err) => {
                     tracing::error!("not able to create a new context");
+                    Err(format!("Could not start the session: {err}"))
                 }
             }
         }
@@ -1629,5 +1731,41 @@ pub mod test {
         context_manager.move_current_tab_to(5);
         assert_eq!(context_manager.current_index, 2);
         assert_eq!(order(&mut context_manager), vec![1, 0, 2, 3, 4]);
+    }
+
+    #[test]
+    fn pinned_home_tab_is_found_and_not_mistaken_for_others() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(5, VoidListener {}, window_id).unwrap();
+        cm.add_context(false, 0);
+        cm.add_context(false, 0);
+
+        assert!(cm.find_home_tab().is_none());
+        assert!(!cm.is_pinned(0));
+
+        cm.contexts[0].pinned = true;
+        cm.contexts[0].custom_title = Some("This computer".to_string());
+        cm.contexts[0].current_mut().host_id =
+            Some(crate::hosts::LOCAL_ID.to_string());
+        cm.contexts[0].current_mut().pinned = true;
+
+        assert_eq!(cm.find_home_tab(), Some(0));
+        assert!(cm.is_pinned(0));
+        assert!(!cm.is_pinned(1));
+        assert!(!cm.is_pinned(2));
+    }
+
+    #[test]
+    fn is_pinned_survives_when_current_pane_is_not_the_root() {
+        // Grid-level `pinned` is the source of truth so a split on the home
+        // tab cannot make CloseTab suddenly work.
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(3, VoidListener {}, window_id).unwrap();
+        cm.contexts[0].pinned = true;
+        cm.contexts[0].current_mut().pinned = false;
+        cm.contexts[0].current_mut().host_id = None;
+        assert!(cm.is_pinned(0));
     }
 }

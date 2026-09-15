@@ -17,21 +17,40 @@
 
 pub mod activity_bar;
 pub mod add_host;
+pub mod anim;
 pub mod chrome;
+pub mod connection;
 pub mod geom;
 pub mod icons;
+pub mod loading;
+pub mod os_icons;
+pub mod overlap;
+pub mod settings;
 pub mod sftp_pane;
 pub mod sidebar;
+pub mod snippets;
 pub mod theme;
 
-pub use activity_bar::{ActivityBarState, Section, SECTIONS};
+pub use activity_bar::{ActivityBarState, RailAction, RailHit, Section, TOP_SECTIONS, SECTIONS};
 pub use add_host::{
     AddHostForm, AddHostLayout, Field, FormInput, FormOutcome, HostFormValues,
 };
 pub use chrome::{Chrome, ChromeAction};
+pub use connection::{
+    ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
+};
 pub use geom::Rect;
-pub use icons::{Icon, IconPlacement, Seg};
-pub use sidebar::{HostItem, HostPanel, PanelHit};
+pub use icons::{Cmd, Icon, IconPlacement};
+pub use loading::{breath_ring, orbit_dots, phase as loading_phase, shimmer_bar, OrbitDot};
+pub use os_icons::{HostStatus, OsGlyph};
+pub use overlap::{assert_no_overlaps, assert_panel_no_overlaps, find_overlaps, rects_overlap};
+pub use settings::{SettingsHit, SettingsModal, SettingsTab, SshKeyItem};
+pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
+pub use sidebar::{
+    Badge, HostDrag, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit, Row,
+    HOST_DRAG_THRESHOLD,
+};
+pub use snippets::{SnippetHit, SnippetItem, SnippetsPanel};
 pub use theme::ChromeTheme;
 
 pub use terminus_bridge;

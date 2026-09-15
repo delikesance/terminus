@@ -298,7 +298,7 @@ pub async fn detect_local_os() -> String {
     parse_os_id(&release, &local_uname_hint())
 }
 
-fn local_uname_hint() -> String {
+pub fn local_uname_hint() -> String {
     let platform = std::env::consts::OS;
 
     #[cfg(target_os = "linux")]
