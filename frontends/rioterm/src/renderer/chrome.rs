@@ -1122,39 +1122,29 @@ fn render_settings_modal(
                     .key_draft_field_rect(window_width, window_height)
                 {
                     let focused = chrome.settings.key_draft_focused;
-                    let empty = chrome.settings.key_label.value.is_empty();
-                    let (value, placeholder) = if empty && !focused {
-                        ("Key label (e.g. Laptop Ed25519)", true)
-                    } else {
-                        (chrome.settings.key_label.value.as_str(), false)
-                    };
+                    let paint = terminus_ui::FieldPaint::from_draft(
+                        &chrome.settings.key_label,
+                        "Key label (e.g. Laptop Ed25519)",
+                        focused,
+                    );
                     paint_settings_field_card(
                         sugarloaf,
                         theme,
                         field,
                         "Label",
-                        value,
+                        &paint.text,
                         focused,
-                        placeholder,
+                        paint.placeholder,
                         0.0,
                         true,
                     );
-                    if focused {
-                        let input = terminus_ui::settings::field_input_in_card(field);
-                        let caret_x = input.x
-                            + terminus_ui::settings::FIELD_TEXT_INSET
-                            + sugarloaf.text_mut().measure(
-                                &chrome.settings.key_label.prefix(),
-                                &opts(HINT_SIZE, theme.text, false),
-                            );
-                        paint_caret(
+                    if paint.show_caret {
+                        paint_field_caret_prefix(
                             sugarloaf,
-                            caret_x,
-                            input.y + (input.height - HINT_SIZE) * 0.5,
-                            HINT_SIZE,
-                            theme.accent,
-                            DEPTH_DIALOG + 0.05,
-                            ORDER_DIALOG,
+                            theme,
+                            field,
+                            &chrome.settings.key_label.prefix_display(),
+                            0.0,
                         );
                     }
                 }
@@ -1164,46 +1154,37 @@ fn render_settings_modal(
                 {
                     let focused = chrome.settings.key_draft_pem_focused;
                     let empty = chrome.settings.key_pem.value.is_empty();
-                    let display = chrome.settings.key_pem.display_line();
-                    let (value, placeholder) = if empty && !focused {
-                        (
-                            "Paste OpenSSH private key to import (optional)",
-                            true,
-                        )
-                    } else if empty {
-                        ("", false)
-                    } else if focused {
-                        (display.as_str(), false)
+                    let paint = if !empty && !focused {
+                        terminus_ui::FieldPaint {
+                            text: "••••••••  OpenSSH private key ready".into(),
+                            placeholder: false,
+                            show_caret: false,
+                        }
                     } else {
-                        ("••••••••  OpenSSH private key ready", false)
+                        terminus_ui::FieldPaint::from_draft(
+                            &chrome.settings.key_pem,
+                            "Paste OpenSSH private key to import (optional)",
+                            focused,
+                        )
                     };
                     paint_settings_field_card(
                         sugarloaf,
                         theme,
                         pem_card,
                         "Private key",
-                        value,
+                        &paint.text,
                         focused,
-                        placeholder,
+                        paint.placeholder,
                         0.0,
                         true,
                     );
-                    if focused {
-                        let input = terminus_ui::settings::field_input_in_card(pem_card);
-                        let caret_x = input.x
-                            + terminus_ui::settings::FIELD_TEXT_INSET
-                            + sugarloaf.text_mut().measure(
-                                &chrome.settings.key_pem.prefix_display(),
-                                &opts(HINT_SIZE, theme.text, false),
-                            );
-                        paint_caret(
+                    if paint.show_caret {
+                        paint_field_caret_prefix(
                             sugarloaf,
-                            caret_x,
-                            input.y + (input.height - HINT_SIZE) * 0.5,
-                            HINT_SIZE,
-                            theme.accent,
-                            DEPTH_DIALOG + 0.05,
-                            ORDER_DIALOG,
+                            theme,
+                            pem_card,
+                            &chrome.settings.key_pem.prefix_display(),
+                            0.0,
                         );
                     }
                 }
@@ -2738,6 +2719,178 @@ pub(crate) fn paint_caret(
     );
 }
 
+/// Shared labeled text-field card (Settings SqlSync, SFTP name, …).
+pub(crate) fn paint_field_card(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    card: Rect,
+    label: &str,
+    value: &str,
+    focused: bool,
+    placeholder: bool,
+    trailing_slot: f32,
+    paint_text: bool,
+) {
+    paint_field_card_at(
+        sugarloaf,
+        theme,
+        card,
+        label,
+        value,
+        focused,
+        placeholder,
+        trailing_slot,
+        paint_text,
+        DEPTH_DIALOG,
+        ORDER_DIALOG,
+    );
+}
+
+/// Field card with explicit depth/order (SFTP toolbar vs dialog chrome).
+pub(crate) fn paint_field_card_at(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    card: Rect,
+    label: &str,
+    value: &str,
+    focused: bool,
+    placeholder: bool,
+    trailing_slot: f32,
+    paint_text: bool,
+    depth: f32,
+    order: u8,
+) {
+    paint_surface(
+        sugarloaf,
+        &card,
+        theme.button_bg,
+        None,
+        12.0,
+        depth + 0.03,
+        order,
+        false,
+    );
+    if paint_text {
+        draw_text(
+            sugarloaf,
+            card.x + terminus_ui::settings::FIELD_CARD_PAD,
+            card.y + terminus_ui::settings::FIELD_CARD_PAD,
+            label,
+            HINT_SIZE,
+            theme.text_muted,
+            false,
+        );
+    }
+    let field_bg = theme.field_bg;
+    let input = terminus_ui::settings::field_input_in_card(card);
+    if focused {
+        paint_surface(
+            sugarloaf,
+            &input,
+            field_bg,
+            Some(theme.field_border_focus),
+            8.0,
+            depth + 0.039,
+            order,
+            false,
+        );
+    } else {
+        paint_surface(
+            sugarloaf,
+            &input,
+            field_bg,
+            None,
+            8.0,
+            depth + 0.04,
+            order,
+            false,
+        );
+    }
+    if paint_text {
+        let color = if placeholder {
+            theme.text_placeholder
+        } else {
+            theme.text
+        };
+        let text_budget = (input.width
+            - terminus_ui::settings::FIELD_TEXT_INSET
+            - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
+        .max(0.0);
+        let shown = elide(
+            sugarloaf,
+            value,
+            text_budget,
+            &opts(ROW_SUB_SIZE, color, false),
+        );
+        let text_y = input.y + (input.height - ROW_SUB_SIZE) * 0.5;
+        draw_text(
+            sugarloaf,
+            input.x + terminus_ui::settings::FIELD_TEXT_INSET,
+            text_y,
+            &shown,
+            ROW_SUB_SIZE,
+            color,
+            false,
+        );
+    }
+}
+
+/// Caret inside a field card, positioned after `prefix` (not always end-of-value).
+pub(crate) fn paint_field_caret_prefix(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    card: Rect,
+    prefix: &str,
+    trailing_slot: f32,
+) {
+    paint_field_caret_prefix_at(
+        sugarloaf,
+        theme,
+        card,
+        prefix,
+        trailing_slot,
+        DEPTH_DIALOG,
+        ORDER_DIALOG,
+    );
+}
+
+pub(crate) fn paint_field_caret_prefix_at(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    card: Rect,
+    prefix: &str,
+    trailing_slot: f32,
+    depth: f32,
+    order: u8,
+) {
+    let input = terminus_ui::settings::field_input_in_card(card);
+    let text_x = input.x + terminus_ui::settings::FIELD_TEXT_INSET;
+    let text_budget = (input.width
+        - terminus_ui::settings::FIELD_TEXT_INSET
+        - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
+    .max(0.0);
+    let shown = elide(
+        sugarloaf,
+        prefix,
+        text_budget,
+        &opts(ROW_SUB_SIZE, theme.text, false),
+    );
+    let advance = sugarloaf
+        .text_mut()
+        .measure(&shown, &opts(ROW_SUB_SIZE, theme.text, false));
+    let caret_x = (text_x + advance).min(text_x + text_budget);
+    let caret_y = input.y + (input.height - 16.0) * 0.5;
+    paint_caret(
+        sugarloaf,
+        caret_x,
+        caret_y,
+        16.0,
+        theme.accent,
+        depth + 0.05,
+        order,
+    );
+}
+
 /// Inline rename name + optional selection wash + caret.
 fn paint_rename_text(
     sugarloaf: &mut Sugarloaf,
@@ -3884,33 +4037,29 @@ fn render_vault_unlock(
 
     // Same field card + caret path as Settings → Encryption Passphrase.
     let card = layout.passphrase_card_rect();
-    let (value, placeholder) = prompt.field_paint_text();
+    let paint = prompt.field_paint();
     paint_settings_field_card(
         sugarloaf,
         theme,
         card,
         "Encryption Passphrase",
-        &value,
+        &paint.text,
         true,
-        placeholder,
+        paint.placeholder,
         terminus_ui::settings::FIELD_EYE_SLOT,
         true,
     );
-    if !placeholder {
+    if paint.show_caret {
+        let caret_prefix = if paint.placeholder {
+            ""
+        } else {
+            paint.text.as_str()
+        };
         paint_settings_caret(
             sugarloaf,
             theme,
             card,
-            &value,
-            terminus_ui::settings::FIELD_EYE_SLOT,
-        );
-    } else {
-        // Empty focused field still shows the caret at the start.
-        paint_settings_caret(
-            sugarloaf,
-            theme,
-            card,
-            "",
+            caret_prefix,
             terminus_ui::settings::FIELD_EYE_SLOT,
         );
     }
@@ -4068,79 +4217,17 @@ fn paint_settings_field_card(
     trailing_slot: f32,
     paint_text: bool,
 ) {
-    paint_surface(
+    paint_field_card(
         sugarloaf,
-        &card,
-        theme.button_bg,
-        None,
-        12.0,
-        DEPTH_DIALOG + 0.03,
-        ORDER_DIALOG,
-        false,
+        theme,
+        card,
+        label,
+        value,
+        focused,
+        placeholder,
+        trailing_slot,
+        paint_text,
     );
-    if paint_text {
-        draw_text(
-            sugarloaf,
-            card.x + terminus_ui::settings::FIELD_CARD_PAD,
-            card.y + terminus_ui::settings::FIELD_CARD_PAD,
-            label,
-            HINT_SIZE,
-            theme.text_muted,
-            false,
-        );
-    }
-    let field_bg = theme.field_bg;
-    let input = terminus_ui::settings::field_input_in_card(card);
-    if focused {
-        paint_surface(
-            sugarloaf,
-            &input,
-            field_bg,
-            Some(theme.field_border_focus),
-            8.0,
-            DEPTH_DIALOG + 0.039,
-            ORDER_DIALOG,
-            false,
-        );
-    } else {
-        paint_surface(
-            sugarloaf,
-            &input,
-            field_bg,
-            None,
-            8.0,
-            DEPTH_DIALOG + 0.04,
-            ORDER_DIALOG,
-            false,
-        );
-    }
-    if paint_text {
-        let color = if placeholder {
-            theme.text_placeholder
-        } else {
-            theme.text
-        };
-        let text_budget = (input.width
-            - terminus_ui::settings::FIELD_TEXT_INSET
-            - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
-        .max(0.0);
-        let shown = elide(
-            sugarloaf,
-            value,
-            text_budget,
-            &opts(ROW_SUB_SIZE, color, false),
-        );
-        let text_y = input.y + (input.height - ROW_SUB_SIZE) * 0.5;
-        draw_text(
-            sugarloaf,
-            input.x + terminus_ui::settings::FIELD_TEXT_INSET,
-            text_y,
-            &shown,
-            ROW_SUB_SIZE,
-            color,
-            false,
-        );
-    }
 }
 
 fn paint_settings_caret(
@@ -4150,32 +4237,7 @@ fn paint_settings_caret(
     value: &str,
     trailing_slot: f32,
 ) {
-    let input = terminus_ui::settings::field_input_in_card(card);
-    let text_x = input.x + terminus_ui::settings::FIELD_TEXT_INSET;
-    let text_budget = (input.width
-        - terminus_ui::settings::FIELD_TEXT_INSET
-        - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
-    .max(0.0);
-    let shown = elide(
-        sugarloaf,
-        value,
-        text_budget,
-        &opts(ROW_SUB_SIZE, theme.text, false),
-    );
-    let advance = sugarloaf
-        .text_mut()
-        .measure(&shown, &opts(ROW_SUB_SIZE, theme.text, false));
-    let caret_x = (text_x + advance).min(text_x + text_budget);
-    let caret_y = input.y + (input.height - 16.0) * 0.5;
-    paint_caret(
-        sugarloaf,
-        caret_x,
-        caret_y,
-        16.0,
-        theme.accent,
-        DEPTH_DIALOG + 0.05,
-        ORDER_DIALOG,
-    );
+    paint_field_caret_prefix(sugarloaf, theme, card, value, trailing_slot);
 }
 
 fn render_context_menu(

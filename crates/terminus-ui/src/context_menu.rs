@@ -26,6 +26,10 @@ pub enum ContextAction {
     DeleteGroup(String),
     /// Open the host editor prefilled for a stored SSH host.
     EditHost(String),
+    /// Open the dual-pane SFTP browser for a stored SSH host (default: Local | Host).
+    OpenSftp(String),
+    /// Open a stored host in the other SFTP pane (Host | Host, or swap Local).
+    OpenSftpOtherPane(String),
     /// Begin renaming a stored SSH host.
     RenameHost(String),
     /// Begin renaming a host group.
@@ -34,6 +38,18 @@ pub enum ContextAction {
     Copy,
     /// Paste clipboard into the focused sink.
     Paste,
+    /// SFTP: create a folder on the focused side.
+    SftpNewFolder,
+    /// SFTP: rename the selected entry.
+    SftpRename,
+    /// Sftp: delete the selected entry.
+    SftpDelete,
+    /// SFTP: transfer the selected file to the other pane.
+    SftpTransfer,
+    /// SFTP: enter the selected directory.
+    SftpOpen,
+    /// SFTP: refresh the focused pane listing.
+    SftpRefresh,
 }
 
 /// One row in the menu.
@@ -100,18 +116,71 @@ impl ContextMenu {
         })
     }
 
-    /// Host row context: edit, rename, or delete the stored host.
+    /// Host row context: edit, SFTP, rename, or delete the stored host.
+    ///
+    /// When `sftp_open` is true, also offers opening the host in the other SFTP pane.
     pub fn for_host(x: f32, y: f32, host_id: impl Into<String>) -> Option<Self> {
+        Self::for_host_with_sftp(x, y, host_id, false)
+    }
+
+    pub fn for_host_with_sftp(
+        x: f32,
+        y: f32,
+        host_id: impl Into<String>,
+        sftp_open: bool,
+    ) -> Option<Self> {
         let id = host_id.into();
+        let mut items = vec![
+            ContextItem::new("Edit host", ContextAction::EditHost(id.clone())),
+            ContextItem::new("Open SFTP", ContextAction::OpenSftp(id.clone())),
+        ];
+        if sftp_open {
+            items.push(ContextItem::new(
+                "Open in other pane",
+                ContextAction::OpenSftpOtherPane(id.clone()),
+            ));
+        }
+        items.push(ContextItem::new(
+            "Rename",
+            ContextAction::RenameHost(id.clone()),
+        ));
+        items.push(ContextItem::new("Delete host", ContextAction::DeleteHost(id)).danger());
+        Self::open(x, y, items)
+    }
+
+    /// SFTP empty list / background: new folder + refresh.
+    pub fn for_sftp_empty(x: f32, y: f32) -> Option<Self> {
         Self::open(
             x,
             y,
             vec![
-                ContextItem::new("Edit host", ContextAction::EditHost(id.clone())),
-                ContextItem::new("Rename", ContextAction::RenameHost(id.clone())),
-                ContextItem::new("Delete host", ContextAction::DeleteHost(id)).danger(),
+                ContextItem::new("New folder", ContextAction::SftpNewFolder),
+                ContextItem::new("Refresh", ContextAction::SftpRefresh),
             ],
         )
+    }
+
+    /// SFTP row context for a file or directory.
+    ///
+    /// `transfer_label` is typically "Upload", "Download", or "Copy to other pane".
+    pub fn for_sftp_entry(
+        x: f32,
+        y: f32,
+        is_dir: bool,
+        transfer_label: Option<&str>,
+    ) -> Option<Self> {
+        let mut items = Vec::new();
+        if is_dir {
+            items.push(ContextItem::new("Open", ContextAction::SftpOpen));
+        }
+        if let Some(label) = transfer_label {
+            items.push(ContextItem::new(label, ContextAction::SftpTransfer));
+        }
+        items.push(ContextItem::new("Rename", ContextAction::SftpRename));
+        items.push(ContextItem::new("New folder", ContextAction::SftpNewFolder));
+        items.push(ContextItem::new("Delete", ContextAction::SftpDelete).danger());
+        items.push(ContextItem::new("Refresh", ContextAction::SftpRefresh));
+        Self::open(x, y, items)
     }
 
     /// Group header context: rename or delete the group.
@@ -242,9 +311,9 @@ mod tests {
         let group = ContextMenu::for_group(10.0, 10.0, "g1").unwrap();
         let host = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
         assert_eq!(group.items.len(), 2);
-        assert_eq!(host.items.len(), 3);
+        assert_eq!(host.items.len(), 4);
         assert_eq!(group.height(), ContextMenu::height_for(2));
-        assert_eq!(host.height(), ContextMenu::height_for(3));
+        assert_eq!(host.height(), ContextMenu::height_for(4));
         assert!(group.height() < host.height());
         assert_eq!(group.rect().height, group.height());
     }
@@ -252,11 +321,11 @@ mod tests {
     #[test]
     fn host_menu_hits_delete_and_dismisses_outside() {
         let menu = ContextMenu::for_host(100.0, 100.0, "h1").unwrap();
-        assert_eq!(menu.items.len(), 3);
-        let item = menu.item_rect(2).unwrap();
+        assert_eq!(menu.items.len(), 4);
+        let item = menu.item_rect(3).unwrap();
         assert_eq!(
             menu.hit_test(item.x + 2.0, item.y + 2.0),
-            ContextMenuHit::Item(2)
+            ContextMenuHit::Item(3)
         );
         assert_eq!(menu.hit_test(0.0, 0.0), ContextMenuHit::Dismiss);
         assert_eq!(
@@ -265,10 +334,14 @@ mod tests {
         );
         assert_eq!(
             menu.take_action(1),
-            Some(ContextAction::RenameHost("h1".into()))
+            Some(ContextAction::OpenSftp("h1".into()))
         );
         assert_eq!(
             menu.take_action(2),
+            Some(ContextAction::RenameHost("h1".into()))
+        );
+        assert_eq!(
+            menu.take_action(3),
             Some(ContextAction::DeleteHost("h1".into()))
         );
     }

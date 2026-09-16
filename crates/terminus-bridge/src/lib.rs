@@ -12,6 +12,7 @@
 //!   (host-key approval, vault unlock) between the async core and the UI.
 
 pub mod modal_event_handlers;
+pub mod sftp_worker;
 pub mod ssh_transport;
 pub mod terminus_bridge_impl;
 
@@ -20,5 +21,8 @@ pub mod terminus_bridge_impl;
 // pub use modal_event_handlers::{
 //     HostKeyRequest, ModalDecision, ModalRequest, VaultUnlockRequest,
 // };
+pub use sftp_worker::{
+    SftpCommand, SftpEvent, SftpListEntry, SftpSide, SftpWorker,
+};
 pub use ssh_transport::{Command, SshPump, SshTransport, TransportState};
 // pub use terminus_bridge_impl::{SessionHandle, TerminusBridge, TerminusCoreService};

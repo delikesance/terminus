@@ -1732,6 +1732,87 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::OpenSftp(id) => {
+                                        match route.window.screen.open_sftp_pane(&id) {
+                                            Ok(()) => {
+                                                route.request_redraw();
+                                            }
+                                            Err(err) => {
+                                                route.window.screen.chrome.panel.notice =
+                                                    Some(err);
+                                                route.request_overlay_redraw();
+                                            }
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::OpenSftpOtherPane(id) => {
+                                        match route.window.screen.open_sftp_other_pane(&id)
+                                        {
+                                            Ok(()) => {
+                                                route.request_redraw();
+                                            }
+                                            Err(err) => {
+                                                route.window.screen.chrome.panel.notice =
+                                                    Some(err);
+                                                route.request_overlay_redraw();
+                                            }
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::SftpNewFolder => {
+                                        if let Some(s) = route.window.screen.sftp.as_mut()
+                                        {
+                                            s.begin_mkdir_focused();
+                                            route.window.screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::SftpRename => {
+                                        if let Some(s) = route.window.screen.sftp.as_mut()
+                                        {
+                                            let _ = s.begin_rename_focused();
+                                            route.window.screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::SftpDelete => {
+                                        if let Some(s) = route.window.screen.sftp.as_mut()
+                                        {
+                                            s.remove_focused();
+                                            route.window.screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::SftpTransfer => {
+                                        if let Some(s) = route.window.screen.sftp.as_mut()
+                                        {
+                                            s.transfer_selected();
+                                            route.window.screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::SftpOpen => {
+                                        if let Some(s) = route.window.screen.sftp.as_mut()
+                                        {
+                                            s.open_selected_dir();
+                                            route.window.screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::SftpRefresh => {
+                                        if let Some(s) = route.window.screen.sftp.as_mut()
+                                        {
+                                            s.refresh_focused();
+                                            route.window.screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
                                     ChromeAction::RenameHost(id) => {
                                         let name = route
                                             .window
@@ -1879,6 +1960,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let scale = route.window.screen.sugarloaf.scale_factor();
                                 let mx = route.window.screen.mouse.x as f32 / scale;
                                 let my = route.window.screen.mouse.y as f32 / scale;
+
+                                // SFTP file/folder context menu first when over the pane.
+                                if route.window.screen.sftp.is_some()
+                                    && route.window.screen.sftp_bounds().is_some_and(|b| {
+                                        b.contains(mx, my)
+                                    })
+                                {
+                                    if route.window.screen.handle_sftp_context_press(mx, my)
+                                    {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                }
+
                                 match route.window.screen.chrome_context_press(mx, my) {
                                     ChromeAction::Ignored => {}
                                     ChromeAction::Consumed => {
@@ -1903,6 +1998,38 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             if handled_by_island {
                                 route.request_redraw();
                                 return;
+                            }
+                        }
+
+                        // Dual-pane SFTP: swallow mouse when the active leaf is SFTP.
+                        if route.window.screen.sftp.is_some() {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            let double = matches!(
+                                route.window.screen.mouse.click_state,
+                                ClickState::DoubleClick | ClickState::TripleClick
+                            );
+                            if button == MouseButton::Left {
+                                match route.window.screen.handle_sftp_click(mx, my, double)
+                                {
+                                    terminus_ui::SftpClickResult::Close
+                                    | terminus_ui::SftpClickResult::Handled => {
+                                        route.request_redraw();
+                                        return;
+                                    }
+                                    terminus_ui::SftpClickResult::Miss => {}
+                                }
+                            }
+                            if button == MouseButton::Left || button == MouseButton::Right {
+                                // Still consume clicks over the SFTP leaf so they
+                                // don't reach the underlying PTY.
+                                if route.window.screen.sftp_bounds().is_some_and(|b| {
+                                    b.contains(mx, my)
+                                }) {
+                                    route.request_redraw();
+                                    return;
+                                }
                             }
                         }
 
@@ -1984,6 +2111,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             let timer_id =
                                 TimerId::new(Topic::SelectionScrolling, scroll_timer_id);
                             self.scheduler.unschedule(timer_id);
+                        }
+
+                        // SFTP file drag-drop between panes.
+                        if button == MouseButton::Left && route.window.screen.sftp.is_some()
+                        {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            if route.window.screen.handle_sftp_drag_release(mx, my) {
+                                route.request_redraw();
+                                return;
+                            }
                         }
 
                         if button == MouseButton::Left
@@ -2272,6 +2411,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     let lx = x as f32 / scale;
                     let ly = y as f32 / scale;
                     let mut chrome_dirty = false;
+                    if route.window.screen.handle_sftp_hover(lx, ly) {
+                        chrome_dirty = true;
+                    }
+                    let sftp_drag_active = route.window.screen.sftp.is_some()
+                        && route.window.screen.mouse.left_button_state
+                            == ElementState::Pressed;
+                    if sftp_drag_active
+                        && route.window.screen.handle_sftp_drag_move(lx, ly)
+                    {
+                        chrome_dirty = true;
+                    }
                     let host_drag_active = route.window.screen.chrome.panel.host_drag.is_some()
                         && route.window.screen.mouse.left_button_state == ElementState::Pressed;
                     if host_drag_active {
@@ -2279,7 +2429,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     } else if route.window.screen.chrome_hover(lx, ly) {
                         chrome_dirty = true;
                     }
-                    if let Some(icon) = route.window.screen.chrome_cursor_at(lx, ly) {
+                    if let Some(icon) = route.window.screen.sftp_cursor_at(lx, ly) {
+                        route.window.winit_window.set_cursor(icon);
+                    } else if let Some(icon) = route.window.screen.chrome_cursor_at(lx, ly) {
                         route.window.winit_window.set_cursor(icon);
                     }
                     if chrome_dirty {
@@ -2472,7 +2624,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     let icon = route
                         .window
                         .screen
-                        .chrome_cursor_at(lx, ly)
+                        .sftp_cursor_at(lx, ly)
+                        .or_else(|| route.window.screen.chrome_cursor_at(lx, ly))
                         .unwrap_or_else(|| route.window.screen.mouse_cursor_icon());
                     route.window.winit_window.set_cursor(icon);
 
@@ -2515,6 +2668,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     || route.window.screen.renderer.confirm_quit.is_active()
                 {
                     return;
+                }
+
+                if route.window.screen.sftp.is_some() {
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    let mx = route.window.screen.mouse.x as f32 / scale;
+                    let my = route.window.screen.mouse.y as f32 / scale;
+                    let lines = match delta {
+                        MouseScrollDelta::LineDelta(_, lines) => lines,
+                        MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / 20.0,
+                    };
+                    if route.window.screen.handle_sftp_scroll(mx, my, lines) {
+                        route.request_redraw();
+                        return;
+                    }
                 }
 
                 if self.config.hide_cursor_when_typing {

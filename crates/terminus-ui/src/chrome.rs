@@ -75,6 +75,10 @@ pub enum ChromeAction {
     DeleteGroup(String),
     /// Edit a stored host in the add-host dialog (context menu).
     EditHost(String),
+    /// Open the dual-pane SFTP browser for a stored host (context menu).
+    OpenSftp(String),
+    /// Open a stored host in the other SFTP pane (context menu).
+    OpenSftpOtherPane(String),
     /// Begin renaming a stored host (context menu).
     RenameHost(String),
     /// Begin renaming a host group (context menu).
@@ -89,6 +93,18 @@ pub enum ChromeAction {
     ContextCopy,
     /// Context menu: paste.
     ContextPaste,
+    /// SFTP context: new folder on focused side.
+    SftpNewFolder,
+    /// SFTP context: rename selection.
+    SftpRename,
+    /// SFTP context: delete selection.
+    SftpDelete,
+    /// SFTP context: transfer selection to the other pane.
+    SftpTransfer,
+    /// SFTP context: enter selected directory.
+    SftpOpen,
+    /// SFTP context: refresh focused pane.
+    SftpRefresh,
     /// Settings: focus the connection URI field.
     FocusSqlUri,
     /// Settings: focus the vault passphrase field.
@@ -300,12 +316,16 @@ impl Chrome {
     ///
     /// Kept separate from [`Self::handle_press`] so a right-click never
     /// arms a host drag or opens a session.
+    ///
+    /// `sftp_open` adds "Open in other pane" on host rows when an SFTP
+    /// session is already active.
     pub fn handle_context_press(
         &mut self,
         window_width: f32,
         window_height: f32,
         x: f32,
         y: f32,
+        sftp_open: bool,
     ) -> ChromeAction {
         // Modals / overlays own the pointer; don't open under them.
         if self.settings.open || self.connection.is_some() || self.form.is_open()
@@ -328,7 +348,9 @@ impl Chrome {
                 .get(index)
                 .and_then(Row::host)
                 .filter(|h| h.stored)
-                .and_then(|h| ContextMenu::for_host(x, y, h.id.clone())),
+                .and_then(|h| {
+                    ContextMenu::for_host_with_sftp(x, y, h.id.clone(), sftp_open)
+                }),
             Some(PanelHit::Group(index)) => self
                 .panel
                 .rows
@@ -375,10 +397,20 @@ impl Chrome {
                     Some(ContextAction::DeleteHost(id)) => ChromeAction::DeleteHost(id),
                     Some(ContextAction::DeleteGroup(id)) => ChromeAction::DeleteGroup(id),
                     Some(ContextAction::EditHost(id)) => ChromeAction::EditHost(id),
+                    Some(ContextAction::OpenSftp(id)) => ChromeAction::OpenSftp(id),
+                    Some(ContextAction::OpenSftpOtherPane(id)) => {
+                        ChromeAction::OpenSftpOtherPane(id)
+                    }
                     Some(ContextAction::RenameHost(id)) => ChromeAction::RenameHost(id),
                     Some(ContextAction::RenameGroup(id)) => ChromeAction::RenameGroup(id),
                     Some(ContextAction::Copy) => ChromeAction::ContextCopy,
                     Some(ContextAction::Paste) => ChromeAction::ContextPaste,
+                    Some(ContextAction::SftpNewFolder) => ChromeAction::SftpNewFolder,
+                    Some(ContextAction::SftpRename) => ChromeAction::SftpRename,
+                    Some(ContextAction::SftpDelete) => ChromeAction::SftpDelete,
+                    Some(ContextAction::SftpTransfer) => ChromeAction::SftpTransfer,
+                    Some(ContextAction::SftpOpen) => ChromeAction::SftpOpen,
+                    Some(ContextAction::SftpRefresh) => ChromeAction::SftpRefresh,
                     None => ChromeAction::Consumed,
                 })
             }
@@ -1196,10 +1228,10 @@ mod tests {
     fn right_click_host_opens_delete_menu_and_selects() {
         let mut chrome = chrome_with_hosts(2);
         let row = chrome.panel.item_rect(0.0, 1);
-        let open = chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0);
+        let open = chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
         assert_eq!(open, ChromeAction::Consumed);
         let menu = chrome.context_menu.as_ref().expect("menu open");
-        let item = menu.item_rect(2).unwrap();
+        let item = menu.item_rect(3).unwrap();
         let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
         assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
         assert!(chrome.context_menu.is_none());

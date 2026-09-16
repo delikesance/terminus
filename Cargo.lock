@@ -5368,6 +5368,7 @@ dependencies = [
  "sugarloaf",
  "taffy",
  "teletypewriter",
+ "terminus-bridge",
  "terminus-core",
  "terminus-ui",
  "tiny-skia 0.12.0",
