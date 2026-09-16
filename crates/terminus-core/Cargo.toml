@@ -24,6 +24,8 @@ tracing = "0.1"
 thiserror = "1"
 dirs = "4"
 rand = "0.8"
+# ssh-key (via russh) expects rand 0.10 CryptoRng for PrivateKey::random.
+rand_keygen = { package = "rand", version = "0.10" }
 
 [target.'cfg(unix)'.dependencies]
 libgssapi = "0.11"

@@ -36,12 +36,8 @@ pub enum Field {
 }
 
 /// Always-visible text fields before the auth block.
-pub const BASE_FIELDS: [Field; 4] = [
-    Field::Name,
-    Field::Hostname,
-    Field::Username,
-    Field::Port,
-];
+pub const BASE_FIELDS: [Field; 4] =
+    [Field::Name, Field::Hostname, Field::Username, Field::Port];
 
 /// Back-compat alias: base text fields only (auth rows are conditional).
 pub const FIELDS: [Field; 4] = BASE_FIELDS;
@@ -85,7 +81,11 @@ impl Field {
     pub const fn is_text(self) -> bool {
         matches!(
             self,
-            Field::Name | Field::Hostname | Field::Username | Field::Port | Field::Password
+            Field::Name
+                | Field::Hostname
+                | Field::Username
+                | Field::Port
+                | Field::Password
         )
     }
 
@@ -130,8 +130,12 @@ pub const BUTTON_GAP: f32 = 8.0;
 /// What a mouse press on the open add-host dialog hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddHostHit {
-    /// An input box — focus that field (AuthMethod / Identity also cycle).
+    /// An input box — focus that field (Identity also cycles).
     Field(Field),
+    /// Open / close the Authentication Method dropdown.
+    ToggleAuthMenu,
+    /// Pick an auth method from the open dropdown.
+    SelectAuth(usize),
     /// Dismiss without saving.
     Cancel,
     /// Persist the draft (same as Enter).
@@ -210,6 +214,10 @@ pub struct AddHostForm {
     password_caret: usize,
     focus: Field,
     error: Option<String>,
+    /// Authentication Method dropdown is expanded.
+    auth_menu_open: bool,
+    /// Hovered option in the auth dropdown (`None` = none).
+    auth_menu_hover: Option<usize>,
 }
 
 impl Default for AddHostForm {
@@ -225,6 +233,8 @@ impl Default for AddHostForm {
             password_caret: 0,
             focus: Field::Name,
             error: None,
+            auth_menu_open: false,
+            auth_menu_hover: None,
         }
     }
 }
@@ -254,11 +264,7 @@ impl AddHostForm {
     /// Total dialog height, including a hint/error line.
     pub fn height(&self) -> f32 {
         let n = self.visible_fields().len() as f32;
-        PAD + TITLE_HEIGHT
-            + n * FIELD_HEIGHT
-            + (n - 1.0) * FIELD_GAP
-            + PAD
-            + HINT_HEIGHT
+        PAD + TITLE_HEIGHT + n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP + PAD + HINT_HEIGHT
     }
 
     /// Show the form, empty, focused on the first field.
@@ -274,12 +280,16 @@ impl AddHostForm {
         self.identity_id = self.identities.first().map(|(id, _)| id.clone());
         self.focus = Field::Name;
         self.error = None;
+        self.auth_menu_open = false;
+        self.auth_menu_hover = None;
         self.open = true;
     }
 
     pub fn close(&mut self) {
         self.open = false;
         self.error = None;
+        self.auth_menu_open = false;
+        self.auth_menu_hover = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -313,6 +323,47 @@ impl AddHostForm {
 
     pub fn auth_method(&self) -> &str {
         &self.auth_method
+    }
+
+    pub fn auth_menu_open(&self) -> bool {
+        self.auth_menu_open
+    }
+
+    pub fn auth_menu_hover(&self) -> Option<usize> {
+        self.auth_menu_hover
+    }
+
+    pub fn toggle_auth_menu(&mut self) {
+        self.auth_menu_open = !self.auth_menu_open;
+        if !self.auth_menu_open {
+            self.auth_menu_hover = None;
+        }
+        self.focus = Field::AuthMethod;
+    }
+
+    pub fn close_auth_menu(&mut self) {
+        self.auth_menu_open = false;
+        self.auth_menu_hover = None;
+    }
+
+    /// Pick an auth method by index into [`AUTH_METHODS`].
+    pub fn select_auth_method(&mut self, index: usize) {
+        if index >= AUTH_METHODS.len() {
+            return;
+        }
+        self.auth_method = AUTH_METHODS[index].to_string();
+        self.auth_menu_open = false;
+        self.auth_menu_hover = None;
+        self.clamp_focus_to_visible();
+        self.error = None;
+    }
+
+    pub fn set_auth_menu_hover(&mut self, index: Option<usize>) -> bool {
+        if self.auth_menu_hover == index {
+            return false;
+        }
+        self.auth_menu_hover = index;
+        true
     }
 
     pub fn identity_id(&self) -> Option<&str> {
@@ -350,10 +401,7 @@ impl AddHostForm {
             Field::Username => &self.values[2],
             Field::Port => &self.values[3],
             Field::AuthMethod => &self.auth_method,
-            Field::Identity => self
-                .identity_id
-                .as_deref()
-                .unwrap_or(""),
+            Field::Identity => self.identity_id.as_deref().unwrap_or(""),
             Field::Password => &self.password,
         }
     }
@@ -415,6 +463,8 @@ impl AddHostForm {
             .unwrap_or(0);
         let next = (i as isize + delta).rem_euclid(AUTH_METHODS.len() as isize) as usize;
         self.auth_method = AUTH_METHODS[next].to_string();
+        self.auth_menu_open = false;
+        self.auth_menu_hover = None;
         self.clamp_focus_to_visible();
         self.error = None;
     }
@@ -429,7 +479,8 @@ impl AddHostForm {
             .as_ref()
             .and_then(|id| self.identities.iter().position(|(i, _)| i == id))
             .unwrap_or(0);
-        let next = (i as isize + delta).rem_euclid(self.identities.len() as isize) as usize;
+        let next =
+            (i as isize + delta).rem_euclid(self.identities.len() as isize) as usize;
         self.identity_id = Some(self.identities[next].0.clone());
         self.error = None;
     }
@@ -443,12 +494,7 @@ impl AddHostForm {
             .iter()
             .copied()
             .find(|f| matches!(f, Field::Identity | Field::Password))
-            .or_else(|| {
-                visible
-                    .iter()
-                    .copied()
-                    .find(|f| *f == Field::AuthMethod)
-            })
+            .or_else(|| visible.iter().copied().find(|f| *f == Field::AuthMethod))
             .unwrap_or(Field::Name);
     }
 
@@ -570,15 +616,15 @@ impl AddHostForm {
     }
 
     /// Move focus `delta` fields forward, wrapping across visible rows.
-    pub fn focus_by(&mut self, delta: isize) {
+    fn focus_by(&mut self, delta: isize) {
         let fields = self.visible_fields();
         let len = fields.len() as isize;
-        let i = fields
-            .iter()
-            .position(|&f| f == self.focus)
-            .unwrap_or(0) as isize;
+        let i = fields.iter().position(|&f| f == self.focus).unwrap_or(0) as isize;
         let next = (i + delta).rem_euclid(len) as usize;
         self.focus = fields[next];
+        if self.focus != Field::AuthMethod {
+            self.close_auth_menu();
+        }
         self.error = None;
     }
 
@@ -586,6 +632,9 @@ impl AddHostForm {
     pub fn focus_field(&mut self, field: Field) {
         if self.visible_fields().contains(&field) {
             self.focus = field;
+            if field != Field::AuthMethod {
+                self.close_auth_menu();
+            }
             self.error = None;
         }
     }
@@ -651,7 +700,14 @@ impl AddHostForm {
                 Consumed
             }
             FormInput::Enter => Submit,
-            FormInput::Escape => Cancel,
+            FormInput::Escape => {
+                if self.auth_menu_open {
+                    self.close_auth_menu();
+                    Consumed
+                } else {
+                    Cancel
+                }
+            }
         }
     }
 }
@@ -696,10 +752,7 @@ impl AddHostLayout {
 
     /// The field row for `field`, or `None` when that auth detail is hidden.
     pub fn field_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
-        let row = form
-            .visible_fields()
-            .iter()
-            .position(|&f| f == field)?;
+        let row = form.visible_fields().iter().position(|&f| f == field)?;
         Some(Rect::new(
             self.x + PAD,
             self.row_top(row),
@@ -755,10 +808,48 @@ impl AddHostLayout {
         )
     }
 
+    /// Floating dropdown panel under the Authentication Method input.
+    pub fn auth_menu_rect(&self, form: &AddHostForm) -> Option<Rect> {
+        let input = self.input_rect(form, Field::AuthMethod)?;
+        let row_h = 32.0;
+        Some(Rect::new(
+            input.x,
+            input.bottom() + 4.0,
+            input.width,
+            AUTH_METHODS.len() as f32 * row_h + 8.0,
+        ))
+    }
+
+    pub fn auth_option_rect(&self, form: &AddHostForm, index: usize) -> Option<Rect> {
+        let menu = self.auth_menu_rect(form)?;
+        Some(Rect::new(
+            menu.x + 4.0,
+            menu.y + 4.0 + index as f32 * 32.0,
+            menu.width - 8.0,
+            32.0,
+        ))
+    }
+
     /// Hit-test inside an open dialog. Coordinates are logical pixels.
     pub fn hit_test(&self, form: &AddHostForm, x: f32, y: f32) -> AddHostHit {
         let dialog_height = form.height();
         let dialog = self.rect(dialog_height);
+        // Auth dropdown may extend past the dialog bottom; still accept
+        // option hits so the popover stays clickable.
+        if form.auth_menu_open() {
+            if let Some(menu) = self.auth_menu_rect(form) {
+                if menu.contains(x, y) {
+                    for i in 0..AUTH_METHODS.len() {
+                        if let Some(opt) = self.auth_option_rect(form, i) {
+                            if opt.contains(x, y) {
+                                return AddHostHit::SelectAuth(i);
+                            }
+                        }
+                    }
+                    return AddHostHit::Consume;
+                }
+            }
+        }
         if !dialog.contains(x, y) {
             return AddHostHit::Consume;
         }
@@ -771,6 +862,9 @@ impl AddHostLayout {
         for field in form.visible_fields() {
             if let Some(input) = self.input_rect(form, field) {
                 if input.contains(x, y) {
+                    if field == Field::AuthMethod {
+                        return AddHostHit::ToggleAuthMenu;
+                    }
                     return AddHostHit::Field(field);
                 }
             }
@@ -1017,10 +1111,7 @@ mod tests {
     #[test]
     fn left_right_cycle_auth_and_identity() {
         let mut form = open_form();
-        form.set_identities(vec![
-            ("a".into(), "A".into()),
-            ("b".into(), "B".into()),
-        ]);
+        form.set_identities(vec![("a".into(), "A".into()), ("b".into(), "B".into())]);
         form.focus_field(Field::AuthMethod);
         form.handle_input(FormInput::Right, "");
         assert_eq!(form.auth_method(), "password");
@@ -1115,6 +1206,28 @@ mod tests {
     }
 
     #[test]
+    fn auth_dropdown_toggle_and_select() {
+        let mut form = open_form();
+        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let auth = layout.input_rect(&form, Field::AuthMethod).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, auth.x + 2.0, auth.y + 2.0),
+            AddHostHit::ToggleAuthMenu
+        );
+        form.toggle_auth_menu();
+        assert!(form.auth_menu_open());
+        let opt = layout.auth_option_rect(&form, 1).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, opt.x + 2.0, opt.y + 2.0),
+            AddHostHit::SelectAuth(1)
+        );
+        form.select_auth_method(1);
+        assert_eq!(form.auth_method(), "password");
+        assert!(!form.auth_menu_open());
+        assert!(form.visible_fields().contains(&Field::Password));
+    }
+
+    #[test]
     fn hit_test_finds_fields_and_footer_buttons() {
         let form = open_form();
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
@@ -1128,7 +1241,7 @@ mod tests {
         let auth = layout.input_rect(&form, Field::AuthMethod).unwrap();
         assert_eq!(
             layout.hit_test(&form, auth.x + 2.0, auth.y + 2.0),
-            AddHostHit::Field(Field::AuthMethod)
+            AddHostHit::ToggleAuthMenu
         );
 
         let identity = layout.input_rect(&form, Field::Identity).unwrap();

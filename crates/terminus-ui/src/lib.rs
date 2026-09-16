@@ -21,6 +21,7 @@ pub mod anim;
 pub mod button;
 pub mod chrome;
 pub mod connection;
+pub mod context_menu;
 pub mod geom;
 pub mod icons;
 pub mod loading;
@@ -32,28 +33,39 @@ pub mod sidebar;
 pub mod snippets;
 pub mod theme;
 
-pub use activity_bar::{ActivityBarState, RailAction, RailHit, Section, TOP_SECTIONS, SECTIONS};
-pub use add_host::{
-    auth_method_label, AddHostForm, AddHostHit, AddHostLayout, Field, FormInput, FormOutcome,
-    HostFormValues, AUTH_METHODS, BASE_FIELDS,
+pub use activity_bar::{
+    ActivityBarState, RailAction, RailHit, Section, SECTIONS, TOP_SECTIONS,
 };
+pub use add_host::{
+    auth_method_label, AddHostForm, AddHostHit, AddHostLayout, Field, FormInput,
+    FormOutcome, HostFormValues, AUTH_METHODS, BASE_FIELDS,
+};
+pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
 pub use button::{centered_label_origin, dashed_cta_badge, ButtonKind, ButtonSpec};
 pub use chrome::{Chrome, ChromeAction, ChromeCursor};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
 };
+pub use context_menu::{
+    ContextAction, ContextItem, ContextMenu, ContextMenuHit, ITEM_HEIGHT as CONTEXT_ITEM_HEIGHT,
+    MENU_PAD_X, MENU_RADIUS,
+};
 pub use geom::Rect;
 pub use icons::{Cmd, Icon, IconPlacement};
-pub use loading::{breath_ring, orbit_dots, phase as loading_phase, shimmer_bar, OrbitDot};
-pub use os_icons::{HostStatus, OsGlyph};
-pub use overlap::{assert_no_overlaps, assert_panel_no_overlaps, find_overlaps, rects_overlap};
-pub use settings::{
-    SettingsHit, SettingsModal, SettingsTab, SqlSyncFocus, SshKeyItem, SyncUiStatus, SQL_ENGINES,
+pub use loading::{
+    breath_ring, orbit_dots, phase as loading_phase, shimmer_bar, OrbitDot,
 };
-pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
+pub use os_icons::{HostStatus, OsGlyph};
+pub use overlap::{
+    assert_no_overlaps, assert_panel_no_overlaps, find_overlaps, rects_overlap,
+};
+pub use settings::{
+    SettingsHit, SettingsModal, SettingsTab, SqlSyncFocus, SshKeyItem, SyncUiStatus,
+    SQL_ENGINES,
+};
 pub use sidebar::{
-    Badge, HostDrag, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit, Row,
-    HOST_DRAG_THRESHOLD,
+    Badge, HostDrag, HostDragKind, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit, RenameDraft,
+    Row, HOST_DRAG_THRESHOLD,
 };
 pub use snippets::{SnippetHit, SnippetItem, SnippetsPanel};
 pub use theme::ChromeTheme;

@@ -554,11 +554,11 @@ impl Screen<'_> {
                 .host_store
                 .identities()
                 .iter()
-                .map(|(id, name, fingerprint)| terminus_ui::settings::SshKeyItem {
+                .map(|(id, name, fingerprint, created)| terminus_ui::settings::SshKeyItem {
                     id: id.clone(),
                     name: name.clone(),
                     fingerprint: fingerprint.clone(),
-                    created: String::new(),
+                    created: created.clone(),
                 })
                 .collect();
             self.chrome.settings.set_keys(key_items.clone());
@@ -570,6 +570,9 @@ impl Screen<'_> {
             );
 
             if let Some(notice) = self.host_store.take_notice() {
+                if notice.starts_with("SSH key") {
+                    self.chrome.settings.close_key_draft();
+                }
                 self.chrome.panel.notice = Some(notice);
                 self.chrome.panel.error = None;
                 if let Some(label) = self.pending_host_select.take() {
@@ -586,20 +589,25 @@ impl Screen<'_> {
                 }
             }
             if let Some(message) = self.host_store.error().map(str::to_string) {
+                if self.chrome.settings.key_drafting {
+                    self.chrome.settings.key_draft_error = Some(message.clone());
+                }
                 if self.chrome.add_host_is_open() {
                     self.chrome.form.set_error(message);
-                } else {
+                } else if !self.chrome.settings.key_drafting {
                     self.chrome.panel.error = Some(message);
                 }
             }
-            if let Some(msg) = self.host_store.take_vault_message() {
-                self.chrome.panel.notice = Some(msg);
-            }
+            // Vault unlock feedback is already folded into sync_status_line
+            // by the repository; drop the one-shot so it is not also shown
+            // on the host-list notice band.
+            let _ = self.host_store.take_vault_message();
             self.chrome.settings.apply_sync_status(terminus_ui::SyncUiStatus {
                 uri: self.host_store.sync_uri().to_string(),
                 connected: self.host_store.sync_connected(),
                 vault_unlocked: self.host_store.vault_unlocked(),
                 status_line: self.host_store.sync_status_line().to_string(),
+                is_error: self.host_store.sync_status_is_error(),
             });
         }
         true
@@ -609,12 +617,71 @@ impl Screen<'_> {
     pub fn chrome_press(&mut self, x: f32, y: f32) -> terminus_ui::chrome::ChromeAction {
         let (width, height) = self.chrome_viewport();
         let reserved_before = self.chrome.reserved_width();
+        let menu_was_open = self.chrome.context_menu.is_some();
         let action = self.chrome.handle_press(width, height, x, y);
+        // #region agent log
+        if menu_was_open
+            || matches!(
+                action,
+                terminus_ui::chrome::ChromeAction::DeleteHost(_)
+                    | terminus_ui::chrome::ChromeAction::DeleteGroup(_)
+                    | terminus_ui::chrome::ChromeAction::ContextCopy
+                    | terminus_ui::chrome::ChromeAction::ContextPaste
+            )
+        {
+            crate::agent_debug::log(
+                "H5",
+                "screen/mod.rs:chrome_press",
+                "context menu left-press result",
+                &format!(
+                    r#"{{"action":"{action:?}","menu_was_open":{menu_was_open},"menu_open":{}}}"#,
+                    self.chrome.context_menu.is_some()
+                ),
+            );
+        }
+        // #endregion
         // Collapsing the rail or toggling the panel changes how much of
         // the window the terminal may use.
         if self.chrome.reserved_width() != reserved_before {
             self.reapply_chrome_inset();
         }
+        action
+    }
+
+    /// Right-click on chrome: open or dismiss a context menu.
+    pub fn chrome_context_press(
+        &mut self,
+        x: f32,
+        y: f32,
+    ) -> terminus_ui::chrome::ChromeAction {
+        let (width, height) = self.chrome_viewport();
+        let action = self.chrome.handle_context_press(width, height, x, y);
+        // #region agent log
+        let mut overlap_rows = Vec::new();
+        if let Some(menu) = self.chrome.context_menu.as_ref() {
+            let cover = {
+                let r = menu.rect();
+                terminus_ui::Rect::new(r.x - 12.0, r.y - 12.0, r.width + 24.0, r.height + 24.0)
+            };
+            let origin_y = self.chrome.origin_y();
+            for (i, _) in self.chrome.panel.rows.iter().enumerate() {
+                let row = self.chrome.panel.item_rect(origin_y, i);
+                if terminus_ui::rects_overlap(cover, row) {
+                    overlap_rows.push(i);
+                }
+            }
+        }
+        crate::agent_debug::log(
+            "H11",
+            "screen/mod.rs:chrome_context_press",
+            "right-click chrome result",
+            &format!(
+                r#"{{"action":"{action:?}","menu_open":{},"x":{x},"y":{y},"late_pass":true,"overlap_rows":{:?}}}"#,
+                self.chrome.context_menu.is_some(),
+                overlap_rows
+            ),
+        );
+        // #endregion
         action
     }
 
@@ -674,6 +741,62 @@ impl Screen<'_> {
         use rio_window::event::ElementState;
         use rio_window::keyboard::{Key, NamedKey};
         use terminus_ui::add_host::{FormInput, FormOutcome};
+
+        // Context menu: Escape dismisses without reaching the terminal.
+        if self.chrome.context_menu.is_some() {
+            if key_event.state != ElementState::Pressed {
+                return Some(FormOutcome::Consumed);
+            }
+            if matches!(key_event.logical_key, Key::Named(NamedKey::Escape)) {
+                self.chrome.close_context_menu();
+            }
+            return Some(FormOutcome::Consumed);
+        }
+
+        // Inline rename from the context menu.
+        if self.chrome.panel.rename.is_some() && !self.chrome.add_host_is_open() {
+            if key_event.state != ElementState::Pressed {
+                return Some(FormOutcome::Consumed);
+            }
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.chrome.panel.cancel_rename();
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(draft) = self.chrome.panel.rename.clone() {
+                        let name = draft.name.trim().to_string();
+                        if !name.is_empty() {
+                            if draft.is_group {
+                                self.host_store.rename_group(&draft.id, &name);
+                            } else {
+                                self.host_store.rename_host(&draft.id, &name);
+                            }
+                        }
+                        self.chrome.panel.cancel_rename();
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                        draft.name.pop();
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Character(ch) => {
+                    let text = key_event.text.as_deref().unwrap_or(ch.as_str());
+                    if crate::renderer::is_printable_text(text) {
+                        if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                            if draft.name.len() < 64 {
+                                draft.name.push_str(text);
+                            }
+                        }
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                _ => return Some(FormOutcome::Consumed),
+            }
+        }
 
         // Host-list search field: type to filter, Esc clears focus.
         if self.chrome.panel.filter_focused && !self.chrome.add_host_is_open() {
@@ -2438,11 +2561,38 @@ impl Screen<'_> {
         self.chrome.tick_host_drag(dt)
     }
 
-    fn apply_host_drag_action(&mut self, action: terminus_ui::chrome::ChromeAction) {
-        if let terminus_ui::chrome::ChromeAction::SetHostGroup { host_id, group_id } = action {
-            self.host_store
-                .set_host_group(&host_id, group_id.as_deref());
-            let _ = self.pump_chrome();
+    pub fn apply_host_drag_action(&mut self, action: terminus_ui::chrome::ChromeAction) {
+        match action {
+            terminus_ui::chrome::ChromeAction::SetHostGroup { host_id, group_id } => {
+                self.host_store
+                    .set_host_group(&host_id, group_id.as_deref());
+                let _ = self.pump_chrome();
+            }
+            terminus_ui::chrome::ChromeAction::ReorderHost {
+                host_id,
+                before_host_id,
+                before_group_id,
+            } => {
+                self.host_store.reorder_host(
+                    &host_id,
+                    before_host_id.as_deref(),
+                    before_group_id.as_deref(),
+                );
+                let _ = self.pump_chrome();
+            }
+            terminus_ui::chrome::ChromeAction::ReorderGroup {
+                group_id,
+                before_group_id,
+                before_host_id,
+            } => {
+                self.host_store.reorder_group(
+                    &group_id,
+                    before_group_id.as_deref(),
+                    before_host_id.as_deref(),
+                );
+                let _ = self.pump_chrome();
+            }
+            _ => {}
         }
     }
 

@@ -6672,6 +6672,7 @@ dependencies = [
  "dirs 4.0.0",
  "hex",
  "libgssapi",
+ "rand 0.10.2",
  "rand 0.8.8",
  "russh",
  "russh-sftp",

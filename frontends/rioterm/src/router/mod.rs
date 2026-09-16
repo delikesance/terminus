@@ -240,6 +240,25 @@ impl Route<'_> {
                 }
                 return true;
             }
+            if self
+                .window
+                .screen
+                .chrome
+                .panel
+                .rename
+                .as_ref()
+                .is_some_and(|r| r.focused)
+            {
+                if crate::renderer::is_printable_text(text) {
+                    if let Some(draft) = self.window.screen.chrome.panel.rename.as_mut() {
+                        if draft.name.len() + text.len() <= 64 {
+                            draft.name.push_str(text);
+                            self.request_overlay_redraw();
+                        }
+                    }
+                }
+                return true;
+            }
         }
         match self.active_modal() {
             Some(Modal::IslandRename) => {
@@ -311,7 +330,15 @@ impl Route<'_> {
         // even though they are not a full modal over the terminal.
         if self.window.screen.chrome.hosts_visible()
             && (self.window.screen.chrome.panel.filter_focused
-                || self.window.screen.chrome.panel.new_group_focused)
+                || self.window.screen.chrome.panel.new_group_focused
+                || self
+                    .window
+                    .screen
+                    .chrome
+                    .panel
+                    .rename
+                    .as_ref()
+                    .is_some_and(|r| r.focused))
             && !self.window.screen.chrome.add_host_is_open()
         {
             let _ = self.window.screen.chrome_key_input(key_event);
@@ -547,9 +574,64 @@ impl Route<'_> {
 
             Modal::Settings => {
                 use rio_window::event::ElementState;
-                use terminus_ui::SqlSyncFocus;
+                use terminus_ui::{SettingsTab, SqlSyncFocus};
 
                 if key_event.state == ElementState::Pressed {
+                    let on_keys = self.window.screen.chrome.settings.tab == SettingsTab::Keys;
+                    let drafting = self.window.screen.chrome.settings.key_drafting;
+
+                    if on_keys && drafting {
+                        match &key_event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                self.window.screen.chrome.settings.close_key_draft();
+                            }
+                            Key::Named(NamedKey::Backspace) => {
+                                let _ = self.window.screen.chrome.settings.key_draft_backspace();
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                match self
+                                    .window
+                                    .screen
+                                    .chrome
+                                    .settings
+                                    .take_key_draft_label()
+                                {
+                                    Ok(name) => {
+                                        let pem = self
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .key_draft_pem
+                                            .trim()
+                                            .to_string();
+                                        let pem =
+                                            if pem.is_empty() { None } else { Some(pem) };
+                                        self.window
+                                            .screen
+                                            .host_store
+                                            .create_ssh_key_with_pem(&name, pem);
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                            Key::Character(ch) => {
+                                let text = key_event.text.as_deref().unwrap_or(ch.as_str());
+                                if crate::renderer::is_printable_text(text) {
+                                    let _ = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .insert_key_draft_text(text);
+                                }
+                            }
+                            _ => {}
+                        }
+                        self.request_overlay_redraw();
+                        return true;
+                    }
+
                     match &key_event.logical_key {
                         Key::Named(NamedKey::Escape) => {
                             self.window.screen.chrome.settings.close();

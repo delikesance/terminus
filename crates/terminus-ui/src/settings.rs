@@ -7,6 +7,57 @@ pub const SIDEBAR_WIDTH: f32 = 224.0;
 pub const HEIGHT_RATIO: f32 = 0.78;
 pub const RADIUS: f32 = 16.0;
 
+/// Equal inset around the input inside a SqlSync field card.
+pub const FIELD_CARD_PAD: f32 = 12.0;
+/// Space from card top to the value input (label sits above).
+pub const FIELD_INPUT_TOP: f32 = 30.0;
+pub const FIELD_INPUT_HEIGHT: f32 = 28.0;
+/// Card height: top pad for label + input + matching bottom pad.
+pub const FIELD_CARD_HEIGHT: f32 = FIELD_INPUT_TOP + FIELD_INPUT_HEIGHT + FIELD_CARD_PAD;
+/// Gap between stacked field cards.
+pub const FIELD_CARD_GAP: f32 = 12.0;
+pub const FIELD_CARD_STEP: f32 = FIELD_CARD_HEIGHT + FIELD_CARD_GAP;
+/// Horizontal inset for value text / placeholder inside the input.
+pub const FIELD_TEXT_INSET: f32 = 10.0;
+/// Trailing eye-toggle slot inside the passphrase input (keeps text clear).
+pub const FIELD_EYE_SLOT: f32 = 28.0;
+pub const FIELD_EYE_ICON: f32 = 16.0;
+/// Soft error banner under the SqlSync action row (only when flagged).
+pub const ERROR_BANNER_HEIGHT: f32 = 44.0;
+pub const ERROR_BANNER_GAP: f32 = 10.0;
+/// Status text line inside the SqlSync footer block (full content width).
+pub const STATUS_TEXT_HEIGHT: f32 = 22.0;
+/// Gap between the status line and the Unlock / Test Sync buttons.
+pub const STATUS_ACTIONS_GAP: f32 = 10.0;
+/// Button row height inside the SqlSync footer block.
+pub const STATUS_ACTIONS_HEIGHT: f32 = 28.0;
+/// Footer block: status on its own line, then the action buttons.
+pub const STATUS_BLOCK_HEIGHT: f32 =
+    FIELD_CARD_PAD + STATUS_TEXT_HEIGHT + STATUS_ACTIONS_GAP + STATUS_ACTIONS_HEIGHT + FIELD_CARD_PAD;
+/// Shared Unlock / Test Sync button width.
+pub const SYNC_ACTION_BTN_WIDTH: f32 = 110.0;
+pub const SYNC_ACTION_BTN_GAP: f32 = 8.0;
+/// Dashed "New SSH Key" CTA height on the Keys tab.
+pub const KEY_CTA_HEIGHT: f32 = 56.0;
+pub const KEY_CTA_GAP: f32 = 12.0;
+/// Stored key row height.
+pub const KEY_ROW_HEIGHT: f32 = 56.0;
+pub const KEY_ROW_GAP: f32 = 8.0;
+/// Inline generate form under the CTA.
+pub const KEY_DRAFT_HEIGHT: f32 = 96.0;
+pub const KEY_DRAFT_GENERATE_WIDTH: f32 = 96.0;
+pub const KEY_DRAFT_CANCEL_WIDTH: f32 = 72.0;
+
+/// Shared input row geometry inside a SqlSync field card (equal card pad).
+pub fn field_input_in_card(card: Rect) -> Rect {
+    Rect::new(
+        card.x + FIELD_CARD_PAD,
+        card.y + FIELD_INPUT_TOP,
+        (card.width - 2.0 * FIELD_CARD_PAD).max(0.0),
+        FIELD_INPUT_HEIGHT,
+    )
+}
+
 /// Remote database engines exposed by the SqlSync selector.
 pub const SQL_ENGINES: [&str; 2] = ["SQLite", "PostgreSQL"];
 
@@ -40,6 +91,8 @@ pub struct SyncUiStatus {
     pub connected: bool,
     pub vault_unlocked: bool,
     pub status_line: String,
+    /// When true, [`status_line`](Self::status_line) is an error to highlight.
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,9 +109,28 @@ pub struct SettingsModal {
     pub sql_passphrase: String,
     pub passphrase_visible: bool,
     pub sync_connected: bool,
+    /// Baseline status shown on the action row (never replaced by errors).
     pub sync_status: String,
+    /// Soft error banner message; `None` hides the banner.
+    pub sync_error: Option<String>,
     pub vault_unlocked: bool,
     pub sql_focus: SqlSyncFocus,
+    /// Inline "New SSH Key" draft form is open.
+    pub key_drafting: bool,
+    /// Label typed into the generate form.
+    pub key_draft_name: String,
+    /// Optional OpenSSH private-key PEM; empty means generate Ed25519.
+    pub key_draft_pem: String,
+    /// Whether the draft name field owns the caret.
+    pub key_draft_focused: bool,
+    /// Whether the PEM paste field owns the caret.
+    pub key_draft_pem_focused: bool,
+    /// Error shown under the generate form (empty label, worker failure, …).
+    pub key_draft_error: Option<String>,
+    /// Hovered Delete control index on the Keys list (red label).
+    pub key_delete_hover: Option<usize>,
+    /// Hovered key row index — Delete is only painted for this row.
+    pub key_row_hover: Option<usize>,
 }
 
 impl Default for SettingsModal {
@@ -75,8 +147,17 @@ impl Default for SettingsModal {
             passphrase_visible: false,
             sync_connected: false,
             sync_status: "Not configured".into(),
+            sync_error: None,
             vault_unlocked: false,
             sql_focus: SqlSyncFocus::None,
+            key_drafting: false,
+            key_draft_name: String::new(),
+            key_draft_pem: String::new(),
+            key_draft_focused: false,
+            key_draft_pem_focused: false,
+            key_draft_error: None,
+            key_delete_hover: None,
+            key_row_hover: None,
         }
     }
 }
@@ -88,6 +169,14 @@ pub enum SettingsHit {
     Tab(SettingsTab),
     NewKey,
     DeleteKey(usize),
+    /// Focus the inline generate-key name field.
+    FocusKeyDraft,
+    /// Focus the optional PEM paste field on the generate form.
+    FocusKeyPem,
+    /// Confirm generating an Ed25519 identity from the draft name.
+    GenerateKey,
+    /// Cancel the inline generate-key form.
+    CancelKeyDraft,
     /// Open / close the Database Engine dropdown.
     ToggleEngineMenu,
     /// Pick an engine from the open dropdown.
@@ -128,8 +217,30 @@ impl SettingsModal {
         self.sync_connected = snap.connected;
         self.vault_unlocked = snap.vault_unlocked;
         if !snap.status_line.is_empty() {
-            self.sync_status = snap.status_line;
+            if snap.is_error {
+                // Keep the action-row baseline; banner owns the error text.
+                self.sync_error = Some(snap.status_line);
+            } else {
+                self.sync_error = None;
+                self.sync_status = snap.status_line;
+            }
         }
+    }
+
+    /// Vault unlock/create feedback: errors go to the banner only.
+    pub fn apply_vault_feedback(&mut self, message: String, unlocked: bool) {
+        self.vault_unlocked = unlocked;
+        if unlocked {
+            self.sync_error = None;
+            self.sync_status = message;
+        } else {
+            self.sync_error = Some(message);
+        }
+    }
+
+    #[inline]
+    pub fn sync_status_is_error(&self) -> bool {
+        self.sync_error.is_some()
     }
 
     /// Paint model for the Connection URI field.
@@ -186,6 +297,11 @@ impl SettingsModal {
         if tab != SettingsTab::SqlSync {
             self.sql_focus = SqlSyncFocus::None;
         }
+        if tab != SettingsTab::Keys {
+            self.close_key_draft();
+            self.key_delete_hover = None;
+            self.key_row_hover = None;
+        }
     }
 
     pub fn close(&mut self) {
@@ -193,6 +309,98 @@ impl SettingsModal {
         self.sql_focus = SqlSyncFocus::None;
         self.engine_menu_open = false;
         self.engine_menu_hover = None;
+        self.key_delete_hover = None;
+        self.key_row_hover = None;
+        self.close_key_draft();
+    }
+
+    /// Open the inline generate-key form and focus the label field.
+    pub fn open_key_draft(&mut self) {
+        self.tab = SettingsTab::Keys;
+        self.key_drafting = true;
+        self.key_draft_focused = true;
+        self.key_draft_pem_focused = false;
+        self.key_draft_error = None;
+        self.sql_focus = SqlSyncFocus::None;
+    }
+
+    pub fn close_key_draft(&mut self) {
+        self.key_drafting = false;
+        self.key_draft_focused = false;
+        self.key_draft_pem_focused = false;
+        self.key_draft_name.clear();
+        self.key_draft_pem.clear();
+        self.key_draft_error = None;
+    }
+
+    pub fn focus_key_draft(&mut self) {
+        if self.key_drafting {
+            self.key_draft_focused = true;
+            self.key_draft_pem_focused = false;
+            self.sql_focus = SqlSyncFocus::None;
+        }
+    }
+
+    pub fn focus_key_pem(&mut self) {
+        if self.key_drafting {
+            self.key_draft_pem_focused = true;
+            self.key_draft_focused = false;
+            self.sql_focus = SqlSyncFocus::None;
+        }
+    }
+
+    /// Insert into the focused generate-key field (label or PEM).
+    pub fn insert_key_draft_text(&mut self, text: &str) -> bool {
+        if !self.key_drafting {
+            return false;
+        }
+        if text.is_empty() {
+            return false;
+        }
+        // PEM pastes may include newlines; allow them only in the PEM field.
+        if self.key_draft_pem_focused {
+            self.key_draft_pem.push_str(text);
+            self.key_draft_error = None;
+            return true;
+        }
+        if !self.key_draft_focused {
+            return false;
+        }
+        if text.chars().any(char::is_control) {
+            return false;
+        }
+        self.key_draft_name.push_str(text);
+        self.key_draft_error = None;
+        true
+    }
+
+    pub fn key_draft_backspace(&mut self) -> bool {
+        if !self.key_drafting {
+            return false;
+        }
+        if self.key_draft_pem_focused {
+            return self.key_draft_pem.pop().is_some();
+        }
+        if !self.key_draft_focused {
+            return false;
+        }
+        self.key_draft_name.pop().is_some()
+    }
+
+    /// Validate the draft label before asking the worker to generate/import.
+    pub fn take_key_draft_label(&mut self) -> Result<String, String> {
+        let name = self.key_draft_name.trim().to_string();
+        if name.is_empty() {
+            let msg = "Enter a label for the new SSH key".to_string();
+            self.key_draft_error = Some(msg.clone());
+            return Err(msg);
+        }
+        Ok(name)
+    }
+
+    /// Whether the draft should import a pasted PEM instead of generating.
+    pub fn key_draft_wants_import(&self) -> bool {
+        !self.key_draft_pem.trim().is_empty()
     }
 
     pub fn focus_uri(&mut self) {
@@ -333,10 +541,12 @@ impl SettingsModal {
         tab: SettingsTab,
     ) -> Rect {
         let dialog = self.dialog_rect(window_width, window_height);
-        let y = dialog.y + 72.0 + match tab {
-            SettingsTab::Keys => 0.0,
-            SettingsTab::SqlSync => 40.0,
-        };
+        let y = dialog.y
+            + 72.0
+            + match tab {
+                SettingsTab::Keys => 0.0,
+                SettingsTab::SqlSync => 40.0,
+            };
         Rect::new(dialog.x + 12.0, y, SIDEBAR_WIDTH - 24.0, 36.0)
     }
 
@@ -345,7 +555,11 @@ impl SettingsModal {
         Rect::new(dialog.right() - 88.0, dialog.bottom() - 40.0, 72.0, 28.0)
     }
 
-    fn sql_content_origin(&self, window_width: f32, window_height: f32) -> (f32, f32, f32) {
+    fn sql_content_origin(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> (f32, f32, f32) {
         let dialog = self.dialog_rect(window_width, window_height);
         let content_x = dialog.x + SIDEBAR_WIDTH + 24.0;
         let content_y = dialog.y + 80.0;
@@ -353,16 +567,150 @@ impl SettingsModal {
         (content_x, content_y, card_w)
     }
 
+    /// Content origin shared by Keys + SqlSync panes.
+    pub fn keys_content_origin(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> (f32, f32, f32) {
+        self.sql_content_origin(window_width, window_height)
+    }
+
+    /// Dashed "New SSH Key" CTA.
+    pub fn new_key_cta_rect(&self, window_width: f32, window_height: f32) -> Rect {
+        let (x, y, w) = self.keys_content_origin(window_width, window_height);
+        Rect::new(x, y + 48.0, w, KEY_CTA_HEIGHT)
+    }
+
+    /// Inline generate form under the CTA (only while drafting).
+    pub fn key_draft_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        if !self.key_drafting {
+            return None;
+        }
+        let cta = self.new_key_cta_rect(window_width, window_height);
+        Some(Rect::new(
+            cta.x,
+            cta.bottom() + KEY_CTA_GAP,
+            cta.width,
+            KEY_DRAFT_HEIGHT,
+        ))
+    }
+
+    pub fn key_draft_field_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        let draft = self.key_draft_rect(window_width, window_height)?;
+        let buttons_w = KEY_DRAFT_GENERATE_WIDTH + 8.0 + KEY_DRAFT_CANCEL_WIDTH;
+        Some(Rect::new(
+            draft.x + FIELD_CARD_PAD,
+            draft.y + 10.0,
+            (draft.width - 2.0 * FIELD_CARD_PAD - buttons_w - 8.0).max(40.0),
+            FIELD_INPUT_HEIGHT,
+        ))
+    }
+
+    pub fn key_draft_pem_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        let draft = self.key_draft_rect(window_width, window_height)?;
+        Some(Rect::new(
+            draft.x + FIELD_CARD_PAD,
+            draft.y + 10.0 + FIELD_INPUT_HEIGHT + 8.0,
+            (draft.width - 2.0 * FIELD_CARD_PAD).max(40.0),
+            FIELD_INPUT_HEIGHT,
+        ))
+    }
+
+    pub fn key_draft_generate_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        let draft = self.key_draft_rect(window_width, window_height)?;
+        let cancel = self.key_draft_cancel_rect(window_width, window_height)?;
+        Some(Rect::new(
+            cancel.x - 8.0 - KEY_DRAFT_GENERATE_WIDTH,
+            draft.y + 10.0,
+            KEY_DRAFT_GENERATE_WIDTH,
+            FIELD_INPUT_HEIGHT,
+        ))
+    }
+
+    pub fn key_draft_cancel_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        let draft = self.key_draft_rect(window_width, window_height)?;
+        Some(Rect::new(
+            draft.right() - FIELD_CARD_PAD - KEY_DRAFT_CANCEL_WIDTH,
+            draft.y + 10.0,
+            KEY_DRAFT_CANCEL_WIDTH,
+            FIELD_INPUT_HEIGHT,
+        ))
+    }
+
+    fn keys_list_origin_y(&self, window_width: f32, window_height: f32) -> f32 {
+        let cta = self.new_key_cta_rect(window_width, window_height);
+        let mut y = cta.bottom() + KEY_CTA_GAP;
+        if self.key_drafting {
+            y += KEY_DRAFT_HEIGHT + KEY_CTA_GAP;
+            if self.key_draft_error.is_some() {
+                y += 18.0;
+            }
+        }
+        y
+    }
+
+    /// Row for a stored managed key.
+    pub fn key_row_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+        index: usize,
+    ) -> Rect {
+        let (x, _, w) = self.keys_content_origin(window_width, window_height);
+        let y = self.keys_list_origin_y(window_width, window_height)
+            + index as f32 * (KEY_ROW_HEIGHT + KEY_ROW_GAP);
+        Rect::new(x, y, w, KEY_ROW_HEIGHT)
+    }
+
+    /// Delete control on a key row (right-aligned, vertically centred).
+    pub fn key_delete_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+        index: usize,
+    ) -> Rect {
+        let row = self.key_row_rect(window_width, window_height, index);
+        const W: f32 = 56.0;
+        const H: f32 = 24.0;
+        const PAD: f32 = 14.0;
+        Rect::new(
+            row.right() - PAD - W,
+            row.y + (row.height - H) * 0.5,
+            W,
+            H,
+        )
+    }
+
     /// Engine card (read-only display / dropdown trigger).
     pub fn engine_card_rect(&self, window_width: f32, window_height: f32) -> Rect {
         let (x, y, w) = self.sql_content_origin(window_width, window_height);
-        Rect::new(x, y + 52.0, w, 64.0)
+        Rect::new(x, y + 52.0, w, FIELD_CARD_HEIGHT)
     }
 
     /// Clickable input row inside the engine card (opens the dropdown).
     pub fn engine_input_rect(&self, window_width: f32, window_height: f32) -> Rect {
-        let card = self.engine_card_rect(window_width, window_height);
-        Rect::new(card.x + 16.0, card.y + 30.0, card.width - 32.0, 26.0)
+        field_input_in_card(self.engine_card_rect(window_width, window_height))
     }
 
     /// Floating dropdown panel under the engine input.
@@ -384,40 +732,90 @@ impl SettingsModal {
         index: usize,
     ) -> Rect {
         let menu = self.engine_menu_rect(window_width, window_height);
-        Rect::new(menu.x + 4.0, menu.y + 4.0 + index as f32 * 32.0, menu.width - 8.0, 32.0)
+        Rect::new(
+            menu.x + 4.0,
+            menu.y + 4.0 + index as f32 * 32.0,
+            menu.width - 8.0,
+            32.0,
+        )
     }
 
     /// Connection URI field card.
     pub fn uri_card_rect(&self, window_width: f32, window_height: f32) -> Rect {
         let (x, y, w) = self.sql_content_origin(window_width, window_height);
-        Rect::new(x, y + 52.0 + 76.0, w, 64.0)
+        Rect::new(x, y + 52.0 + FIELD_CARD_STEP, w, FIELD_CARD_HEIGHT)
     }
 
     pub fn uri_input_rect(&self, window_width: f32, window_height: f32) -> Rect {
-        let card = self.uri_card_rect(window_width, window_height);
-        Rect::new(card.x + 16.0, card.y + 30.0, card.width - 32.0, 26.0)
+        field_input_in_card(self.uri_card_rect(window_width, window_height))
     }
 
     /// Passphrase field card.
     pub fn passphrase_card_rect(&self, window_width: f32, window_height: f32) -> Rect {
         let (x, y, w) = self.sql_content_origin(window_width, window_height);
-        Rect::new(x, y + 52.0 + 2.0 * 76.0, w, 64.0)
+        Rect::new(x, y + 52.0 + 2.0 * FIELD_CARD_STEP, w, FIELD_CARD_HEIGHT)
     }
 
+    /// Text editable region (excludes the trailing eye toggle).
     pub fn passphrase_input_rect(&self, window_width: f32, window_height: f32) -> Rect {
-        let card = self.passphrase_card_rect(window_width, window_height);
-        Rect::new(card.x + 16.0, card.y + 30.0, card.width - 56.0, 26.0)
+        let input =
+            field_input_in_card(self.passphrase_card_rect(window_width, window_height));
+        Rect::new(
+            input.x,
+            input.y,
+            (input.width - FIELD_EYE_SLOT).max(0.0),
+            input.height,
+        )
     }
 
+    /// Eye toggle hit target on the right of the passphrase input.
     pub fn passphrase_toggle_rect(&self, window_width: f32, window_height: f32) -> Rect {
-        let card = self.passphrase_card_rect(window_width, window_height);
-        Rect::new(card.right() - 36.0, card.y + 30.0, 24.0, 26.0)
+        let input =
+            field_input_in_card(self.passphrase_card_rect(window_width, window_height));
+        Rect::new(
+            input.right() - FIELD_EYE_SLOT,
+            input.y,
+            FIELD_EYE_SLOT,
+            input.height,
+        )
     }
 
-    /// Status row under the three field cards.
+    /// Footer block under the three field cards: status line + action buttons.
     pub fn status_row_rect(&self, window_width: f32, window_height: f32) -> Rect {
         let (x, y, w) = self.sql_content_origin(window_width, window_height);
-        Rect::new(x, y + 52.0 + 3.0 * 76.0, w, 48.0)
+        Rect::new(x, y + 52.0 + 3.0 * FIELD_CARD_STEP, w, STATUS_BLOCK_HEIGHT)
+    }
+
+    /// Full-width status text band (does not share the row with buttons).
+    pub fn status_text_rect(&self, window_width: f32, window_height: f32) -> Rect {
+        let block = self.status_row_rect(window_width, window_height);
+        Rect::new(
+            block.x + FIELD_CARD_PAD,
+            block.y + FIELD_CARD_PAD,
+            (block.width - 2.0 * FIELD_CARD_PAD).max(0.0),
+            STATUS_TEXT_HEIGHT,
+        )
+    }
+
+    /// Soft red error panel under the action row — only when sync failed.
+    pub fn error_banner_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        let Some(msg) = self.sync_error.as_deref() else {
+            return None;
+        };
+        if msg.trim().is_empty() {
+            return None;
+        }
+        let row = self.status_row_rect(window_width, window_height);
+        Some(Rect::new(
+            row.x,
+            row.bottom() + ERROR_BANNER_GAP,
+            row.width,
+            ERROR_BANNER_HEIGHT,
+        ))
     }
 
     pub fn unlock_vault_button_rect(
@@ -425,19 +823,29 @@ impl SettingsModal {
         window_width: f32,
         window_height: f32,
     ) -> Rect {
-        let row = self.status_row_rect(window_width, window_height);
-        let btn_w = 110.0;
-        Rect::new(row.right() - btn_w - 12.0 - 118.0, row.y + 10.0, btn_w, 28.0)
+        let block = self.status_row_rect(window_width, window_height);
+        let y = block.y + FIELD_CARD_PAD + STATUS_TEXT_HEIGHT + STATUS_ACTIONS_GAP;
+        Rect::new(
+            block.right()
+                - FIELD_CARD_PAD
+                - SYNC_ACTION_BTN_WIDTH
+                - SYNC_ACTION_BTN_GAP
+                - SYNC_ACTION_BTN_WIDTH,
+            y,
+            SYNC_ACTION_BTN_WIDTH,
+            STATUS_ACTIONS_HEIGHT,
+        )
     }
 
-    pub fn test_sync_button_rect(
-        &self,
-        window_width: f32,
-        window_height: f32,
-    ) -> Rect {
-        let row = self.status_row_rect(window_width, window_height);
-        let btn_w = 110.0;
-        Rect::new(row.right() - btn_w - 12.0, row.y + 10.0, btn_w, 28.0)
+    pub fn test_sync_button_rect(&self, window_width: f32, window_height: f32) -> Rect {
+        let block = self.status_row_rect(window_width, window_height);
+        let y = block.y + FIELD_CARD_PAD + STATUS_TEXT_HEIGHT + STATUS_ACTIONS_GAP;
+        Rect::new(
+            block.right() - FIELD_CARD_PAD - SYNC_ACTION_BTN_WIDTH,
+            y,
+            SYNC_ACTION_BTN_WIDTH,
+            STATUS_ACTIONS_HEIGHT,
+        )
     }
 
     pub fn hit_test(
@@ -454,7 +862,9 @@ impl SettingsModal {
         if !dialog.contains(x, y) {
             return SettingsHit::Close;
         }
-        if self.close_button_rect(window_width, window_height).contains(x, y)
+        if self
+            .close_button_rect(window_width, window_height)
+            .contains(x, y)
             || self.done_rect(window_width, window_height).contains(x, y)
         {
             return SettingsHit::Close;
@@ -470,6 +880,42 @@ impl SettingsModal {
             .contains(x, y)
         {
             return SettingsHit::Tab(SettingsTab::SqlSync);
+        }
+        if self.tab == SettingsTab::Keys {
+            if let Some(gen) = self.key_draft_generate_rect(window_width, window_height) {
+                if gen.contains(x, y) {
+                    return SettingsHit::GenerateKey;
+                }
+            }
+            if let Some(cancel) = self.key_draft_cancel_rect(window_width, window_height) {
+                if cancel.contains(x, y) {
+                    return SettingsHit::CancelKeyDraft;
+                }
+            }
+            if let Some(field) = self.key_draft_field_rect(window_width, window_height) {
+                if field.contains(x, y) {
+                    return SettingsHit::FocusKeyDraft;
+                }
+            }
+            if let Some(pem) = self.key_draft_pem_rect(window_width, window_height) {
+                if pem.contains(x, y) {
+                    return SettingsHit::FocusKeyPem;
+                }
+            }
+            if self
+                .new_key_cta_rect(window_width, window_height)
+                .contains(x, y)
+            {
+                return SettingsHit::NewKey;
+            }
+            for i in 0..self.keys.len() {
+                if self
+                    .key_delete_rect(window_width, window_height, i)
+                    .contains(x, y)
+                {
+                    return SettingsHit::DeleteKey(i);
+                }
+            }
         }
         if self.tab == SettingsTab::SqlSync {
             // Dropdown options sit above everything else while open.
@@ -545,11 +991,18 @@ impl SettingsModal {
             return ChromeCursor::Default;
         }
         match self.hit_test(window_width, window_height, x, y) {
-            SettingsHit::FocusUri | SettingsHit::FocusPassphrase => ChromeCursor::Text,
+            SettingsHit::FocusUri
+            | SettingsHit::FocusPassphrase
+            | SettingsHit::FocusKeyDraft
+            | SettingsHit::FocusKeyPem => ChromeCursor::Text,
             SettingsHit::Consume => ChromeCursor::Default,
-            SettingsHit::Close | SettingsHit::Done | SettingsHit::Tab(_)
+            SettingsHit::Close
+            | SettingsHit::Done
+            | SettingsHit::Tab(_)
             | SettingsHit::NewKey
             | SettingsHit::DeleteKey(_)
+            | SettingsHit::GenerateKey
+            | SettingsHit::CancelKeyDraft
             | SettingsHit::ToggleEngineMenu
             | SettingsHit::SelectEngine(_)
             | SettingsHit::TogglePassphrase
@@ -558,22 +1011,74 @@ impl SettingsModal {
         }
     }
 
-    /// Hover handling for the engine dropdown; returns whether to repaint.
-    pub fn handle_hover(&mut self, window_width: f32, window_height: f32, x: f32, y: f32) -> bool {
-        if !self.engine_menu_open {
-            return self.set_engine_menu_hover(None);
-        }
-        let mut hover = None;
-        for i in 0..SQL_ENGINES.len() {
-            if self
-                .engine_option_rect(window_width, window_height, i)
-                .contains(x, y)
-            {
-                hover = Some(i);
-                break;
+    /// Hover handling for engine dropdown options and Keys Delete controls.
+    pub fn handle_hover(
+        &mut self,
+        window_width: f32,
+        window_height: f32,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        let mut changed = false;
+
+        if self.tab == SettingsTab::Keys {
+            let mut row_hover = None;
+            let mut del_hover = None;
+            for i in 0..self.keys.len() {
+                if self
+                    .key_row_rect(window_width, window_height, i)
+                    .contains(x, y)
+                {
+                    row_hover = Some(i);
+                    if self
+                        .key_delete_rect(window_width, window_height, i)
+                        .contains(x, y)
+                    {
+                        del_hover = Some(i);
+                    }
+                    break;
+                }
             }
+            changed |= self.set_key_row_hover(row_hover);
+            changed |= self.set_key_delete_hover(del_hover);
+        } else {
+            changed |= self.set_key_row_hover(None);
+            changed |= self.set_key_delete_hover(None);
         }
-        self.set_engine_menu_hover(hover)
+
+        if self.engine_menu_open {
+            let mut hover = None;
+            for i in 0..SQL_ENGINES.len() {
+                if self
+                    .engine_option_rect(window_width, window_height, i)
+                    .contains(x, y)
+                {
+                    hover = Some(i);
+                    break;
+                }
+            }
+            changed |= self.set_engine_menu_hover(hover);
+        } else {
+            changed |= self.set_engine_menu_hover(None);
+        }
+
+        changed
+    }
+
+    pub fn set_key_delete_hover(&mut self, index: Option<usize>) -> bool {
+        if self.key_delete_hover == index {
+            return false;
+        }
+        self.key_delete_hover = index;
+        true
+    }
+
+    pub fn set_key_row_hover(&mut self, index: Option<usize>) -> bool {
+        if self.key_row_hover == index {
+            return false;
+        }
+        self.key_row_hover = index;
+        true
     }
 }
 
@@ -603,6 +1108,32 @@ mod tests {
         assert_eq!(s.sql_passphrase, "secretpass");
         assert!(s.sql_backspace());
         assert_eq!(s.sql_passphrase, "secretpas");
+    }
+
+    #[test]
+    fn hit_test_finds_new_key_cta_and_generate_form() {
+        let mut s = SettingsModal::default();
+        s.open_tab(SettingsTab::Keys);
+        let (w, h) = (1000.0, 800.0);
+        let cta = s.new_key_cta_rect(w, h);
+        assert_eq!(
+            s.hit_test(w, h, cta.x + 4.0, cta.y + 4.0),
+            SettingsHit::NewKey
+        );
+        s.open_key_draft();
+        assert!(s.key_drafting);
+        let field = s.key_draft_field_rect(w, h).expect("field");
+        assert_eq!(
+            s.hit_test(w, h, field.x + 2.0, field.y + 2.0),
+            SettingsHit::FocusKeyDraft
+        );
+        let gen = s.key_draft_generate_rect(w, h).expect("generate");
+        assert_eq!(
+            s.hit_test(w, h, gen.x + 2.0, gen.y + 2.0),
+            SettingsHit::GenerateKey
+        );
+        s.insert_key_draft_text("Laptop");
+        assert_eq!(s.take_key_draft_label().unwrap(), "Laptop");
     }
 
     #[test]
@@ -660,10 +1191,12 @@ mod tests {
             connected: true,
             vault_unlocked: true,
             status_line: "Last synced just now".into(),
+            is_error: false,
         });
         assert!(s.sync_connected);
         assert!(s.vault_unlocked);
         assert_eq!(s.sync_status, "Last synced just now");
+        assert!(!s.sync_status_is_error());
         assert_eq!(s.sql_uri, "sqlite:./remote.db");
     }
 
@@ -676,8 +1209,93 @@ mod tests {
             connected: false,
             vault_unlocked: false,
             status_line: "Not configured".into(),
+            is_error: false,
         });
         assert_eq!(s.sql_uri, "sqlite:./draft.db");
+    }
+
+    #[test]
+    fn vault_feedback_lands_on_sql_sync_status_not_as_success_when_locked() {
+        let mut s = SettingsModal::default();
+        assert_eq!(s.sync_status, "Not configured");
+        s.apply_vault_feedback("Vault passphrase must be at least 8 characters".into(), false);
+        assert_eq!(s.sync_status, "Not configured");
+        assert_eq!(
+            s.sync_error.as_deref(),
+            Some("Vault passphrase must be at least 8 characters")
+        );
+        assert!(s.sync_status_is_error());
+        assert!(!s.vault_unlocked);
+
+        s.apply_vault_feedback("Vault unlocked".into(), true);
+        assert_eq!(s.sync_status, "Vault unlocked");
+        assert!(s.sync_error.is_none());
+        assert!(!s.sync_status_is_error());
+        assert!(s.vault_unlocked);
+    }
+
+    #[test]
+    fn sync_error_status_is_flagged() {
+        let mut s = SettingsModal::default();
+        s.apply_sync_status(SyncUiStatus {
+            uri: "postgres://x".into(),
+            connected: false,
+            vault_unlocked: false,
+            status_line: "connection refused".into(),
+            is_error: true,
+        });
+        assert_eq!(s.sync_status, "Not configured");
+        assert_eq!(s.sync_error.as_deref(), Some("connection refused"));
+        assert!(s.sync_status_is_error());
+    }
+
+    #[test]
+    fn error_banner_only_when_sync_failed() {
+        let mut s = SettingsModal::default();
+        s.open_tab(SettingsTab::SqlSync);
+        let (w, h) = (1000.0, 800.0);
+        assert!(s.error_banner_rect(w, h).is_none());
+
+        s.apply_sync_status(SyncUiStatus {
+            uri: "sqlite:./x.db".into(),
+            connected: false,
+            vault_unlocked: false,
+            status_line: "connection refused".into(),
+            is_error: true,
+        });
+        let banner = s.error_banner_rect(w, h).expect("banner");
+        let row = s.status_row_rect(w, h);
+        assert!(banner.y >= row.bottom());
+        assert!((banner.width - row.width).abs() < 0.01);
+        assert!((banner.height - ERROR_BANNER_HEIGHT).abs() < 0.01);
+        assert_eq!(s.sync_status, "Not configured");
+
+        s.apply_sync_status(SyncUiStatus {
+            uri: "sqlite:./x.db".into(),
+            connected: true,
+            vault_unlocked: true,
+            status_line: "Sync ok".into(),
+            is_error: false,
+        });
+        assert!(s.error_banner_rect(w, h).is_none());
+        assert_eq!(s.sync_status, "Sync ok");
+    }
+
+    #[test]
+    fn status_text_sits_above_action_buttons_full_width() {
+        let mut s = SettingsModal::default();
+        s.open_tab(SettingsTab::SqlSync);
+        let (w, h) = (1000.0, 800.0);
+        let block = s.status_row_rect(w, h);
+        let text = s.status_text_rect(w, h);
+        let unlock = s.unlock_vault_button_rect(w, h);
+        let test = s.test_sync_button_rect(w, h);
+
+        assert!(text.bottom() <= unlock.y);
+        assert!(text.width > block.width * 0.7);
+        assert!((unlock.y - test.y).abs() < 0.01);
+        assert!(test.x > unlock.right());
+        assert!(test.right() <= block.right() + 0.01);
     }
 
     #[test]
@@ -721,5 +1339,23 @@ mod tests {
         s.toggle_passphrase_visible();
         let visible = s.passphrase_field_paint();
         assert_eq!(visible.text, "secret");
+    }
+
+    #[test]
+    fn field_cards_use_equal_padding_and_eye_clears_text() {
+        let mut s = SettingsModal::default();
+        s.open_tab(SettingsTab::SqlSync);
+        let (w, h) = (1000.0, 800.0);
+        let card = s.passphrase_card_rect(w, h);
+        let input = field_input_in_card(card);
+        assert!((input.x - card.x - FIELD_CARD_PAD).abs() < 0.01);
+        assert!((card.right() - input.right() - FIELD_CARD_PAD).abs() < 0.01);
+        assert!((card.bottom() - input.bottom() - FIELD_CARD_PAD).abs() < 0.01);
+
+        let text = s.passphrase_input_rect(w, h);
+        let eye = s.passphrase_toggle_rect(w, h);
+        assert!(text.right() <= eye.x + 0.01);
+        assert!((eye.right() - input.right()).abs() < 0.01);
+        assert!(!crate::overlap::rects_overlap(text, eye));
     }
 }

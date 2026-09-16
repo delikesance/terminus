@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Host {
     pub id: Uuid,
     pub name: String,
@@ -16,16 +16,20 @@ pub struct Host {
     pub tags: Vec<String>,
     pub notes: String,
     pub os_id: Option<String>,
+    /// Manual order among peers (same group_id / ungrouped). Lower first.
+    pub sort_order: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Group {
     pub id: Uuid,
     pub name: String,
     pub parent_id: Option<Uuid>,
+    /// Manual order among root groups. Lower first.
+    pub sort_order: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,

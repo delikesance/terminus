@@ -82,7 +82,9 @@ pub struct HostRow {
     pub username: String,
     pub group_id: Option<String>,
     pub os_id: Option<String>,
-    /// Used to keep newly moved hosts at the end of their group.
+    /// Manual order among peers (same group / ungrouped). Lower first.
+    pub sort_order: i64,
+    /// Used as a tie-break after sort_order within a group.
     pub updated_at: DateTime<Utc>,
 }
 
@@ -96,6 +98,7 @@ impl HostRow {
             username: host.username.clone(),
             group_id: host.group_id.map(|id| id.to_string()),
             os_id: host.os_id.clone(),
+            sort_order: host.sort_order,
             updated_at: host.updated_at,
         }
     }
@@ -251,13 +254,14 @@ fn push_sessions(rows: &mut Vec<Row>, sessions: &[&OpenSession], host_id: &str) 
 
 /// The sidebar's list, in order:
 /// 1. `Local` — this computer + WSL distros (+ their open sessions)
-/// 2. `Hosts` — mixed root hosts and groups (sorted by name), always shown
+/// 2. `Hosts` — ungrouped hosts and groups interleaved by `sort_order`
 ///
 /// Empty groups stay in the list so a freshly created group is visible.
+/// Default backfill puts hosts before groups once; the user can reorder freely.
 pub fn sidebar_rows(
     platform: &PlatformFacts,
     hosts: &[HostRow],
-    groups: &[(String, String)],
+    groups: &[(String, String, i64)],
     collapsed: &HashSet<String>,
     collapsed_hosts: &HashSet<String>,
     open_host_ids: &[String],
@@ -318,29 +322,34 @@ pub fn sidebar_rows(
         Group(&'a str, &'a str, Vec<&'a HostRow>),
     }
 
-    let mut root: Vec<(String, RootItem<'_>)> = Vec::new();
+    let mut root: Vec<(i64, String, RootItem<'_>)> = Vec::new();
     for host in hosts.iter().filter(|host| host.group_id.is_none()) {
-        root.push((host.name.clone(), RootItem::Host(host)));
+        root.push((
+            host.sort_order,
+            host.name.to_lowercase(),
+            RootItem::Host(host),
+        ));
     }
-    for (group_id, group_name) in groups {
+    for (group_id, group_name, group_order) in groups {
         let mut group_hosts: Vec<_> = hosts
             .iter()
             .filter(|host| host.group_id.as_deref() == Some(group_id.as_str()))
             .collect();
-        // Oldest first → a just-moved host (fresh updated_at) lands at the end.
         group_hosts.sort_by(|a, b| {
-            a.updated_at
-                .cmp(&b.updated_at)
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.updated_at.cmp(&b.updated_at))
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         root.push((
-            group_name.clone(),
+            *group_order,
+            group_name.to_lowercase(),
             RootItem::Group(group_id.as_str(), group_name.as_str(), group_hosts),
         ));
     }
-    root.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
+    root.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
-    for (_, item) in root {
+    for (_, _, item) in root {
         match item {
             RootItem::Host(host) => {
                 let host_sessions = sessions_for_host(sessions, &host.id);
@@ -381,6 +390,36 @@ pub fn sidebar_rows(
             }
         }
     }
+
+    // #region agent log
+    {
+        let mut order: Vec<String> = Vec::new();
+        for row in &rows {
+            match row {
+                Row::Host(h) if h.stored && !h.nested => {
+                    order.push(format!("host:{}", h.name.replace('"', "")));
+                }
+                Row::Group { name, .. } => {
+                    order.push(format!("group:{}", name.replace('"', "")));
+                }
+                _ => {}
+            }
+        }
+        crate::agent_debug::log(
+            "H4",
+            "hosts.rs:sidebar_rows",
+            "hosts section root order",
+            &format!(
+                r#"{{"order":[{}],"runId":"post-fix"}}"#,
+                order
+                    .iter()
+                    .map(|s| format!(r#""{s}""#))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        );
+    }
+    // #endregion
 
     rows
 }
@@ -559,6 +598,7 @@ fn host_from_draft(draft: &HostDraft) -> Host {
         tags: Vec::new(),
         notes: String::new(),
         os_id: None,
+        sort_order: 0,
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -577,8 +617,36 @@ enum Command {
         host_id: String,
         group_id: Option<String>,
     },
+    /// Place an ungrouped host before another root host or group.
+    ReorderHost {
+        host_id: String,
+        before_host_id: Option<String>,
+        before_group_id: Option<String>,
+    },
+    /// Place a group before another group or root host.
+    ReorderGroup {
+        group_id: String,
+        before_group_id: Option<String>,
+        before_host_id: Option<String>,
+    },
     /// Unlock or create the vault with a passphrase (Settings).
     UnlockVault(String),
+    /// Generate and persist a new Ed25519 managed SSH key.
+    CreateSshKey {
+        name: String,
+        /// When set, import this OpenSSH PEM instead of generating.
+        pem: Option<String>,
+    },
+    /// Soft-delete a managed SSH key.
+    DeleteSshKey { id: String },
+    /// Soft-delete a stored SSH host.
+    DeleteHost { id: String },
+    /// Soft-delete a host group (hosts inside become ungrouped).
+    DeleteGroup { id: String },
+    /// Rename a stored SSH host.
+    RenameHost { id: String, name: String },
+    /// Rename a host group.
+    RenameGroup { id: String, name: String },
     /// Persist remote URI and run SyncEngine::sync_now.
     TestSync {
         uri: String,
@@ -589,14 +657,15 @@ enum Command {
 #[derive(Debug)]
 enum HostEvent {
     Loaded(Vec<HostRow>),
-    GroupsLoaded(Vec<(String, String)>),
-    IdentitiesLoaded(Vec<(String, String, String)>),
+    GroupsLoaded(Vec<(String, String, i64)>),
+    IdentitiesLoaded(Vec<(String, String, String, String)>),
     /// Loaded sync URI + status for the Settings pane.
     SyncStatus {
         uri: String,
         connected: bool,
         vault_unlocked: bool,
         status_line: String,
+        is_error: bool,
     },
     /// This machine and the Windows-side distros. Sent per refresh, after
     /// `Loaded`, and deliberately not counted as an answer to a command:
@@ -617,9 +686,9 @@ pub struct HostRepository {
     commands: Sender<Command>,
     events: Receiver<HostEvent>,
     hosts: Vec<HostRow>,
-    groups: Vec<(String, String)>,
+    groups: Vec<(String, String, i64)>,
     /// `(id, name, fingerprint)` for Settings + add-host picker.
-    identities: Vec<(String, String, String)>,
+    identities: Vec<(String, String, String, String)>,
     platform: PlatformFacts,
     loading: bool,
     /// Commands sent but not yet answered.
@@ -633,6 +702,7 @@ pub struct HostRepository {
     sync_uri: String,
     sync_connected: bool,
     sync_status_line: String,
+    sync_status_is_error: bool,
 }
 
 impl HostRepository {
@@ -668,6 +738,7 @@ impl HostRepository {
             sync_uri: String::new(),
             sync_connected: false,
             sync_status_line: "Not configured".into(),
+            sync_status_is_error: false,
         }
     }
 
@@ -680,11 +751,11 @@ impl HostRepository {
         &self.hosts
     }
 
-    pub fn groups(&self) -> &[(String, String)] {
+    pub fn groups(&self) -> &[(String, String, i64)] {
         &self.groups
     }
 
-    pub fn identities(&self) -> &[(String, String, String)] {
+    pub fn identities(&self) -> &[(String, String, String, String)] {
         &self.identities
     }
 
@@ -710,6 +781,10 @@ impl HostRepository {
 
     pub fn sync_status_line(&self) -> &str {
         &self.sync_status_line
+    }
+
+    pub fn sync_status_is_error(&self) -> bool {
+        self.sync_status_is_error
     }
 
     /// Persist URI and run a sync test against SyncEngine.
@@ -766,9 +841,87 @@ impl HostRepository {
         });
     }
 
+    /// Reorder an ungrouped host before a root host or group.
+    pub fn reorder_host(
+        &mut self,
+        host_id: &str,
+        before_host_id: Option<&str>,
+        before_group_id: Option<&str>,
+    ) {
+        self.send(Command::ReorderHost {
+            host_id: host_id.to_string(),
+            before_host_id: before_host_id.map(str::to_string),
+            before_group_id: before_group_id.map(str::to_string),
+        });
+    }
+
+    /// Reorder a group before another group or root host.
+    pub fn reorder_group(
+        &mut self,
+        group_id: &str,
+        before_group_id: Option<&str>,
+        before_host_id: Option<&str>,
+    ) {
+        self.send(Command::ReorderGroup {
+            group_id: group_id.to_string(),
+            before_group_id: before_group_id.map(str::to_string),
+            before_host_id: before_host_id.map(str::to_string),
+        });
+    }
+
     /// Unlock or create the vault (Settings passphrase).
     pub fn unlock_vault(&mut self, passphrase: &str) {
         self.send(Command::UnlockVault(passphrase.to_string()));
+    }
+
+    /// Generate and persist a new Ed25519 managed SSH key.
+    pub fn create_ssh_key(&mut self, name: &str) {
+        self.create_ssh_key_with_pem(name, None);
+    }
+
+    /// Generate, or import `pem` when provided.
+    pub fn create_ssh_key_with_pem(&mut self, name: &str, pem: Option<String>) {
+        self.send(Command::CreateSshKey {
+            name: name.to_string(),
+            pem,
+        });
+    }
+
+    /// Soft-delete a managed SSH key by id.
+    pub fn delete_ssh_key(&mut self, id: &str) {
+        self.send(Command::DeleteSshKey {
+            id: id.to_string(),
+        });
+    }
+
+    /// Soft-delete a stored SSH host by id.
+    pub fn delete_host(&mut self, id: &str) {
+        self.send(Command::DeleteHost {
+            id: id.to_string(),
+        });
+    }
+
+    /// Soft-delete a host group by id.
+    pub fn delete_group(&mut self, id: &str) {
+        self.send(Command::DeleteGroup {
+            id: id.to_string(),
+        });
+    }
+
+    /// Rename a stored SSH host.
+    pub fn rename_host(&mut self, id: &str, name: &str) {
+        self.send(Command::RenameHost {
+            id: id.to_string(),
+            name: name.to_string(),
+        });
+    }
+
+    /// Rename a host group.
+    pub fn rename_group(&mut self, id: &str, name: &str) {
+        self.send(Command::RenameGroup {
+            id: id.to_string(),
+            name: name.to_string(),
+        });
     }
 
     /// Persist without probing (tests). Prefer [`Self::probe_and_create`] in UI.
@@ -833,11 +986,13 @@ impl HostRepository {
                     connected,
                     vault_unlocked,
                     status_line,
+                    is_error,
                 }) => {
                     self.sync_uri = uri;
                     self.sync_connected = connected;
                     self.vault_unlocked = vault_unlocked;
                     self.sync_status_line = status_line;
+                    self.sync_status_is_error = is_error;
                     changed = true;
                 }
                 Ok(HostEvent::Platform(platform)) => {
@@ -847,6 +1002,7 @@ impl HostRepository {
                 Ok(HostEvent::Stored(label)) => {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.notice = Some(label);
+                    self.error = None;
                     changed = true;
                 }
                 Ok(HostEvent::Failed(message)) => {
@@ -858,7 +1014,13 @@ impl HostRepository {
                 Ok(HostEvent::VaultStatus { unlocked, message }) => {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.vault_unlocked = unlocked;
-                    self.vault_message = message;
+                    if let Some(msg) = message {
+                        // Surface vault unlock/create results on the SqlSync
+                        // status row (not the host-list notice band).
+                        self.sync_status_line = msg.clone();
+                        self.sync_status_is_error = !unlocked;
+                        self.vault_message = Some(msg);
+                    }
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -954,7 +1116,16 @@ fn worker(
             }
             Command::Create(draft) => {
                 // Test / skip-probe path: no SSH round-trip.
-                let host = host_from_draft(&draft);
+                let mut host = host_from_draft(&draft);
+                match runtime.block_on(store.next_host_sort_order(None)) {
+                    Ok(order) => host.sort_order = order,
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(format!(
+                            "Could not save the host: {err}"
+                        )));
+                        continue;
+                    }
+                }
                 let label = host.name.clone();
                 match runtime.block_on(store.upsert_host(&host)) {
                     Ok(()) => {
@@ -983,10 +1154,20 @@ fn worker(
             }
             Command::CreateGroup(name) => {
                 let now = Utc::now();
+                let sort_order = match runtime.block_on(store.next_group_sort_order()) {
+                    Ok(order) => order,
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(format!(
+                            "Could not save the group: {err}"
+                        )));
+                        continue;
+                    }
+                };
                 let group = Group {
                     id: Uuid::new_v4(),
                     name,
                     parent_id: None,
+                    sort_order,
                     created_at: now,
                     updated_at: now,
                     deleted_at: None,
@@ -1014,6 +1195,76 @@ fn worker(
                     }
                 }
             }
+            Command::ReorderHost {
+                host_id,
+                before_host_id,
+                before_group_id,
+            } => {
+                match reorder_host(
+                    &runtime,
+                    &store,
+                    &host_id,
+                    before_host_id.as_deref(),
+                    before_group_id.as_deref(),
+                ) {
+                    Ok(label) => {
+                        // #region agent log
+                        crate::agent_debug::log(
+                            "H2",
+                            "hosts.rs:ReorderHost",
+                            "reorder persisted",
+                            &format!(
+                                r#"{{"hostId":"{}","beforeHost":"{}","beforeGroup":"{}","runId":"post-fix"}}"#,
+                                host_id.replace('"', ""),
+                                before_host_id.as_deref().unwrap_or("").replace('"', ""),
+                                before_group_id.as_deref().unwrap_or("").replace('"', "")
+                            ),
+                        );
+                        // #endregion
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list(&runtime, &store));
+                        let _ = events.send(list_groups(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
+                    }
+                }
+            }
+            Command::ReorderGroup {
+                group_id,
+                before_group_id,
+                before_host_id,
+            } => {
+                match reorder_group(
+                    &runtime,
+                    &store,
+                    &group_id,
+                    before_group_id.as_deref(),
+                    before_host_id.as_deref(),
+                ) {
+                    Ok(label) => {
+                        // #region agent log
+                        crate::agent_debug::log(
+                            "H3",
+                            "hosts.rs:ReorderGroup",
+                            "group reorder persisted",
+                            &format!(
+                                r#"{{"groupId":"{}","beforeGroup":"{}","beforeHost":"{}","runId":"post-fix"}}"#,
+                                group_id.replace('"', ""),
+                                before_group_id.as_deref().unwrap_or("").replace('"', ""),
+                                before_host_id.as_deref().unwrap_or("").replace('"', "")
+                            ),
+                        );
+                        // #endregion
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list_groups(&runtime, &store));
+                        let _ = events.send(list(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
+                    }
+                }
+            }
             Command::UnlockVault(passphrase) => {
                 match unlock_or_create_vault(&runtime, &store, &passphrase) {
                     Ok(unlocked) => {
@@ -1035,6 +1286,90 @@ fn worker(
                             unlocked: false,
                             message: Some(message),
                         });
+                    }
+                }
+            }
+            Command::CreateSshKey { name, pem } => {
+                match create_ssh_key(&runtime, &store, &name, pem.as_deref()) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list_identities(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
+                    }
+                }
+            }
+            Command::DeleteSshKey { id } => {
+                match delete_ssh_key(&runtime, &store, &id) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list_identities(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
+                    }
+                }
+            }
+            Command::DeleteHost { id } => {
+                // #region agent log
+                crate::agent_debug::log(
+                    "H4",
+                    "hosts.rs:DeleteHost",
+                    "worker received DeleteHost",
+                    &format!(r#"{{"id":"{}"}}"#, id.replace('"', "")),
+                );
+                // #endregion
+                match delete_host(&runtime, &store, &id) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
+                    }
+                }
+            }
+            Command::DeleteGroup { id } => {
+                // #region agent log
+                crate::agent_debug::log(
+                    "H4",
+                    "hosts.rs:DeleteGroup",
+                    "worker received DeleteGroup",
+                    &format!(r#"{{"id":"{}"}}"#, id.replace('"', "")),
+                );
+                // #endregion
+                match delete_group(&runtime, &store, &id) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list(&runtime, &store));
+                        let _ = events.send(list_groups(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
+                    }
+                }
+            }
+            Command::RenameHost { id, name } => {
+                match rename_host(&runtime, &store, &id, &name) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
+                    }
+                }
+            }
+            Command::RenameGroup { id, name } => {
+                match rename_group(&runtime, &store, &id, &name) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(label));
+                        let _ = events.send(list_groups(&runtime, &store));
+                        let _ = events.send(list(&runtime, &store));
+                    }
+                    Err(err) => {
+                        let _ = events.send(HostEvent::Failed(err));
                     }
                 }
             }
@@ -1102,6 +1437,9 @@ fn probe_and_persist(
     }
 
     let mut host = host_from_draft(&draft);
+    host.sort_order = runtime
+        .block_on(store.next_host_sort_order(None))
+        .map_err(|e| format!("Could not save the host: {e}"))?;
     // Probe uses in-memory password when present.
     if method == HostAuthMethod::Password {
         host.password = Some(draft.password.clone());
@@ -1168,16 +1506,22 @@ fn sync_status_event(
                 terminus_core::sync::SyncStatus::Idle | terminus_core::sync::SyncStatus::Syncing
             );
 
-        let status_line = if let Some(err) = last_error {
-            err
+        let (status_line, is_error) = if let Some(err) = last_error {
+            (err, true)
         } else if let Some(ts) = last_sync {
-            format!("Last synced {}", ts.format("%Y-%m-%d %H:%M UTC"))
+            (
+                format!("Last synced {}", ts.format("%Y-%m-%d %H:%M UTC")),
+                false,
+            )
         } else if !engine.config.has_remote() {
-            "Not configured".to_string()
+            ("Not configured".to_string(), false)
         } else if !configured {
-            format!("Remote set but not attached ({})", status.as_str())
+            (
+                format!("Remote set but not attached ({})", status.as_str()),
+                false,
+            )
         } else {
-            format!("Ready ({})", status.as_str())
+            (format!("Ready ({})", status.as_str()), false)
         };
 
         HostEvent::SyncStatus {
@@ -1185,6 +1529,7 @@ fn sync_status_event(
             connected,
             vault_unlocked,
             status_line,
+            is_error,
         }
     })
 }
@@ -1203,15 +1548,21 @@ async fn run_test_sync(
     }
 
     if uri.is_empty() {
-        engine.clear_remote().await;
-        engine.config.enabled = false;
-        engine.config.remote_url = None;
-        let _ = persist_sync_config(store, &engine.config).await;
+        // Test Sync with an empty field is a validation error — do not clear
+        // a previously configured remote, and do not return a non-error
+        // "Not configured" that silently dismisses the error banner.
+        let connected = engine.is_configured().await
+            && matches!(
+                engine.status().await,
+                terminus_core::sync::SyncStatus::Idle
+                    | terminus_core::sync::SyncStatus::Syncing
+            );
         return HostEvent::SyncStatus {
-            uri: String::new(),
-            connected: false,
+            uri: engine.config.remote_url.clone().unwrap_or_default(),
+            connected,
             vault_unlocked,
-            status_line: "Not configured".into(),
+            status_line: "Enter a connection URI before testing sync".into(),
+            is_error: true,
         };
     }
 
@@ -1232,6 +1583,7 @@ async fn run_test_sync(
             connected: false,
             vault_unlocked,
             status_line: err,
+            is_error: true,
         };
     }
 
@@ -1243,6 +1595,7 @@ async fn run_test_sync(
             connected: false,
             vault_unlocked,
             status_line: err.to_string(),
+            is_error: true,
         };
     }
 
@@ -1254,16 +1607,19 @@ async fn run_test_sync(
             .await;
     }
 
-    let status_line = match engine.sync_now().await {
+    let (status_line, is_error) = match engine.sync_now().await {
         Ok(report) => {
             engine.config.last_sync = report.finished_at;
             let _ = persist_sync_config(store, &engine.config).await;
-            format!(
-                "Sync ok — pushed {}, pulled {}",
-                report.pushed, report.pulled
+            (
+                format!(
+                    "Sync ok — pushed {}, pulled {}",
+                    report.pushed, report.pulled
+                ),
+                false,
             )
         }
-        Err(err) => err.to_string(),
+        Err(err) => (err.to_string(), true),
     };
 
     let connected = engine.is_configured().await
@@ -1277,6 +1633,7 @@ async fn run_test_sync(
         connected,
         vault_unlocked,
         status_line,
+        is_error,
     }
 }
 
@@ -1294,23 +1651,17 @@ async fn persist_sync_config(
 fn list_identities(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
     match runtime.block_on(store.list_identities()) {
         Ok(idents) => {
-            let rows: Vec<(String, String, String)> = idents
+            let rows: Vec<(String, String, String, String)> = idents
                 .into_iter()
                 .filter(|i| i.deleted_at.is_none())
                 .map(|i| {
                     let fp = i
                         .public_key
                         .as_deref()
-                        .map(|pk| {
-                            let trimmed = pk.trim();
-                            if trimmed.len() > 24 {
-                                format!("{}…", &trimmed[..24])
-                            } else {
-                                trimmed.to_string()
-                            }
-                        })
+                        .map(terminus_core::fingerprint_from_public_openssh)
                         .unwrap_or_else(|| "no public key".into());
-                    (i.id.to_string(), i.name, fp)
+                    let created = i.created_at.format("%Y-%m-%d").to_string();
+                    (i.id.to_string(), i.name, fp, created)
                 })
                 .collect();
             HostEvent::IdentitiesLoaded(rows)
@@ -1319,16 +1670,162 @@ fn list_identities(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEven
     }
 }
 
+fn create_ssh_key(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    name: &str,
+    pem: Option<&str>,
+) -> Result<String, String> {
+    let identity = match pem.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(pem) => {
+            terminus_core::import_openssh_identity(name, pem, None).map_err(|e| e.to_string())?
+        }
+        None => {
+            terminus_core::generate_ed25519_identity(name).map_err(|e| e.to_string())?
+        }
+    };
+    let label = identity.name.clone();
+    let imported = pem.map(str::trim).is_some_and(|p| !p.is_empty());
+    runtime
+        .block_on(store.upsert_identity(&identity))
+        .map_err(|e| e.to_string())?;
+    Ok(if imported {
+        format!("SSH key “{label}” imported")
+    } else {
+        format!("SSH key “{label}” created")
+    })
+}
+
+fn delete_ssh_key(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    id: &str,
+) -> Result<String, String> {
+    let uuid = uuid::Uuid::parse_str(id).map_err(|_| "Invalid SSH key id".to_string())?;
+    let existing = runtime
+        .block_on(store.get_identity(uuid))
+        .map_err(|e| e.to_string())?;
+    let Some(ident) = existing else {
+        return Err("SSH key not found".into());
+    };
+    let label = ident.name.clone();
+    runtime
+        .block_on(store.delete_identity(uuid))
+        .map_err(|e| e.to_string())?;
+    Ok(format!("SSH key “{label}” deleted"))
+}
+
+fn delete_host(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    id: &str,
+) -> Result<String, String> {
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
+    let hosts = runtime
+        .block_on(store.list_hosts())
+        .map_err(|err| format!("Could not read hosts: {err}"))?;
+    let label = hosts
+        .iter()
+        .find(|h| h.id == uuid && h.deleted_at.is_none())
+        .map(|h| h.name.clone())
+        .ok_or_else(|| "Host not found".to_string())?;
+    runtime
+        .block_on(store.delete_host(uuid))
+        .map_err(|err| format!("Could not delete the host: {err}"))?;
+    Ok(format!("Deleted {label}"))
+}
+
+fn delete_group(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    id: &str,
+) -> Result<String, String> {
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid group id".to_string())?;
+    let groups = runtime
+        .block_on(store.list_groups())
+        .map_err(|err| format!("Could not read groups: {err}"))?;
+    let label = groups
+        .iter()
+        .find(|g| g.id == uuid && g.deleted_at.is_none())
+        .map(|g| g.name.clone())
+        .ok_or_else(|| "Group not found".to_string())?;
+    runtime
+        .block_on(store.delete_group(uuid))
+        .map_err(|err| format!("Could not delete the group: {err}"))?;
+    Ok(format!("Deleted group {label}"))
+}
+
+fn rename_host(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Name cannot be empty".into());
+    }
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
+    let mut hosts = runtime
+        .block_on(store.list_hosts())
+        .map_err(|err| format!("Could not read hosts: {err}"))?;
+    let host = hosts
+        .iter_mut()
+        .find(|h| h.id == uuid && h.deleted_at.is_none())
+        .ok_or_else(|| "Host not found".to_string())?;
+    host.name = name.to_string();
+    host.updated_at = Utc::now();
+    let label = host.name.clone();
+    runtime
+        .block_on(store.upsert_host(host))
+        .map_err(|err| format!("Could not rename the host: {err}"))?;
+    Ok(format!("Renamed {label}"))
+}
+
+fn rename_group(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Name cannot be empty".into());
+    }
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid group id".to_string())?;
+    let mut groups = runtime
+        .block_on(store.list_groups())
+        .map_err(|err| format!("Could not read groups: {err}"))?;
+    let group = groups
+        .iter_mut()
+        .find(|g| g.id == uuid && g.deleted_at.is_none())
+        .ok_or_else(|| "Group not found".to_string())?;
+    group.name = name.to_string();
+    group.updated_at = Utc::now();
+    let label = group.name.clone();
+    runtime
+        .block_on(store.upsert_group(group))
+        .map_err(|err| format!("Could not rename the group: {err}"))?;
+    Ok(format!("Renamed group {label}"))
+}
+
 fn list_groups(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
     match runtime.block_on(store.list_groups()) {
         Ok(groups) => {
-            let mut rows: Vec<(String, String)> = groups
+            let mut rows: Vec<(i64, String, String)> = groups
                 .into_iter()
                 .filter(|group| group.deleted_at.is_none())
-                .map(|group| (group.id.to_string(), group.name))
+                .map(|group| (group.sort_order, group.id.to_string(), group.name))
                 .collect();
-            rows.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-            HostEvent::GroupsLoaded(rows)
+            rows.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| a.2.to_lowercase().cmp(&b.2.to_lowercase()))
+            });
+            HostEvent::GroupsLoaded(
+                rows.into_iter()
+                    .map(|(order, id, name)| (id, name, order))
+                    .collect(),
+            )
         }
         Err(err) => HostEvent::Failed(format!("Could not read groups: {err}")),
     }
@@ -1373,12 +1870,69 @@ fn set_host_group(
         .find(|h| h.id == id && h.deleted_at.is_none())
         .ok_or_else(|| "Host not found".to_string())?;
     host.group_id = group_uuid;
+    host.sort_order = runtime
+        .block_on(store.next_host_sort_order(group_uuid))
+        .map_err(|err| format!("Could not move the host: {err}"))?;
     host.updated_at = Utc::now();
     let label = host.name.clone();
     runtime
         .block_on(store.upsert_host(host))
         .map_err(|err| format!("Could not move the host: {err}"))?;
     Ok(format!("Moved {label}"))
+}
+
+fn reorder_host(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    host_id: &str,
+    before_host_id: Option<&str>,
+    before_group_id: Option<&str>,
+) -> Result<String, String> {
+    let id = Uuid::parse_str(host_id).map_err(|_| "Invalid host id".to_string())?;
+    let (before_is_group, before_id) = if let Some(b) = before_group_id {
+        (
+            Some(true),
+            Some(Uuid::parse_str(b).map_err(|_| "Invalid group id".to_string())?),
+        )
+    } else if let Some(b) = before_host_id {
+        (
+            Some(false),
+            Some(Uuid::parse_str(b).map_err(|_| "Invalid host id".to_string())?),
+        )
+    } else {
+        (None, None)
+    };
+    runtime
+        .block_on(store.reorder_root(false, id, before_is_group, before_id))
+        .map_err(|err| format!("Could not reorder the host: {err}"))?;
+    Ok("Reordered".to_string())
+}
+
+fn reorder_group(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    group_id: &str,
+    before_group_id: Option<&str>,
+    before_host_id: Option<&str>,
+) -> Result<String, String> {
+    let id = Uuid::parse_str(group_id).map_err(|_| "Invalid group id".to_string())?;
+    let (before_is_group, before_id) = if let Some(b) = before_host_id {
+        (
+            Some(false),
+            Some(Uuid::parse_str(b).map_err(|_| "Invalid host id".to_string())?),
+        )
+    } else if let Some(b) = before_group_id {
+        (
+            Some(true),
+            Some(Uuid::parse_str(b).map_err(|_| "Invalid group id".to_string())?),
+        )
+    } else {
+        (None, None)
+    };
+    runtime
+        .block_on(store.reorder_root(true, id, before_is_group, before_id))
+        .map_err(|err| format!("Could not reorder the group: {err}"))?;
+    Ok("Reordered group".to_string())
 }
 
 /// Where the database file for `dir` lives (used by tests and diagnostics).
@@ -1461,6 +2015,7 @@ mod tests {
             username: "root".to_string(),
             group_id: None,
             os_id: None,
+            sort_order: 0,
             updated_at: Utc::now(),
         }
     }
@@ -1557,6 +2112,60 @@ mod tests {
                 .endpoint,
             "deploy@web-01 · Ubuntu"
         );
+    }
+
+    #[test]
+    fn ungrouped_hosts_come_before_groups() {
+        let platform = PlatformFacts {
+            machine: machine("NixOS", "nixos", Some("NixOS")),
+            distros: Vec::new(),
+            unnamed_distros: 0,
+        };
+        // Explicit sort_order mimics the one-shot hosts-then-groups backfill.
+        let mut host = host_row("h1", "mainserver");
+        host.sort_order = 0;
+        let hosts = vec![host];
+        let groups = vec![
+            ("g1".into(), "jeremy".into(), 1),
+            ("g2".into(), "test".into(), 2),
+        ];
+        let empty = HashSet::new();
+        let rows = sidebar_rows(&platform, &hosts, &groups, &empty, &empty, &[], &[]);
+
+        let mut root: Vec<&str> = Vec::new();
+        for row in &rows {
+            match row {
+                Row::Host(h) if h.stored && !h.nested => root.push(h.name.as_str()),
+                Row::Group { name, .. } => root.push(name.as_str()),
+                _ => {}
+            }
+        }
+        assert_eq!(root, vec!["mainserver", "jeremy", "test"]);
+    }
+
+    #[test]
+    fn group_can_sort_above_host_via_sort_order() {
+        let platform = PlatformFacts {
+            machine: machine("NixOS", "nixos", Some("NixOS")),
+            distros: Vec::new(),
+            unnamed_distros: 0,
+        };
+        let mut host = host_row("h1", "mainserver");
+        host.sort_order = 1;
+        let hosts = vec![host];
+        let groups = vec![("g1".into(), "jeremy".into(), 0)];
+        let empty = HashSet::new();
+        let rows = sidebar_rows(&platform, &hosts, &groups, &empty, &empty, &[], &[]);
+
+        let mut root: Vec<&str> = Vec::new();
+        for row in &rows {
+            match row {
+                Row::Host(h) if h.stored && !h.nested => root.push(h.name.as_str()),
+                Row::Group { name, .. } => root.push(name.as_str()),
+                _ => {}
+            }
+        }
+        assert_eq!(root, vec!["jeremy", "mainserver"]);
     }
 
     #[test]
@@ -1722,6 +2331,7 @@ mod tests {
             username: "root".to_string(),
             group_id: None,
             os_id: None,
+            sort_order: 0,
             updated_at: Utc::now(),
         };
         assert_eq!(row.endpoint(), "root@box.internal");
@@ -1849,6 +2459,22 @@ mod tests {
             repo.sync_status_line().contains("PostgreSQL")
         }));
         assert!(!repo.sync_connected());
+        assert!(
+            repo.sync_status_is_error(),
+            "postgres reject must flag sync_status_is_error"
+        );
+
+        // Empty URI must surface as an error banner, not silently clear state.
+        repo.test_sync("");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.sync_status_line().contains("Enter a connection")
+        }));
+        assert!(
+            repo.sync_status_is_error(),
+            "empty URI Test Sync must flag an error"
+        );
+        // Previous postgres URI should still be reported (remote not cleared).
+        assert!(repo.sync_uri().contains("postgres"));
 
         let remote = dir.join("remote.db");
         let uri = format!("sqlite:{}", remote.display());
@@ -1872,6 +2498,47 @@ mod tests {
     }
 
     #[test]
+    fn worker_create_and_delete_managed_ssh_key() {
+        let dir = temp_dir("ssh-key");
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+
+        repo.create_ssh_key("Laptop Ed25519");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.identities().iter().any(|(id, name, fp, created)| {
+                !id.is_empty()
+                    && name == "Laptop Ed25519"
+                    && fp.starts_with("SHA256:")
+                    && !created.is_empty()
+            })
+        }));
+        assert!(repo
+            .take_notice()
+            .is_some_and(|n| n.contains("Laptop Ed25519")));
+
+        let id = repo.identities()[0].0.clone();
+        repo.delete_ssh_key(&id);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.identities().is_empty()
+        }));
+
+        // Import path: generate a PEM then re-import under a new label.
+        let generated = terminus_core::generate_ed25519_identity("tmp").expect("pem");
+        let pem = generated.private_key.expect("private");
+        repo.create_ssh_key_with_pem("Imported", Some(pem));
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.identities()
+                .iter()
+                .any(|(_, name, fp, _)| name == "Imported" && fp.starts_with("SHA256:"))
+        }));
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn worker_unlock_vault_from_passphrase() {
         let dir = temp_dir("vault");
         let mut repo = HostRepository::spawn(dir.clone(), None);
@@ -1881,10 +2548,10 @@ mod tests {
 
         repo.unlock_vault("short");
         assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
-            repo.vault_message()
-                .is_some_and(|m| m.contains("at least 8"))
+            repo.sync_status_line().contains("at least 8")
         }));
         assert!(!repo.vault_unlocked());
+        assert!(repo.sync_status_is_error());
         let _ = repo.take_vault_message();
 
         repo.unlock_vault("long-enough-passphrase");
