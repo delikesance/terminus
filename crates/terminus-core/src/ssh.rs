@@ -625,6 +625,114 @@ pub async fn probe_ssh_auth(opts: &SshConnectOptions) -> std::result::Result<(),
     }
 }
 
+/// Dedicated SFTP connection: owns the russh [`Handle`] so the channel stays alive.
+///
+/// Terminal tabs use the OpenSSH CLI; SFTP opens an independent russh session
+/// (same auth as the host) and requests the `sftp` subsystem.
+pub struct SftpConnection {
+    _handle: Handle<ClientHandler>,
+    session: crate::sftp::SftpSession,
+}
+
+impl SftpConnection {
+    /// Borrow the wrapped [`crate::sftp::SftpSession`].
+    pub fn session(&self) -> &crate::sftp::SftpSession {
+        &self.session
+    }
+
+    /// Mutable borrow of the wrapped session.
+    pub fn session_mut(&mut self) -> &mut crate::sftp::SftpSession {
+        &mut self.session
+    }
+}
+
+impl std::ops::Deref for SftpConnection {
+    type Target = crate::sftp::SftpSession;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for SftpConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session
+    }
+}
+
+impl std::fmt::Debug for SftpConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SftpConnection")
+            .field("session", &self.session)
+            .finish_non_exhaustive()
+    }
+}
+
+async fn open_sftp_on_handle(
+    handle: &Handle<ClientHandler>,
+) -> Result<crate::sftp::SftpSession> {
+    let channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| Error::SshError(format!("cannot open SFTP session channel: {e}")))?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| Error::SshError(format!("sftp subsystem request failed: {e}")))?;
+    crate::sftp::SftpSession::connect(channel.into_stream()).await
+}
+
+/// Connect, authenticate, and open an SFTP subsystem (no shell / PTY).
+pub async fn connect_sftp(opts: &SshConnectOptions) -> Result<SftpConnection> {
+    let outcome = Arc::new(Mutex::new(None));
+    let handler = ClientHandler {
+        host: opts.hostname.clone(),
+        port: opts.port,
+        policy: opts.policy.clone(),
+        known_hosts: opts.known_hosts.clone(),
+        outcome: Arc::clone(&outcome),
+    };
+
+    let mut config = client::Config::default();
+    config.keepalive_interval = opts.keepalive_interval;
+    config.inactivity_timeout = Some(DEFAULT_INACTIVITY_TIMEOUT);
+    config.channel_buffer_size = 256;
+
+    let addrs = (opts.hostname.as_str(), opts.port);
+    let connect = client::connect(Arc::new(config), addrs, handler);
+    let mut handle = match tokio::time::timeout(opts.connect_timeout, connect).await {
+        Err(_) => {
+            return Err(Error::TimeoutError(format!(
+                "SSH connect to {}:{} timed out after {:?}",
+                opts.hostname, opts.port, opts.connect_timeout
+            )))
+        }
+        Ok(Ok(handle)) => handle,
+        Ok(Err(err)) => return Err(host_key_aware_error(err, &outcome)),
+    };
+
+    authenticate(&mut handle, &opts.hostname, opts.port, &opts.auth).await?;
+    let session = open_sftp_on_handle(&handle).await?;
+    info!(
+        host = %opts.hostname,
+        port = opts.port,
+        user = %opts.auth.username,
+        "SFTP session established"
+    );
+    Ok(SftpConnection {
+        _handle: handle,
+        session,
+    })
+}
+
+/// Same as [`connect_sftp`], named for the host-sidebar / dual-pane entry path.
+///
+/// Callers typically build `opts` via [`probe_options_from_host`] (or a TOFU
+/// variant) after resolving password / identity from the store.
+pub async fn connect_sftp_for_host(opts: &SshConnectOptions) -> Result<SftpConnection> {
+    connect_sftp(opts).await
+}
+
 impl SshSession {
     /// Connects to `opts.hostname:opts.port`, verifies the host key and
     /// authenticates. The channel is left open but no PTY is requested yet —
@@ -698,6 +806,12 @@ impl SshSession {
         self.pty = pty;
         debug!(host = %self.hostname, cols = self.pty.cols, rows = self.pty.rows, "shell started");
         Ok(())
+    }
+
+    /// Opens an additional channel and requests the SFTP subsystem on this
+    /// connection (shell channel remains open).
+    pub async fn open_sftp(&self) -> Result<crate::sftp::SftpSession> {
+        open_sftp_on_handle(&self.handle).await
     }
 
     /// Sends keystrokes to the remote shell.
@@ -1029,5 +1143,61 @@ mod tests {
             ProbeError::from_error(Error::TimeoutError("boom".into())),
             ProbeError::Unreachable(_)
         ));
+    }
+
+    #[test]
+    fn connect_sftp_options_from_host_carry_auth() {
+        let host = Host {
+            id: uuid::Uuid::nil(),
+            name: "demo".into(),
+            hostname: "sftp.example".into(),
+            port: 2222,
+            username: "alice".into(),
+            auth_method: "password".into(),
+            password: Some("secret".into()),
+            identity_id: None,
+            group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
+            os_id: None,
+            sort_order: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            deleted_at: None,
+        };
+        let opts = probe_options_from_host(&host, None);
+        assert_eq!(opts.hostname, "sftp.example");
+        assert_eq!(opts.port, 2222);
+        assert_eq!(opts.auth.username, "alice");
+        assert_eq!(opts.auth.password.as_deref(), Some("secret"));
+        assert_eq!(opts.auth.method, Some(HostAuthMethod::Password));
+    }
+
+    #[tokio::test]
+    async fn connect_sftp_unreachable_host_errors() {
+        let opts = SshConnectOptions {
+            hostname: "127.0.0.1".into(),
+            port: 1,
+            auth: SshAuth {
+                username: "nobody".into(),
+                password: Some("x".into()),
+                method: Some(HostAuthMethod::Password),
+                ..SshAuth::default()
+            },
+            policy: HostKeyPolicy::AcceptAll,
+            known_hosts: temp_known_hosts("sftp-unreach"),
+            connect_timeout: Duration::from_millis(200),
+            keepalive_interval: None,
+        };
+        let err = connect_sftp_for_host(&opts).await.expect_err("must fail");
+        let msg = err.to_string().to_ascii_lowercase();
+        assert!(
+            msg.contains("timeout")
+                || msg.contains("refused")
+                || msg.contains("unreachable")
+                || msg.contains("connection")
+                || msg.contains("ssh"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -28,6 +28,7 @@ pub mod helpers;
 pub mod island;
 pub mod scrollbar;
 pub mod search;
+pub mod sftp_pane;
 pub mod trail_cursor;
 pub mod utils;
 #[cfg(target_os = "windows")]
@@ -524,6 +525,7 @@ impl Renderer {
         connecting_phase: Option<f32>,
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         window_maximized: bool,
+        sftp: Option<(&terminus_ui::SftpPaneState, terminus_ui::Rect)>,
     ) -> (Option<crate::context::renderable::WindowUpdate>, bool) {
         let mut any_panel_dirty = false;
         let grid = context_manager.current_grid_mut();
@@ -536,6 +538,17 @@ impl Renderer {
         }
 
         for (_key, grid_context) in grid.contexts_mut().iter_mut() {
+            if grid_context.pane_kind == crate::layout::PaneKind::Sftp {
+                // SFTP replaces cell paint; clear dirty so we don't spin.
+                grid_context
+                    .context_mut()
+                    .renderable_content
+                    .pending_update
+                    .reset();
+                any_panel_dirty = true;
+                continue;
+            }
+
             let panel_rect = grid_context.layout_rect;
             let context = grid_context.context_mut();
 
@@ -949,6 +962,15 @@ impl Renderer {
             sugarloaf,
             (window_size.width, window_size.height, scale_factor),
         );
+
+        if let Some((state, bounds)) = sftp {
+            crate::renderer::sftp_pane::paint(
+                sugarloaf,
+                state,
+                bounds,
+                &self.chrome_theme,
+            );
+        }
 
         // Terminus chrome (activity rail, host panel, add-host editor).
         // Painted from the same rectangles the mouse hit-tests against;

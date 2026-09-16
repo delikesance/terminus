@@ -23,6 +23,7 @@ mod renderer;
 mod router;
 mod scheduler;
 mod screen;
+mod sftp_ui;
 mod vault_remember;
 mod watcher;
 

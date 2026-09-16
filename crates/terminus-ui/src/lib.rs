@@ -65,12 +65,18 @@ pub use settings::{
     SettingsHit, SettingsModal, SettingsTab, SqlSyncFocus, SshKeyItem, SyncUiStatus,
     SQL_ENGINES,
 };
+pub use sftp_pane::{
+    hit_is_clickable, hit_is_text, join_remote, parent_path, SftpBackend, SftpClickResult, SftpDrag,
+    SftpFocus, SftpHit, SftpNameEdit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow,
+    SftpSideState, BTN_GAP, BTN_SIZE, FOOTER_HEIGHT, HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT,
+    SFTP_DRAG_THRESHOLD, TOOLBAR_HEIGHT,
+};
 pub use sidebar::{
     Badge, HostDrag, HostDragKind, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit,
     RenameDraft, RenameMoveKind, Row, HOST_DRAG_THRESHOLD,
 };
 pub use snippets::{SnippetHit, SnippetItem, SnippetsPanel};
-pub use text_field::{TextDraft, TextMoveKind};
+pub use text_field::{FieldPaint, TextDraft, TextMoveKind};
 pub use theme::ChromeTheme;
 pub use vault_unlock::{
     PendingVaultAction, VaultUnlockHit, VaultUnlockLayout, VaultUnlockPrompt,

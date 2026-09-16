@@ -153,6 +153,11 @@ impl<T: rio_backend::event::EventListener> ContextGridItem<T> {
     }
 
     #[inline]
+    pub fn set_pane_kind(&mut self, kind: PaneKind) {
+        self.pane_kind = kind;
+    }
+
+    #[inline]
     pub fn context(&self) -> &Context<T> {
         &self.val
     }
@@ -930,14 +935,16 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
             item.val.dimension.update_width(width);
             item.val.dimension.update_height(height);
 
-            // Update terminal size
-            let mut terminal = item.val.terminal.lock();
-            terminal.resize::<ContextDimension>(item.val.dimension);
-            drop(terminal);
+            // SFTP panes replace the PTY view — skip terminal resize/PTY ioctl.
+            if item.pane_kind != PaneKind::Sftp {
+                let mut terminal = item.val.terminal.lock();
+                terminal.resize::<ContextDimension>(item.val.dimension);
+                drop(terminal);
 
-            let winsize =
-                crate::renderer::utils::terminal_dimensions(&item.val.dimension);
-            let _ = item.val.messenger.send_resize(winsize);
+                let winsize =
+                    crate::renderer::utils::terminal_dimensions(&item.val.dimension);
+                let _ = item.val.messenger.send_resize(winsize);
+            }
 
             // The reflow damages the Crosswords, but the present gate reads
             // `pending_update.is_dirty()` and skips the panel before reading
@@ -1057,6 +1064,10 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
     #[inline]
     pub fn current_item(&self) -> Option<&ContextGridItem<T>> {
         self.inner.get(&self.current)
+    }
+
+    pub fn current_item_mut(&mut self) -> Option<&mut ContextGridItem<T>> {
+        self.inner.get_mut(&self.current)
     }
 
     pub fn current(&self) -> &Context<T> {
