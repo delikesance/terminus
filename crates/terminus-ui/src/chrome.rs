@@ -7,12 +7,15 @@
 //! with a hit-test.
 
 use crate::activity_bar::{self, ActivityBarState, RailAction, RailHit, Section};
-use crate::add_host::{AddHostForm, AddHostHit, Field, FormInput, FormOutcome};
+use crate::add_host::{AddHostForm, AddHostHit, FormInput, FormOutcome};
 use crate::connection::{ConnectionHit, ConnectionSequence};
 use crate::context_menu::{ContextAction, ContextMenu, ContextMenuHit};
 use crate::settings::{SettingsHit, SettingsModal, SettingsTab};
 use crate::sidebar::{HostItem, HostPanel, PanelHit, Row};
 use crate::snippets::{SnippetHit, SnippetsPanel};
+use crate::vault_unlock::{
+    PendingVaultAction, VaultUnlockHit, VaultUnlockLayout, VaultUnlockPrompt,
+};
 
 /// Mouse cursor affordance for chrome hit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -56,6 +59,8 @@ pub enum ChromeAction {
     AddHostSession(String),
     /// Footer Connect on the add-host dialog (same as Enter).
     SubmitHostForm,
+    /// Vault unlock prompt: submit passphrase.
+    SubmitVaultUnlock,
     /// Settings: unlock / create vault with the SQL Sync passphrase field.
     UnlockVault,
     /// Settings: persist remote URI and run SyncEngine::sync_now.
@@ -68,6 +73,8 @@ pub enum ChromeAction {
     DeleteHost(String),
     /// Soft-delete a host group (context menu).
     DeleteGroup(String),
+    /// Edit a stored host in the add-host dialog (context menu).
+    EditHost(String),
     /// Begin renaming a stored host (context menu).
     RenameHost(String),
     /// Begin renaming a host group (context menu).
@@ -123,6 +130,8 @@ pub struct Chrome {
     pub snippets: SnippetsPanel,
     pub settings: SettingsModal,
     pub form: AddHostForm,
+    /// Prompt when a sealed secret is needed and the vault is locked.
+    pub vault_unlock: VaultUnlockPrompt,
     /// Live SSH/WSL connecting modal, when a session is starting.
     pub connection: Option<ConnectionSequence>,
     /// Right-click context menu, when open.
@@ -144,6 +153,7 @@ impl Default for Chrome {
             snippets: SnippetsPanel::with_defaults(),
             settings: SettingsModal::default(),
             form: AddHostForm::default(),
+            vault_unlock: VaultUnlockPrompt::default(),
             connection: None,
             context_menu: None,
             top_inset: 0.0,
@@ -199,12 +209,29 @@ impl Chrome {
         self.settings.open
     }
 
+    pub fn vault_unlock_is_open(&self) -> bool {
+        self.vault_unlock.is_open()
+    }
+
+    /// Ask for the vault passphrase, then retry `pending` after unlock.
+    pub fn open_vault_unlock(&mut self, pending: PendingVaultAction) {
+        self.vault_unlock.open(pending);
+    }
+
     /// Open the add-host editor.
     pub fn open_add_host(&mut self) {
         self.activity.selected = Section::Servers;
         self.activity.collapsed = false;
         self.panel_visible = true;
         self.form.open();
+    }
+
+    /// Open the host editor prefilled for an existing host.
+    pub fn open_edit_host(&mut self, values: crate::add_host::HostFormValues, host_id: String) {
+        self.activity.selected = Section::Servers;
+        self.activity.collapsed = false;
+        self.panel_visible = true;
+        self.form.open_edit(values, host_id);
     }
 
     pub fn open_settings(&mut self, tab: SettingsTab) {
@@ -281,7 +308,9 @@ impl Chrome {
         y: f32,
     ) -> ChromeAction {
         // Modals / overlays own the pointer; don't open under them.
-        if self.settings.open || self.connection.is_some() || self.form.is_open() {
+        if self.settings.open || self.connection.is_some() || self.form.is_open()
+            || self.vault_unlock.is_open()
+        {
             self.close_context_menu();
             return ChromeAction::Ignored;
         }
@@ -345,6 +374,7 @@ impl Chrome {
                 Some(match action {
                     Some(ContextAction::DeleteHost(id)) => ChromeAction::DeleteHost(id),
                     Some(ContextAction::DeleteGroup(id)) => ChromeAction::DeleteGroup(id),
+                    Some(ContextAction::EditHost(id)) => ChromeAction::EditHost(id),
                     Some(ContextAction::RenameHost(id)) => ChromeAction::RenameHost(id),
                     Some(ContextAction::RenameGroup(id)) => ChromeAction::RenameGroup(id),
                     Some(ContextAction::Copy) => ChromeAction::ContextCopy,
@@ -365,6 +395,29 @@ impl Chrome {
         // An open context menu eats the next left click: select or dismiss.
         if let Some(action) = self.route_context_menu_press(x, y) {
             return action;
+        }
+
+        // Vault unlock sits above every other dialog: a sealed secret was
+        // requested and nothing else can proceed until the user answers.
+        if self.vault_unlock.is_open() {
+            let layout = VaultUnlockLayout::centered(window_width, window_height);
+            return match layout.hit_test(x, y) {
+                VaultUnlockHit::Field => ChromeAction::Consumed,
+                VaultUnlockHit::ToggleVisible => {
+                    self.vault_unlock.toggle_visible();
+                    ChromeAction::Consumed
+                }
+                VaultUnlockHit::ToggleRemember => {
+                    self.vault_unlock.toggle_remember();
+                    ChromeAction::Consumed
+                }
+                VaultUnlockHit::Unlock => ChromeAction::SubmitVaultUnlock,
+                VaultUnlockHit::Cancel => {
+                    self.vault_unlock.close();
+                    ChromeAction::Consumed
+                }
+                VaultUnlockHit::Consume => ChromeAction::Consumed,
+            };
         }
 
         // Settings modal sits above connection and add-host.
@@ -474,19 +527,17 @@ impl Chrome {
                 && layout
                     .auth_menu_rect(&self.form)
                     .is_some_and(|m| m.contains(x, y));
-            if !dialog.contains(x, y) && !on_auth_menu {
+            let on_identity_menu = self.form.identity_menu_open()
+                && layout
+                    .identity_menu_rect(&self.form)
+                    .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_auth_menu && !on_identity_menu {
                 self.form.close();
                 return ChromeAction::Consumed;
             }
             return match layout.hit_test(&self.form, x, y) {
                 AddHostHit::Field(field) => {
-                    match field {
-                        Field::Identity => {
-                            self.form.cycle_identity(1);
-                            self.form.focus_field(Field::Identity);
-                        }
-                        other => self.form.focus_field(other),
-                    }
+                    self.form.focus_field(field);
                     ChromeAction::Consumed
                 }
                 AddHostHit::ToggleAuthMenu => {
@@ -497,6 +548,18 @@ impl Chrome {
                     self.form.select_auth_method(index);
                     ChromeAction::Consumed
                 }
+                AddHostHit::ToggleIdentityMenu => {
+                    self.form.toggle_identity_menu();
+                    ChromeAction::Consumed
+                }
+                AddHostHit::SelectIdentity(index) => {
+                    self.form.select_identity(index);
+                    ChromeAction::Consumed
+                }
+                AddHostHit::TogglePasswordVisible => {
+                    self.form.toggle_password_visible();
+                    ChromeAction::Consumed
+                }
                 AddHostHit::Cancel => {
                     self.form.close();
                     ChromeAction::Consumed
@@ -505,6 +568,9 @@ impl Chrome {
                 AddHostHit::Consume => {
                     if self.form.auth_menu_open() {
                         self.form.close_auth_menu();
+                    }
+                    if self.form.identity_menu_open() {
+                        self.form.close_identity_menu();
                     }
                     ChromeAction::Consumed
                 }
@@ -718,20 +784,37 @@ impl Chrome {
             return false;
         }
         if self.form.is_open() {
-            if !self.form.auth_menu_open() {
-                return self.form.set_auth_menu_hover(None);
-            }
             let layout = self.dialog_layout(window_width, window_height);
-            let mut hover = None;
-            for i in 0..crate::add_host::AUTH_METHODS.len() {
-                if let Some(opt) = layout.auth_option_rect(&self.form, i) {
-                    if opt.contains(x, y) {
-                        hover = Some(i);
-                        break;
+            let mut changed = false;
+            if self.form.auth_menu_open() {
+                let mut hover = None;
+                for i in 0..crate::add_host::AUTH_METHODS.len() {
+                    if let Some(opt) = layout.auth_option_rect(&self.form, i) {
+                        if opt.contains(x, y) {
+                            hover = Some(i);
+                            break;
+                        }
                     }
                 }
+                changed |= self.form.set_auth_menu_hover(hover);
+            } else {
+                changed |= self.form.set_auth_menu_hover(None);
             }
-            return self.form.set_auth_menu_hover(hover);
+            if self.form.identity_menu_open() {
+                let mut hover = None;
+                for i in 0..self.form.identities().len() {
+                    if let Some(opt) = layout.identity_option_rect(&self.form, i) {
+                        if opt.contains(x, y) {
+                            hover = Some(i);
+                            break;
+                        }
+                    }
+                }
+                changed |= self.form.set_identity_menu_hover(hover);
+            } else {
+                changed |= self.form.set_identity_menu_hover(None);
+            }
+            return changed;
         }
         let origin_y = self.origin_y();
         let height = window_height - origin_y;
@@ -765,6 +848,17 @@ impl Chrome {
                 ContextMenuHit::Consume | ContextMenuHit::Dismiss => ChromeCursor::Default,
             };
         }
+        if self.vault_unlock.is_open() {
+            let layout = VaultUnlockLayout::centered(window_width, window_height);
+            return match layout.hit_test(x, y) {
+                VaultUnlockHit::Field => ChromeCursor::Text,
+                VaultUnlockHit::ToggleVisible
+                | VaultUnlockHit::ToggleRemember
+                | VaultUnlockHit::Unlock
+                | VaultUnlockHit::Cancel => ChromeCursor::Pointer,
+                VaultUnlockHit::Consume => ChromeCursor::Default,
+            };
+        }
         if self.settings.open {
             return self.settings.cursor_at(window_width, window_height, x, y);
         }
@@ -781,14 +875,20 @@ impl Chrome {
                 && layout
                     .auth_menu_rect(&self.form)
                     .is_some_and(|m| m.contains(x, y));
-            if !dialog.contains(x, y) && !on_auth_menu {
+            let on_identity_menu = self.form.identity_menu_open()
+                && layout
+                    .identity_menu_rect(&self.form)
+                    .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_auth_menu && !on_identity_menu {
                 return ChromeCursor::Pointer; // scrim dismiss
             }
             return match layout.hit_test(&self.form, x, y) {
-                AddHostHit::Field(Field::Identity) => ChromeCursor::Pointer,
                 AddHostHit::Field(_) => ChromeCursor::Text,
                 AddHostHit::ToggleAuthMenu
                 | AddHostHit::SelectAuth(_)
+                | AddHostHit::ToggleIdentityMenu
+                | AddHostHit::SelectIdentity(_)
+                | AddHostHit::TogglePasswordVisible
                 | AddHostHit::Connect
                 | AddHostHit::Cancel => ChromeCursor::Pointer,
                 AddHostHit::Consume => ChromeCursor::Default,
@@ -1021,6 +1121,35 @@ impl Chrome {
         Some(outcome)
     }
 
+    /// Route keyboard input to the vault unlock prompt.
+    ///
+    /// Returns `Some(true)` when Unlock should be submitted.
+    pub fn handle_vault_unlock_input(
+        &mut self,
+        input: FormInput,
+        text: &str,
+    ) -> Option<bool> {
+        if !self.vault_unlock.is_open() {
+            return None;
+        }
+        match input {
+            FormInput::Text => {
+                self.vault_unlock.insert(text);
+                Some(false)
+            }
+            FormInput::Backspace => {
+                self.vault_unlock.backspace();
+                Some(false)
+            }
+            FormInput::Enter => Some(true),
+            FormInput::Escape => {
+                self.vault_unlock.close();
+                Some(false)
+            }
+            _ => Some(false),
+        }
+    }
+
     /// Where the editor dialog sits for this window size.
     pub fn dialog_layout(
         &self,
@@ -1070,7 +1199,7 @@ mod tests {
         let open = chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0);
         assert_eq!(open, ChromeAction::Consumed);
         let menu = chrome.context_menu.as_ref().expect("menu open");
-        let item = menu.item_rect(1).unwrap();
+        let item = menu.item_rect(2).unwrap();
         let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
         assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
         assert!(chrome.context_menu.is_none());

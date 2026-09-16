@@ -130,12 +130,18 @@ pub const BUTTON_GAP: f32 = 8.0;
 /// What a mouse press on the open add-host dialog hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddHostHit {
-    /// An input box — focus that field (Identity also cycles).
+    /// An input box — focus that field.
     Field(Field),
     /// Open / close the Authentication Method dropdown.
     ToggleAuthMenu,
     /// Pick an auth method from the open dropdown.
     SelectAuth(usize),
+    /// Open / close the Select Saved SSH Key dropdown.
+    ToggleIdentityMenu,
+    /// Pick a saved identity from the open dropdown.
+    SelectIdentity(usize),
+    /// Eye toggle on the password field.
+    TogglePasswordVisible,
     /// Dismiss without saving.
     Cancel,
     /// Persist the draft (same as Enter).
@@ -204,6 +210,8 @@ pub enum FormOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddHostForm {
     open: bool,
+    /// When set, the dialog updates this host instead of creating one.
+    editing_id: Option<String>,
     values: [String; 4],
     /// Caret position, in characters (not bytes), per base text field.
     carets: [usize; 4],
@@ -212,18 +220,25 @@ pub struct AddHostForm {
     identities: Vec<(String, String)>,
     password: String,
     password_caret: usize,
+    /// Whether the password field shows plaintext (eye toggle).
+    password_visible: bool,
     focus: Field,
     error: Option<String>,
     /// Authentication Method dropdown is expanded.
     auth_menu_open: bool,
     /// Hovered option in the auth dropdown (`None` = none).
     auth_menu_hover: Option<usize>,
+    /// Select Saved SSH Key dropdown is expanded.
+    identity_menu_open: bool,
+    /// Hovered option in the identity dropdown (`None` = none).
+    identity_menu_hover: Option<usize>,
 }
 
 impl Default for AddHostForm {
     fn default() -> Self {
         Self {
             open: false,
+            editing_id: None,
             values: Default::default(),
             carets: [0; 4],
             auth_method: "key".to_string(),
@@ -231,10 +246,13 @@ impl Default for AddHostForm {
             identities: Vec::new(),
             password: String::new(),
             password_caret: 0,
+            password_visible: false,
             focus: Field::Name,
             error: None,
             auth_menu_open: false,
             auth_menu_hover: None,
+            identity_menu_open: false,
+            identity_menu_hover: None,
         }
     }
 }
@@ -277,23 +295,90 @@ impl AddHostForm {
         self.auth_method = "key".to_string();
         self.password.clear();
         self.password_caret = 0;
+        self.password_visible = false;
         self.identity_id = self.identities.first().map(|(id, _)| id.clone());
+        self.editing_id = None;
         self.focus = Field::Name;
         self.error = None;
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
+        self.identity_menu_open = false;
+        self.identity_menu_hover = None;
+        self.open = true;
+    }
+
+    /// Prefill the form for editing an existing host. Password stays empty
+    /// (leave blank to keep the stored credential).
+    pub fn open_edit(&mut self, values: HostFormValues, host_id: String) {
+        self.values = [
+            values.name,
+            values.hostname,
+            values.username,
+            values.port,
+        ];
+        self.carets = [
+            self.values[0].chars().count(),
+            self.values[1].chars().count(),
+            self.values[2].chars().count(),
+            self.values[3].chars().count(),
+        ];
+        self.auth_method = if values.auth_method.trim().is_empty() {
+            "key".to_string()
+        } else {
+            values.auth_method
+        };
+        self.password.clear();
+        self.password_caret = 0;
+        self.password_visible = false;
+        self.identity_id = values.identity_id.or_else(|| {
+            self.identities.first().map(|(id, _)| id.clone())
+        });
+        let still_valid = self
+            .identity_id
+            .as_ref()
+            .is_some_and(|id| self.identities.iter().any(|(i, _)| i == id));
+        if !still_valid {
+            self.identity_id = self.identities.first().map(|(id, _)| id.clone());
+        }
+        self.editing_id = Some(host_id);
+        self.focus = Field::Name;
+        self.error = None;
+        self.auth_menu_open = false;
+        self.auth_menu_hover = None;
+        self.identity_menu_open = false;
+        self.identity_menu_hover = None;
         self.open = true;
     }
 
     pub fn close(&mut self) {
         self.open = false;
+        self.editing_id = None;
         self.error = None;
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
+        self.identity_menu_open = false;
+        self.identity_menu_hover = None;
     }
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Host id being edited, if any.
+    pub fn editing_id(&self) -> Option<&str> {
+        self.editing_id.as_deref()
+    }
+
+    pub fn is_editing(&self) -> bool {
+        self.editing_id.is_some()
+    }
+
+    pub fn password_visible(&self) -> bool {
+        self.password_visible
+    }
+
+    pub fn toggle_password_visible(&mut self) {
+        self.password_visible = !self.password_visible;
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -334,6 +419,7 @@ impl AddHostForm {
     }
 
     pub fn toggle_auth_menu(&mut self) {
+        self.close_identity_menu();
         self.auth_menu_open = !self.auth_menu_open;
         if !self.auth_menu_open {
             self.auth_menu_hover = None;
@@ -354,6 +440,7 @@ impl AddHostForm {
         self.auth_method = AUTH_METHODS[index].to_string();
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
+        self.close_identity_menu();
         self.clamp_focus_to_visible();
         self.error = None;
     }
@@ -363,6 +450,49 @@ impl AddHostForm {
             return false;
         }
         self.auth_menu_hover = index;
+        true
+    }
+
+    pub fn identity_menu_open(&self) -> bool {
+        self.identity_menu_open
+    }
+
+    pub fn identity_menu_hover(&self) -> Option<usize> {
+        self.identity_menu_hover
+    }
+
+    pub fn toggle_identity_menu(&mut self) {
+        if !self.shows_identity() {
+            return;
+        }
+        self.close_auth_menu();
+        self.identity_menu_open = !self.identity_menu_open;
+        if !self.identity_menu_open {
+            self.identity_menu_hover = None;
+        }
+        self.focus = Field::Identity;
+    }
+
+    pub fn close_identity_menu(&mut self) {
+        self.identity_menu_open = false;
+        self.identity_menu_hover = None;
+    }
+
+    /// Pick a saved identity by index into [`Self::identities`].
+    pub fn select_identity(&mut self, index: usize) {
+        if index >= self.identities.len() {
+            return;
+        }
+        self.identity_id = Some(self.identities[index].0.clone());
+        self.close_identity_menu();
+        self.error = None;
+    }
+
+    pub fn set_identity_menu_hover(&mut self, index: Option<usize>) -> bool {
+        if self.identity_menu_hover == index {
+            return false;
+        }
+        self.identity_menu_hover = index;
         true
     }
 
@@ -449,7 +579,10 @@ impl AddHostForm {
     pub fn auth_validation_error(&self) -> Option<&'static str> {
         match self.auth_method.as_str() {
             "key" if self.identity_id.is_none() => Some("Select an SSH key"),
-            "password" if self.password.is_empty() => Some("Enter a password"),
+            // When editing, an empty password means "keep the stored one".
+            "password" if self.password.is_empty() && self.editing_id.is_none() => {
+                Some("Enter a password")
+            }
             "key" | "password" | "gssapi" => None,
             _ => Some("Unknown authentication method"),
         }
@@ -465,6 +598,7 @@ impl AddHostForm {
         self.auth_method = AUTH_METHODS[next].to_string();
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
+        self.close_identity_menu();
         self.clamp_focus_to_visible();
         self.error = None;
     }
@@ -625,6 +759,9 @@ impl AddHostForm {
         if self.focus != Field::AuthMethod {
             self.close_auth_menu();
         }
+        if self.focus != Field::Identity {
+            self.close_identity_menu();
+        }
         self.error = None;
     }
 
@@ -634,6 +771,9 @@ impl AddHostForm {
             self.focus = field;
             if field != Field::AuthMethod {
                 self.close_auth_menu();
+            }
+            if field != Field::Identity {
+                self.close_identity_menu();
             }
             self.error = None;
         }
@@ -704,6 +844,9 @@ impl AddHostForm {
                 if self.auth_menu_open {
                     self.close_auth_menu();
                     Consumed
+                } else if self.identity_menu_open {
+                    self.close_identity_menu();
+                    Consumed
                 } else {
                     Cancel
                 }
@@ -765,6 +908,28 @@ impl AddHostLayout {
     pub fn input_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
         let row = self.field_rect(form, field)?;
         Some(Rect::new(row.x, row.y + INPUT_TOP, row.width, INPUT_HEIGHT))
+    }
+
+    /// Editable text region of the password input (excludes the eye slot).
+    pub fn password_text_rect(&self, form: &AddHostForm) -> Option<Rect> {
+        let input = self.input_rect(form, Field::Password)?;
+        Some(Rect::new(
+            input.x,
+            input.y,
+            (input.width - crate::settings::FIELD_EYE_SLOT).max(0.0),
+            input.height,
+        ))
+    }
+
+    /// Eye toggle on the right of the password input.
+    pub fn password_toggle_rect(&self, form: &AddHostForm) -> Option<Rect> {
+        let input = self.input_rect(form, Field::Password)?;
+        Some(Rect::new(
+            input.right() - crate::settings::FIELD_EYE_SLOT,
+            input.y,
+            crate::settings::FIELD_EYE_SLOT,
+            input.height,
+        ))
     }
 
     /// The caption line above a field's input box.
@@ -830,12 +995,41 @@ impl AddHostLayout {
         ))
     }
 
+    /// Floating dropdown panel under the Select Saved SSH Key input.
+    pub fn identity_menu_rect(&self, form: &AddHostForm) -> Option<Rect> {
+        if !form.shows_identity() {
+            return None;
+        }
+        let input = self.input_rect(form, Field::Identity)?;
+        let n = form.identities().len().max(1) as f32;
+        let row_h = 32.0;
+        Some(Rect::new(
+            input.x,
+            input.bottom() + 4.0,
+            input.width,
+            n * row_h + 8.0,
+        ))
+    }
+
+    pub fn identity_option_rect(&self, form: &AddHostForm, index: usize) -> Option<Rect> {
+        if index >= form.identities().len() {
+            return None;
+        }
+        let menu = self.identity_menu_rect(form)?;
+        Some(Rect::new(
+            menu.x + 4.0,
+            menu.y + 4.0 + index as f32 * 32.0,
+            menu.width - 8.0,
+            32.0,
+        ))
+    }
+
     /// Hit-test inside an open dialog. Coordinates are logical pixels.
     pub fn hit_test(&self, form: &AddHostForm, x: f32, y: f32) -> AddHostHit {
         let dialog_height = form.height();
         let dialog = self.rect(dialog_height);
-        // Auth dropdown may extend past the dialog bottom; still accept
-        // option hits so the popover stays clickable.
+        // Auth / identity dropdowns may extend past the dialog bottom; still
+        // accept option hits so the popover stays clickable.
         if form.auth_menu_open() {
             if let Some(menu) = self.auth_menu_rect(form) {
                 if menu.contains(x, y) {
@@ -843,6 +1037,20 @@ impl AddHostLayout {
                         if let Some(opt) = self.auth_option_rect(form, i) {
                             if opt.contains(x, y) {
                                 return AddHostHit::SelectAuth(i);
+                            }
+                        }
+                    }
+                    return AddHostHit::Consume;
+                }
+            }
+        }
+        if form.identity_menu_open() {
+            if let Some(menu) = self.identity_menu_rect(form) {
+                if menu.contains(x, y) {
+                    for i in 0..form.identities().len() {
+                        if let Some(opt) = self.identity_option_rect(form, i) {
+                            if opt.contains(x, y) {
+                                return AddHostHit::SelectIdentity(i);
                             }
                         }
                     }
@@ -860,12 +1068,26 @@ impl AddHostLayout {
             return AddHostHit::Cancel;
         }
         for field in form.visible_fields() {
+            if field == Field::Password {
+                if let Some(eye) = self.password_toggle_rect(form) {
+                    if eye.contains(x, y) {
+                        return AddHostHit::TogglePasswordVisible;
+                    }
+                }
+                if let Some(text) = self.password_text_rect(form) {
+                    if text.contains(x, y) {
+                        return AddHostHit::Field(Field::Password);
+                    }
+                }
+                continue;
+            }
             if let Some(input) = self.input_rect(form, field) {
                 if input.contains(x, y) {
-                    if field == Field::AuthMethod {
-                        return AddHostHit::ToggleAuthMenu;
-                    }
-                    return AddHostHit::Field(field);
+                    return match field {
+                        Field::AuthMethod => AddHostHit::ToggleAuthMenu,
+                        Field::Identity => AddHostHit::ToggleIdentityMenu,
+                        other => AddHostHit::Field(other),
+                    };
                 }
             }
         }
@@ -1071,6 +1293,40 @@ mod tests {
     }
 
     #[test]
+    fn open_edit_prefills_and_marks_editing() {
+        let mut form = AddHostForm::default();
+        form.set_identities(vec![("k1".into(), "Prod".into())]);
+        form.open_edit(
+            HostFormValues {
+                name: "web".into(),
+                hostname: "web.example".into(),
+                username: "deploy".into(),
+                port: "2222".into(),
+                auth_method: "key".into(),
+                identity_id: Some("k1".into()),
+                password: String::new(),
+            },
+            "host-id".into(),
+        );
+        assert!(form.is_open());
+        assert!(form.is_editing());
+        assert_eq!(form.editing_id(), Some("host-id"));
+        assert_eq!(form.values().name, "web");
+        assert_eq!(form.values().hostname, "web.example");
+        assert_eq!(form.values().port, "2222");
+        assert_eq!(form.identity_id(), Some("k1"));
+        assert_eq!(form.auth_validation_error(), None);
+        form.select_auth_method(
+            AUTH_METHODS
+                .iter()
+                .position(|&m| m == "password")
+                .expect("password"),
+        );
+        // Empty password allowed while editing.
+        assert_eq!(form.auth_validation_error(), None);
+    }
+
+    #[test]
     fn closing_clears_the_error() {
         let mut form = open_form();
         form.set_error("boom");
@@ -1228,6 +1484,33 @@ mod tests {
     }
 
     #[test]
+    fn identity_dropdown_toggle_and_select() {
+        let mut form = open_form();
+        form.set_identities(vec![
+            ("k1".into(), "Prod".into()),
+            ("k2".into(), "Staging".into()),
+        ]);
+        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let identity = layout.input_rect(&form, Field::Identity).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, identity.x + 2.0, identity.y + 2.0),
+            AddHostHit::ToggleIdentityMenu
+        );
+        form.toggle_identity_menu();
+        assert!(form.identity_menu_open());
+        assert!(!form.auth_menu_open());
+        let opt = layout.identity_option_rect(&form, 1).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, opt.x + 2.0, opt.y + 2.0),
+            AddHostHit::SelectIdentity(1)
+        );
+        form.select_identity(1);
+        assert_eq!(form.identity_id(), Some("k2"));
+        assert_eq!(form.selected_identity_name(), Some("Staging"));
+        assert!(!form.identity_menu_open());
+    }
+
+    #[test]
     fn hit_test_finds_fields_and_footer_buttons() {
         let form = open_form();
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
@@ -1247,7 +1530,7 @@ mod tests {
         let identity = layout.input_rect(&form, Field::Identity).unwrap();
         assert_eq!(
             layout.hit_test(&form, identity.x + 2.0, identity.y + 2.0),
-            AddHostHit::Field(Field::Identity)
+            AddHostHit::ToggleIdentityMenu
         );
 
         let h = form.height();
@@ -1281,6 +1564,21 @@ mod tests {
             AddHostHit::Field(Field::Password)
         );
         assert!(layout.input_rect(&form, Field::Identity).is_none());
+    }
+
+    #[test]
+    fn hit_test_password_eye_toggles_visibility() {
+        let mut form = open_form();
+        form.cycle_auth_method(1); // password
+        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let eye = layout.password_toggle_rect(&form).expect("eye slot");
+        assert_eq!(
+            layout.hit_test(&form, eye.x + 2.0, eye.y + 2.0),
+            AddHostHit::TogglePasswordVisible
+        );
+        assert!(!form.password_visible());
+        form.toggle_password_visible();
+        assert!(form.password_visible());
     }
 
     #[test]

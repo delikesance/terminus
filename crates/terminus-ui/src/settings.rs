@@ -1,6 +1,7 @@
 //! Settings modal: SSH Keys + Remote SQL Sync.
 
 use crate::geom::Rect;
+use crate::text_field::TextDraft;
 
 pub const MAX_WIDTH: f32 = 768.0;
 pub const SIDEBAR_WIDTH: f32 = 224.0;
@@ -43,10 +44,13 @@ pub const KEY_CTA_GAP: f32 = 12.0;
 /// Stored key row height.
 pub const KEY_ROW_HEIGHT: f32 = 56.0;
 pub const KEY_ROW_GAP: f32 = 8.0;
-/// Inline generate form under the CTA.
-pub const KEY_DRAFT_HEIGHT: f32 = 96.0;
+/// Inline generate form under the CTA (two field cards + actions + error).
+pub const KEY_DRAFT_HEIGHT: f32 = 252.0;
 pub const KEY_DRAFT_GENERATE_WIDTH: f32 = 96.0;
 pub const KEY_DRAFT_CANCEL_WIDTH: f32 = 72.0;
+/// Max bytes for a pasted OpenSSH private key.
+pub const KEY_PEM_MAX_BYTES: usize = 16_384;
+pub const KEY_LABEL_MAX_BYTES: usize = 64;
 
 /// Shared input row geometry inside a SqlSync field card (equal card pad).
 pub fn field_input_in_card(card: Rect) -> Rect {
@@ -117,10 +121,10 @@ pub struct SettingsModal {
     pub sql_focus: SqlSyncFocus,
     /// Inline "New SSH Key" draft form is open.
     pub key_drafting: bool,
-    /// Label typed into the generate form.
-    pub key_draft_name: String,
+    /// Label field (same editing model as rename / other chrome fields).
+    pub key_label: TextDraft,
     /// Optional OpenSSH private-key PEM; empty means generate Ed25519.
-    pub key_draft_pem: String,
+    pub key_pem: TextDraft,
     /// Whether the draft name field owns the caret.
     pub key_draft_focused: bool,
     /// Whether the PEM paste field owns the caret.
@@ -151,8 +155,8 @@ impl Default for SettingsModal {
             vault_unlocked: false,
             sql_focus: SqlSyncFocus::None,
             key_drafting: false,
-            key_draft_name: String::new(),
-            key_draft_pem: String::new(),
+            key_label: TextDraft::default(),
+            key_pem: TextDraft::default(),
             key_draft_focused: false,
             key_draft_pem_focused: false,
             key_draft_error: None,
@@ -320,6 +324,8 @@ impl SettingsModal {
         self.key_drafting = true;
         self.key_draft_focused = true;
         self.key_draft_pem_focused = false;
+        self.key_label.clear();
+        self.key_pem.clear();
         self.key_draft_error = None;
         self.sql_focus = SqlSyncFocus::None;
     }
@@ -328,8 +334,8 @@ impl SettingsModal {
         self.key_drafting = false;
         self.key_draft_focused = false;
         self.key_draft_pem_focused = false;
-        self.key_draft_name.clear();
-        self.key_draft_pem.clear();
+        self.key_label.clear();
+        self.key_pem.clear();
         self.key_draft_error = None;
     }
 
@@ -349,29 +355,36 @@ impl SettingsModal {
         }
     }
 
+    /// Active text draft while key drafting, if any.
+    pub fn key_draft_active(&mut self) -> Option<&mut TextDraft> {
+        if !self.key_drafting {
+            return None;
+        }
+        if self.key_draft_pem_focused {
+            Some(&mut self.key_pem)
+        } else if self.key_draft_focused {
+            Some(&mut self.key_label)
+        } else {
+            None
+        }
+    }
+
     /// Insert into the focused generate-key field (label or PEM).
     pub fn insert_key_draft_text(&mut self, text: &str) -> bool {
-        if !self.key_drafting {
+        if !self.key_drafting || text.is_empty() {
             return false;
         }
-        if text.is_empty() {
-            return false;
-        }
-        // PEM pastes may include newlines; allow them only in the PEM field.
-        if self.key_draft_pem_focused {
-            self.key_draft_pem.push_str(text);
+        let ok = if self.key_draft_pem_focused {
+            self.key_pem.insert(text, KEY_PEM_MAX_BYTES, true)
+        } else if self.key_draft_focused {
+            self.key_label.insert(text, KEY_LABEL_MAX_BYTES, false)
+        } else {
+            false
+        };
+        if ok {
             self.key_draft_error = None;
-            return true;
         }
-        if !self.key_draft_focused {
-            return false;
-        }
-        if text.chars().any(char::is_control) {
-            return false;
-        }
-        self.key_draft_name.push_str(text);
-        self.key_draft_error = None;
-        true
+        ok
     }
 
     pub fn key_draft_backspace(&mut self) -> bool {
@@ -379,17 +392,17 @@ impl SettingsModal {
             return false;
         }
         if self.key_draft_pem_focused {
-            return self.key_draft_pem.pop().is_some();
+            return self.key_pem.backspace(false);
         }
         if !self.key_draft_focused {
             return false;
         }
-        self.key_draft_name.pop().is_some()
+        self.key_label.backspace(false)
     }
 
     /// Validate the draft label before asking the worker to generate/import.
     pub fn take_key_draft_label(&mut self) -> Result<String, String> {
-        let name = self.key_draft_name.trim().to_string();
+        let name = self.key_label.value.trim().to_string();
         if name.is_empty() {
             let msg = "Enter a label for the new SSH key".to_string();
             self.key_draft_error = Some(msg.clone());
@@ -400,7 +413,25 @@ impl SettingsModal {
 
     /// Whether the draft should import a pasted PEM instead of generating.
     pub fn key_draft_wants_import(&self) -> bool {
-        !self.key_draft_pem.trim().is_empty()
+        !self.key_pem.value.trim().is_empty()
+    }
+
+    /// Soft error banner between the PEM card and the action buttons.
+    pub fn key_draft_error_banner_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        if !self.key_drafting || self.key_draft_error.is_none() {
+            return None;
+        }
+        let pem = self.key_draft_pem_rect(window_width, window_height)?;
+        Some(Rect::new(
+            pem.x,
+            pem.bottom() + 8.0,
+            pem.width,
+            ERROR_BANNER_HEIGHT,
+        ))
     }
 
     pub fn focus_uri(&mut self) {
@@ -606,12 +637,11 @@ impl SettingsModal {
         window_height: f32,
     ) -> Option<Rect> {
         let draft = self.key_draft_rect(window_width, window_height)?;
-        let buttons_w = KEY_DRAFT_GENERATE_WIDTH + 8.0 + KEY_DRAFT_CANCEL_WIDTH;
         Some(Rect::new(
             draft.x + FIELD_CARD_PAD,
-            draft.y + 10.0,
-            (draft.width - 2.0 * FIELD_CARD_PAD - buttons_w - 8.0).max(40.0),
-            FIELD_INPUT_HEIGHT,
+            draft.y + FIELD_CARD_PAD,
+            (draft.width - 2.0 * FIELD_CARD_PAD).max(40.0),
+            FIELD_CARD_HEIGHT,
         ))
     }
 
@@ -623,9 +653,9 @@ impl SettingsModal {
         let draft = self.key_draft_rect(window_width, window_height)?;
         Some(Rect::new(
             draft.x + FIELD_CARD_PAD,
-            draft.y + 10.0 + FIELD_INPUT_HEIGHT + 8.0,
+            draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP,
             (draft.width - 2.0 * FIELD_CARD_PAD).max(40.0),
-            FIELD_INPUT_HEIGHT,
+            FIELD_CARD_HEIGHT,
         ))
     }
 
@@ -638,7 +668,7 @@ impl SettingsModal {
         let cancel = self.key_draft_cancel_rect(window_width, window_height)?;
         Some(Rect::new(
             cancel.x - 8.0 - KEY_DRAFT_GENERATE_WIDTH,
-            draft.y + 10.0,
+            cancel.y,
             KEY_DRAFT_GENERATE_WIDTH,
             FIELD_INPUT_HEIGHT,
         ))
@@ -650,9 +680,14 @@ impl SettingsModal {
         window_height: f32,
     ) -> Option<Rect> {
         let draft = self.key_draft_rect(window_width, window_height)?;
+        // Sit below the PEM card; leave room for the soft error banner when shown.
+        let mut actions_y = draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP * 2.0;
+        if self.key_draft_error.is_some() {
+            actions_y += ERROR_BANNER_HEIGHT + 8.0;
+        }
         Some(Rect::new(
             draft.right() - FIELD_CARD_PAD - KEY_DRAFT_CANCEL_WIDTH,
-            draft.y + 10.0,
+            actions_y,
             KEY_DRAFT_CANCEL_WIDTH,
             FIELD_INPUT_HEIGHT,
         ))
@@ -663,9 +698,6 @@ impl SettingsModal {
         let mut y = cta.bottom() + KEY_CTA_GAP;
         if self.key_drafting {
             y += KEY_DRAFT_HEIGHT + KEY_CTA_GAP;
-            if self.key_draft_error.is_some() {
-                y += 18.0;
-            }
         }
         y
     }
