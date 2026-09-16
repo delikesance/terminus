@@ -27,10 +27,10 @@ pub use managed_key::{
 pub use models::*;
 pub use session::{OutputSink, SessionManager, SessionSpec};
 pub use ssh::{
-    default_known_hosts_path, fingerprint_of, probe_options_from_host, probe_ssh_auth,
-    HostKeyOutcome, HostKeyPolicy, KnownHosts, ProbeError, SshAuth, SshConnectOptions, SshEvent,
-    SshPty, SshSession, CHUNK_SIZE, DEFAULT_CONNECT_TIMEOUT, DEFAULT_KEEPALIVE_INTERVAL,
-    DEFAULT_TERM,
+    connect_sftp, connect_sftp_for_host, default_known_hosts_path, fingerprint_of,
+    probe_options_from_host, probe_ssh_auth, HostKeyOutcome, HostKeyPolicy, KnownHosts,
+    ProbeError, SftpConnection, SshAuth, SshConnectOptions, SshEvent, SshPty, SshSession,
+    CHUNK_SIZE, DEFAULT_CONNECT_TIMEOUT, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_TERM,
 };
 pub use store::Store;
 pub use sync::SyncEngine;

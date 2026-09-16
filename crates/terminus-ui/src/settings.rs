@@ -1,7 +1,7 @@
 //! Settings modal: SSH Keys + Remote SQL Sync.
 
 use crate::geom::Rect;
-use crate::text_field::TextDraft;
+use crate::text_field::{FieldPaint, TextDraft};
 
 pub const MAX_WIDTH: f32 = 768.0;
 pub const SIDEBAR_WIDTH: f32 = 224.0;
@@ -195,13 +195,8 @@ pub enum SettingsHit {
     Done,
 }
 
-/// What one SqlSync text field should paint.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SqlFieldPaint {
-    pub text: String,
-    pub placeholder: bool,
-    pub show_caret: bool,
-}
+/// What one SqlSync text field should paint (shared [`FieldPaint`] model).
+pub type SqlFieldPaint = FieldPaint;
 
 impl SettingsModal {
     /// Replace the SSH key list (from `Store::list_identities`).
@@ -249,45 +244,36 @@ impl SettingsModal {
 
     /// Paint model for the Connection URI field.
     pub fn uri_field_paint(&self) -> SqlFieldPaint {
-        let focused = self.sql_focus == SqlSyncFocus::Uri;
-        if self.sql_uri.is_empty() && !focused {
-            SqlFieldPaint {
-                text: self.uri_placeholder().to_string(),
-                placeholder: true,
-                show_caret: false,
-            }
-        } else {
-            SqlFieldPaint {
-                text: self.sql_uri.clone(),
-                placeholder: false,
-                show_caret: focused,
-            }
-        }
+        FieldPaint::from_value(
+            &self.sql_uri,
+            self.uri_placeholder(),
+            self.sql_focus == SqlSyncFocus::Uri,
+        )
     }
 
     /// Paint model for the passphrase field (masking included).
     pub fn passphrase_field_paint(&self) -> SqlFieldPaint {
         let focused = self.sql_focus == SqlSyncFocus::Passphrase;
         if self.sql_passphrase.is_empty() && !focused {
-            SqlFieldPaint {
+            FieldPaint {
                 text: self.passphrase_placeholder().to_string(),
                 placeholder: true,
                 show_caret: false,
             }
         } else if self.sql_passphrase.is_empty() {
-            SqlFieldPaint {
+            FieldPaint {
                 text: String::new(),
                 placeholder: false,
                 show_caret: focused,
             }
         } else if self.passphrase_visible {
-            SqlFieldPaint {
+            FieldPaint {
                 text: self.sql_passphrase.clone(),
                 placeholder: false,
                 show_caret: focused,
             }
         } else {
-            SqlFieldPaint {
+            FieldPaint {
                 text: "•".repeat(self.sql_passphrase.chars().count()),
                 placeholder: false,
                 show_caret: focused,

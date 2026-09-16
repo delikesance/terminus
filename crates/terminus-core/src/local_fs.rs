@@ -172,6 +172,23 @@ pub async fn create_dir_all(path: impl AsRef<Path>) -> Result<()> {
     })
 }
 
+/// Renames / moves a local path.
+pub async fn rename_local(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    fs::rename(from, to).await.map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Error::NotFoundError(format!("{}", from.display()))
+        } else {
+            Error::FileSystemError(format!(
+                "cannot rename {} → {}: {err}",
+                from.display(),
+                to.display()
+            ))
+        }
+    })
+}
+
 /// Removes a file, a symlink, or a directory (`recursive` controls whether a
 /// non-empty directory is deleted too).
 pub async fn remove_local_path(path: impl AsRef<Path>, recursive: bool) -> Result<()> {

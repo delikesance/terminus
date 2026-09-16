@@ -170,12 +170,31 @@ impl VaultUnlockPrompt {
 
     /// Display string for the shared Settings field painter (masking included).
     pub fn field_paint_text(&self) -> (String, bool) {
+        let paint = self.field_paint();
+        (paint.text, paint.placeholder)
+    }
+
+    /// Shared [`FieldPaint`] model (same path as Settings / SFTP fields).
+    pub fn field_paint(&self) -> crate::text_field::FieldPaint {
+        use crate::text_field::FieldPaint;
         if self.passphrase.is_empty() {
-            ("Enter passphrase…".into(), true)
+            FieldPaint {
+                text: "Enter passphrase…".into(),
+                placeholder: true,
+                show_caret: true,
+            }
         } else if self.visible {
-            (self.passphrase.clone(), false)
+            FieldPaint {
+                text: self.passphrase.clone(),
+                placeholder: false,
+                show_caret: true,
+            }
         } else {
-            ("•".repeat(self.passphrase.chars().count()), false)
+            FieldPaint {
+                text: "•".repeat(self.passphrase.chars().count()),
+                placeholder: false,
+                show_caret: true,
+            }
         }
     }
 

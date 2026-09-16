@@ -18,6 +18,56 @@ pub enum TextMoveKind {
     Extend,
 }
 
+/// Paint model for a labeled text field card (Settings, SFTP name, …).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldPaint {
+    pub text: String,
+    pub placeholder: bool,
+    pub show_caret: bool,
+}
+
+impl FieldPaint {
+    /// Build paint state from a [`TextDraft`].
+    pub fn from_draft(draft: &TextDraft, placeholder: &str, focused: bool) -> Self {
+        if draft.value.is_empty() && !focused {
+            Self {
+                text: placeholder.to_string(),
+                placeholder: true,
+                show_caret: false,
+            }
+        } else if draft.value.is_empty() {
+            Self {
+                text: String::new(),
+                placeholder: false,
+                show_caret: focused,
+            }
+        } else {
+            Self {
+                text: draft.display_line(),
+                placeholder: false,
+                show_caret: focused,
+            }
+        }
+    }
+
+    /// Idle / focused paint for a plain `String` field (Settings URI, …).
+    pub fn from_value(value: &str, placeholder: &str, focused: bool) -> Self {
+        if value.is_empty() && !focused {
+            Self {
+                text: placeholder.to_string(),
+                placeholder: true,
+                show_caret: false,
+            }
+        } else {
+            Self {
+                text: value.to_string(),
+                placeholder: false,
+                show_caret: focused,
+            }
+        }
+    }
+}
+
 impl TextDraft {
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
