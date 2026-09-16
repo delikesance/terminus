@@ -44,7 +44,13 @@ pub fn phase(elapsed_secs: f32) -> f32 {
 /// `orbit_r` is the path radius; `dot_r` the base disc size. Leading
 /// dots are brighter and slightly larger so the chase reads as motion
 /// instead of a static triangle.
-pub fn orbit_dots(cx: f32, cy: f32, orbit_r: f32, dot_r: f32, phase: f32) -> [OrbitDot; ORBIT_COUNT] {
+pub fn orbit_dots(
+    cx: f32,
+    cy: f32,
+    orbit_r: f32,
+    dot_r: f32,
+    phase: f32,
+) -> [OrbitDot; ORBIT_COUNT] {
     let mut out = [OrbitDot {
         x: cx,
         y: cy,

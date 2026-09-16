@@ -9,6 +9,7 @@
 use crate::activity_bar::{self, ActivityBarState, RailAction, RailHit, Section};
 use crate::add_host::{AddHostForm, AddHostHit, Field, FormInput, FormOutcome};
 use crate::connection::{ConnectionHit, ConnectionSequence};
+use crate::context_menu::{ContextAction, ContextMenu, ContextMenuHit};
 use crate::settings::{SettingsHit, SettingsModal, SettingsTab};
 use crate::sidebar::{HostItem, HostPanel, PanelHit, Row};
 use crate::snippets::{SnippetHit, SnippetsPanel};
@@ -59,16 +60,52 @@ pub enum ChromeAction {
     UnlockVault,
     /// Settings: persist remote URI and run SyncEngine::sync_now.
     TestSync,
+    /// Settings: generate a new Ed25519 managed SSH key.
+    GenerateSshKey,
+    /// Settings: soft-delete a managed SSH key by id.
+    DeleteSshKey(String),
+    /// Soft-delete a stored host (context menu).
+    DeleteHost(String),
+    /// Soft-delete a host group (context menu).
+    DeleteGroup(String),
+    /// Begin renaming a stored host (context menu).
+    RenameHost(String),
+    /// Begin renaming a host group (context menu).
+    RenameGroup(String),
+    /// Commit an inline rename with the draft name.
+    CommitRename {
+        id: String,
+        is_group: bool,
+        name: String,
+    },
+    /// Context menu: copy.
+    ContextCopy,
+    /// Context menu: paste.
+    ContextPaste,
     /// Settings: focus the connection URI field.
     FocusSqlUri,
     /// Settings: focus the vault passphrase field.
     FocusSqlPassphrase,
+    /// Settings: focus the generate-key label field.
+    FocusKeyDraft,
     /// Expand/collapse sessions under a host.
     ToggleHost(String),
     /// Move a stored host into a group (`Some`) or out to the root list (`None`).
     SetHostGroup {
         host_id: String,
         group_id: Option<String>,
+    },
+    /// Place a host before another ungrouped host or before a group.
+    ReorderHost {
+        host_id: String,
+        before_host_id: Option<String>,
+        before_group_id: Option<String>,
+    },
+    /// Place a group before another group or before a root host.
+    ReorderGroup {
+        group_id: String,
+        before_group_id: Option<String>,
+        before_host_id: Option<String>,
     },
     /// Close the connection-progress modal.
     DismissConnection,
@@ -88,6 +125,8 @@ pub struct Chrome {
     pub form: AddHostForm,
     /// Live SSH/WSL connecting modal, when a session is starting.
     pub connection: Option<ConnectionSequence>,
+    /// Right-click context menu, when open.
+    pub context_menu: Option<ContextMenu>,
     /// Unscaled height reserved above the chrome by the tab strip, so
     /// the rail starts under the tabs instead of behind them.
     pub top_inset: f32,
@@ -106,6 +145,7 @@ impl Default for Chrome {
             settings: SettingsModal::default(),
             form: AddHostForm::default(),
             connection: None,
+            context_menu: None,
             top_inset: 0.0,
             panel_visible: true,
             last_window_width: 1200.0,
@@ -229,6 +269,92 @@ impl Chrome {
         action
     }
 
+    /// Right-click: open a context menu over a host or group row.
+    ///
+    /// Kept separate from [`Self::handle_press`] so a right-click never
+    /// arms a host drag or opens a session.
+    pub fn handle_context_press(
+        &mut self,
+        window_width: f32,
+        window_height: f32,
+        x: f32,
+        y: f32,
+    ) -> ChromeAction {
+        // Modals / overlays own the pointer; don't open under them.
+        if self.settings.open || self.connection.is_some() || self.form.is_open() {
+            self.close_context_menu();
+            return ChromeAction::Ignored;
+        }
+        if !self.hosts_visible() || self.activity.collapsed {
+            self.close_context_menu();
+            return ChromeAction::Ignored;
+        }
+
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        let menu = match self.panel.hit_test(origin_y, height, x, y) {
+            Some(PanelHit::Item(index)) => self
+                .panel
+                .rows
+                .get(index)
+                .and_then(Row::host)
+                .filter(|h| h.stored)
+                .and_then(|h| ContextMenu::for_host(x, y, h.id.clone())),
+            Some(PanelHit::Group(index)) => self
+                .panel
+                .rows
+                .get(index)
+                .and_then(|row| match row {
+                    Row::Group { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .and_then(|id| ContextMenu::for_group(x, y, id)),
+            _ => None,
+        };
+
+        match menu {
+            Some(m) => {
+                self.context_menu = Some(m.clamped(window_width, window_height));
+                ChromeAction::Consumed
+            }
+            None => {
+                self.close_context_menu();
+                ChromeAction::Ignored
+            }
+        }
+    }
+
+    pub fn close_context_menu(&mut self) {
+        self.context_menu = None;
+    }
+
+    fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
+        let Some(menu) = self.context_menu.as_ref() else {
+            return None;
+        };
+        match menu.hit_test(x, y) {
+            ContextMenuHit::Dismiss => {
+                self.close_context_menu();
+                // Swallow the dismiss click so it does not open a host.
+                Some(ChromeAction::Consumed)
+            }
+            ContextMenuHit::Consume => Some(ChromeAction::Consumed),
+            ContextMenuHit::Item(index) => {
+                let action = menu.take_action(index);
+                self.close_context_menu();
+                Some(match action {
+                    Some(ContextAction::DeleteHost(id)) => ChromeAction::DeleteHost(id),
+                    Some(ContextAction::DeleteGroup(id)) => ChromeAction::DeleteGroup(id),
+                    Some(ContextAction::RenameHost(id)) => ChromeAction::RenameHost(id),
+                    Some(ContextAction::RenameGroup(id)) => ChromeAction::RenameGroup(id),
+                    Some(ContextAction::Copy) => ChromeAction::ContextCopy,
+                    Some(ContextAction::Paste) => ChromeAction::ContextPaste,
+                    None => ChromeAction::Consumed,
+                })
+            }
+        }
+    }
+
     fn route_press(
         &mut self,
         window_width: f32,
@@ -236,6 +362,11 @@ impl Chrome {
         x: f32,
         y: f32,
     ) -> ChromeAction {
+        // An open context menu eats the next left click: select or dismiss.
+        if let Some(action) = self.route_context_menu_press(x, y) {
+            return action;
+        }
+
         // Settings modal sits above connection and add-host.
         if self.settings.open {
             return match self.settings.hit_test(window_width, window_height, x, y) {
@@ -276,9 +407,40 @@ impl Chrome {
                     self.settings.close_engine_menu();
                     ChromeAction::TestSync
                 }
-                SettingsHit::NewKey | SettingsHit::DeleteKey(_) | SettingsHit::Consume => {
+                SettingsHit::NewKey => {
+                    self.settings.open_key_draft();
+                    ChromeAction::FocusKeyDraft
+                }
+                SettingsHit::FocusKeyDraft => {
+                    self.settings.focus_key_draft();
+                    ChromeAction::FocusKeyDraft
+                }
+                SettingsHit::FocusKeyPem => {
+                    self.settings.focus_key_pem();
+                    ChromeAction::FocusKeyDraft
+                }
+                SettingsHit::GenerateKey => {
+                    match self.settings.take_key_draft_label() {
+                        Ok(_name) => ChromeAction::GenerateSshKey,
+                        Err(_) => ChromeAction::Consumed,
+                    }
+                }
+                SettingsHit::CancelKeyDraft => {
+                    self.settings.close_key_draft();
+                    ChromeAction::Consumed
+                }
+                SettingsHit::DeleteKey(index) => {
+                    if let Some(key) = self.settings.keys.get(index) {
+                        ChromeAction::DeleteSshKey(key.id.clone())
+                    } else {
+                        ChromeAction::Consumed
+                    }
+                }
+                SettingsHit::Consume => {
                     self.settings.close_engine_menu();
                     self.settings.clear_sql_focus();
+                    self.settings.key_draft_focused = false;
+                    self.settings.key_draft_pem_focused = false;
                     ChromeAction::Consumed
                 }
             };
@@ -287,11 +449,12 @@ impl Chrome {
         // The connection modal sits above everything else: clicks never
         // fall through to the terminal or the add-host form behind it.
         if self.connection.is_some() {
-            let hit = self
-                .connection
-                .as_ref()
-                .unwrap()
-                .hit_test(window_width, window_height, x, y);
+            let hit = self.connection.as_ref().unwrap().hit_test(
+                window_width,
+                window_height,
+                x,
+                y,
+            );
             return match hit {
                 ConnectionHit::ToggleLogs => {
                     if let Some(conn) = self.connection.as_mut() {
@@ -307,17 +470,17 @@ impl Chrome {
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let dialog = layout.rect(self.form.height());
-            if !dialog.contains(x, y) {
+            let on_auth_menu = self.form.auth_menu_open()
+                && layout
+                    .auth_menu_rect(&self.form)
+                    .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_auth_menu {
                 self.form.close();
                 return ChromeAction::Consumed;
             }
             return match layout.hit_test(&self.form, x, y) {
                 AddHostHit::Field(field) => {
                     match field {
-                        Field::AuthMethod => {
-                            self.form.cycle_auth_method(1);
-                            self.form.focus_field(Field::AuthMethod);
-                        }
                         Field::Identity => {
                             self.form.cycle_identity(1);
                             self.form.focus_field(Field::Identity);
@@ -326,12 +489,25 @@ impl Chrome {
                     }
                     ChromeAction::Consumed
                 }
+                AddHostHit::ToggleAuthMenu => {
+                    self.form.toggle_auth_menu();
+                    ChromeAction::Consumed
+                }
+                AddHostHit::SelectAuth(index) => {
+                    self.form.select_auth_method(index);
+                    ChromeAction::Consumed
+                }
                 AddHostHit::Cancel => {
                     self.form.close();
                     ChromeAction::Consumed
                 }
                 AddHostHit::Connect => ChromeAction::SubmitHostForm,
-                AddHostHit::Consume => ChromeAction::Consumed,
+                AddHostHit::Consume => {
+                    if self.form.auth_menu_open() {
+                        self.form.close_auth_menu();
+                    }
+                    ChromeAction::Consumed
+                }
             };
         }
 
@@ -372,25 +548,17 @@ impl Chrome {
         }
 
         if self.snippets_visible() {
-            return match self
-                .snippets
-                .hit_test(origin_y, chrome_height, x, y)
-            {
-                Some(SnippetHit::Item(index)) => {
-                    match self.snippets.items.get(index) {
-                        Some(item) => ChromeAction::RunSnippet(item.cmd.clone()),
-                        None => ChromeAction::Consumed,
-                    }
-                }
+            return match self.snippets.hit_test(origin_y, chrome_height, x, y) {
+                Some(SnippetHit::Item(index)) => match self.snippets.items.get(index) {
+                    Some(item) => ChromeAction::RunSnippet(item.cmd.clone()),
+                    None => ChromeAction::Consumed,
+                },
                 Some(SnippetHit::Background) => ChromeAction::Consumed,
                 None => ChromeAction::Ignored,
             };
         }
 
-        match self
-            .panel
-            .hit_test(origin_y, chrome_height, x, y)
-        {
+        match self.panel.hit_test(origin_y, chrome_height, x, y) {
             Some(PanelHit::Search) => {
                 self.panel.filter_focused = true;
                 self.panel.new_group_focused = false;
@@ -412,10 +580,42 @@ impl Chrome {
                 }
                 match hit {
                     Some(PanelHit::Group(index)) if self.hosts_visible() => {
-                        if let Some(Row::Group { id, .. }) = self.panel.rows.get(index) {
-                            return ChromeAction::ToggleGroup(id.clone());
+                        match self.panel.rows.get(index) {
+                            Some(Row::Group {
+                                id,
+                                name,
+                                host_count,
+                                ..
+                            }) => {
+                                let card = self.panel.card_rect(self.origin_y(), index);
+                                let endpoint = if *host_count == 0 {
+                                    "Empty group".to_string()
+                                } else if *host_count == 1 {
+                                    "1 host".to_string()
+                                } else {
+                                    format!("{host_count} hosts")
+                                };
+                                self.panel.host_drag = Some(crate::sidebar::HostDrag {
+                                    host_id: id.clone(),
+                                    host_name: name.clone(),
+                                    endpoint,
+                                    kind: crate::sidebar::HostDragKind::Group,
+                                    row_index: index,
+                                    press_x: x,
+                                    press_y: y,
+                                    current_x: x,
+                                    current_y: y,
+                                    grab_dx: x - card.x,
+                                    grab_dy: y - card.y,
+                                    source_rect: card,
+                                    ghost_rect: card,
+                                    phase: crate::sidebar::HostDragPhase::Armed,
+                                    drop_target: None,
+                                });
+                                ChromeAction::Consumed
+                            }
+                            _ => ChromeAction::Consumed,
                         }
-                        ChromeAction::Consumed
                     }
                     Some(PanelHit::Item(index)) if self.hosts_visible() => {
                         self.panel.selected = Some(index);
@@ -428,6 +628,7 @@ impl Chrome {
                                     host_id: item.id.clone(),
                                     host_name: item.name.clone(),
                                     endpoint: item.endpoint.clone(),
+                                    kind: crate::sidebar::HostDragKind::Host,
                                     row_index: index,
                                     press_x: x,
                                     press_y: y,
@@ -457,7 +658,9 @@ impl Chrome {
                     }
                     Some(PanelHit::CloseSession(index)) if self.hosts_visible() => {
                         match self.panel.rows.get(index).and_then(Row::session) {
-                            Some(session) => ChromeAction::CloseSession(session.tab_index),
+                            Some(session) => {
+                                ChromeAction::CloseSession(session.tab_index)
+                            }
                             None => ChromeAction::Consumed,
                         }
                     }
@@ -501,22 +704,34 @@ impl Chrome {
     /// Route a mouse move; returns whether anything needs repainting.
     pub fn handle_hover(&mut self, window_height: f32, x: f32, y: f32) -> bool {
         let window_width = {
-            // Callers pass height only today; settings hover uses dialog
-            // geometry that also needs width. Reconstruct from dialog
-            // centering using a wide-enough stand-in when unknown —
-            // the screen passes both via cursor_at. For hover highlight
-            // on the dropdown we need the real width from the dialog
-            // math which depends on window_width. Use a side channel:
-            // store last known width on Chrome.
             self.last_window_width
         };
+        if let Some(menu) = self.context_menu.as_mut() {
+            return menu.hover_at(x, y);
+        }
         if self.settings.open {
             return self
                 .settings
                 .handle_hover(window_width, window_height, x, y);
         }
-        if self.connection.is_some() || self.form.is_open() || self.activity.collapsed {
+        if self.connection.is_some() || self.activity.collapsed {
             return false;
+        }
+        if self.form.is_open() {
+            if !self.form.auth_menu_open() {
+                return self.form.set_auth_menu_hover(None);
+            }
+            let layout = self.dialog_layout(window_width, window_height);
+            let mut hover = None;
+            for i in 0..crate::add_host::AUTH_METHODS.len() {
+                if let Some(opt) = layout.auth_option_rect(&self.form, i) {
+                    if opt.contains(x, y) {
+                        hover = Some(i);
+                        break;
+                    }
+                }
+            }
+            return self.form.set_auth_menu_hover(hover);
         }
         let origin_y = self.origin_y();
         let height = window_height - origin_y;
@@ -537,7 +752,19 @@ impl Chrome {
     }
 
     /// Cursor affordance under `(x, y)`.
-    pub fn cursor_at(&self, window_width: f32, window_height: f32, x: f32, y: f32) -> ChromeCursor {
+    pub fn cursor_at(
+        &self,
+        window_width: f32,
+        window_height: f32,
+        x: f32,
+        y: f32,
+    ) -> ChromeCursor {
+        if let Some(menu) = self.context_menu.as_ref() {
+            return match menu.hit_test(x, y) {
+                ContextMenuHit::Item(_) => ChromeCursor::Pointer,
+                ContextMenuHit::Consume | ContextMenuHit::Dismiss => ChromeCursor::Default,
+            };
+        }
         if self.settings.open {
             return self.settings.cursor_at(window_width, window_height, x, y);
         }
@@ -550,13 +777,20 @@ impl Chrome {
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let dialog = layout.rect(self.form.height());
-            if !dialog.contains(x, y) {
+            let on_auth_menu = self.form.auth_menu_open()
+                && layout
+                    .auth_menu_rect(&self.form)
+                    .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_auth_menu {
                 return ChromeCursor::Pointer; // scrim dismiss
             }
             return match layout.hit_test(&self.form, x, y) {
-                AddHostHit::Field(Field::AuthMethod | Field::Identity) => ChromeCursor::Pointer,
+                AddHostHit::Field(Field::Identity) => ChromeCursor::Pointer,
                 AddHostHit::Field(_) => ChromeCursor::Text,
-                AddHostHit::Connect | AddHostHit::Cancel => ChromeCursor::Pointer,
+                AddHostHit::ToggleAuthMenu
+                | AddHostHit::SelectAuth(_)
+                | AddHostHit::Connect
+                | AddHostHit::Cancel => ChromeCursor::Pointer,
                 AddHostHit::Consume => ChromeCursor::Default,
             };
         }
@@ -576,7 +810,9 @@ impl Chrome {
         }
         if self.hosts_visible() {
             return match self.panel.hit_test(origin_y, height, x, y) {
-                Some(PanelHit::Search) | Some(PanelHit::NewGroupField) => ChromeCursor::Text,
+                Some(PanelHit::Search) | Some(PanelHit::NewGroupField) => {
+                    ChromeCursor::Text
+                }
                 Some(PanelHit::Background) | None => ChromeCursor::Default,
                 Some(_) => ChromeCursor::Pointer,
             };
@@ -607,7 +843,8 @@ impl Chrome {
         if matches!(drag.phase, crate::sidebar::HostDragPhase::Dragging) {
             let w = drag.source_rect.width;
             let h = drag.source_rect.height;
-            drag.ghost_rect = crate::geom::Rect::new(x - drag.grab_dx, y - drag.grab_dy, w, h);
+            drag.ghost_rect =
+                crate::geom::Rect::new(x - drag.grab_dx, y - drag.grab_dy, w, h);
         }
         let dragging = matches!(drag.phase, crate::sidebar::HostDragPhase::Dragging);
         let origin_y = self.origin_y();
@@ -626,98 +863,124 @@ impl Chrome {
 
     /// Finish a host press/drag on primary-button release.
     pub fn handle_release(&mut self, window_height: f32, x: f32, y: f32) -> ChromeAction {
-        let Some(drag) = self.panel.host_drag.as_mut() else {
+        let Some(drag) = self.panel.host_drag.as_ref() else {
             return ChromeAction::Ignored;
         };
-        // Already snapping — wait for tick to finish.
-        if matches!(drag.phase, crate::sidebar::HostDragPhase::Snapping { .. }) {
-            return ChromeAction::Consumed;
-        }
         if matches!(drag.phase, crate::sidebar::HostDragPhase::Armed) {
             let id = drag.host_id.clone();
+            let is_group = drag.is_group();
             self.panel.host_drag = None;
-            return ChromeAction::OpenHost(id);
+            return if is_group {
+                ChromeAction::ToggleGroup(id)
+            } else {
+                ChromeAction::OpenHost(id)
+            };
         }
-        // Dragging → start snap animation toward the drop slot.
+        // Dragging → apply drop immediately (no snap tween).
         let origin_y = self.origin_y();
         let height = (window_height - origin_y).max(0.0);
+        let cached = self
+            .panel
+            .host_drag
+            .as_ref()
+            .and_then(|d| d.drop_target.clone());
+        let host_id = self
+            .panel
+            .host_drag
+            .as_ref()
+            .map(|d| d.host_id.clone())
+            .unwrap_or_default();
+        let is_group = self
+            .panel
+            .host_drag
+            .as_ref()
+            .is_some_and(crate::sidebar::HostDrag::is_group);
         let target = self
             .panel
             .drop_target_at(origin_y, height, x, y)
-            .or_else(|| {
-                self.panel
-                    .host_drag
-                    .as_ref()
-                    .and_then(|d| d.drop_target.clone())
-            });
+            .or(cached);
         let Some(target) = target else {
             self.panel.host_drag = None;
             return ChromeAction::Consumed;
         };
-        let from = self
-            .panel
-            .host_drag
-            .as_ref()
-            .map(|d| d.ghost_rect)
-            .unwrap_or_else(|| {
-                crate::geom::Rect::new(x, y, crate::sidebar::ITEM_HEIGHT, crate::sidebar::ITEM_HEIGHT)
-            });
-        let to = self
-            .panel
-            .drop_slot_rect(origin_y, &target)
-            .unwrap_or(from);
         if let crate::sidebar::HostDropTarget::Group(ref group_id) = target {
             self.panel.collapsed_groups.remove(group_id);
         }
-        if let Some(drag) = self.panel.host_drag.as_mut() {
-            drag.drop_target = Some(target.clone());
-            drag.phase = crate::sidebar::HostDragPhase::Snapping {
-                tween: crate::anim::RectTween::new(
-                    from,
-                    to,
-                    crate::anim::SNAP_DURATION,
-                    crate::anim::Ease::OutBack,
-                ),
-                pending: target,
-            };
-            drag.ghost_rect = from;
-        }
-        ChromeAction::Consumed
+        self.panel.host_drag = None;
+        Self::action_from_drop(host_id, is_group, target)
     }
 
-    /// Advance host-drag snap animation. Returns a pending action when the
-    /// snap finishes (persist group assignment).
-    pub fn tick_host_drag(&mut self, dt: f32) -> Option<ChromeAction> {
-        let drag = self.panel.host_drag.as_mut()?;
-        let crate::sidebar::HostDragPhase::Snapping { tween, pending } = &mut drag.phase else {
-            return None;
-        };
-        drag.ghost_rect = tween.tick(dt);
-        if !tween.finished() {
-            return None;
-        }
-        let pending = pending.clone();
-        let host_id = drag.host_id.clone();
-        self.panel.host_drag = None;
-        Some(match pending {
+    fn action_from_drop(
+        host_id: String,
+        is_group: bool,
+        pending: crate::sidebar::HostDropTarget,
+    ) -> ChromeAction {
+        match pending {
             crate::sidebar::HostDropTarget::Group(group_id) => ChromeAction::SetHostGroup {
                 host_id,
                 group_id: Some(group_id),
             },
-            crate::sidebar::HostDropTarget::Ungroup => ChromeAction::SetHostGroup {
-                host_id,
-                group_id: None,
-            },
-        })
+            crate::sidebar::HostDropTarget::Ungroup => {
+                if is_group {
+                    ChromeAction::ReorderGroup {
+                        group_id: host_id,
+                        before_group_id: None,
+                        before_host_id: None,
+                    }
+                } else {
+                    ChromeAction::ReorderHost {
+                        host_id,
+                        before_host_id: None,
+                        before_group_id: None,
+                    }
+                }
+            }
+            crate::sidebar::HostDropTarget::BeforeHost(before_host_id) => {
+                if is_group {
+                    ChromeAction::ReorderGroup {
+                        group_id: host_id,
+                        before_group_id: None,
+                        before_host_id: Some(before_host_id),
+                    }
+                } else {
+                    ChromeAction::ReorderHost {
+                        host_id,
+                        before_host_id: Some(before_host_id),
+                        before_group_id: None,
+                    }
+                }
+            }
+            crate::sidebar::HostDropTarget::BeforeGroup(before_group_id) => {
+                if is_group {
+                    ChromeAction::ReorderGroup {
+                        group_id: host_id,
+                        before_group_id: Some(before_group_id),
+                        before_host_id: None,
+                    }
+                } else {
+                    ChromeAction::ReorderHost {
+                        host_id,
+                        before_host_id: None,
+                        before_group_id: Some(before_group_id),
+                    }
+                }
+            }
+        }
     }
 
-    /// Whether the chrome needs continuous frames (snap in flight).
+    /// Kept for the animation loop; host-drag no longer uses a snap tween.
+    pub fn tick_host_drag(&mut self, _dt: f32) -> Option<ChromeAction> {
+        None
+    }
+
+    /// Whether the chrome needs continuous frames.
     pub fn needs_animation_frames(&self) -> bool {
-        self.panel
-            .host_drag
-            .as_ref()
-            .is_some_and(crate::sidebar::HostDrag::is_snapping)
-            || self.connection.is_some()
+        self.connection.is_some()
+            || self
+                .panel
+                .host_drag
+                .as_ref()
+                .is_some_and(|d| d.started() && !d.is_snapping())
     }
 
     /// Route a wheel notch over the panel; returns whether it was consumed.
@@ -801,6 +1064,19 @@ mod tests {
     }
 
     #[test]
+    fn right_click_host_opens_delete_menu_and_selects() {
+        let mut chrome = chrome_with_hosts(2);
+        let row = chrome.panel.item_rect(0.0, 1);
+        let open = chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0);
+        assert_eq!(open, ChromeAction::Consumed);
+        let menu = chrome.context_menu.as_ref().expect("menu open");
+        let item = menu.item_rect(1).unwrap();
+        let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
+        assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
+        assert!(chrome.context_menu.is_none());
+    }
+
+    #[test]
     fn the_reserved_width_matches_what_the_rail_and_panel_paint() {
         let mut chrome = chrome_with_hosts(1);
         assert_eq!(
@@ -862,16 +1138,12 @@ mod tests {
         assert!(chrome.handle_drag_move(800.0, group.x + 20.0, group.y + 20.0));
         assert!(chrome.panel.host_drag.as_ref().is_some_and(|d| d.started()));
         let action = chrome.handle_release(800.0, group.x + 20.0, group.y + 20.0);
-        assert_eq!(action, ChromeAction::Consumed);
-        assert!(chrome.panel.host_drag.as_ref().is_some_and(|d| d.is_snapping()));
-        // Advance past snap duration.
-        let finished = chrome.tick_host_drag(1.0);
         assert_eq!(
-            finished,
-            Some(ChromeAction::SetHostGroup {
+            action,
+            ChromeAction::SetHostGroup {
                 host_id: "solo".to_string(),
                 group_id: Some("g1".to_string()),
-            })
+            }
         );
         assert!(chrome.panel.host_drag.is_none());
     }

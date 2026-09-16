@@ -1551,6 +1551,34 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::ReorderHost {
+                                        host_id,
+                                        before_host_id,
+                                        before_group_id,
+                                    } => {
+                                        route.window.screen.host_store.reorder_host(
+                                            &host_id,
+                                            before_host_id.as_deref(),
+                                            before_group_id.as_deref(),
+                                        );
+                                        let _ = route.window.screen.pump_chrome();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::ReorderGroup {
+                                        group_id,
+                                        before_group_id,
+                                        before_host_id,
+                                    } => {
+                                        route.window.screen.host_store.reorder_group(
+                                            &group_id,
+                                            before_group_id.as_deref(),
+                                            before_host_id.as_deref(),
+                                        );
+                                        let _ = route.window.screen.pump_chrome();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::DismissConnection => {
                                         route.window.screen.force_end_connecting();
                                         route.request_overlay_redraw();
@@ -1588,8 +1616,141 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::GenerateSshKey => {
+                                        let name = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .key_draft_name
+                                            .trim()
+                                            .to_string();
+                                        let pem = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .key_draft_pem
+                                            .trim()
+                                            .to_string();
+                                        if name.is_empty() {
+                                            route
+                                                .window
+                                                .screen
+                                                .chrome
+                                                .settings
+                                                .key_draft_error = Some(
+                                                "Enter a label for the new SSH key".into(),
+                                            );
+                                        } else {
+                                            let pem = if pem.is_empty() {
+                                                None
+                                            } else {
+                                                Some(pem)
+                                            };
+                                            route
+                                                .window
+                                                .screen
+                                                .host_store
+                                                .create_ssh_key_with_pem(&name, pem);
+                                        }
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::DeleteSshKey(id) => {
+                                        route.window.screen.host_store.delete_ssh_key(&id);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::DeleteHost(id) => {
+                                        route.window.screen.host_store.delete_host(&id);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::DeleteGroup(id) => {
+                                        route.window.screen.host_store.delete_group(&id);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::RenameHost(id) => {
+                                        let name = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .panel
+                                            .rows
+                                            .iter()
+                                            .find_map(|r| {
+                                                r.host()
+                                                    .filter(|h| h.id == id)
+                                                    .map(|h| h.name.clone())
+                                            })
+                                            .unwrap_or_default();
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .panel
+                                            .begin_rename(id, false, &name);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::RenameGroup(id) => {
+                                        let name = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .panel
+                                            .rows
+                                            .iter()
+                                            .find_map(|r| match r {
+                                                terminus_ui::sidebar::Row::Group {
+                                                    id: gid,
+                                                    name,
+                                                    ..
+                                                } if gid == &id => Some(name.clone()),
+                                                _ => None,
+                                            })
+                                            .unwrap_or_default();
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .panel
+                                            .begin_rename(id, true, &name);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::CommitRename {
+                                        id,
+                                        is_group,
+                                        name,
+                                    } => {
+                                        if is_group {
+                                            route
+                                                .window
+                                                .screen
+                                                .host_store
+                                                .rename_group(&id, &name);
+                                        } else {
+                                            route
+                                                .window
+                                                .screen
+                                                .host_store
+                                                .rename_host(&id, &name);
+                                        }
+                                        route.window.screen.chrome.panel.cancel_rename();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::ContextCopy | ChromeAction::ContextPaste => {
+                                        // Terminal/field copy-paste menu items — wired later.
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::FocusSqlUri
-                                    | ChromeAction::FocusSqlPassphrase => {
+                                    | ChromeAction::FocusSqlPassphrase
+                                    | ChromeAction::FocusKeyDraft => {
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1641,6 +1802,39 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 return;
                             }
                         } else if let MouseButton::Right = button {
+                            // #region agent log
+                            crate::agent_debug::log(
+                                "H1",
+                                "application.rs:Right",
+                                "right mouse pressed",
+                                r#"{"branch":"before_chrome"}"#,
+                            );
+                            // #endregion
+                            {
+                                let scale = route.window.screen.sugarloaf.scale_factor();
+                                let mx = route.window.screen.mouse.x as f32 / scale;
+                                let my = route.window.screen.mouse.y as f32 / scale;
+                                match route.window.screen.chrome_context_press(mx, my) {
+                                    ChromeAction::Ignored => {}
+                                    ChromeAction::Consumed => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    other => {
+                                        // #region agent log
+                                        crate::agent_debug::log(
+                                            "H1",
+                                            "application.rs:Right",
+                                            "unexpected context action",
+                                            &format!(r#"{{"action":"{other:?}"}}"#),
+                                        );
+                                        // #endregion
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                }
+                            }
+
                             let handled_by_island =
                                 route.window.screen.handle_island_click(
                                     &route.window.winit_window,
@@ -1776,8 +1970,23 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     route.request_overlay_redraw();
                                     return;
                                 }
-                                // Snap animation started (or cancelled): keep
-                                // redrawing until tick_host_drag persists.
+                                ChromeAction::ToggleGroup(id) => {
+                                    route
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .toggle_group_collapsed(&id);
+                                    let _ = route.window.screen.pump_chrome();
+                                    route.request_overlay_redraw();
+                                    return;
+                                }
+                                ChromeAction::SetHostGroup { .. }
+                                | ChromeAction::ReorderHost { .. }
+                                | ChromeAction::ReorderGroup { .. } => {
+                                    route.window.screen.apply_host_drag_action(action);
+                                    route.request_overlay_redraw();
+                                    return;
+                                }
                                 _ => {
                                     route.request_overlay_redraw();
                                     return;

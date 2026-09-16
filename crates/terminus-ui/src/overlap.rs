@@ -81,10 +81,7 @@ pub fn assert_panel_no_overlaps(
 ) {
     let cta = panel.add_button_rect(origin_y, height);
     assert_no_overlaps(
-        &[
-            ("search", panel.search_rect(origin_y)),
-            ("cta", cta),
-        ],
+        &[("search", panel.search_rect(origin_y)), ("cta", cta)],
         "search vs cta",
     );
 
@@ -101,10 +98,7 @@ pub fn assert_panel_no_overlaps(
         if let Some(add) = panel.host_add_session_rect(origin_y, index) {
             row_controls.push(("add", add));
         }
-        if matches!(
-            panel.rows.get(index),
-            Some(crate::sidebar::Row::Session(_))
-        ) {
+        if matches!(panel.rows.get(index), Some(crate::sidebar::Row::Session(_))) {
             if let Some(close) = panel.session_close_rect(origin_y, index) {
                 row_controls.push(("close", close));
             }
@@ -139,7 +133,8 @@ pub fn assert_panel_no_overlaps(
                     let section = panel.item_rect(origin_y, index);
                     assert!(
                         action.y >= section.y - 0.5
-                            && action.bottom() <= section.y + crate::sidebar::SECTION_HEIGHT + 0.5,
+                            && action.bottom()
+                                <= section.y + crate::sidebar::SECTION_HEIGHT + 0.5,
                         "new group action escapes Hosts header"
                     );
                 }

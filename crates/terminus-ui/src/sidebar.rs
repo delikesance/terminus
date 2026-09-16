@@ -238,16 +238,27 @@ impl Row {
     }
 }
 
-/// Where a dragged host would land on release.
+/// Where a dragged sidebar item would land on release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostDropTarget {
-    /// Drop into this group id.
+    /// Drop a host into this group id (membership).
     Group(String),
-    /// Drop back to the ungrouped Hosts list.
+    /// Append at the end of the root Hosts list (and ungroup if needed).
     Ungroup,
+    /// Insert among root items immediately before this host id.
+    BeforeHost(String),
+    /// Insert among root items immediately before this group id.
+    BeforeGroup(String),
 }
 
-/// Lifecycle of a host→group drag.
+/// What is being dragged in the hosts panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostDragKind {
+    Host,
+    Group,
+}
+
+/// Lifecycle of a host/group drag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostDragPhase {
     /// Pointer down, not yet past the move threshold.
@@ -261,12 +272,14 @@ pub enum HostDragPhase {
     },
 }
 
-/// In-progress drag of a stored host into/out of a group.
+/// In-progress drag of a stored host or a group.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostDrag {
+    /// Host id or group id, depending on [`Self::kind`].
     pub host_id: String,
     pub host_name: String,
     pub endpoint: String,
+    pub kind: HostDragKind,
     pub row_index: usize,
     pub press_x: f32,
     pub press_y: f32,
@@ -284,6 +297,10 @@ pub struct HostDrag {
 }
 
 impl HostDrag {
+    pub fn is_group(&self) -> bool {
+        matches!(self.kind, HostDragKind::Group)
+    }
+
     /// True once the ghost is visible (dragging or snapping).
     pub fn ghost_visible(&self) -> bool {
         matches!(
@@ -336,6 +353,15 @@ pub enum PanelHit {
     Background,
 }
 
+/// Inline rename of a host or group from the context menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameDraft {
+    pub id: String,
+    pub is_group: bool,
+    pub name: String,
+    pub focused: bool,
+}
+
 /// Sidebar state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostPanel {
@@ -358,6 +384,8 @@ pub struct HostPanel {
     pub new_group_name: String,
     /// Whether the new-group name field has keyboard focus.
     pub new_group_focused: bool,
+    /// Context-menu rename of a host or group row.
+    pub rename: Option<RenameDraft>,
     /// Group ids whose child hosts are hidden in the list.
     pub collapsed_groups: HashSet<String>,
     /// Host ids whose open sessions are hidden under the host row.
@@ -464,12 +492,7 @@ impl HostPanel {
         let row = self.item_rect(origin_y, index);
         let w = NEW_GROUP_BUTTON_WIDTH;
         let h = 22.0;
-        Rect::new(
-            row.right() - w,
-            row.y + (SECTION_HEIGHT - h) * 0.5,
-            w,
-            h,
-        )
+        Rect::new(row.right() - w, row.y + (SECTION_HEIGHT - h) * 0.5, w, h)
     }
 
     /// Inline new-group form under the Hosts section (only when drafting).
@@ -548,6 +571,26 @@ impl HostPanel {
         self.new_group_drafting = false;
         self.new_group_focused = false;
         self.new_group_name.clear();
+    }
+
+    /// Start renaming a stored host or group (context menu).
+    pub fn begin_rename(&mut self, id: String, is_group: bool, current_name: &str) {
+        self.filter_focused = false;
+        self.new_group_focused = false;
+        self.rename = Some(RenameDraft {
+            id,
+            is_group,
+            name: current_name.to_string(),
+            focused: true,
+        });
+    }
+
+    pub fn cancel_rename(&mut self) {
+        self.rename = None;
+    }
+
+    pub fn is_renaming(&self, id: &str) -> bool {
+        self.rename.as_ref().is_some_and(|r| r.id == id)
     }
 
     /// Toggle the inline new-group form.
@@ -732,8 +775,10 @@ impl HostPanel {
                 _ => break,
             }
         }
-        // Slight inner pad under the last child so the box doesn't feel clipped.
-        let pad_bottom = if has_children { 6.0 } else { 0.0 };
+        // Inner pad under the last child — same as the side gutters ([`CARD_PAD`]).
+        // The last nested row's slot also reserves [`CARD_GAP`] *below* this pad so
+        // the gap from tray edge to the next root card matches collapsed groups.
+        let pad_bottom = if has_children { CARD_PAD } else { 0.0 };
         Some(Rect::new(
             header.x,
             header.y,
@@ -759,7 +804,12 @@ impl HostPanel {
         out
     }
 
-    /// Resolve a drop target under `(x, y)` while dragging a host.
+    /// Resolve a drop target under `(x, y)` while dragging a host or group.
+    ///
+    /// Root reordering uses the pointer's Y among root cards (top half =
+    /// insert before, past the last card = append) so a insertion bar can
+    /// guide the drop. Membership into a group still wins when the pointer
+    /// is on a nested host, an empty group, or a session under a group.
     pub fn drop_target_at(
         &self,
         origin_y: f32,
@@ -767,27 +817,148 @@ impl HostPanel {
         x: f32,
         y: f32,
     ) -> Option<HostDropTarget> {
-        match self.hit_test(origin_y, height, x, y)? {
-            PanelHit::Group(index) => self.rows.get(index).and_then(|row| match row {
-                Row::Group { id, .. } => Some(HostDropTarget::Group(id.clone())),
-                _ => None,
-            }),
-            PanelHit::Item(index) => self.enclosing_group_id(index).map(HostDropTarget::Group),
-            PanelHit::Session(index) => {
-                let host_id = self.rows.get(index)?.session()?.host_id.clone();
-                let host_idx = self.row_of_host(&host_id)?;
-                self.enclosing_group_id(host_idx)
-                    .map(HostDropTarget::Group)
-                    .or(Some(HostDropTarget::Ungroup))
-            }
-            PanelHit::Background => {
-                if self.point_in_hosts_section(origin_y, height, y) {
-                    Some(HostDropTarget::Ungroup)
-                } else {
-                    None
+        let dragging_group = self.host_drag.as_ref().is_some_and(HostDrag::is_group);
+        let drag_id = self.host_drag.as_ref().map(|d| d.host_id.as_str());
+
+        // Membership takes priority over root reordering.
+        if !dragging_group {
+            match self.hit_test(origin_y, height, x, y) {
+                Some(PanelHit::Item(index)) => {
+                    if let Some(group_id) = self.enclosing_group_id(index) {
+                        return Some(HostDropTarget::Group(group_id));
+                    }
                 }
+                Some(PanelHit::Session(index)) => {
+                    let host_id = self.rows.get(index)?.session()?.host_id.clone();
+                    let host_idx = self.row_of_host(&host_id)?;
+                    if let Some(group_id) = self.enclosing_group_id(host_idx) {
+                        return Some(HostDropTarget::Group(group_id));
+                    }
+                }
+                Some(PanelHit::Group(index)) => {
+                    if let Some(Row::Group {
+                        id,
+                        host_count,
+                        ..
+                    }) = self.rows.get(index)
+                    {
+                        if *host_count == 0 {
+                            let card = self.card_rect(origin_y, index);
+                            // Middle band of an empty group = join; edges = reorder.
+                            let rel = (y - card.y) / card.height.max(1.0);
+                            if (0.25..0.75).contains(&rel) {
+                                return Some(HostDropTarget::Group(id.clone()));
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => None,
+        }
+
+        if !self.point_in_hosts_section(origin_y, height, y) {
+            return None;
+        }
+
+        self.root_insert_target_at(origin_y, y, drag_id)
+    }
+
+    /// Root cards (ungrouped stored hosts + groups) in paint order.
+    fn root_reorder_cards(&self, origin_y: f32) -> Vec<(crate::geom::Rect, HostDropTarget)> {
+        let mut out = Vec::new();
+        for (index, row) in self.rows.iter().enumerate() {
+            match row {
+                Row::Host(host) if host.stored && !host.nested => {
+                    out.push((
+                        self.card_rect(origin_y, index),
+                        HostDropTarget::BeforeHost(host.id.clone()),
+                    ));
+                }
+                Row::Group { id, .. } => {
+                    out.push((
+                        self.card_rect(origin_y, index),
+                        HostDropTarget::BeforeGroup(id.clone()),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Pick insert-before / append from pointer Y among root cards.
+    fn root_insert_target_at(
+        &self,
+        origin_y: f32,
+        y: f32,
+        drag_id: Option<&str>,
+    ) -> Option<HostDropTarget> {
+        let cards = self.root_reorder_cards(origin_y);
+        if cards.is_empty() {
+            return Some(HostDropTarget::Ungroup);
+        }
+
+        for (rect, target) in &cards {
+            let skips_self = match target {
+                HostDropTarget::BeforeHost(id) | HostDropTarget::BeforeGroup(id) => {
+                    Some(id.as_str()) == drag_id
+                }
+                _ => false,
+            };
+            if skips_self {
+                continue;
+            }
+            let mid = rect.y + rect.height * 0.5;
+            if y < mid {
+                return Some(target.clone());
+            }
+        }
+        Some(HostDropTarget::Ungroup)
+    }
+
+    /// Thin insertion bar for root reorder targets (not membership).
+    pub fn insertion_bar_rect(
+        &self,
+        origin_y: f32,
+        target: &HostDropTarget,
+    ) -> Option<crate::geom::Rect> {
+        const BAR_H: f32 = 3.0;
+        let width = WIDTH - 2.0 * PAD_X;
+        let x = ORIGIN_X + PAD_X;
+        match target {
+            HostDropTarget::BeforeHost(host_id) => {
+                let index = self.row_of_host(host_id)?;
+                let card = self.card_rect(origin_y, index);
+                Some(crate::geom::Rect::new(
+                    x,
+                    card.y - BAR_H * 0.5 - 1.0,
+                    width,
+                    BAR_H,
+                ))
+            }
+            HostDropTarget::BeforeGroup(group_id) => {
+                let index = self.rows.iter().position(
+                    |row| matches!(row, Row::Group { id, .. } if id == group_id),
+                )?;
+                let card = self.card_rect(origin_y, index);
+                Some(crate::geom::Rect::new(
+                    x,
+                    card.y - BAR_H * 0.5 - 1.0,
+                    width,
+                    BAR_H,
+                ))
+            }
+            HostDropTarget::Ungroup => {
+                let cards = self.root_reorder_cards(origin_y);
+                let y = if let Some((last, _)) = cards.last() {
+                    last.bottom() + CARD_GAP * 0.5 - BAR_H * 0.5
+                } else {
+                    let hosts_idx = self.hosts_section_index()?;
+                    self.item_rect(origin_y, hosts_idx).bottom() + 4.0
+                };
+                Some(crate::geom::Rect::new(x, y, width, BAR_H))
+            }
+            HostDropTarget::Group(_) => None,
         }
     }
 
@@ -821,7 +992,7 @@ impl HostPanel {
         self.host_drag = None;
     }
 
-    /// Destination rect for a snap into `target` (group tray slot or ungroup row).
+    /// Destination rect for a snap into `target` (group tray, insertion slot).
     pub fn drop_slot_rect(
         &self,
         origin_y: f32,
@@ -829,9 +1000,9 @@ impl HostPanel {
     ) -> Option<crate::geom::Rect> {
         match target {
             HostDropTarget::Group(group_id) => {
-                let group_index = self.rows.iter().position(|row| {
-                    matches!(row, Row::Group { id, .. } if id == group_id)
-                })?;
+                let group_index = self.rows.iter().position(
+                    |row| matches!(row, Row::Group { id, .. } if id == group_id),
+                )?;
                 let tray = self.group_tray_rect(origin_y, group_index)?;
                 let header = self.card_rect(origin_y, group_index);
                 let nest = CARD_PAD;
@@ -862,13 +1033,14 @@ impl HostPanel {
                     ITEM_HEIGHT,
                 ))
             }
-            HostDropTarget::Ungroup => {
-                let hosts_idx = self.hosts_section_index()?;
-                let section = self.item_rect(origin_y, hosts_idx);
+            HostDropTarget::Ungroup
+            | HostDropTarget::BeforeHost(_)
+            | HostDropTarget::BeforeGroup(_) => {
+                let bar = self.insertion_bar_rect(origin_y, target)?;
                 Some(crate::geom::Rect::new(
-                    ORIGIN_X + PAD_X,
-                    section.bottom() + 4.0,
-                    WIDTH - 2.0 * PAD_X,
+                    bar.x,
+                    bar.y - ITEM_HEIGHT * 0.5 + bar.height * 0.5,
+                    bar.width,
                     ITEM_HEIGHT,
                 ))
             }
@@ -889,12 +1061,48 @@ impl HostPanel {
                     .and_then(|n| self.rows.get(n))
                     .and_then(Row::session)
                     .is_some_and(|s| s.host_id == session.host_id);
+                let last_in_group = match next {
+                    None => true,
+                    Some(n) => {
+                        !matches!(
+                            self.rows.get(n),
+                            Some(Row::Host(h)) if h.nested
+                        ) && !matches!(self.rows.get(n), Some(Row::Session(_)))
+                    }
+                };
                 let gap = if same_host_next {
                     SESSION_GAP
+                } else if last_in_group
+                    && self
+                        .rows
+                        .iter()
+                        .find_map(|r| r.host().filter(|h| h.id == session.host_id))
+                        .is_some_and(|h| h.nested)
+                {
+                    // Nested host's last session: tray pad + root CARD_GAP.
+                    CARD_PAD + CARD_GAP
                 } else {
                     SESSION_AFTER_GAP
                 };
                 SESSION_HEIGHT + gap
+            }
+            Row::Host(host) if host.nested => {
+                let visible = self.visible_row_indices();
+                let pos = visible.iter().position(|&i| i == index);
+                let next = pos.and_then(|p| visible.get(p + 1).copied());
+                let next_is_nested_continuation = next.is_some_and(|n| {
+                    matches!(
+                        self.rows.get(n),
+                        Some(Row::Host(h)) if h.nested
+                    ) || matches!(self.rows.get(n), Some(Row::Session(_)))
+                });
+                if next_is_nested_continuation {
+                    ITEM_HEIGHT + CARD_GAP
+                } else {
+                    // Last nested host in the tray: inner CARD_PAD + outer CARD_GAP
+                    // so tray→next-root spacing matches collapsed group→group.
+                    ITEM_HEIGHT + CARD_PAD + CARD_GAP
+                }
             }
             _ => row.height(),
         }
@@ -978,7 +1186,12 @@ impl HostPanel {
                     }
                     i += 1;
                 }
-                Row::Group { id, name, collapsed, .. } => {
+                Row::Group {
+                    id,
+                    name,
+                    collapsed,
+                    ..
+                } => {
                     let collapsed = *collapsed || self.collapsed_groups.contains(id);
                     let mut j = i + 1;
                     let mut child_indices = Vec::new();
@@ -1005,11 +1218,12 @@ impl HostPanel {
                             _ => break,
                         }
                     }
-                    let any_visible_child = child_indices.iter().any(|&idx| match &self.rows[idx] {
-                        Row::Host(host) => host_visible(host),
-                        Row::Session(session) => session_visible(session),
-                        _ => false,
-                    });
+                    let any_visible_child =
+                        child_indices.iter().any(|&idx| match &self.rows[idx] {
+                            Row::Host(host) => host_visible(host),
+                            Row::Session(session) => session_visible(session),
+                            _ => false,
+                        });
                     let name_matches =
                         filtering && name.to_ascii_lowercase().contains(&filter_lower);
                     if !filtering || any_visible_child || name_matches {
@@ -1362,7 +1576,10 @@ impl HostPanel {
             Some(PanelHit::NewGroup) => (None, false, true),
             _ => (None, false, false),
         };
-        if item == self.hover && add == self.add_hover && new_group == self.new_group_hover {
+        if item == self.hover
+            && add == self.add_hover
+            && new_group == self.new_group_hover
+        {
             return false;
         }
         self.hover = item;
@@ -1648,10 +1865,7 @@ mod tests {
                 session_count: 0,
             }),
         ]);
-        assert_eq!(
-            panel.row_slot_height(1),
-            SESSION_HEIGHT + SESSION_AFTER_GAP
-        );
+        assert_eq!(panel.row_slot_height(1), SESSION_HEIGHT + SESSION_AFTER_GAP);
         let oy = 0.0;
         let session_bottom = panel.card_rect(oy, 1).bottom();
         let next_top = panel.card_rect(oy, 2).y;
@@ -2005,9 +2219,27 @@ mod tests {
         );
         assert_eq!(panel.group_nested_host_indices(0), vec![1]);
 
+        // Tray bottom + CARD_GAP must land on the next root card (same as
+        // collapsed→collapsed spacing).
+        let gap_after_open = solo.y - tray.bottom();
+        assert!(
+            (gap_after_open - CARD_GAP).abs() < 0.5,
+            "open-group→next gap={gap_after_open}, want CARD_GAP={CARD_GAP}"
+        );
+
         panel.collapsed_groups.insert("g1".to_string());
         let collapsed = panel.group_tray_rect(oy, 0).expect("collapsed tray");
         assert!((collapsed.height - header.height).abs() < 1.0);
+        let solo_after = panel.card_rect(oy, 2);
+        // solo is still index 2 in rows but may not be visible... wait when
+        // collapsed, nested is hidden so solo is still at index 2 in rows,
+        // visible indices change offset. card_rect uses offset_of which uses
+        // visible rows — solo should move up.
+        let gap_after_closed = solo_after.y - collapsed.bottom();
+        assert!(
+            (gap_after_closed - CARD_GAP).abs() < 0.5,
+            "closed-group→next gap={gap_after_closed}, want CARD_GAP={CARD_GAP}"
+        );
     }
 
     #[test]

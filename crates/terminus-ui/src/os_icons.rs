@@ -90,9 +90,7 @@ impl SimpleBrand {
             (&["fedora"], Self::Fedora),
             (&["arch"], Self::ArchLinux),
             (
-                &[
-                    "mac", "darwin", "sonoma", "sequoia", "ventura", "apple",
-                ],
+                &["mac", "darwin", "sonoma", "sequoia", "ventura", "apple"],
                 Self::Apple,
             ),
             (&["postgres", "pgsql"], Self::Postgresql),
@@ -159,23 +157,23 @@ pub enum SimpleBrand {
 
 impl SimpleBrand {
     pub const ALL: [Self; 17] = [
-            Self::NixOs,
-            Self::Ubuntu,
-            Self::Debian,
-            Self::Fedora,
-            Self::ArchLinux,
-            Self::Apple,
-            Self::Linux,
-            Self::Postgresql,
-            Self::RedHat,
-            Self::AlpineLinux,
-            Self::CentOs,
-            Self::OpenSuse,
-            Self::Gentoo,
-            Self::VoidLinux,
-            Self::RockyLinux,
-            Self::KaliLinux,
-            Self::LinuxMint,
+        Self::NixOs,
+        Self::Ubuntu,
+        Self::Debian,
+        Self::Fedora,
+        Self::ArchLinux,
+        Self::Apple,
+        Self::Linux,
+        Self::Postgresql,
+        Self::RedHat,
+        Self::AlpineLinux,
+        Self::CentOs,
+        Self::OpenSuse,
+        Self::Gentoo,
+        Self::VoidLinux,
+        Self::RockyLinux,
+        Self::KaliLinux,
+        Self::LinuxMint,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -270,7 +268,6 @@ impl SimpleBrand {
 }
 // ---- end generated simple-icons ----
 
-
 /// Status for a host row in the sidebar.
 ///
 /// Visual language: a small luminous **status dot** on the badge (see
@@ -300,11 +297,26 @@ impl HostStatus {
         match self {
             Self::Idle => None,
             // emerald-400
-            Self::Running => Some([0x34 as f32 / 255.0, 0xd3 as f32 / 255.0, 0x99 as f32 / 255.0, 1.0]),
+            Self::Running => Some([
+                0x34 as f32 / 255.0,
+                0xd3 as f32 / 255.0,
+                0x99 as f32 / 255.0,
+                1.0,
+            ]),
             // slate-500 — present but quiet
-            Self::Stopped => Some([0x64 as f32 / 255.0, 0x74 as f32 / 255.0, 0x8b as f32 / 255.0, 1.0]),
+            Self::Stopped => Some([
+                0x64 as f32 / 255.0,
+                0x74 as f32 / 255.0,
+                0x8b as f32 / 255.0,
+                1.0,
+            ]),
             // Apple accent blue — live session
-            Self::Active => Some([0x0a as f32 / 255.0, 0x84 as f32 / 255.0, 0xff as f32 / 255.0, 1.0]),
+            Self::Active => Some([
+                0x0a as f32 / 255.0,
+                0x84 as f32 / 255.0,
+                0xff as f32 / 255.0,
+                1.0,
+            ]),
         }
     }
 }

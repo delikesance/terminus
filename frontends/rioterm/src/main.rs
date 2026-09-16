@@ -5,6 +5,7 @@
 #![windows_subsystem = "windows"]
 
 mod application;
+mod agent_debug;
 mod bindings;
 mod cli;
 mod constants;

@@ -201,6 +201,9 @@ struct TextVulkanState {
 
 pub struct Text {
     instances: Vec<TextInstance>,
+    /// Drawn after [`Self::instances`] so callers can overlay chrome
+    /// (e.g. context menus) on top of earlier UI labels/icons.
+    late_instances: Vec<TextInstance>,
     scale_factor: f32,
     font_library: FontLibrary,
     font_resolve: FxHashMap<(char, u8), (u32, bool)>,
@@ -232,6 +235,7 @@ impl Text {
     pub fn new(font_library: &FontLibrary) -> Self {
         Self {
             instances: Vec::new(),
+            late_instances: Vec::new(),
             scale_factor: 1.0,
             font_library: font_library.clone(),
             font_resolve: FxHashMap::default(),
@@ -279,17 +283,33 @@ impl Text {
 
     #[inline]
     pub fn instance_count(&self) -> usize {
-        self.instances.len()
+        self.instances.len() + self.late_instances.len()
     }
 
     #[inline]
     pub fn clear(&mut self) {
         self.instances.clear();
+        self.late_instances.clear();
     }
 
     #[inline]
     pub fn instances(&self) -> &[TextInstance] {
         &self.instances
+    }
+
+    /// Same as [`Self::draw`], but composited after every regular UI text
+    /// draw this frame (second pass). Use for floating menus that must
+    /// sit above host-row labels.
+    pub fn draw_late(&mut self, x: f32, y: f32, text: &str, opts: &DrawOpts) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let Some(shaped) = self.shape_for(text, opts) else {
+            return 0.0;
+        };
+        let width_px = shaped_width(&shaped);
+        self.emit_instances_late(x, y, &shaped, opts);
+        width_px / self.scale_factor
     }
 
     /// Draw `text` at logical top-left `(x, y)` with `opts`. Returns
@@ -349,6 +369,38 @@ impl Text {
     where
         F: FnOnce(u16) -> Option<CoverageMask>,
     {
+        self.draw_mask_to(false, x, y, artwork_id, size, color, rasterize)
+    }
+
+    /// Like [`Self::draw_mask`], but composited in the late UI-text pass.
+    pub fn draw_mask_late<F>(
+        &mut self,
+        x: f32,
+        y: f32,
+        artwork_id: u64,
+        size: u16,
+        color: [u8; 4],
+        rasterize: F,
+    ) -> bool
+    where
+        F: FnOnce(u16) -> Option<CoverageMask>,
+    {
+        self.draw_mask_to(true, x, y, artwork_id, size, color, rasterize)
+    }
+
+    fn draw_mask_to<F>(
+        &mut self,
+        late: bool,
+        x: f32,
+        y: f32,
+        artwork_id: u64,
+        size: u16,
+        color: [u8; 4],
+        rasterize: F,
+    ) -> bool
+    where
+        F: FnOnce(u16) -> Option<CoverageMask>,
+    {
         if size == 0 {
             return false;
         }
@@ -364,7 +416,7 @@ impl Text {
             return false;
         }
         let scale = self.scale_factor;
-        self.instances.push(TextInstance {
+        let inst = TextInstance {
             pos: [(x * scale).round(), (y * scale).round()],
             glyph_pos: [slot.x as u32, slot.y as u32],
             glyph_size: [slot.w as u32, slot.h as u32],
@@ -373,7 +425,12 @@ impl Text {
             atlas: 0,
             page: slot.page,
             _pad: [0; 2],
-        });
+        };
+        if late {
+            self.late_instances.push(inst);
+        } else {
+            self.instances.push(inst);
+        }
         true
     }
 
@@ -555,6 +612,21 @@ impl Text {
     //  Emit pipeline — rasterize + push TextInstance
 
     fn emit_instances(&mut self, x: f32, y: f32, run: &ShapedRun, opts: &DrawOpts) {
+        self.emit_instances_to(false, x, y, run, opts);
+    }
+
+    fn emit_instances_late(&mut self, x: f32, y: f32, run: &ShapedRun, opts: &DrawOpts) {
+        self.emit_instances_to(true, x, y, run, opts);
+    }
+
+    fn emit_instances_to(
+        &mut self,
+        late: bool,
+        x: f32,
+        y: f32,
+        run: &ShapedRun,
+        opts: &DrawOpts,
+    ) {
         let scale = self.scale_factor;
         let mut pen_x = x * scale;
         let py = y * scale;
@@ -586,7 +658,7 @@ impl Text {
             // shader), so cell positioning is untouched.
             let origin_x = (pen_x + glyph.x).round();
             let origin_y = (py + glyph.y.max(0.0)).round();
-            self.instances.push(TextInstance {
+            let inst = TextInstance {
                 pos: [origin_x, origin_y],
                 glyph_pos: [slot.x as u32, slot.y as u32],
                 glyph_size: [slot.w as u32, slot.h as u32],
@@ -595,7 +667,12 @@ impl Text {
                 atlas: atlas_tag,
                 page: slot.page,
                 _pad: [0; 2],
-            });
+            };
+            if late {
+                self.late_instances.push(inst);
+            } else {
+                self.instances.push(inst);
+            }
 
             pen_x += glyph.advance;
         }
@@ -976,7 +1053,7 @@ impl Text {
     /// glyphs use `instance.color`, color glyphs sample directly.
     /// No-op when CPU state is absent or no instances were queued.
     pub fn render_cpu(&self, buf: &mut [u32], buf_w: u32, buf_h: u32) {
-        if self.instances.is_empty() {
+        if self.instances.is_empty() && self.late_instances.is_empty() {
             return;
         }
         let Some(state) = self.cpu.as_ref() else {
@@ -989,7 +1066,7 @@ impl Text {
         let color_atlas = state.atlas_color.pixels();
         let color_side = state.atlas_color.side() as usize;
 
-        for inst in &self.instances {
+        for inst in self.instances.iter().chain(self.late_instances.iter()) {
             let gw = inst.glyph_size[0] as i32;
             let gh = inst.glyph_size[1] as i32;
             if gw <= 0 || gh <= 0 {
@@ -1058,7 +1135,7 @@ impl Text {
         viewport: [f32; 2],
         frame: usize,
     ) {
-        let instance_count = self.instances.len();
+        let instance_count = self.instances.len() + self.late_instances.len();
         if instance_count == 0 {
             return;
         }
@@ -1076,7 +1153,17 @@ impl Text {
 
         unsafe {
             let dst = state.instance_buffers[slot].contents() as *mut TextInstance;
-            std::ptr::copy_nonoverlapping(self.instances.as_ptr(), dst, instance_count);
+            let early = self.instances.len();
+            if early > 0 {
+                std::ptr::copy_nonoverlapping(self.instances.as_ptr(), dst, early);
+            }
+            if !self.late_instances.is_empty() {
+                std::ptr::copy_nonoverlapping(
+                    self.late_instances.as_ptr(),
+                    dst.add(early),
+                    self.late_instances.len(),
+                );
+            }
         }
 
         encoder.set_render_pipeline_state(&state.pipeline);
@@ -1184,7 +1271,9 @@ impl Text {
         render_pass: &mut wgpu::RenderPass<'pass>,
         viewport: [f32; 2],
     ) {
-        let instance_count = self.instances.len();
+        let early = self.instances.len();
+        let late = self.late_instances.len();
+        let instance_count = early + late;
         if instance_count == 0 {
             return;
         }
@@ -1207,11 +1296,14 @@ impl Text {
             state.instance_capacity = new_cap;
         }
 
-        // Upload instances.
+        // Early then late — wgpu draws in buffer order, so late sits on top.
+        let mut all = Vec::with_capacity(instance_count);
+        all.extend_from_slice(&self.instances);
+        all.extend_from_slice(&self.late_instances);
         state.queue.write_buffer(
             &state.instance_buffer,
             0,
-            bytemuck_instances(&self.instances),
+            bytemuck_instances(&all),
         );
 
         render_pass.set_pipeline(&state.pipeline);
@@ -1263,7 +1355,7 @@ impl Text {
         slot: usize,
         viewport: [f32; 2],
     ) {
-        if self.instances.is_empty() {
+        if self.instances.is_empty() && self.late_instances.is_empty() {
             return;
         }
         let Some(state) = self.vulkan.as_mut() else {
@@ -1277,6 +1369,27 @@ impl Text {
             std::ptr::write(dst, uniforms);
         }
 
+        // Two passes so late overlays cannot be reordered under early
+        // glyphs by (atlas, page) bucketing.
+        let early = std::mem::take(&mut self.instances);
+        let late = std::mem::take(&mut self.late_instances);
+        Self::render_vulkan_list(state, cmd, slot, &early);
+        Self::render_vulkan_list(state, cmd, slot, &late);
+        self.instances = early;
+        self.late_instances = late;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn render_vulkan_list(
+        state: &mut TextVulkanState,
+        cmd: ash::vk::CommandBuffer,
+        slot: usize,
+        instances: &[TextInstance],
+    ) {
+        if instances.is_empty() {
+            return;
+        }
+
         // Bucket instances by (atlas_kind, page) into contiguous
         // ranges of the per-slot vertex buffer. Each `cmd_draw` binds
         // one page's descriptor set + one kind via push constant, so
@@ -1284,14 +1397,14 @@ impl Text {
         // 1–2 buckets (a few glyphs on page 0, both kinds at most),
         // so the linear-search grouping is cheap.
         let mut groups: Vec<((u8, u8), Vec<TextInstance>)> = Vec::with_capacity(4);
-        for inst in &self.instances {
+        for inst in instances {
             let key = (inst.atlas, inst.page);
             match groups.iter_mut().find(|(k, _)| *k == key) {
                 Some(g) => g.1.push(*inst),
                 None => groups.push((key, vec![*inst])),
             }
         }
-        let mut bucketed: Vec<TextInstance> = Vec::with_capacity(self.instances.len());
+        let mut bucketed: Vec<TextInstance> = Vec::with_capacity(instances.len());
         let mut buckets: Vec<((u8, u8), u32, u32)> = Vec::with_capacity(groups.len());
         for ((kind, page), insts) in groups.into_iter() {
             let start = bucketed.len() as u32;

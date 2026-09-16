@@ -4,6 +4,7 @@ pub mod forward_runtime;
 pub mod gssapi;
 pub mod local_fs;
 pub mod machine;
+pub mod managed_key;
 pub mod models;
 pub mod os_detect;
 pub mod session;
@@ -20,6 +21,9 @@ pub use auth_method::{
 };
 pub use error::{Error, Result};
 pub use forward_runtime::ForwardRuntime;
+pub use managed_key::{
+    fingerprint_from_public_openssh, generate_ed25519_identity, import_openssh_identity,
+};
 pub use models::*;
 pub use session::{OutputSink, SessionManager, SessionSpec};
 pub use ssh::{

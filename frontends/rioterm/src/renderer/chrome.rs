@@ -22,6 +22,7 @@ use terminus_ui::activity_bar;
 use terminus_ui::add_host::{auth_method_label, Field};
 use terminus_ui::chrome::Chrome;
 use terminus_ui::connection::{NodeVisual, STEP_COUNT};
+use terminus_ui::context_menu::{ContextMenu, ITEM_HEIGHT as CTX_ITEM_HEIGHT, MENU_PAD_X, MENU_RADIUS};
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Cmd, Icon, IconPlacement, LUCIDE_STROKE};
 use terminus_ui::loading::{breath_ring, orbit_dots, shimmer_bar};
@@ -142,7 +143,12 @@ pub fn render(
         render_settings_modal(sugarloaf, chrome, theme, window_width, window_height, device_scale);
     }
 
-    // Ghost last, max z-order — always above rail, panel, dialogs, sticky header.
+    if let Some(menu) = chrome.context_menu.as_ref() {
+        render_context_menu(sugarloaf, menu, theme, device_scale);
+    }
+
+    // Insertion bar while dragging, then ghost at max z-order.
+    paint_host_drag_insertion_bar(sugarloaf, chrome, theme);
     paint_host_drag_ghost(sugarloaf, chrome, theme, device_scale);
 }
 
@@ -972,7 +978,7 @@ fn render_settings_modal(
         ORDER_DIALOG,
     );
     match chrome.settings.tab {
-        terminus_ui::SettingsTab::Keys => {
+            terminus_ui::SettingsTab::Keys => {
             draw_text(
                 sugarloaf,
                 content_x,
@@ -991,11 +997,9 @@ fn render_settings_modal(
                 theme.text_muted,
                 false,
             );
-            let mut y = content_y + 48.0;
-            let cta_w = dialog.right() - content_x - 24.0;
-            let cta_h = 56.0;
-            let cta = Rect::new(content_x, y, cta_w, cta_h);
-            // Dashed New SSH Key CTA (same component as drawer New Host).
+            let cta = chrome
+                .settings
+                .new_key_cta_rect(window_width, window_height);
             paint_dashed_cta(
                 sugarloaf,
                 theme,
@@ -1012,9 +1016,155 @@ fn render_settings_modal(
                 DEPTH_DIALOG + 0.03,
                 ORDER_DIALOG,
             );
-            y += 68.0;
-            for key in &chrome.settings.keys {
-                let row = Rect::new(content_x, y, cta_w, 56.0);
+
+            if let Some(draft) = chrome
+                .settings
+                .key_draft_rect(window_width, window_height)
+            {
+                paint_surface(
+                    sugarloaf,
+                    &draft,
+                    theme.button_bg,
+                    Some(theme.panel_border),
+                    12.0,
+                    DEPTH_DIALOG + 0.03,
+                    ORDER_DIALOG,
+                    false,
+                );
+                if let Some(field) = chrome
+                    .settings
+                    .key_draft_field_rect(window_width, window_height)
+                {
+                    let label = if chrome.settings.key_draft_name.is_empty()
+                        && !chrome.settings.key_draft_focused
+                    {
+                        "Key label (e.g. Laptop Ed25519)"
+                    } else {
+                        chrome.settings.key_draft_name.as_str()
+                    };
+                    let color = if chrome.settings.key_draft_name.is_empty()
+                        && !chrome.settings.key_draft_focused
+                    {
+                        theme.text_muted
+                    } else {
+                        theme.text
+                    };
+                    draw_text(
+                        sugarloaf,
+                        field.x + 8.0,
+                        field.y + (field.height - ROW_SUB_SIZE) * 0.5,
+                        label,
+                        ROW_SUB_SIZE,
+                        color,
+                        false,
+                    );
+                    if chrome.settings.key_draft_focused {
+                        let caret_x = field.x
+                            + 8.0
+                            + sugarloaf.text_mut().measure(
+                                &chrome.settings.key_draft_name,
+                                &opts(ROW_SUB_SIZE, theme.text, false),
+                            );
+                        paint_caret(
+                            sugarloaf,
+                            caret_x,
+                            field.y + 4.0,
+                            field.height - 8.0,
+                            theme.accent,
+                            DEPTH_DIALOG + 0.05,
+                            ORDER_DIALOG,
+                        );
+                    }
+                }
+                if let Some(pem_field) = chrome
+                    .settings
+                    .key_draft_pem_rect(window_width, window_height)
+                {
+                    let (pem_label, color) = if chrome.settings.key_draft_pem.is_empty()
+                        && !chrome.settings.key_draft_pem_focused
+                    {
+                        (
+                            "Paste OpenSSH private key to import (optional)",
+                            theme.text_muted,
+                        )
+                    } else if chrome.settings.key_draft_pem.is_empty() {
+                        ("", theme.text)
+                    } else {
+                        ("••••••••  private key pasted", theme.text)
+                    };
+                    if !pem_label.is_empty() {
+                        draw_text(
+                            sugarloaf,
+                            pem_field.x + 8.0,
+                            pem_field.y + (pem_field.height - ROW_SUB_SIZE) * 0.5,
+                            pem_label,
+                            ROW_SUB_SIZE,
+                            color,
+                            false,
+                        );
+                    }
+                    if chrome.settings.key_draft_pem_focused {
+                        paint_caret(
+                            sugarloaf,
+                            pem_field.x + 8.0,
+                            pem_field.y + 4.0,
+                            pem_field.height - 8.0,
+                            theme.accent,
+                            DEPTH_DIALOG + 0.05,
+                            ORDER_DIALOG,
+                        );
+                    }
+                }
+                if let Some(gen) = chrome
+                    .settings
+                    .key_draft_generate_rect(window_width, window_height)
+                {
+                    let gen_label = if chrome.settings.key_draft_wants_import() {
+                        "Import"
+                    } else {
+                        "Generate"
+                    };
+                    paint_chrome_button(
+                        sugarloaf,
+                        theme,
+                        terminus_ui::ButtonSpec::primary(gen),
+                        gen_label,
+                        ROW_SUB_SIZE,
+                        DEPTH_DIALOG + 0.04,
+                        ORDER_DIALOG,
+                    );
+                }
+                if let Some(cancel) = chrome
+                    .settings
+                    .key_draft_cancel_rect(window_width, window_height)
+                {
+                    paint_chrome_button(
+                        sugarloaf,
+                        theme,
+                        terminus_ui::ButtonSpec::secondary(cancel),
+                        "Cancel",
+                        ROW_SUB_SIZE,
+                        DEPTH_DIALOG + 0.04,
+                        ORDER_DIALOG,
+                    );
+                }
+                if let Some(err) = chrome.settings.key_draft_error.as_deref() {
+                    draw_text(
+                        sugarloaf,
+                        draft.x + terminus_ui::settings::FIELD_CARD_PAD,
+                        draft.bottom() + 4.0,
+                        err,
+                        HINT_SIZE,
+                        theme.danger,
+                        false,
+                    );
+                }
+            }
+
+            for (index, key) in chrome.settings.keys.iter().enumerate() {
+                let row = chrome
+                    .settings
+                    .key_row_rect(window_width, window_height, index);
                 paint_surface(
                     sugarloaf,
                     &row,
@@ -1028,38 +1178,59 @@ fn render_settings_modal(
                 draw_icon(
                     sugarloaf,
                     Icon::KeyRound,
-                    IconPlacement::new(content_x + 14.0, y + 18.0, 16.0),
+                    IconPlacement::new(row.x + 14.0, row.y + 18.0, 16.0),
                     theme.accent,
                     device_scale,
                 );
+                let text_x = row.x + 40.0;
+                let del = chrome
+                    .settings
+                    .key_delete_rect(window_width, window_height, index);
                 draw_text(
                     sugarloaf,
-                    content_x + 40.0,
-                    y + 14.0,
+                    text_x,
+                    row.y + 14.0,
                     &key.name,
                     ROW_TITLE_SIZE,
                     theme.text,
                     true,
                 );
+                let fp_max = (del.x - text_x - 12.0).max(40.0);
+                let fp_shown = elide(
+                    sugarloaf,
+                    &key.fingerprint,
+                    fp_max,
+                    &opts(HINT_SIZE, theme.text_muted, false),
+                );
                 draw_text(
                     sugarloaf,
-                    content_x + 40.0,
-                    y + 32.0,
-                    &key.fingerprint,
+                    text_x,
+                    row.y + 32.0,
+                    &fp_shown,
                     HINT_SIZE,
                     theme.text_muted,
                     false,
                 );
-                draw_text(
-                    sugarloaf,
-                    dialog.right() - 100.0,
-                    y + 22.0,
-                    "Delete",
-                    ROW_SUB_SIZE,
-                    theme.text_muted,
-                    false,
-                );
-                y += 64.0;
+                // Delete only appears while the row is hovered (mock:
+                // opacity-0 group-hover:opacity-100). Turns red when the
+                // pointer is on the control itself.
+                if chrome.settings.key_row_hover == Some(index) {
+                    let del_color = if chrome.settings.key_delete_hover == Some(index)
+                    {
+                        theme.danger
+                    } else {
+                        theme.text_muted
+                    };
+                    draw_text(
+                        sugarloaf,
+                        del.x,
+                        del.y + (del.height - ROW_SUB_SIZE) * 0.5,
+                        "Delete",
+                        ROW_SUB_SIZE,
+                        del_color,
+                        false,
+                    );
+                }
             }
         }
             terminus_ui::SettingsTab::SqlSync => {
@@ -1108,7 +1279,6 @@ fn render_settings_modal(
             let uri_card = chrome.settings.uri_card_rect(window_width, window_height);
             let pass_card = chrome.settings.passphrase_card_rect(window_width, window_height);
             let status_row = chrome.settings.status_row_rect(window_width, window_height);
-            let card_w = engine_card.width;
 
             // Engine selector card
             paint_settings_field_card(
@@ -1119,13 +1289,15 @@ fn render_settings_modal(
                 chrome.settings.engine_label(),
                 chrome.settings.engine_menu_open,
                 false,
-                true,
+                terminus_ui::settings::FIELD_EYE_SLOT,
                 true,
             );
+            let engine_input =
+                terminus_ui::settings::field_input_in_card(engine_card);
             draw_text(
                 sugarloaf,
-                engine_card.right() - 28.0,
-                engine_card.y + 36.0,
+                engine_input.right() - 18.0,
+                engine_input.y + (engine_input.height - ROW_SUB_SIZE) * 0.5,
                 if chrome.settings.engine_menu_open {
                     "▴"
                 } else {
@@ -1151,11 +1323,11 @@ fn render_settings_modal(
                 &uri_paint.text,
                 chrome.settings.sql_focus == terminus_ui::SqlSyncFocus::Uri,
                 uri_paint.placeholder,
-                false,
+                0.0,
                 uri_paint_text,
             );
             if uri_paint_text && uri_paint.show_caret {
-                paint_settings_caret(sugarloaf, theme, uri_card, &uri_paint.text);
+                paint_settings_caret(sugarloaf, theme, uri_card, &uri_paint.text, 0.0);
             }
 
             // Passphrase field
@@ -1168,29 +1340,39 @@ fn render_settings_modal(
                 &pass_paint.text,
                 chrome.settings.sql_focus == terminus_ui::SqlSyncFocus::Passphrase,
                 pass_paint.placeholder,
-                false,
+                terminus_ui::settings::FIELD_EYE_SLOT,
                 true,
             );
             if pass_paint.show_caret {
-                paint_settings_caret(sugarloaf, theme, pass_card, &pass_paint.text);
+                paint_settings_caret(
+                    sugarloaf,
+                    theme,
+                    pass_card,
+                    &pass_paint.text,
+                    terminus_ui::settings::FIELD_EYE_SLOT,
+                );
             }
 
-            // Passphrase visibility toggle.
+            // Passphrase visibility toggle — eye / eye-off icon.
             let eye = chrome
                 .settings
                 .passphrase_toggle_rect(window_width, window_height);
-            draw_text(
+            let eye_icon = if chrome.settings.passphrase_visible {
+                Icon::EyeOff
+            } else {
+                Icon::Eye
+            };
+            let eye_size = terminus_ui::settings::FIELD_EYE_ICON;
+            draw_icon(
                 sugarloaf,
-                eye.x + 2.0,
-                eye.y + 6.0,
-                if chrome.settings.passphrase_visible {
-                    "Hide"
-                } else {
-                    "Show"
-                },
-                HINT_SIZE,
-                color_from_f32(theme.accent),
-                false,
+                eye_icon,
+                IconPlacement::new(
+                    eye.x + (eye.width - eye_size) * 0.5,
+                    eye.y + (eye.height - eye_size) * 0.5,
+                    eye_size,
+                ),
+                theme.accent,
+                device_scale,
             );
 
             paint_surface(
@@ -1203,6 +1385,8 @@ fn render_settings_modal(
                 ORDER_DIALOG,
                 false,
             );
+            // Status on its own line (full block width); Unlock / Test Sync sit
+            // on the row below so long sync messages are not cropped.
             let status_label = if chrome.settings.vault_unlocked
                 && !chrome.settings.sync_status.to_ascii_lowercase().contains("vault")
             {
@@ -1210,16 +1394,19 @@ fn render_settings_modal(
             } else {
                 chrome.settings.sync_status.clone()
             };
+            let status_text = chrome
+                .settings
+                .status_text_rect(window_width, window_height);
             let status_shown = elide(
                 sugarloaf,
                 &status_label,
-                card_w - 250.0,
+                status_text.width,
                 &opts(HINT_SIZE, theme.text_muted, false),
             );
             draw_text(
                 sugarloaf,
-                status_row.x + 16.0,
-                status_row.y + 18.0,
+                status_text.x,
+                status_text.y + (status_text.height - HINT_SIZE) * 0.5,
                 &status_shown,
                 HINT_SIZE,
                 theme.text_muted,
@@ -1251,6 +1438,54 @@ fn render_settings_modal(
                 DEPTH_DIALOG + 0.04,
                 ORDER_DIALOG,
             );
+
+            if let Some(banner) = chrome
+                .settings
+                .error_banner_rect(window_width, window_height)
+            {
+                let err_text = chrome
+                    .settings
+                    .sync_error
+                    .as_deref()
+                    .unwrap_or("");
+                // Soft red wash — low alpha so the dialog chrome still reads.
+                let wash = [
+                    0xf8 as f32 / 255.0,
+                    0x71 as f32 / 255.0,
+                    0x71 as f32 / 255.0,
+                    0.14,
+                ];
+                paint_surface(
+                    sugarloaf,
+                    &banner,
+                    wash,
+                    Some([
+                        0xf8 as f32 / 255.0,
+                        0x71 as f32 / 255.0,
+                        0x71 as f32 / 255.0,
+                        0.35,
+                    ]),
+                    12.0,
+                    DEPTH_DIALOG + 0.03,
+                    ORDER_DIALOG,
+                    true,
+                );
+                let err_shown = elide(
+                    sugarloaf,
+                    err_text,
+                    banner.width - 2.0 * terminus_ui::settings::FIELD_CARD_PAD,
+                    &opts(HINT_SIZE, theme.danger, false),
+                );
+                draw_text(
+                    sugarloaf,
+                    banner.x + terminus_ui::settings::FIELD_CARD_PAD,
+                    banner.y + (banner.height - HINT_SIZE) * 0.5,
+                    &err_shown,
+                    HINT_SIZE,
+                    theme.danger,
+                    false,
+                );
+            }
 
             // Engine dropdown: higher paint *order* than dialog cards.
             // (In sugarloaf, larger depth is further back — dialog BG is 0.2
@@ -1438,6 +1673,7 @@ fn render_host_rows(
                                 && matches!(
                                     &d.drop_target,
                                     Some(sidebar::HostDropTarget::Group(gid))
+                                        | Some(sidebar::HostDropTarget::BeforeGroup(gid))
                                         if Some(gid.as_str()) == group_id
                                 )
                         });
@@ -1458,6 +1694,37 @@ fn render_host_rows(
                             border,
                             sidebar::CARD_RADIUS,
                         );
+                        // #region agent log
+                        if let Some(next_idx) = chrome
+                            .panel
+                            .visible_row_indices()
+                            .into_iter()
+                            .skip_while(|&i| i != index)
+                            .nth(1)
+                        {
+                            let next_is_root = match chrome.panel.rows.get(next_idx) {
+                                Some(sidebar::Row::Group { .. }) => true,
+                                Some(sidebar::Row::Host(h)) if !h.nested => true,
+                                _ => false,
+                            };
+                            if next_is_root {
+                                let next_card = chrome.panel.card_rect(origin_y, next_idx);
+                                let gap = next_card.y - tray.bottom();
+                                crate::agent_debug::log(
+                                    "H6",
+                                    "chrome.rs:group_tray_gap",
+                                    "gap after group tray",
+                                    &format!(
+                                        r#"{{"group":"{}","collapsed":{},"gap":{},"cardGap":{},"runId":"post-fix"}}"#,
+                                        name.replace('"', ""),
+                                        collapsed,
+                                        gap,
+                                        sidebar::CARD_GAP
+                                    ),
+                                );
+                            }
+                        }
+                        // #endregion
                     }
                 }
             }
@@ -1530,15 +1797,47 @@ fn render_host_rows(
                     device_scale,
                 );
                 let text_x = badge_x + sidebar::HOST_BADGE_TILE + sidebar::ICON_GAP;
-                draw_text(
-                    sugarloaf,
-                    text_x,
-                    card.y + 12.0,
-                    name,
-                    ROW_TITLE_SIZE,
-                    theme.text,
-                    true,
+                let renaming = chrome.panel.is_renaming(
+                    match row_kind {
+                        sidebar::Row::Group { id, .. } => id.as_str(),
+                        _ => "",
+                    },
                 );
+                if renaming {
+                    let draft = chrome.panel.rename.as_ref().map(|r| r.name.as_str()).unwrap_or("");
+                    let accent = color_from_f32(theme.accent);
+                    draw_text(
+                        sugarloaf,
+                        text_x,
+                        card.y + 12.0,
+                        draft,
+                        ROW_TITLE_SIZE,
+                        accent,
+                        true,
+                    );
+                    let w = sugarloaf
+                        .text_mut()
+                        .measure(draft, &opts(ROW_TITLE_SIZE, accent, true));
+                    paint_caret(
+                        sugarloaf,
+                        text_x + w,
+                        card.y + 12.0,
+                        ROW_TITLE_SIZE,
+                        theme.accent,
+                        DEPTH_CONTENT + 0.03,
+                        ORDER_CONTENT,
+                    );
+                } else {
+                    draw_text(
+                        sugarloaf,
+                        text_x,
+                        card.y + 12.0,
+                        name,
+                        ROW_TITLE_SIZE,
+                        theme.text,
+                        true,
+                    );
+                }
                 let sessions = match row_kind {
                     sidebar::Row::Group { session_count, .. } => *session_count,
                     _ => 0,
@@ -1853,21 +2152,47 @@ fn render_host_rows(
         };
         let text_width = (card.right() - text_x - trailing).max(0.0);
 
-        let name = elide(
-            sugarloaf,
-            &host.name,
-            text_width,
-            &opts(ROW_TITLE_SIZE, theme.text, true),
-        );
+        let renaming = chrome.panel.is_renaming(&host.id);
+        let accent = color_from_f32(theme.accent);
+        let name = if renaming {
+            chrome
+                .panel
+                .rename
+                .as_ref()
+                .map(|r| r.name.as_str())
+                .unwrap_or(host.name.as_str())
+                .to_string()
+        } else {
+            elide(
+                sugarloaf,
+                &host.name,
+                text_width,
+                &opts(ROW_TITLE_SIZE, theme.text, true),
+            )
+        };
         draw_text(
             sugarloaf,
             text_x,
             card.y + 12.0,
             &name,
             ROW_TITLE_SIZE,
-            theme.text,
+            if renaming { accent } else { theme.text },
             true,
         );
+        if renaming {
+            let w = sugarloaf
+                .text_mut()
+                .measure(&name, &opts(ROW_TITLE_SIZE, accent, true));
+            paint_caret(
+                sugarloaf,
+                text_x + w,
+                card.y + 12.0,
+                ROW_TITLE_SIZE,
+                theme.accent,
+                DEPTH_CONTENT + 0.03,
+                ORDER_CONTENT,
+            );
+        }
 
         // While connecting, the subtitle becomes a status line and a
         // shimmer sweeps under it; otherwise it stays the endpoint.
@@ -1937,6 +2262,78 @@ fn render_host_rows(
     render_panel_scrollbar(sugarloaf, chrome, theme, origin_y, height, body);
 }
 
+/// Accent insertion bar showing where a dragged host/group will land.
+fn paint_host_drag_insertion_bar(
+    sugarloaf: &mut Sugarloaf,
+    chrome: &Chrome,
+    theme: &ChromeTheme,
+) {
+    let Some(drag) = chrome.panel.host_drag.as_ref() else {
+        return;
+    };
+    if !drag.started() {
+        return;
+    }
+    let Some(target) = drag.drop_target.as_ref() else {
+        return;
+    };
+    let origin_y = chrome.origin_y();
+    let Some(bar) = chrome.panel.insertion_bar_rect(origin_y, target) else {
+        return;
+    };
+    if bar.width < 4.0 || bar.height < 1.0 {
+        return;
+    }
+    // #region agent log
+    {
+        static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+        let key = format!("{target:?}:{:.0}", bar.y);
+        if let Ok(mut prev) = LAST.lock() {
+            if *prev != key {
+                *prev = key;
+                crate::agent_debug::log(
+                    "H5",
+                    "chrome.rs:insertion_bar",
+                    "insertion bar target",
+                    &format!(
+                        r#"{{"target":"{}","barY":{},"runId":"post-fix"}}"#,
+                        format!("{target:?}").replace('"', "'"),
+                        bar.y
+                    ),
+                );
+            }
+        }
+    }
+    // #endregion
+    paint_surface(
+        sugarloaf,
+        &bar,
+        theme.accent,
+        None,
+        2.0,
+        DEPTH_GHOST - 0.02,
+        ORDER_GHOST,
+        false,
+    );
+    // Soft glow wash under the bar for readability on dark cards.
+    let wash = Rect::new(
+        bar.x,
+        bar.y - 3.0,
+        bar.width,
+        bar.height + 6.0,
+    );
+    paint_surface(
+        sugarloaf,
+        &wash,
+        with_alpha(theme.accent, 0.22),
+        None,
+        4.0,
+        DEPTH_GHOST - 0.03,
+        ORDER_GHOST,
+        false,
+    );
+}
+
 /// Floating phantom of the dragged host — full card chrome, 50% opacity,
 /// painted at max order so it sits above every other chrome layer.
 fn paint_host_drag_ghost(
@@ -1989,7 +2386,11 @@ fn paint_host_drag_ghost(
     );
     draw_icon(
         sugarloaf,
-        Icon::Server,
+        if drag.is_group() {
+            Icon::Folder
+        } else {
+            Icon::Server
+        },
         IconPlacement::new(
             badge.x + (badge_tile - sidebar::ICON_SIZE) * 0.5,
             badge.y + (badge_tile - sidebar::ICON_SIZE) * 0.5,
@@ -2413,10 +2814,16 @@ fn paint_dashed_cta(
     );
     if labels {
         let text_x = badge.right() + sidebar::ICON_GAP;
+        // Same title/subtitle rhythm as host cards and key rows
+        // (`+12` / `+32` on a 56px row), scaled when the CTA is taller
+        // (New Host is 60). Centers the two-line stack with the badge.
+        let base = cta.y + (cta.height - 56.0) * 0.5;
+        let title_y = base + 12.0;
+        let sub_y = base + 32.0;
         draw_text(
             sugarloaf,
             text_x,
-            cta.y + 16.0,
+            title_y,
             title,
             ROW_TITLE_SIZE,
             title_color,
@@ -2425,7 +2832,7 @@ fn paint_dashed_cta(
         draw_text(
             sugarloaf,
             text_x,
-            cta.y + 36.0,
+            sub_y,
             subtitle,
             ROW_SUB_SIZE,
             theme.text_muted,
@@ -2861,15 +3268,19 @@ fn render_add_host(
         );
 
         if let Some(caption) = layout.caption_rect(form, field) {
-            draw_text(
-                sugarloaf,
-                caption.x,
-                caption.y + 2.0,
-                field.label(),
-                CAPTION_SIZE,
-                [0xcb, 0xd5, 0xe1, 255], // slate-300
-                false,
-            );
+            let skip_caption = form.auth_menu_open()
+                && matches!(field, Field::Identity | Field::Password);
+            if !skip_caption {
+                draw_text(
+                    sugarloaf,
+                    caption.x,
+                    caption.y + 2.0,
+                    field.label(),
+                    CAPTION_SIZE,
+                    [0xcb, 0xd5, 0xe1, 255], // slate-300
+                    false,
+                );
+            }
         }
 
         let text_y = input.y + (input.height - INPUT_SIZE) / 2.0;
@@ -2886,8 +3297,26 @@ fn render_add_host(
                     theme.text,
                     false,
                 );
+                draw_text(
+                    sugarloaf,
+                    input.right() - 18.0,
+                    text_y,
+                    if form.auth_menu_open() {
+                        "▴"
+                    } else {
+                        "▾"
+                    },
+                    INPUT_SIZE,
+                    theme.text_muted,
+                    false,
+                );
             }
             Field::Identity => {
+                // Skip glyph paint while the auth menu covers this row —
+                // sugarloaf UI text always composites above quads.
+                if form.auth_menu_open() {
+                    continue;
+                }
                 let label = form
                     .selected_identity_name()
                     .unwrap_or_else(|| field.placeholder());
@@ -2899,6 +3328,9 @@ fn render_add_host(
                 draw_text(sugarloaf, text_x, text_y, label, INPUT_SIZE, color, false);
             }
             Field::Password => {
+                if form.auth_menu_open() {
+                    continue;
+                }
                 let masked: String = "•".repeat(form.password().chars().count());
                 if masked.is_empty() && !focused {
                     draw_text(
@@ -3022,15 +3454,33 @@ fn render_add_host(
     }
 
     // Cancel + Connect footer — shared ButtonSpec paint path.
+    // Skip button *labels* while the auth menu covers them: sugarloaf's
+    // UI text pass always composites after every quad, so Cancel/Connect
+    // glyphs would otherwise float on top of the opaque popover (same
+    // pattern as URI text under the SQL engine dropdown).
     let cancel = layout.cancel_button_rect(form.height());
     let connect = layout.connect_button_rect(form.height());
+    let auth_menu = form
+        .auth_menu_open()
+        .then(|| layout.auth_menu_rect(form))
+        .flatten();
+    let cancel_label = if auth_menu.is_some_and(|m| terminus_ui::rects_overlap(m, cancel)) {
+        ""
+    } else {
+        "Cancel"
+    };
+    let connect_label = if auth_menu.is_some_and(|m| terminus_ui::rects_overlap(m, connect)) {
+        ""
+    } else {
+        "Connect"
+    };
     paint_chrome_button(
         sugarloaf,
         theme,
         terminus_ui::ButtonSpec::secondary(cancel)
             .with_radius(input_radius)
             .muted(),
-        "Cancel",
+        cancel_label,
         HINT_SIZE,
         DEPTH_DIALOG_BG + 0.025,
         ORDER_DIALOG,
@@ -3039,11 +3489,74 @@ fn render_add_host(
         sugarloaf,
         theme,
         terminus_ui::ButtonSpec::primary(connect).with_radius(input_radius),
-        "Connect",
+        connect_label,
         HINT_SIZE,
         DEPTH_DIALOG_BG + 0.025,
         ORDER_DIALOG,
     );
+
+    // Auth Method dropdown: higher paint order than dialog field text.
+    if form.auth_menu_open() {
+        if let Some(menu) = layout.auth_menu_rect(form) {
+            paint_surface(
+                sugarloaf,
+                &menu,
+                theme.button_bg,
+                Some(theme.panel_border),
+                10.0,
+                DEPTH_DIALOG,
+                ORDER_DIALOG_POPOVER,
+                false,
+            );
+            for i in 0..terminus_ui::AUTH_METHODS.len() {
+                let Some(opt) = layout.auth_option_rect(form, i) else {
+                    continue;
+                };
+                let selected = form.auth_method() == terminus_ui::AUTH_METHODS[i];
+                let hovered = form.auth_menu_hover() == Some(i);
+                if selected || hovered {
+                    paint_surface(
+                        sugarloaf,
+                        &opt,
+                        if hovered {
+                            theme.item_hover
+                        } else {
+                            theme.accent_soft
+                        },
+                        None,
+                        6.0,
+                        DEPTH_DIALOG + 0.002,
+                        ORDER_DIALOG_POPOVER,
+                        false,
+                    );
+                }
+                draw_text(
+                    sugarloaf,
+                    opt.x + 12.0,
+                    opt.y + 8.0,
+                    auth_method_label(terminus_ui::AUTH_METHODS[i]),
+                    ROW_SUB_SIZE,
+                    if selected {
+                        color_from_f32(theme.accent)
+                    } else {
+                        theme.text
+                    },
+                    selected,
+                );
+                if selected {
+                    draw_text(
+                        sugarloaf,
+                        opt.right() - 22.0,
+                        opt.y + 8.0,
+                        "✓",
+                        ROW_SUB_SIZE,
+                        color_from_f32(theme.accent),
+                        true,
+                    );
+                }
+            }
+        }
+    }
 }
 
 // ---- primitives ------------------------------------------------------
@@ -3076,6 +3589,9 @@ fn draw_text(
 
 /// Shared settings field card (label + input row).
 ///
+/// `trailing_slot` reserves space on the right of the input for an
+/// adornment (e.g. passphrase eye) so value text never overlaps it.
+///
 /// When `paint_text` is false, only the card/input quads are drawn —
 /// used while a popover covers the card so UI text (always last pass)
 /// does not bleed through the menu.
@@ -3087,7 +3603,7 @@ fn paint_settings_field_card(
     value: &str,
     focused: bool,
     placeholder: bool,
-    _selector: bool,
+    trailing_slot: f32,
     paint_text: bool,
 ) {
     paint_surface(
@@ -3103,8 +3619,8 @@ fn paint_settings_field_card(
     if paint_text {
         draw_text(
             sugarloaf,
-            card.x + 16.0,
-            card.y + 12.0,
+            card.x + terminus_ui::settings::FIELD_CARD_PAD,
+            card.y + terminus_ui::settings::FIELD_CARD_PAD,
             label,
             HINT_SIZE,
             theme.text_muted,
@@ -3112,7 +3628,7 @@ fn paint_settings_field_card(
         );
     }
     let field_bg = theme.field_bg;
-    let input = Rect::new(card.x + 16.0, card.y + 30.0, card.width - 32.0, 26.0);
+    let input = terminus_ui::settings::field_input_in_card(card);
     if focused {
         paint_surface(
             sugarloaf,
@@ -3142,16 +3658,21 @@ fn paint_settings_field_card(
         } else {
             theme.text
         };
+        let text_budget = (input.width
+            - terminus_ui::settings::FIELD_TEXT_INSET
+            - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
+        .max(0.0);
         let shown = elide(
             sugarloaf,
             value,
-            input.width - 16.0,
+            text_budget,
             &opts(ROW_SUB_SIZE, color, false),
         );
+        let text_y = input.y + (input.height - ROW_SUB_SIZE) * 0.5;
         draw_text(
             sugarloaf,
-            card.x + 24.0,
-            card.y + 36.0,
+            input.x + terminus_ui::settings::FIELD_TEXT_INSET,
+            text_y,
             &shown,
             ROW_SUB_SIZE,
             color,
@@ -3165,20 +3686,196 @@ fn paint_settings_caret(
     theme: &ChromeTheme,
     card: Rect,
     value: &str,
+    trailing_slot: f32,
 ) {
-    let text_x = card.x + 24.0;
+    let input = terminus_ui::settings::field_input_in_card(card);
+    let text_x = input.x + terminus_ui::settings::FIELD_TEXT_INSET;
+    let text_budget = (input.width
+        - terminus_ui::settings::FIELD_TEXT_INSET
+        - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
+    .max(0.0);
+    let shown = elide(
+        sugarloaf,
+        value,
+        text_budget,
+        &opts(ROW_SUB_SIZE, theme.text, false),
+    );
     let advance = sugarloaf
         .text_mut()
-        .measure(value, &opts(ROW_SUB_SIZE, theme.text, false));
+        .measure(&shown, &opts(ROW_SUB_SIZE, theme.text, false));
+    let caret_x = (text_x + advance).min(text_x + text_budget);
+    let caret_y = input.y + (input.height - 16.0) * 0.5;
     paint_caret(
         sugarloaf,
-        text_x + advance,
-        card.y + 34.0,
+        caret_x,
+        caret_y,
         16.0,
         theme.accent,
         DEPTH_DIALOG + 0.05,
         ORDER_DIALOG,
     );
+}
+
+fn render_context_menu(
+    sugarloaf: &mut Sugarloaf,
+    menu: &ContextMenu,
+    theme: &ChromeTheme,
+    device_scale: f32,
+) {
+    let rect = menu.rect();
+
+    // Quad shell still helps under terminal cells; the late UI-text pass
+    // is what actually covers host labels/icons.
+    paint_surface(
+        sugarloaf,
+        &rect,
+        theme.button_bg,
+        Some(theme.panel_border),
+        MENU_RADIUS,
+        DEPTH_DIALOG,
+        ORDER_GHOST,
+        false,
+    );
+
+    let scale = device_scale.max(1.0);
+    let side = ((rect.width.max(rect.height) * scale).ceil() as u16).max(1);
+    let bg = color_from_f32(theme.button_bg);
+    let border = color_from_f32(theme.panel_border);
+    let radius_px = MENU_RADIUS * scale;
+    let content_w = (rect.width * scale).round().max(1.0);
+    let content_h = (rect.height * scale).round().max(1.0);
+
+    sugarloaf.text_mut().draw_mask_late(
+        rect.x,
+        rect.y,
+        CTX_MENU_BG_ID,
+        side,
+        bg,
+        move |size| rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, false),
+    );
+    // 1px border as a second late mask (ring).
+    sugarloaf.text_mut().draw_mask_late(
+        rect.x,
+        rect.y,
+        CTX_MENU_BORDER_ID,
+        side,
+        border,
+        move |size| rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, true),
+    );
+
+    for (i, item) in menu.items.iter().enumerate() {
+        let Some(row) = menu.item_rect(i) else {
+            continue;
+        };
+        let hovered = menu.hover == Some(i);
+        if hovered {
+            let fill = if item.danger {
+                [
+                    theme.danger[0],
+                    theme.danger[1],
+                    theme.danger[2],
+                    48,
+                ]
+            } else {
+                color_from_f32(theme.item_hover)
+            };
+            let row_side = ((row.width.max(row.height) * scale).ceil() as u16).max(1);
+            let rw = (row.width * scale).round().max(1.0);
+            let rh = (row.height * scale).round().max(1.0);
+            sugarloaf.text_mut().draw_mask_late(
+                row.x,
+                row.y,
+                CTX_MENU_HOVER_ID ^ (i as u64),
+                row_side,
+                fill,
+                move |size| rasterize_rounded_rect_mask(size, rw, rh, 6.0 * scale, false),
+            );
+        }
+        let color = if item.danger {
+            theme.danger
+        } else {
+            theme.text
+        };
+        let text_y = row.y + (CTX_ITEM_HEIGHT - ROW_SUB_SIZE) * 0.5;
+        sugarloaf.text_mut().draw_late(
+            row.x + MENU_PAD_X + 4.0,
+            text_y,
+            &item.label,
+            &opts(ROW_SUB_SIZE, color, false),
+        );
+    }
+}
+
+const CTX_MENU_BG_ID: u64 = 0x7E11_0001;
+const CTX_MENU_BORDER_ID: u64 = 0x7E11_0002;
+const CTX_MENU_HOVER_ID: u64 = 0x7E11_0100;
+
+fn rasterize_rounded_rect_mask(
+    size: u16,
+    content_w: f32,
+    content_h: f32,
+    radius: f32,
+    stroke_only: bool,
+) -> Option<rio_backend::sugarloaf::text::CoverageMask> {
+    let side = size as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(side, side)?;
+    let w = content_w.min(size as f32).max(1.0);
+    let h = content_h.min(size as f32).max(1.0);
+    let r = radius.min(w * 0.5).min(h * 0.5).max(0.0);
+    let path = rounded_rect_path(0.0, 0.0, w, h, r)?;
+    let mut paint = tiny_skia::Paint::default();
+    paint.anti_alias = true;
+    paint.set_color_rgba8(255, 255, 255, 255);
+    if stroke_only {
+        let stroke = tiny_skia::Stroke {
+            width: 1.0,
+            ..tiny_skia::Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    } else {
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
+    let bytes: Vec<u8> = pixmap
+        .pixels()
+        .iter()
+        .map(|p| p.alpha())
+        .collect();
+    rio_backend::sugarloaf::text::CoverageMask::new(size, bytes)
+}
+
+fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
+    let mut b = tiny_skia::PathBuilder::new();
+    if r <= 0.5 {
+        b.move_to(x, y);
+        b.line_to(x + w, y);
+        b.line_to(x + w, y + h);
+        b.line_to(x, y + h);
+        b.close();
+        return b.finish();
+    }
+    b.move_to(x + r, y);
+    b.line_to(x + w - r, y);
+    b.cubic_to(x + w, y, x + w, y, x + w, y + r);
+    b.line_to(x + w, y + h - r);
+    b.cubic_to(x + w, y + h, x + w, y + h, x + w - r, y + h);
+    b.line_to(x + r, y + h);
+    b.cubic_to(x, y + h, x, y + h, x, y + h - r);
+    b.line_to(x, y + r);
+    b.cubic_to(x, y, x, y, x + r, y);
+    b.close();
+    b.finish()
 }
 
 /// Paint a chrome button using [`terminus_ui::ButtonSpec`] centering math.
@@ -3214,6 +3911,9 @@ fn paint_chrome_button(
             order,
             false,
         );
+    }
+    if label.is_empty() {
+        return;
     }
     let color = spec.label_color([255, 255, 255, 255], theme.text, theme.text_muted);
     let bold = matches!(spec.kind, terminus_ui::ButtonKind::Primary);
@@ -3437,6 +4137,17 @@ fn render_connection_modal(
         return;
     };
 
+    // Measure step labels first so the dialog / columns hug real glyph
+    // advances (no text clamp — width grows with content + padding).
+    let mut label_widths = [0.0f32; STEP_COUNT];
+    for i in 0..STEP_COUNT {
+        let label = conn.step_label(i);
+        label_widths[i] = sugarloaf
+            .text_mut()
+            .measure(label, &opts(10.0, theme.text, false));
+    }
+    conn.set_label_widths(label_widths);
+
     let dialog = conn.dialog_rect(window_width, window_height);
     // Outer radius 13 → fill at 12 via paint_surface's inset shrink.
     paint_dialog_shell(
@@ -3616,12 +4327,12 @@ fn render_connection_modal(
             NodeVisual::Active => as_u8(theme.accent),
             NodeVisual::Done => as_u8(success),
         };
-        let lw = sugarloaf
-            .text_mut()
-            .measure(label, &opts(10.0, label_color, false));
+        let lw = label_widths[i];
+        // Center under the node — columns share the widest label's width.
+        let label_x = node.x + (node.width - lw) * 0.5;
         draw_text(
             sugarloaf,
-            node.x + (node.width - lw) * 0.5,
+            label_x,
             node.bottom() + 8.0,
             label,
             10.0,
