@@ -38,7 +38,9 @@ impl Store {
             .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
         Self::migrate(&pool).await?;
-        Ok(Self { pool })
+        let store = Self { pool };
+        store.ensure_default_root_order().await?;
+        Ok(store)
     }
 
     async fn migrate(pool: &SqlitePool) -> Result<()> {
@@ -57,6 +59,7 @@ impl Store {
                 tags TEXT NOT NULL DEFAULT '[]',
                 notes TEXT NOT NULL DEFAULT '',
                 os_id TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 deleted_at TEXT
@@ -73,6 +76,7 @@ impl Store {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 parent_id TEXT,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 deleted_at TEXT
@@ -161,13 +165,22 @@ impl Store {
             r#"
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT ''
             )
             "#,
         )
         .execute(pool)
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
+
+        // Older installs created `settings` without `updated_at`. CREATE IF NOT
+        // EXISTS is a no-op then, so add the column when missing. Live Windows
+        // DBs already have `updated_at TEXT NOT NULL` from a prior schema —
+        // `set_setting` must write it (see below).
+        Self::ensure_settings_updated_at(pool).await?;
+        Self::ensure_sort_order(pool, "hosts").await?;
+        Self::ensure_sort_order(pool, "groups").await?;
 
         sqlx::query(
             r#"
@@ -191,17 +204,61 @@ impl Store {
         Ok(())
     }
 
+    async fn ensure_settings_updated_at(pool: &SqlitePool) -> Result<()> {
+        let rows = sqlx::query("PRAGMA table_info(settings)")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        let has_updated_at = rows.iter().any(|r| {
+            r.try_get::<String, _>("name")
+                .map(|n| n == "updated_at")
+                .unwrap_or(false)
+        });
+        if !has_updated_at {
+            sqlx::query(
+                "ALTER TABLE settings ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+            )
+            .execute(pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_sort_order(pool: &SqlitePool, table: &str) -> Result<()> {
+        let pragma = format!("PRAGMA table_info({table})");
+        let rows = sqlx::query(&pragma)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        let has = rows.iter().any(|r| {
+            r.try_get::<String, _>("name")
+                .map(|n| n == "sort_order")
+                .unwrap_or(false)
+        });
+        if !has {
+            let alter =
+                format!("ALTER TABLE {table} ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+            sqlx::query(&alter)
+                .execute(pool)
+                .await
+                .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     // --- Host CRUD ---
     pub async fn upsert_host(&self, host: &Host) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO hosts (id, name, hostname, port, username, auth_method, password, identity_id, group_id, tags, notes, os_id, created_at, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO hosts (id, name, hostname, port, username, auth_method, password, identity_id, group_id, tags, notes, os_id, sort_order, created_at, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name, hostname=excluded.hostname, port=excluded.port,
                 username=excluded.username, auth_method=excluded.auth_method, password=excluded.password,
                 identity_id=excluded.identity_id, group_id=excluded.group_id, tags=excluded.tags,
-                notes=excluded.notes, os_id=excluded.os_id, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
+                notes=excluded.notes, os_id=excluded.os_id, sort_order=excluded.sort_order,
+                updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
             "#,
         )
         .bind(host.id.to_string())
@@ -216,6 +273,7 @@ impl Store {
         .bind(serde_json::to_string(&host.tags).unwrap())
         .bind(&host.notes)
         .bind(&host.os_id)
+        .bind(host.sort_order)
         .bind(host.created_at.to_rfc3339())
         .bind(host.updated_at.to_rfc3339())
         .bind(host.deleted_at.map(|d| d.to_rfc3339()))
@@ -251,6 +309,7 @@ impl Store {
                     .unwrap_or_default(),
                 notes: r.get("notes"),
                 os_id: r.get("os_id"),
+                sort_order: r.try_get::<i64, _>("sort_order").unwrap_or(0),
                 created_at: DateTime::parse_from_rfc3339(
                     &r.get::<String, _>("created_at"),
                 )
@@ -280,19 +339,48 @@ impl Store {
         Ok(())
     }
 
+    /// Soft-delete a group and clear membership on hosts that pointed at it.
+    pub async fn delete_group(&self, id: Uuid) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        sqlx::query("UPDATE hosts SET group_id = NULL, updated_at = ? WHERE group_id = ? AND deleted_at IS NULL")
+            .bind(&now)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        sqlx::query("UPDATE groups SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
+
     // --- Group CRUD ---
     pub async fn upsert_group(&self, group: &Group) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO groups (id, name, parent_id, created_at, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO groups (id, name, parent_id, sort_order, created_at, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                name=excluded.name, parent_id=excluded.parent_id, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
+                name=excluded.name, parent_id=excluded.parent_id, sort_order=excluded.sort_order,
+                updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
             "#,
         )
         .bind(group.id.to_string())
         .bind(&group.name)
         .bind(group.parent_id.map(|u| u.to_string()))
+        .bind(group.sort_order)
         .bind(group.created_at.to_rfc3339())
         .bind(group.updated_at.to_rfc3339())
         .bind(group.deleted_at.map(|d| d.to_rfc3339()))
@@ -316,6 +404,7 @@ impl Store {
                 parent_id: r
                     .get::<Option<String>, _>("parent_id")
                     .and_then(|s| Uuid::parse_str(&s).ok()),
+                sort_order: r.try_get::<i64, _>("sort_order").unwrap_or(0),
                 created_at: DateTime::parse_from_rfc3339(
                     &r.get::<String, _>("created_at"),
                 )
@@ -333,6 +422,168 @@ impl Store {
                 }),
             })
             .collect())
+    }
+
+    /// Next `sort_order` for a host joining `group_id`.
+    /// For ungrouped hosts, shares the root sequence with groups.
+    pub async fn next_host_sort_order(&self, group_id: Option<Uuid>) -> Result<i64> {
+        match group_id {
+            Some(gid) => {
+                let row = sqlx::query(
+                    "SELECT COALESCE(MAX(sort_order), -1) AS m FROM hosts WHERE deleted_at IS NULL AND group_id = ?",
+                )
+                .bind(gid.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| Error::DatabaseError(e.to_string()))?;
+                Ok(row.get::<i64, _>("m") + 1)
+            }
+            None => self.next_root_sort_order().await,
+        }
+    }
+
+    pub async fn next_group_sort_order(&self) -> Result<i64> {
+        self.next_root_sort_order().await
+    }
+
+    /// Next sort_order in the shared root list (ungrouped hosts + groups).
+    pub async fn next_root_sort_order(&self) -> Result<i64> {
+        let host_max = sqlx::query(
+            "SELECT COALESCE(MAX(sort_order), -1) AS m FROM hosts WHERE deleted_at IS NULL AND group_id IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?
+        .get::<i64, _>("m");
+        let group_max = sqlx::query(
+            "SELECT COALESCE(MAX(sort_order), -1) AS m FROM groups WHERE deleted_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?
+        .get::<i64, _>("m");
+        Ok(host_max.max(group_max) + 1)
+    }
+
+    /// Anchor for inserting into the shared root list.
+    pub async fn reorder_root(
+        &self,
+        moving_is_group: bool,
+        moving_id: Uuid,
+        before_is_group: Option<bool>,
+        before_id: Option<Uuid>,
+    ) -> Result<()> {
+        #[derive(Clone)]
+        enum RootEntry {
+            Host(Host),
+            Group(Group),
+        }
+
+        let hosts = self.list_hosts().await?;
+        let groups = self.list_groups().await?;
+
+        let mut root: Vec<RootEntry> = Vec::new();
+        for h in hosts.iter().filter(|h| h.group_id.is_none() && h.deleted_at.is_none()) {
+            if moving_is_group || h.id != moving_id {
+                root.push(RootEntry::Host(h.clone()));
+            }
+        }
+        for g in groups.iter().filter(|g| g.deleted_at.is_none()) {
+            if !moving_is_group || g.id != moving_id {
+                root.push(RootEntry::Group(g.clone()));
+            }
+        }
+        root.sort_by(|a, b| {
+            let (oa, na) = match a {
+                RootEntry::Host(h) => (h.sort_order, h.name.to_lowercase()),
+                RootEntry::Group(g) => (g.sort_order, g.name.to_lowercase()),
+            };
+            let (ob, nb) = match b {
+                RootEntry::Host(h) => (h.sort_order, h.name.to_lowercase()),
+                RootEntry::Group(g) => (g.sort_order, g.name.to_lowercase()),
+            };
+            oa.cmp(&ob).then_with(|| na.cmp(&nb))
+        });
+
+        let insert_at = match (before_is_group, before_id) {
+            (Some(true), Some(id)) => root
+                .iter()
+                .position(|e| matches!(e, RootEntry::Group(g) if g.id == id))
+                .unwrap_or(root.len()),
+            (Some(false), Some(id)) => root
+                .iter()
+                .position(|e| matches!(e, RootEntry::Host(h) if h.id == id))
+                .unwrap_or(root.len()),
+            _ => root.len(),
+        };
+
+        let moved = if moving_is_group {
+            let mut g = groups
+                .into_iter()
+                .find(|g| g.id == moving_id)
+                .ok_or_else(|| Error::DatabaseError("group not found".into()))?;
+            g.updated_at = Utc::now();
+            RootEntry::Group(g)
+        } else {
+            let mut h = hosts
+                .into_iter()
+                .find(|h| h.id == moving_id)
+                .ok_or_else(|| Error::DatabaseError("host not found".into()))?;
+            h.group_id = None;
+            h.updated_at = Utc::now();
+            RootEntry::Host(h)
+        };
+        root.insert(insert_at, moved);
+
+        for (i, entry) in root.into_iter().enumerate() {
+            match entry {
+                RootEntry::Host(mut h) => {
+                    h.sort_order = i as i64;
+                    self.upsert_host(&h).await?;
+                }
+                RootEntry::Group(mut g) => {
+                    g.sort_order = i as i64;
+                    self.upsert_group(&g).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One-shot: hosts first (A–Z), then groups (A–Z). Skipped once applied.
+    pub async fn ensure_default_root_order(&self) -> Result<()> {
+        const KEY: &str = "sidebar_root_order_v1";
+        if self.get_setting(KEY).await?.is_some() {
+            return Ok(());
+        }
+        let mut hosts: Vec<Host> = self
+            .list_hosts()
+            .await?
+            .into_iter()
+            .filter(|h| h.group_id.is_none() && h.deleted_at.is_none())
+            .collect();
+        hosts.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        let mut groups: Vec<Group> = self
+            .list_groups()
+            .await?
+            .into_iter()
+            .filter(|g| g.deleted_at.is_none())
+            .collect();
+        groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        let mut i: i64 = 0;
+        for mut h in hosts {
+            h.sort_order = i;
+            i += 1;
+            self.upsert_host(&h).await?;
+        }
+        for mut g in groups {
+            g.sort_order = i;
+            i += 1;
+            self.upsert_group(&g).await?;
+        }
+        self.set_setting(KEY, "1").await?;
+        Ok(())
     }
 
     // --- Identity CRUD ---
@@ -400,6 +651,16 @@ impl Store {
             .await?
             .into_iter()
             .find(|identity| identity.id == id))
+    }
+
+    pub async fn delete_identity(&self, id: Uuid) -> Result<()> {
+        sqlx::query("UPDATE identities SET deleted_at = ? WHERE id = ?")
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        Ok(())
     }
 
     // --- Snippet CRUD ---
@@ -595,12 +856,21 @@ impl Store {
     }
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-            .bind(key)
-            .bind(value)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            "#,
+        )
+        .bind(key)
+        .bind(value)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
         Ok(())
     }
 

@@ -53,8 +53,7 @@ impl SnippetsPanel {
         if self.items.is_empty() {
             return 0.0;
         }
-        12.0
-            + self.items.len() as f32 * ITEM_HEIGHT
+        12.0 + self.items.len() as f32 * ITEM_HEIGHT
             + (self.items.len().saturating_sub(1) as f32) * ITEM_GAP
             + 12.0
     }
@@ -103,8 +102,9 @@ impl SnippetsPanel {
                 SnippetItem {
                     id: "2".into(),
                     name: "System Update & Clean".into(),
-                    cmd: "sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y"
-                        .into(),
+                    cmd:
+                        "sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y"
+                            .into(),
                     desc: "Fully update system packages and clean caches.".into(),
                 },
                 SnippetItem {

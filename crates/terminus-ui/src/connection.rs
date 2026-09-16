@@ -6,10 +6,12 @@
 
 use crate::geom::Rect;
 use crate::icons::Icon;
+use std::cell::Cell;
 
 /// How many nodes sit on the progress line.
 pub const STEP_COUNT: usize = 4;
 
+/// Fallback / minimum dialog width when labels are short.
 pub const DIALOG_WIDTH: f32 = 480.0;
 pub const DIALOG_PAD: f32 = 24.0;
 pub const HEADER_HEIGHT: f32 = 64.0;
@@ -20,9 +22,46 @@ pub const LOGS_MAX_HEIGHT: f32 = 120.0;
 pub const BUTTON_HEIGHT: f32 = 36.0;
 pub const BUTTON_GAP: f32 = 12.0;
 pub const TRACK_LINE_HEIGHT: f32 = 4.0;
-/// Horizontal inset of the progress track from the dialog edges so the
-/// line starts/ends at the centre of the first/last node.
-pub const TRACK_INSET: f32 = DIALOG_PAD + NODE_SIZE * 0.5;
+/// Horizontal padding inside each step column around the measured label.
+pub const LABEL_COLUMN_PAD: f32 = 6.0;
+/// Gap between adjacent step columns (edge to edge).
+pub const STEP_COLUMN_GAP: f32 = 12.0;
+/// Rough advance used before the painter reports real glyph widths.
+const LABEL_ESTIMATE_ADVANCE: f32 = 6.0;
+
+/// Width of one step column: hugs the label (or the node if wider).
+pub fn step_column_width(label_width: f32) -> f32 {
+    label_width.max(NODE_SIZE) + 2.0 * LABEL_COLUMN_PAD
+}
+
+/// Dialog width and evenly spaced node centres (relative to `dialog.x`).
+///
+/// Every column uses the **widest** label's hug width so node-to-node
+/// gaps stay equal; the dialog grows when that uniform track exceeds
+/// [`DIALOG_WIDTH`].
+pub fn track_layout_from_labels(label_widths: &[f32; STEP_COUNT]) -> (f32, [f32; STEP_COUNT]) {
+    let col_w = label_widths
+        .iter()
+        .map(|&w| step_column_width(w))
+        .fold(NODE_SIZE + 2.0 * LABEL_COLUMN_PAD, f32::max);
+    let content = col_w * STEP_COUNT as f32 + STEP_COLUMN_GAP * (STEP_COUNT - 1) as f32;
+    let dialog_width = (content + 2.0 * DIALOG_PAD).max(DIALOG_WIDTH);
+    let start = DIALOG_PAD + (dialog_width - 2.0 * DIALOG_PAD - content).max(0.0) * 0.5;
+    let mut node_cx = [0.0; STEP_COUNT];
+    let mut x = start;
+    for i in 0..STEP_COUNT {
+        node_cx[i] = x + col_w * 0.5;
+        x += col_w;
+        if i + 1 < STEP_COUNT {
+            x += STEP_COLUMN_GAP;
+        }
+    }
+    (dialog_width, node_cx)
+}
+
+fn estimate_label_width(label: &str) -> f32 {
+    (label.chars().count() as f32 * LABEL_ESTIMATE_ADVANCE).max(NODE_SIZE)
+}
 
 /// What kind of session is coming up — drives step labels and logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +104,9 @@ pub struct ConnectionSequence {
     pub logs: Vec<String>,
     pub status: String,
     pub succeeded: bool,
+    /// Measured (or estimated) advance width of each step label. The
+    /// painter updates this each frame so hit-testing matches paint.
+    label_widths: Cell<[f32; STEP_COUNT]>,
 }
 
 impl ConnectionSequence {
@@ -83,7 +125,9 @@ impl ConnectionSequence {
             logs: Vec::new(),
             status: String::new(),
             succeeded: false,
+            label_widths: Cell::new([NODE_SIZE; STEP_COUNT]),
         };
+        seq.refresh_estimated_label_widths();
         seq.apply_step_copy();
         seq
     }
@@ -103,9 +147,33 @@ impl ConnectionSequence {
             logs: Vec::new(),
             status: String::new(),
             succeeded: false,
+            label_widths: Cell::new([NODE_SIZE; STEP_COUNT]),
         };
+        seq.refresh_estimated_label_widths();
         seq.apply_step_copy();
         seq
+    }
+
+    fn refresh_estimated_label_widths(&self) {
+        let mut widths = [NODE_SIZE; STEP_COUNT];
+        for i in 0..STEP_COUNT {
+            widths[i] = estimate_label_width(self.step_label(i));
+        }
+        self.label_widths.set(widths);
+    }
+
+    /// Record glyph advances from the painter so columns hug real text.
+    pub fn set_label_widths(&self, widths: [f32; STEP_COUNT]) {
+        self.label_widths.set(widths);
+    }
+
+    pub fn label_widths(&self) -> [f32; STEP_COUNT] {
+        self.label_widths.get()
+    }
+
+    /// Content-hugging dialog width for the current label advances.
+    pub fn content_width(&self) -> f32 {
+        track_layout_from_labels(&self.label_widths()).0
     }
 
     /// Total dialog height for the current logs drawer state.
@@ -127,21 +195,17 @@ impl ConnectionSequence {
 
     pub fn dialog_rect(&self, window_width: f32, window_height: f32) -> Rect {
         let h = self.height();
+        let w = self.content_width().min(window_width - 16.0);
         Rect::new(
-            ((window_width - DIALOG_WIDTH) * 0.5).max(8.0),
+            ((window_width - w) * 0.5).max(8.0),
             ((window_height - h) * 0.5).max(8.0),
-            DIALOG_WIDTH.min(window_width - 16.0),
+            w,
             h.min(window_height - 16.0),
         )
     }
 
     pub fn header_icon_rect(&self, dialog: Rect) -> Rect {
-        Rect::new(
-            dialog.x + DIALOG_PAD,
-            dialog.y + DIALOG_PAD,
-            44.0,
-            44.0,
-        )
+        Rect::new(dialog.x + DIALOG_PAD, dialog.y + DIALOG_PAD, 44.0, 44.0)
     }
 
     pub fn logs_button_rect(&self, dialog: Rect) -> Rect {
@@ -166,11 +230,13 @@ impl ConnectionSequence {
     /// Grey background rail between the first and last node centres.
     pub fn track_line_rect(&self, dialog: Rect) -> Rect {
         let band = self.track_band(dialog);
-        let inset = TRACK_INSET.min(dialog.width * 0.25);
+        let (_, node_cx) = track_layout_from_labels(&self.label_widths());
+        let x0 = dialog.x + node_cx[0];
+        let x1 = dialog.x + node_cx[STEP_COUNT - 1];
         Rect::new(
-            dialog.x + inset,
+            x0,
             band.y + (TRACK_HEIGHT - TRACK_LINE_HEIGHT) * 0.5 - 4.0,
-            (dialog.width - 2.0 * inset).max(0.0),
+            (x1 - x0).max(0.0),
             TRACK_LINE_HEIGHT,
         )
     }
@@ -192,20 +258,21 @@ impl ConnectionSequence {
     }
 
     pub fn node_center(&self, dialog: Rect, index: usize) -> (f32, f32) {
+        let (_, node_cx) = track_layout_from_labels(&self.label_widths());
         let track = self.track_line_rect(dialog);
-        let t = if STEP_COUNT <= 1 {
-            0.0
-        } else {
-            index as f32 / (STEP_COUNT - 1) as f32
-        };
-        let cx = track.x + track.width * t;
+        let cx = dialog.x + node_cx[index.min(STEP_COUNT - 1)];
         let cy = track.y + track.height * 0.5;
         (cx, cy)
     }
 
     pub fn node_rect(&self, dialog: Rect, index: usize) -> Rect {
         let (cx, cy) = self.node_center(dialog, index);
-        Rect::new(cx - NODE_SIZE * 0.5, cy - NODE_SIZE * 0.5, NODE_SIZE, NODE_SIZE)
+        Rect::new(
+            cx - NODE_SIZE * 0.5,
+            cy - NODE_SIZE * 0.5,
+            NODE_SIZE,
+            NODE_SIZE,
+        )
     }
 
     pub fn status_rect(&self, dialog: Rect) -> Rect {
@@ -416,6 +483,32 @@ mod tests {
         let closed = seq.height();
         seq.toggle_logs();
         assert!(seq.height() > closed);
+    }
+
+    #[test]
+    fn track_columns_use_even_spacing_from_widest_label() {
+        let widths = [30.0, 40.0, 50.0, 93.75];
+        let (dialog_w, cx) = track_layout_from_labels(&widths);
+        let col_w = step_column_width(93.75);
+        let pitch = col_w + STEP_COLUMN_GAP;
+        // Equal centre-to-centre distance between consecutive nodes.
+        for i in 0..STEP_COUNT - 1 {
+            assert!(
+                ((cx[i + 1] - cx[i]) - pitch).abs() < 0.01,
+                "gap {} → {} was {}, want {}",
+                i,
+                i + 1,
+                cx[i + 1] - cx[i],
+                pitch
+            );
+        }
+        let content = col_w * STEP_COUNT as f32 + STEP_COLUMN_GAP * (STEP_COUNT - 1) as f32;
+        assert!((dialog_w - (content + 2.0 * DIALOG_PAD).max(DIALOG_WIDTH)).abs() < 0.01);
+        // Widest label still fits inside dialog pad when centred on its node.
+        let label_left = cx[3] - widths[3] * 0.5;
+        let label_right = cx[3] + widths[3] * 0.5;
+        assert!(label_left >= DIALOG_PAD - 0.01);
+        assert!(label_right <= dialog_w - DIALOG_PAD + 0.01);
     }
 
     #[test]

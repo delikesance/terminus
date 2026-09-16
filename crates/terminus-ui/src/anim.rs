@@ -145,7 +145,12 @@ mod tests {
 
     #[test]
     fn ease_endpoints_are_stable() {
-        for ease in [Ease::Linear, Ease::OutCubic, Ease::InOutCubic, Ease::OutBack] {
+        for ease in [
+            Ease::Linear,
+            Ease::OutCubic,
+            Ease::InOutCubic,
+            Ease::OutBack,
+        ] {
             assert!((ease.sample(0.0) - 0.0).abs() < 0.001, "{ease:?}");
             // OutBack overshoots near the end but settles at 1.
             assert!((ease.sample(1.0) - 1.0).abs() < 0.001, "{ease:?}");

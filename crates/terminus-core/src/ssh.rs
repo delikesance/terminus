@@ -812,6 +812,7 @@ async fn authenticate(
                 tags: Vec::new(),
                 notes: String::new(),
                 os_id: None,
+                sort_order: 0,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
                 deleted_at: None,

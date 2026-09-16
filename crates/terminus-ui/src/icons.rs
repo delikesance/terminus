@@ -55,11 +55,13 @@ pub enum Icon {
     Database,
     ChevronRight,
     ChevronDown,
+    Eye,
+    EyeOff,
 }
 
 impl Icon {
     /// Every icon, in the order the generator emits them.
-    pub const ALL: [Icon; 23] = [
+    pub const ALL: [Icon; 25] = [
         Icon::Server,
         Icon::ArrowRightLeft,
         Icon::Folder,
@@ -83,6 +85,8 @@ impl Icon {
         Icon::Database,
         Icon::ChevronRight,
         Icon::ChevronDown,
+        Icon::Eye,
+        Icon::EyeOff,
     ];
 
     /// The icon's drawing elements: one SVG `d` per shape, verbatim from
@@ -117,6 +121,8 @@ impl Icon {
             Icon::Database => DATABASE,
             Icon::ChevronRight => CHEVRON_RIGHT,
             Icon::ChevronDown => CHEVRON_DOWN,
+            Icon::Eye => EYE,
+            Icon::EyeOff => EYE_OFF,
         }
     }
 
@@ -386,7 +392,10 @@ enum Tok {
     Cmd(char),
     /// Parsed value plus the original substring so arc flags can peel
     /// leading `0`/`1` digits without losing glued coordinates (`012.5`).
-    Num { value: f32, raw: String },
+    Num {
+        value: f32,
+        raw: String,
+    },
 }
 
 /// Split path data into command letters and numbers.
@@ -706,12 +715,8 @@ const SERVER: &[&str] = &[
 ];
 
 /// `arrow-right-left`
-const ARROW_RIGHT_LEFT: &[&str] = &[
-    "m16 3 4 4-4 4",
-    "M20 7H4",
-    "m8 21-4-4 4-4",
-    "M4 17h16",
-];
+const ARROW_RIGHT_LEFT: &[&str] =
+    &["m16 3 4 4-4 4", "M20 7H4", "m8 21-4-4 4-4", "M4 17h16"];
 
 /// `folder`
 const FOLDER: &[&str] = &[
@@ -732,10 +737,7 @@ const SLIDERS_HORIZONTAL: &[&str] = &[
 ];
 
 /// `plus`
-const PLUS: &[&str] = &[
-    "M5 12h14",
-    "M12 5v14",
-];
+const PLUS: &[&str] = &["M5 12h14", "M12 5v14"];
 
 /// `monitor`
 const MONITOR: &[&str] = &[
@@ -752,9 +754,7 @@ const SQUARE_TERMINAL: &[&str] = &[
 ];
 
 /// `check`
-const CHECK: &[&str] = &[
-    "M20 6 9 17l-5-5",
-];
+const CHECK: &[&str] = &["M20 6 9 17l-5-5"];
 
 /// `globe`
 const GLOBE: &[&str] = &[
@@ -770,14 +770,11 @@ const LOCK: &[&str] = &[
 ];
 
 /// `minus`
-const MINUS: &[&str] = &[
-    "M5 12h14",
-];
+const MINUS: &[&str] = &["M5 12h14"];
 
 /// `square`
-const SQUARE: &[&str] = &[
-    "M5 3H19A2 2 0 0 1 21 5V19A2 2 0 0 1 19 21H5A2 2 0 0 1 3 19V5A2 2 0 0 1 5 3Z",
-];
+const SQUARE: &[&str] =
+    &["M5 3H19A2 2 0 0 1 21 5V19A2 2 0 0 1 19 21H5A2 2 0 0 1 3 19V5A2 2 0 0 1 5 3Z"];
 
 /// `copy`
 const COPY: &[&str] = &[
@@ -786,16 +783,10 @@ const COPY: &[&str] = &[
 ];
 
 /// `x`
-const X: &[&str] = &[
-    "M18 6 6 18",
-    "m6 6 12 12",
-];
+const X: &[&str] = &["M18 6 6 18", "m6 6 12 12"];
 
 /// `search`
-const SEARCH: &[&str] = &[
-    "M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0Z",
-    "m21 21-4.3-4.3",
-];
+const SEARCH: &[&str] = &["M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0Z", "m21 21-4.3-4.3"];
 
 /// `layout-grid`
 const LAYOUT_GRID: &[&str] = &[
@@ -806,11 +797,7 @@ const LAYOUT_GRID: &[&str] = &[
 ];
 
 /// `code-xml`
-const CODE_XML: &[&str] = &[
-    "m18 16 4-4-4-4",
-    "m6 8-4 4 4 4",
-    "m14.5 4-5 16",
-];
+const CODE_XML: &[&str] = &["m18 16 4-4-4-4", "m6 8-4 4 4 4", "m14.5 4-5 16"];
 
 /// `cloud-upload`
 const CLOUD_UPLOAD: &[&str] = &[
@@ -839,13 +826,23 @@ const DATABASE: &[&str] = &[
 ];
 
 /// `chevron-right`
-const CHEVRON_RIGHT: &[&str] = &[
-    "m9 18 6-6-6-6",
-];
+const CHEVRON_RIGHT: &[&str] = &["m9 18 6-6-6-6"];
 
 /// `chevron-down`
-const CHEVRON_DOWN: &[&str] = &[
-    "m6 9 6 6 6-6",
+const CHEVRON_DOWN: &[&str] = &["m6 9 6 6 6-6"];
+
+/// `eye`
+const EYE: &[&str] = &[
+    "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0",
+    "M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0Z",
+];
+
+/// `eye-off`
+const EYE_OFF: &[&str] = &[
+    "M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49",
+    "M14.084 14.158a3 3 0 0 1-4.242-4.242",
+    "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143",
+    "m2 2 20 20",
 ];
 
 // ---- end generated ----

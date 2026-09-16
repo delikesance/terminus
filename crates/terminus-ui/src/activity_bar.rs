@@ -164,10 +164,7 @@ pub fn icon_in(item: Rect) -> Rect {
 pub fn item_rect(origin_y: f32, index: usize) -> Rect {
     section_rect(
         origin_y,
-        TOP_SECTIONS
-            .get(index)
-            .copied()
-            .unwrap_or(Section::Servers),
+        TOP_SECTIONS.get(index).copied().unwrap_or(Section::Servers),
     )
 }
 

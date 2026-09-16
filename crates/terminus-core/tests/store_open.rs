@@ -30,6 +30,7 @@ fn sample_host(name: &str) -> Host {
         tags: vec!["prod".to_string()],
         notes: String::new(),
         os_id: None,
+        sort_order: 0,
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -124,5 +125,103 @@ async fn host_password_credential_roundtrips_without_plaintext_on_host() {
     let hosts = store.list_hosts().await.expect("hosts");
     assert!(hosts[0].password.is_none());
     drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Windows installs already have `settings.updated_at TEXT NOT NULL`. Writing
+/// only `(key, value)` used to fail with SQLite 1299 (NOT NULL constraint).
+#[tokio::test]
+async fn set_setting_writes_updated_at_on_legacy_three_column_schema() {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    let dir = temp_dir("settings-legacy");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let db_path = dir.join("terminus.db");
+
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open raw");
+    sqlx::query(
+        r#"
+        CREATE TABLE settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy schema");
+    drop(pool);
+
+    let store = Store::open(dir.clone()).await.expect("open migrates");
+    store
+        .set_setting("sync_config", r#"{"enabled":true}"#)
+        .await
+        .expect("set_setting must supply updated_at");
+    let got = store
+        .get_setting("sync_config")
+        .await
+        .expect("get")
+        .expect("present");
+    assert!(got.contains("enabled"));
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Fresh DBs created without `updated_at` must gain the column on open.
+#[tokio::test]
+async fn open_adds_updated_at_to_two_column_settings() {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Row;
+
+    let dir = temp_dir("settings-two-col");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let db_path = dir.join("terminus.db");
+
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open raw");
+    sqlx::query(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("two-col schema");
+    drop(pool);
+
+    let store = Store::open(dir.clone()).await.expect("open");
+    store
+        .set_setting("vault_header", "{}")
+        .await
+        .expect("set after alter");
+    drop(store);
+
+    let options = SqliteConnectOptions::new().filename(&db_path);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("reopen raw");
+    let cols: Vec<String> = sqlx::query("PRAGMA table_info(settings)")
+        .fetch_all(&pool)
+        .await
+        .expect("pragma")
+        .into_iter()
+        .map(|r| r.get::<String, _>("name"))
+        .collect();
+    assert!(cols.iter().any(|c| c == "updated_at"));
+    drop(pool);
     let _ = std::fs::remove_dir_all(&dir);
 }
