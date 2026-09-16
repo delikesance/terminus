@@ -1,8 +1,11 @@
 //! Floating right-click context menu: paint-free geometry and hit-testing.
 //!
-//! The menu is a small list anchored at the pointer. Items carry a
-//! [`ContextAction`] so the chrome can route a selection without the
-//! painter knowing about hosts or clipboard.
+//! [`ContextMenu`] is the reusable chrome component for any pointer-anchored
+//! list of actions. Height is always derived from `items.len()` via
+//! [`ContextMenu::height`] — never a fixed shell — so host (3 rows) and group
+//! (2 rows) menus paint at different sizes. Callers build items then
+//! [`ContextMenu::open`] / [`ContextMenu::clamped`]; the painter only consumes
+//! [`ContextMenu::rect`] and [`ContextMenu::item_rect`].
 
 use crate::geom::Rect;
 
@@ -21,6 +24,8 @@ pub enum ContextAction {
     DeleteHost(String),
     /// Soft-delete a host group (hosts inside become ungrouped by the store).
     DeleteGroup(String),
+    /// Open the host editor prefilled for a stored SSH host.
+    EditHost(String),
     /// Begin renaming a stored SSH host.
     RenameHost(String),
     /// Begin renaming a host group.
@@ -95,13 +100,14 @@ impl ContextMenu {
         })
     }
 
-    /// Host row context: rename or delete the stored host.
+    /// Host row context: edit, rename, or delete the stored host.
     pub fn for_host(x: f32, y: f32, host_id: impl Into<String>) -> Option<Self> {
         let id = host_id.into();
         Self::open(
             x,
             y,
             vec![
+                ContextItem::new("Edit host", ContextAction::EditHost(id.clone())),
                 ContextItem::new("Rename", ContextAction::RenameHost(id.clone())),
                 ContextItem::new("Delete host", ContextAction::DeleteHost(id)).danger(),
             ],
@@ -137,8 +143,14 @@ impl ContextMenu {
         self.width = width.max(MENU_MIN_WIDTH);
     }
 
+    /// Dynamic shell height: vertical pad + one row per item.
     pub fn height(&self) -> f32 {
-        MENU_PAD_Y * 2.0 + self.items.len() as f32 * ITEM_HEIGHT
+        Self::height_for(self.items.len())
+    }
+
+    /// Height for `n` items (same formula as [`Self::height`]).
+    pub fn height_for(item_count: usize) -> f32 {
+        MENU_PAD_Y * 2.0 + item_count as f32 * ITEM_HEIGHT
     }
 
     /// Clamp the menu into the window so it never hangs off-screen.
@@ -217,21 +229,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn height_scales_with_item_count() {
+        assert_eq!(ContextMenu::height_for(0), MENU_PAD_Y * 2.0);
+        assert_eq!(
+            ContextMenu::height_for(2),
+            MENU_PAD_Y * 2.0 + 2.0 * ITEM_HEIGHT
+        );
+        assert_eq!(
+            ContextMenu::height_for(3),
+            MENU_PAD_Y * 2.0 + 3.0 * ITEM_HEIGHT
+        );
+        let group = ContextMenu::for_group(10.0, 10.0, "g1").unwrap();
+        let host = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
+        assert_eq!(group.items.len(), 2);
+        assert_eq!(host.items.len(), 3);
+        assert_eq!(group.height(), ContextMenu::height_for(2));
+        assert_eq!(host.height(), ContextMenu::height_for(3));
+        assert!(group.height() < host.height());
+        assert_eq!(group.rect().height, group.height());
+    }
+
+    #[test]
     fn host_menu_hits_delete_and_dismisses_outside() {
         let menu = ContextMenu::for_host(100.0, 100.0, "h1").unwrap();
-        assert_eq!(menu.items.len(), 2);
-        let item = menu.item_rect(1).unwrap();
+        assert_eq!(menu.items.len(), 3);
+        let item = menu.item_rect(2).unwrap();
         assert_eq!(
             menu.hit_test(item.x + 2.0, item.y + 2.0),
-            ContextMenuHit::Item(1)
+            ContextMenuHit::Item(2)
         );
         assert_eq!(menu.hit_test(0.0, 0.0), ContextMenuHit::Dismiss);
         assert_eq!(
             menu.take_action(0),
-            Some(ContextAction::RenameHost("h1".into()))
+            Some(ContextAction::EditHost("h1".into()))
         );
         assert_eq!(
             menu.take_action(1),
+            Some(ContextAction::RenameHost("h1".into()))
+        );
+        assert_eq!(
+            menu.take_action(2),
             Some(ContextAction::DeleteHost("h1".into()))
         );
     }

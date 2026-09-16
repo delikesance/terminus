@@ -1332,6 +1332,19 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         let chrome_press = route.window.screen.take_chrome_press();
 
                         if let MouseButton::Left = button {
+                            // Vault unlock sits above every other chrome modal.
+                            if route.window.screen.chrome.vault_unlock_is_open() {
+                                let scale = route.window.screen.sugarloaf.scale_factor();
+                                let mx = route.window.screen.mouse.x as f32 / scale;
+                                let my = route.window.screen.mouse.y as f32 / scale;
+                                let action = route.window.screen.chrome_press(mx, my);
+                                if matches!(action, ChromeAction::SubmitVaultUnlock) {
+                                    route.window.screen.submit_vault_unlock();
+                                }
+                                route.request_overlay_redraw();
+                                return;
+                            }
+
                             // The add-host editor is modal: while it is
                             // open every press belongs to it — a click on
                             // the dialog is swallowed, a click on the
@@ -1341,7 +1354,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let scale = route.window.screen.sugarloaf.scale_factor();
                                 let mx = route.window.screen.mouse.x as f32 / scale;
                                 let my = route.window.screen.mouse.y as f32 / scale;
-                                let _ = route.window.screen.chrome_press(mx, my);
+                                let action = route.window.screen.chrome_press(mx, my);
+                                if matches!(action, ChromeAction::SubmitHostForm) {
+                                    route.window.screen.submit_host_form();
+                                }
                                 route.request_overlay_redraw();
                                 return;
                             }
@@ -1427,6 +1443,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     }
                                     ChromeAction::SubmitHostForm => {
                                         route.window.screen.submit_host_form();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::SubmitVaultUnlock => {
+                                        route.window.screen.submit_vault_unlock();
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1622,18 +1643,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             .screen
                                             .chrome
                                             .settings
-                                            .key_draft_name
-                                            .trim()
-                                            .to_string();
+                                            .key_label
+                                            .value
+                                            .clone();
                                         let pem = route
                                             .window
                                             .screen
                                             .chrome
                                             .settings
-                                            .key_draft_pem
-                                            .trim()
-                                            .to_string();
-                                        if name.is_empty() {
+                                            .key_pem
+                                            .value
+                                            .clone();
+                                        if name.trim().is_empty() {
                                             route
                                                 .window
                                                 .screen
@@ -1643,7 +1664,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                                 "Enter a label for the new SSH key".into(),
                                             );
                                         } else {
-                                            let pem = if pem.is_empty() {
+                                            let pem = if pem.trim().is_empty() {
                                                 None
                                             } else {
                                                 Some(pem)
@@ -1669,6 +1690,45 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     }
                                     ChromeAction::DeleteGroup(id) => {
                                         route.window.screen.host_store.delete_group(&id);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::EditHost(id) => {
+                                        let Some(host) = route
+                                            .window
+                                            .screen
+                                            .host_store
+                                            .hosts()
+                                            .iter()
+                                            .find(|h| h.id == id)
+                                            .cloned()
+                                        else {
+                                            route.request_overlay_redraw();
+                                            return;
+                                        };
+                                        let port = if host.port == 22 {
+                                            String::new()
+                                        } else {
+                                            host.port.to_string()
+                                        };
+                                        let values = terminus_ui::add_host::HostFormValues {
+                                            name: host.name,
+                                            hostname: host.hostname,
+                                            username: host.username,
+                                            port,
+                                            auth_method: if host.auth_method.is_empty() {
+                                                "key".into()
+                                            } else {
+                                                host.auth_method
+                                            },
+                                            identity_id: host.identity_id,
+                                            password: String::new(),
+                                        };
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .open_edit_host(values, id);
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1765,6 +1825,19 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     // grid re-layout marks itself dirty, but a
                                     // pure section switch does not.
                                     ChromeAction::Consumed => {
+                                        // Panel press (incl. armed host/group drag)
+                                        // must not leave a terminal selection live
+                                        // under the still-held LMB.
+                                        if route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .panel
+                                            .host_drag
+                                            .is_some()
+                                        {
+                                            route.window.screen.clear_selection();
+                                        }
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1802,14 +1875,6 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 return;
                             }
                         } else if let MouseButton::Right = button {
-                            // #region agent log
-                            crate::agent_debug::log(
-                                "H1",
-                                "application.rs:Right",
-                                "right mouse pressed",
-                                r#"{"branch":"before_chrome"}"#,
-                            );
-                            // #endregion
                             {
                                 let scale = route.window.screen.sugarloaf.scale_factor();
                                 let mx = route.window.screen.mouse.x as f32 / scale;
@@ -1821,14 +1886,6 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     other => {
-                                        // #region agent log
-                                        crate::agent_debug::log(
-                                            "H1",
-                                            "application.rs:Right",
-                                            "unexpected context action",
-                                            &format!(r#"{{"action":"{other:?}"}}"#),
-                                        );
-                                        // #endregion
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -2215,9 +2272,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     let lx = x as f32 / scale;
                     let ly = y as f32 / scale;
                     let mut chrome_dirty = false;
-                    if route.window.screen.chrome.panel.host_drag.is_some()
-                        && route.window.screen.mouse.left_button_state == ElementState::Pressed
-                    {
+                    let host_drag_active = route.window.screen.chrome.panel.host_drag.is_some()
+                        && route.window.screen.mouse.left_button_state == ElementState::Pressed;
+                    if host_drag_active {
                         chrome_dirty = route.window.screen.chrome_drag_move(lx, ly);
                     } else if route.window.screen.chrome_hover(lx, ly) {
                         chrome_dirty = true;
@@ -2230,6 +2287,12 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         // framebuffer untouched, because the renderer gates
                         // on the context being dirty.
                         route.request_overlay_redraw();
+                    }
+                    // Host/group drag owns the pointer until release — same
+                    // contract as the tab strip. Falling through would keep
+                    // extending a terminal selection under the open LMB.
+                    if host_drag_active {
+                        return;
                     }
                 }
 
@@ -2760,6 +2823,48 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                                 bg_color.a,
                                             );
                                     }
+                                }
+                            }
+                        }
+
+                        // Vault unlock just succeeded: retry the action that needed it.
+                        if let Some(pending) =
+                            route.window.screen.take_pending_vault_continue()
+                        {
+                            match pending {
+                                terminus_ui::PendingVaultAction::OpenHost(id) => {
+                                    match route.window.screen.open_host_session(
+                                        &id,
+                                        &mut self.router.clipboard,
+                                    ) {
+                                        Ok(()) => {
+                                            route.window.screen.chrome.panel.error = None;
+                                        }
+                                        Err(err) => {
+                                            route.window.screen.chrome.panel.error =
+                                                Some(err);
+                                        }
+                                    }
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::AddHostSession(id) => {
+                                    match route.window.screen.add_host_session(
+                                        &id,
+                                        &mut self.router.clipboard,
+                                    ) {
+                                        Ok(()) => {
+                                            route.window.screen.chrome.panel.error = None;
+                                        }
+                                        Err(err) => {
+                                            route.window.screen.chrome.panel.error =
+                                                Some(err);
+                                        }
+                                    }
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::SubmitHostForm => {
+                                    route.window.screen.submit_host_form();
+                                    route.request_overlay_redraw();
                                 }
                             }
                         }

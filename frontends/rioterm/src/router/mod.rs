@@ -195,6 +195,9 @@ impl Route<'_> {
         }
         // The add-host editor outranks the route screens: it can be
         // opened from any of them and is a modal text sink.
+        if self.window.screen.chrome.vault_unlock_is_open() {
+            return Some(Modal::VaultUnlock);
+        }
         if self.window.screen.chrome.add_host_is_open() {
             return Some(Modal::HostEditor);
         }
@@ -249,12 +252,9 @@ impl Route<'_> {
                 .as_ref()
                 .is_some_and(|r| r.focused)
             {
-                if crate::renderer::is_printable_text(text) {
-                    if let Some(draft) = self.window.screen.chrome.panel.rename.as_mut() {
-                        if draft.name.len() + text.len() <= 64 {
-                            draft.name.push_str(text);
-                            self.request_overlay_redraw();
-                        }
+                if let Some(draft) = self.window.screen.chrome.panel.rename.as_mut() {
+                    if draft.insert(text, 64) {
+                        self.request_overlay_redraw();
                     }
                 }
                 return true;
@@ -287,14 +287,25 @@ impl Route<'_> {
                 }
                 true
             }
+            Some(Modal::VaultUnlock) => {
+                if self.window.screen.chrome_vault_unlock_commit_text(text) {
+                    self.request_overlay_redraw();
+                }
+                true
+            }
             Some(Modal::Settings) => {
-                if self
-                    .window
-                    .screen
-                    .chrome
-                    .settings
-                    .insert_sql_text(text)
-                {
+                let settings = &mut self.window.screen.chrome.settings;
+                    if settings.key_drafting {
+                        let trimmed = text.trim_start();
+                        if (text.contains("BEGIN") && text.contains("PRIVATE"))
+                            || trimmed.starts_with("b3BlbnNzaC1rZXk")
+                        {
+                            settings.focus_key_pem();
+                        }
+                        if settings.insert_key_draft_text(text) {
+                            self.request_overlay_redraw();
+                        }
+                    } else if settings.insert_sql_text(text) {
                     self.request_overlay_redraw();
                 }
                 true
@@ -326,19 +337,16 @@ impl Route<'_> {
     ) -> bool {
         use rio_window::event::ElementState;
 
-        // Drawer text fields (filter / new-group) own keys while focused,
-        // even though they are not a full modal over the terminal.
+        // Drawer text fields (filter / new-group / inline rename) own keys
+        // while focused, even though they are not a full modal over the
+        // terminal. Rename wins whenever a draft exists (focused is set on
+        // begin); gating only on `focused` left arrows/spaces leaking to the
+        // PTY if focus was dropped by an unrelated press.
+        let rename_active = self.window.screen.chrome.panel.rename.is_some();
         if self.window.screen.chrome.hosts_visible()
             && (self.window.screen.chrome.panel.filter_focused
                 || self.window.screen.chrome.panel.new_group_focused
-                || self
-                    .window
-                    .screen
-                    .chrome
-                    .panel
-                    .rename
-                    .as_ref()
-                    .is_some_and(|r| r.focused))
+                || rename_active)
             && !self.window.screen.chrome.add_host_is_open()
         {
             let _ = self.window.screen.chrome_key_input(key_event);
@@ -572,6 +580,14 @@ impl Route<'_> {
                 true
             }
 
+            Modal::VaultUnlock => {
+                if self.window.screen.chrome_vault_unlock_key(key_event) {
+                    self.window.screen.submit_vault_unlock();
+                }
+                self.request_overlay_redraw();
+                true
+            }
+
             Modal::Settings => {
                 use rio_window::event::ElementState;
                 use terminus_ui::{SettingsTab, SqlSyncFocus};
@@ -581,12 +597,74 @@ impl Route<'_> {
                     let drafting = self.window.screen.chrome.settings.key_drafting;
 
                     if on_keys && drafting {
+                        use terminus_ui::TextMoveKind;
+                        let mods = self.window.screen.modifiers.state();
+                        let shift = mods.shift_key();
+                        let word = mods.control_key() || mods.alt_key();
+                        let select_mod = mods.control_key() || mods.super_key();
+                        let move_kind = if shift {
+                            TextMoveKind::Extend
+                        } else {
+                            TextMoveKind::Collapse
+                        };
+                        let pem_focus = self
+                            .window
+                            .screen
+                            .chrome
+                            .settings
+                            .key_draft_pem_focused;
                         match &key_event.logical_key {
                             Key::Named(NamedKey::Escape) => {
                                 self.window.screen.chrome.settings.close_key_draft();
                             }
+                            Key::Named(NamedKey::Tab) => {
+                                if pem_focus {
+                                    self.window.screen.chrome.settings.focus_key_draft();
+                                } else {
+                                    self.window.screen.chrome.settings.focus_key_pem();
+                                }
+                            }
                             Key::Named(NamedKey::Backspace) => {
-                                let _ = self.window.screen.chrome.settings.key_draft_backspace();
+                                if let Some(draft) =
+                                    self.window.screen.chrome.settings.key_draft_active()
+                                {
+                                    draft.backspace(word);
+                                }
+                            }
+                            Key::Named(NamedKey::Delete) => {
+                                if let Some(draft) =
+                                    self.window.screen.chrome.settings.key_draft_active()
+                                {
+                                    draft.delete_forward(word);
+                                }
+                            }
+                            Key::Named(NamedKey::ArrowLeft) => {
+                                if let Some(draft) =
+                                    self.window.screen.chrome.settings.key_draft_active()
+                                {
+                                    draft.move_left(move_kind, word);
+                                }
+                            }
+                            Key::Named(NamedKey::ArrowRight) => {
+                                if let Some(draft) =
+                                    self.window.screen.chrome.settings.key_draft_active()
+                                {
+                                    draft.move_right(move_kind, word);
+                                }
+                            }
+                            Key::Named(NamedKey::Home) => {
+                                if let Some(draft) =
+                                    self.window.screen.chrome.settings.key_draft_active()
+                                {
+                                    draft.move_home(move_kind);
+                                }
+                            }
+                            Key::Named(NamedKey::End) => {
+                                if let Some(draft) =
+                                    self.window.screen.chrome.settings.key_draft_active()
+                                {
+                                    draft.move_end(move_kind);
+                                }
                             }
                             Key::Named(NamedKey::Enter) => {
                                 match self
@@ -602,11 +680,14 @@ impl Route<'_> {
                                             .screen
                                             .chrome
                                             .settings
-                                            .key_draft_pem
-                                            .trim()
-                                            .to_string();
-                                        let pem =
-                                            if pem.is_empty() { None } else { Some(pem) };
+                                            .key_pem
+                                            .value
+                                            .clone();
+                                        let pem = if pem.trim().is_empty() {
+                                            None
+                                        } else {
+                                            Some(pem)
+                                        };
                                         self.window
                                             .screen
                                             .host_store
@@ -615,15 +696,57 @@ impl Route<'_> {
                                     Err(_) => {}
                                 }
                             }
+                            Key::Named(NamedKey::Space) => {
+                                let _ = self
+                                    .window
+                                    .screen
+                                    .chrome
+                                    .settings
+                                    .insert_key_draft_text(" ");
+                            }
                             Key::Character(ch) => {
-                                let text = key_event.text.as_deref().unwrap_or(ch.as_str());
-                                if crate::renderer::is_printable_text(text) {
+                                if select_mod && ch.eq_ignore_ascii_case("a") {
+                                    if let Some(draft) = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .key_draft_active()
+                                    {
+                                        draft.select_all();
+                                    }
+                                } else if select_mod && ch.eq_ignore_ascii_case("v") {
+                                    // Ctrl/Cmd+V — clipboard into the focused field.
+                                    let content = clipboard.get(
+                                        rio_backend::clipboard::ClipboardType::Clipboard,
+                                    );
+                                    // OpenSSH PEM paste (headers or raw body) → PEM field.
+                                    let trimmed = content.trim_start();
+                                    if (content.contains("BEGIN")
+                                        && content.contains("PRIVATE"))
+                                        || trimmed.starts_with("b3BlbnNzaC1rZXk")
+                                    {
+                                        self.window.screen.chrome.settings.focus_key_pem();
+                                    }
                                     let _ = self
                                         .window
                                         .screen
                                         .chrome
                                         .settings
-                                        .insert_key_draft_text(text);
+                                        .insert_key_draft_text(&content);
+                                } else if !select_mod {
+                                    let text =
+                                        key_event.text.as_deref().unwrap_or(ch.as_str());
+                                    if pem_focus
+                                        || crate::renderer::is_printable_text(text)
+                                    {
+                                        let _ = self
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .insert_key_draft_text(text);
+                                    }
                                 }
                             }
                             _ => {}

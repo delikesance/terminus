@@ -41,14 +41,14 @@ pub fn import_openssh_identity(
             reason: "key label is empty".into(),
         });
     }
-    let pem = pem.trim();
+    let pem = normalize_openssh_pem(pem);
     if pem.is_empty() {
         return Err(Error::IdentityKeyInvalid {
             reason: "private key PEM is empty".into(),
         });
     }
 
-    let key = russh::keys::decode_secret_key(pem, passphrase).map_err(|e| {
+    let key = russh::keys::decode_secret_key(&pem, passphrase).map_err(|e| {
         Error::IdentityKeyInvalid {
             reason: format!("import openssh key: {e}"),
         }
@@ -69,12 +69,88 @@ pub fn import_openssh_identity(
         name,
         kind: "key".into(),
         public_key: Some(public_key),
-        private_key: Some(pem.to_string()),
+        private_key: Some(pem),
         passphrase: passphrase.map(str::to_string),
         created_at: now,
         updated_at: now,
         deleted_at: None,
     })
+}
+
+/// Normalize clipboard / editor PEM noise so `decode_secret_key` can read it.
+fn normalize_openssh_pem(raw: &str) -> String {
+    let mut s = raw
+        .trim()
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    // If the paste collapsed to a single line, re-wrap the base64 body.
+    if s.contains("BEGIN") && s.contains("END") && !s.contains('\n') {
+        if let Some(rewrapped) = rewrap_single_line_pem(&s) {
+            return rewrapped;
+        }
+    }
+    // Clipboard sometimes copies only the base64 body (no BEGIN/END).
+    // `b3BlbnNzaC1rZXk` is base64 for `openssh-key-v1`.
+    if !s.contains("BEGIN") {
+        if let Some(wrapped) = wrap_openssh_body_if_needed(&s) {
+            return wrapped;
+        }
+    }
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+fn wrap_openssh_body_if_needed(s: &str) -> Option<String> {
+    let body: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if body.len() < 64 {
+        return None;
+    }
+    let looks_openssh = body.starts_with("b3BlbnNzaC1rZXk");
+    let looks_b64 = body
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
+    if !looks_openssh || !looks_b64 {
+        return None;
+    }
+    let mut out = String::from("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    for chunk in body.as_bytes().chunks(70) {
+        out.push_str(std::str::from_utf8(chunk).ok()?);
+        out.push('\n');
+    }
+    out.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+    Some(out)
+}
+
+fn rewrap_single_line_pem(s: &str) -> Option<String> {
+    const BEGIN: &str = "-----BEGIN";
+    const END: &str = "-----END";
+    let b = s.find(BEGIN)?;
+    let e = s.find(END)?;
+    if e <= b {
+        return None;
+    }
+    let after_begin = b + BEGIN.len();
+    let header_close = s[after_begin..].find("-----")?;
+    let header_end = after_begin + header_close + 5;
+    if header_end >= e {
+        return None;
+    }
+    let header = s[b..header_end].trim();
+    let body: String = s[header_end..e].chars().filter(|c| !c.is_whitespace()).collect();
+    let footer = s[e..].trim();
+    let mut out = String::new();
+    out.push_str(header);
+    out.push('\n');
+    for chunk in body.as_bytes().chunks(70) {
+        out.push_str(std::str::from_utf8(chunk).ok()?);
+        out.push('\n');
+    }
+    out.push_str(footer);
+    out.push('\n');
+    Some(out)
 }
 
 fn identity_from_private_key(
@@ -151,5 +227,22 @@ mod tests {
     #[test]
     fn empty_label_is_rejected() {
         assert!(generate_ed25519_identity("  ").is_err());
+    }
+
+    #[test]
+    fn import_accepts_headerless_openssh_body() {
+        let generated = generate_ed25519_identity("tmp").expect("generate");
+        let pem = generated.private_key.expect("pem");
+        // Strip BEGIN/END lines — keep only the base64 body (common clipboard paste).
+        let body: String = pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!body.contains("BEGIN"));
+        assert!(body.trim_start().starts_with("b3BlbnNzaC1rZXk"));
+        let imported =
+            import_openssh_identity("from-body", &body, None).expect("import body");
+        assert_eq!(imported.name, "from-body");
     }
 }
