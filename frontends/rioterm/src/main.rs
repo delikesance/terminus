@@ -5,7 +5,6 @@
 #![windows_subsystem = "windows"]
 
 mod application;
-mod agent_debug;
 mod bindings;
 mod cli;
 mod constants;
@@ -24,6 +23,7 @@ mod renderer;
 mod router;
 mod scheduler;
 mod screen;
+mod vault_remember;
 mod watcher;
 
 use clap::Parser;

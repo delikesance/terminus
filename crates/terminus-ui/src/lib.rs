@@ -28,10 +28,12 @@ pub mod loading;
 pub mod os_icons;
 pub mod overlap;
 pub mod settings;
+pub mod text_field;
 pub mod sftp_pane;
 pub mod sidebar;
 pub mod snippets;
 pub mod theme;
+pub mod vault_unlock;
 
 pub use activity_bar::{
     ActivityBarState, RailAction, RailHit, Section, SECTIONS, TOP_SECTIONS,
@@ -64,11 +66,15 @@ pub use settings::{
     SQL_ENGINES,
 };
 pub use sidebar::{
-    Badge, HostDrag, HostDragKind, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit, RenameDraft,
-    Row, HOST_DRAG_THRESHOLD,
+    Badge, HostDrag, HostDragKind, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit,
+    RenameDraft, RenameMoveKind, Row, HOST_DRAG_THRESHOLD,
 };
 pub use snippets::{SnippetHit, SnippetItem, SnippetsPanel};
+pub use text_field::{TextDraft, TextMoveKind};
 pub use theme::ChromeTheme;
+pub use vault_unlock::{
+    PendingVaultAction, VaultUnlockHit, VaultUnlockLayout, VaultUnlockPrompt,
+};
 
 pub use terminus_bridge;
 pub use terminus_core;

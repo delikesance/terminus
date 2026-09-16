@@ -72,17 +72,212 @@ const MAX_SEARCH_HISTORY_SIZE: usize = 255;
 /// command uses the same one, so a host that is *not* on 22 cannot silently
 /// connect somewhere else. A bare `ssh` is resolved on `PATH` by the spawn,
 /// exactly like the shell itself.
-fn ssh_shell(host: &hosts::HostRow) -> Shell {
+///
+/// When `password` is set, OpenSSH is pointed at a small askpass helper so
+/// the sealed vault secret is used instead of an interactive prompt.
+///
+/// When `identity_pem` is set, the PEM is written to a temp IdentityFile and
+/// passed with `-i` (IdentitiesOnly) so managed keys actually authenticate.
+///
+/// When the host's auth method is `gssapi`, OpenSSH is forced onto
+/// `gssapi-with-mic` (Kerberos ticket cache) with pubkey/password disabled.
+fn ssh_shell(
+    host: &hosts::HostRow,
+    password: Option<&str>,
+    identity_pem: Option<&str>,
+    identity_passphrase: Option<&str>,
+) -> Result<(Shell, Option<Vec<(String, String)>>), String> {
     let destination = if host.username.is_empty() {
         host.hostname.clone()
     } else {
         format!("{}@{}", host.username, host.hostname)
     };
 
-    Shell {
-        program: Some("ssh".to_string()),
-        args: vec!["-p".to_string(), host.port.to_string(), destination],
+    let mut args = vec!["-p".to_string(), host.port.to_string()];
+    let mut env = None;
+
+    if let Some(password) = password {
+        let (askpass, secret_file) = write_ssh_askpass(password)?;
+        args.extend([
+            "-o".into(),
+            "PreferredAuthentications=password".into(),
+            "-o".into(),
+            "PubkeyAuthentication=no".into(),
+            "-o".into(),
+            "NumberOfPasswordPrompts=1".into(),
+            "-o".into(),
+            "StrictHostKeyChecking=accept-new".into(),
+        ]);
+        env = Some(vec![
+            ("SSH_ASKPASS".into(), askpass.to_string_lossy().into_owned()),
+            ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+            (
+                "TERMINUS_SSH_ASKPASS_FILE".into(),
+                secret_file.to_string_lossy().into_owned(),
+            ),
+            // Some OpenSSH builds still gate askpass on DISPLAY.
+            ("DISPLAY".into(), "terminus:0".into()),
+        ]);
+        // Best-effort cleanup of the secret file after askpass has had time
+        // to run (OpenSSH may call it more than once during handshake).
+        let cleanup = secret_file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(120));
+            let _ = std::fs::remove_file(cleanup);
+        });
+    } else if host.auth_method.eq_ignore_ascii_case("gssapi") {
+        push_o_options(&mut args, GSSAPI_SSH_OPTIONS);
+    } else if let Some(pem) = identity_pem {
+        let key_file = write_ssh_identity_file(pem)?;
+        args.extend([
+            "-i".into(),
+            key_file.to_string_lossy().into_owned(),
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+            "-o".into(),
+            "PreferredAuthentications=publickey".into(),
+            "-o".into(),
+            "StrictHostKeyChecking=accept-new".into(),
+        ]);
+        if let Some(passphrase) = identity_passphrase.filter(|p| !p.is_empty()) {
+            let (askpass, secret_file) = write_ssh_askpass(passphrase)?;
+            env = Some(vec![
+                ("SSH_ASKPASS".into(), askpass.to_string_lossy().into_owned()),
+                ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+                (
+                    "TERMINUS_SSH_ASKPASS_FILE".into(),
+                    secret_file.to_string_lossy().into_owned(),
+                ),
+                ("DISPLAY".into(), "terminus:0".into()),
+            ]);
+            let cleanup_secret = secret_file.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(120));
+                let _ = std::fs::remove_file(cleanup_secret);
+            });
+        }
+        let cleanup_key = key_file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(120));
+            let _ = std::fs::remove_file(cleanup_key);
+        });
     }
+
+    args.push(destination);
+
+
+    Ok((
+        Shell {
+            program: Some("ssh".to_string()),
+            args,
+        },
+        env,
+    ))
+}
+
+/// OpenSSH `-o` values that force Kerberos `gssapi-with-mic` for a session.
+const GSSAPI_SSH_OPTIONS: &[&str] = &[
+    "GSSAPIAuthentication=yes",
+    "PreferredAuthentications=gssapi-with-mic",
+    "PubkeyAuthentication=no",
+    "PasswordAuthentication=no",
+    "StrictHostKeyChecking=accept-new",
+];
+
+fn push_o_options(args: &mut Vec<String>, options: &[&str]) {
+    for opt in options {
+        args.push("-o".into());
+        args.push((*opt).into());
+    }
+}
+
+/// Write a managed OpenSSH private key to a temp IdentityFile (mode 0600).
+fn write_ssh_identity_file(pem: &str) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+
+    let dir = std::env::temp_dir().join("terminus-ssh-identity");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create identity dir: {e}"))?;
+
+    let id = uuid::Uuid::new_v4();
+    let path = dir.join(format!("{id}.pem"));
+    {
+        let mut f = std::fs::File::create(&path)
+            .map_err(|e| format!("Could not write identity file: {e}"))?;
+        f.write_all(pem.as_bytes())
+            .map_err(|e| format!("Could not write identity file: {e}"))?;
+        if !pem.ends_with('\n') {
+            f.write_all(b"\n")
+                .map_err(|e| format!("Could not write identity file: {e}"))?;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&path)
+            .map_err(|e| format!("Could not chmod identity file: {e}"))?
+            .permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms)
+            .map_err(|e| format!("Could not chmod identity file: {e}"))?;
+    }
+    Ok(path)
+}
+
+/// Write a one-shot askpass helper + secret file under the temp directory.
+fn write_ssh_askpass(password: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    use std::io::Write;
+
+    let dir = std::env::temp_dir().join("terminus-ssh-askpass");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create askpass dir: {e}"))?;
+
+    let id = uuid::Uuid::new_v4();
+    let secret_file = dir.join(format!("{id}.secret"));
+    {
+        let mut f = std::fs::File::create(&secret_file)
+            .map_err(|e| format!("Could not write askpass secret: {e}"))?;
+        f.write_all(password.as_bytes())
+            .map_err(|e| format!("Could not write askpass secret: {e}"))?;
+        f.write_all(b"\n")
+            .map_err(|e| format!("Could not write askpass secret: {e}"))?;
+    }
+
+    #[cfg(windows)]
+    let askpass = {
+        let path = dir.join("askpass.cmd");
+        if !path.exists() {
+            std::fs::write(
+                &path,
+                "@echo off\r\nif not defined TERMINUS_SSH_ASKPASS_FILE exit /b 1\r\ntype \"%TERMINUS_SSH_ASKPASS_FILE%\"\r\n",
+            )
+            .map_err(|e| format!("Could not write askpass helper: {e}"))?;
+        }
+        path
+    };
+
+    #[cfg(not(windows))]
+    let askpass = {
+        let path = dir.join("askpass.sh");
+        if !path.exists() {
+            std::fs::write(
+                &path,
+                "#!/bin/sh\n# Terminus SSH_ASKPASS helper — prints the sealed password file.\nif [ -z \"$TERMINUS_SSH_ASKPASS_FILE\" ] || [ ! -f \"$TERMINUS_SSH_ASKPASS_FILE\" ]; then\n  exit 1\nfi\ncat \"$TERMINUS_SSH_ASKPASS_FILE\"\n",
+            )
+            .map_err(|e| format!("Could not write askpass helper: {e}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&path)
+                    .map_err(|e| format!("Could not chmod askpass helper: {e}"))?
+                    .permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&path, perms)
+                    .map_err(|e| format!("Could not chmod askpass helper: {e}"))?;
+            }
+        }
+        path
+    };
+
+    Ok((askpass, secret_file))
 }
 
 pub struct Screen<'screen> {
@@ -104,6 +299,8 @@ pub struct Screen<'screen> {
     /// worker. `create` hands out no id, so the row is matched by name
     /// on the next refresh instead of guessing an index.
     pending_host_select: Option<String>,
+    /// After a vault-unlock prompt succeeds, retry this action once.
+    pending_vault_continue: Option<terminus_ui::PendingVaultAction>,
     /// When the sidebar's connecting indicator started. Drives the orbit
     /// phase and the clear-when-ready timer. Paired with
     /// `chrome.panel.connecting_id` / `chrome.connection`.
@@ -297,6 +494,7 @@ impl Screen<'_> {
             dead_pty: false,
             cwd: config.navigation.current_working_directory,
             shell,
+            env: None,
             working_dir,
             spawn_performer: true,
             #[cfg(not(target_os = "windows"))]
@@ -428,6 +626,7 @@ impl Screen<'_> {
                 host_wake,
             ),
             pending_host_select: None,
+            pending_vault_continue: None,
             connecting_started: None,
             connecting_step_at: None,
             connecting_success_at: None,
@@ -593,7 +792,13 @@ impl Screen<'_> {
                     self.chrome.settings.key_draft_error = Some(message.clone());
                 }
                 if self.chrome.add_host_is_open() {
-                    self.chrome.form.set_error(message);
+                    if message.contains("Unlock the vault")
+                        && !self.chrome.vault_unlock_is_open()
+                    {
+                        self.open_vault_unlock_for(terminus_ui::PendingVaultAction::SubmitHostForm);
+                    } else {
+                        self.chrome.form.set_error(message);
+                    }
                 } else if !self.chrome.settings.key_drafting {
                     self.chrome.panel.error = Some(message);
                 }
@@ -601,7 +806,16 @@ impl Screen<'_> {
             // Vault unlock feedback is already folded into sync_status_line
             // by the repository; drop the one-shot so it is not also shown
             // on the host-list notice band.
-            let _ = self.host_store.take_vault_message();
+            if let Some(msg) = self.host_store.take_vault_message() {
+                if self.chrome.vault_unlock_is_open() {
+                    if self.host_store.vault_unlocked() {
+                        self.pending_vault_continue =
+                            self.chrome.vault_unlock.take_pending_on_success();
+                    } else {
+                        self.chrome.vault_unlock.set_error(msg);
+                    }
+                }
+            }
             self.chrome.settings.apply_sync_status(terminus_ui::SyncUiStatus {
                 uri: self.host_store.sync_uri().to_string(),
                 connected: self.host_store.sync_connected(),
@@ -613,33 +827,26 @@ impl Screen<'_> {
         true
     }
 
+    /// Consume a post-unlock retry queued by [`Self::pump_chrome`].
+    pub fn take_pending_vault_continue(
+        &mut self,
+    ) -> Option<terminus_ui::PendingVaultAction> {
+        self.pending_vault_continue.take()
+    }
+
+    fn open_vault_unlock_for(&mut self, pending: terminus_ui::PendingVaultAction) {
+        if crate::vault_remember::has_remembered_passphrase() {
+            self.chrome.vault_unlock.set_remember(true);
+        }
+        self.chrome.open_vault_unlock(pending);
+    }
+
     /// Route a mouse press given in logical pixels.
     pub fn chrome_press(&mut self, x: f32, y: f32) -> terminus_ui::chrome::ChromeAction {
         let (width, height) = self.chrome_viewport();
         let reserved_before = self.chrome.reserved_width();
         let menu_was_open = self.chrome.context_menu.is_some();
         let action = self.chrome.handle_press(width, height, x, y);
-        // #region agent log
-        if menu_was_open
-            || matches!(
-                action,
-                terminus_ui::chrome::ChromeAction::DeleteHost(_)
-                    | terminus_ui::chrome::ChromeAction::DeleteGroup(_)
-                    | terminus_ui::chrome::ChromeAction::ContextCopy
-                    | terminus_ui::chrome::ChromeAction::ContextPaste
-            )
-        {
-            crate::agent_debug::log(
-                "H5",
-                "screen/mod.rs:chrome_press",
-                "context menu left-press result",
-                &format!(
-                    r#"{{"action":"{action:?}","menu_was_open":{menu_was_open},"menu_open":{}}}"#,
-                    self.chrome.context_menu.is_some()
-                ),
-            );
-        }
-        // #endregion
         // Collapsing the rail or toggling the panel changes how much of
         // the window the terminal may use.
         if self.chrome.reserved_width() != reserved_before {
@@ -656,32 +863,6 @@ impl Screen<'_> {
     ) -> terminus_ui::chrome::ChromeAction {
         let (width, height) = self.chrome_viewport();
         let action = self.chrome.handle_context_press(width, height, x, y);
-        // #region agent log
-        let mut overlap_rows = Vec::new();
-        if let Some(menu) = self.chrome.context_menu.as_ref() {
-            let cover = {
-                let r = menu.rect();
-                terminus_ui::Rect::new(r.x - 12.0, r.y - 12.0, r.width + 24.0, r.height + 24.0)
-            };
-            let origin_y = self.chrome.origin_y();
-            for (i, _) in self.chrome.panel.rows.iter().enumerate() {
-                let row = self.chrome.panel.item_rect(origin_y, i);
-                if terminus_ui::rects_overlap(cover, row) {
-                    overlap_rows.push(i);
-                }
-            }
-        }
-        crate::agent_debug::log(
-            "H11",
-            "screen/mod.rs:chrome_context_press",
-            "right-click chrome result",
-            &format!(
-                r#"{{"action":"{action:?}","menu_open":{},"x":{x},"y":{y},"late_pass":true,"overlap_rows":{:?}}}"#,
-                self.chrome.context_menu.is_some(),
-                overlap_rows
-            ),
-        );
-        // #endregion
         action
     }
 
@@ -758,6 +939,16 @@ impl Screen<'_> {
             if key_event.state != ElementState::Pressed {
                 return Some(FormOutcome::Consumed);
             }
+            let mods = self.modifiers.state();
+            let shift = mods.shift_key();
+            // Windows/Linux: Ctrl+Arrow = word. macOS: Option/Alt = word.
+            let word = mods.control_key() || mods.alt_key();
+            let select_mod = mods.control_key() || mods.super_key();
+            let move_kind = if shift {
+                terminus_ui::sidebar::RenameMoveKind::Extend
+            } else {
+                terminus_ui::sidebar::RenameMoveKind::Collapse
+            };
             match &key_event.logical_key {
                 Key::Named(NamedKey::Escape) => {
                     self.chrome.panel.cancel_rename();
@@ -779,22 +970,76 @@ impl Screen<'_> {
                 }
                 Key::Named(NamedKey::Backspace) => {
                     if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.name.pop();
+                        draft.backspace(word);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Delete) => {
+                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                        draft.delete_forward(word);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                        draft.move_left(move_kind, word);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                        draft.move_right(move_kind, word);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Home) => {
+                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                        draft.move_home(move_kind);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::End) => {
+                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                        draft.move_end(move_kind);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                Key::Named(NamedKey::Space) => {
+                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                        draft.insert(" ", 64);
                     }
                     return Some(FormOutcome::Consumed);
                 }
                 Key::Character(ch) => {
+                    // Ctrl/Cmd+A select-all (layout-independent via character).
+                    if select_mod && ch.eq_ignore_ascii_case("a") {
+                        if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                            draft.select_all();
+                        }
+                        return Some(FormOutcome::Consumed);
+                    }
+                    if select_mod {
+                        // Leave other Ctrl/Cmd chords alone (no insert of "c"/"v").
+                        return Some(FormOutcome::Consumed);
+                    }
                     let text = key_event.text.as_deref().unwrap_or(ch.as_str());
                     if crate::renderer::is_printable_text(text) {
                         if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                            if draft.name.len() < 64 {
-                                draft.name.push_str(text);
+                            draft.insert(text, 64);
+                        }
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
+                _ => {
+                    if let Some(text) = key_event.text.as_ref() {
+                        if !select_mod && crate::renderer::is_printable_text(text) {
+                            if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                                draft.insert(text, 64);
                             }
                         }
                     }
                     return Some(FormOutcome::Consumed);
                 }
-                _ => return Some(FormOutcome::Consumed),
             }
         }
 
@@ -909,13 +1154,70 @@ impl Screen<'_> {
         true
     }
 
+    /// Keyboard for the vault unlock prompt. Returns whether Unlock should run.
+    pub fn chrome_vault_unlock_key(
+        &mut self,
+        key_event: &rio_window::event::KeyEvent,
+    ) -> bool {
+        use rio_window::event::ElementState;
+        use rio_window::keyboard::{Key, NamedKey};
+        use terminus_ui::add_host::FormInput;
+
+        if key_event.state != ElementState::Pressed {
+            return false;
+        }
+        let input = match &key_event.logical_key {
+            Key::Named(NamedKey::Enter) => FormInput::Enter,
+            Key::Named(NamedKey::Escape) => FormInput::Escape,
+            Key::Named(NamedKey::Backspace) => FormInput::Backspace,
+            _ => {
+                let text = key_event.text.as_deref().unwrap_or("");
+                if text.is_empty() {
+                    return false;
+                }
+                FormInput::Text
+            }
+        };
+        let text = if input == FormInput::Text {
+            key_event.text.as_deref().unwrap_or_default()
+        } else {
+            ""
+        };
+        self.chrome
+            .handle_vault_unlock_input(input, text)
+            .unwrap_or(false)
+    }
+
+    /// IME commit into the vault unlock passphrase field.
+    pub fn chrome_vault_unlock_commit_text(&mut self, text: &str) -> bool {
+        self.chrome
+            .handle_vault_unlock_input(terminus_ui::add_host::FormInput::Text, text)
+            .is_some()
+    }
+
+    /// Submit the vault unlock passphrase from the prompt.
+    pub fn submit_vault_unlock(&mut self) {
+        let passphrase = self.chrome.vault_unlock.passphrase().to_string();
+        if passphrase.trim().is_empty() {
+            self.chrome
+                .vault_unlock
+                .set_error("Enter your vault passphrase");
+            return;
+        }
+        self.chrome.vault_unlock.set_unlocking();
+        self.host_store
+            .unlock_vault_remember(&passphrase, self.chrome.vault_unlock.remember());
+    }
+
     /// Persist the editor's fields.
     ///
     /// The store is the only validator, so a rejection comes back as the
     /// dialog's error line and the form stays open with its text.
     pub fn submit_host_form(&mut self) {
         let values = self.chrome.form.values();
+        let editing_id = self.chrome.form.editing_id().map(str::to_string);
         let draft = crate::hosts::HostDraft {
+            id: editing_id.clone(),
             name: values.name,
             hostname: values.hostname,
             username: values.username,
@@ -924,14 +1226,25 @@ impl Screen<'_> {
             identity_id: values.identity_id,
             password: values.password,
         };
-        match self.host_store.probe_and_create(&draft) {
+        let result = if let Some(id) = editing_id.as_deref() {
+            self.host_store.probe_and_update(id, &draft)
+        } else {
+            self.host_store.probe_and_create(&draft)
+        };
+        match result {
             Ok(()) => {
                 // Stay open until the worker reports Stored or Failed.
                 self.pending_host_select = draft.normalize().ok().map(|d| d.name);
                 self.chrome.panel.error = None;
-                self.chrome.form.set_error("Connecting…");
+                self.chrome.form.set_error(if editing_id.is_some() {
+                    "Saving…"
+                } else {
+                    "Connecting…"
+                });
             }
-            Err(message) => self.chrome.form.set_error(message),
+            Err(message) => {
+                self.chrome.form.set_error(message);
+            }
         }
     }
 
@@ -2204,14 +2517,14 @@ impl Screen<'_> {
             .host_id
             .clone()
             .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
-        let shell = match self.shell_for_row(&host_id) {
-            Ok(shell) => shell,
+        let (shell, env) = match self.shell_for_row(&host_id) {
+            Ok(launch) => launch,
             Err(err) => {
                 self.chrome.panel.error = Some(err);
                 return;
             }
         };
-        let _ = self.create_tab_with_shell(clipboard, shell, Some(host_id));
+        let _ = self.create_tab_with_shell(clipboard, shell, env, Some(host_id));
     }
 
     /// Create a tab whose session runs `shell` instead of the app's own.
@@ -2224,6 +2537,7 @@ impl Screen<'_> {
         &mut self,
         clipboard: &mut Clipboard,
         shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
         host_id: Option<String>,
     ) -> Result<(), String> {
         let redirect = true;
@@ -2252,6 +2566,7 @@ impl Screen<'_> {
             redirect,
             rich_text_id,
             shell,
+            env,
             host_id,
         );
         if opened.is_err() {
@@ -2335,7 +2650,16 @@ impl Screen<'_> {
             }
         }
 
-        let shell = self.shell_for_row(id)?;
+        let (shell, env) = match self.shell_for_row(id) {
+            Ok(launch) => launch,
+            Err(err) if err.contains("Unlock the vault") => {
+                self.open_vault_unlock_for(
+                    terminus_ui::PendingVaultAction::OpenHost(id.to_string()),
+                );
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
 
         let label = self
             .chrome
@@ -2355,7 +2679,7 @@ impl Screen<'_> {
             self.begin_session_connecting(id);
         }
 
-        match self.create_tab_with_shell(clipboard, shell, Some(id.to_string())) {
+        match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
                 let os_id = self
@@ -2620,7 +2944,16 @@ impl Screen<'_> {
         id: &str,
         clipboard: &mut Clipboard,
     ) -> Result<(), String> {
-        let shell = self.shell_for_row(id)?;
+        let (shell, env) = match self.shell_for_row(id) {
+            Ok(launch) => launch,
+            Err(err) if err.contains("Unlock the vault") => {
+                self.open_vault_unlock_for(
+                    terminus_ui::PendingVaultAction::AddHostSession(id.to_string()),
+                );
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
         let label = self
             .chrome
             .panel
@@ -2636,7 +2969,7 @@ impl Screen<'_> {
             self.begin_session_connecting(id);
         }
 
-        match self.create_tab_with_shell(clipboard, shell, Some(id.to_string())) {
+        match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
                 let os_id = self
@@ -2679,11 +3012,15 @@ impl Screen<'_> {
 
     /// Resolve a row id into the shell its session should run.
     ///
-    /// `None` means "the app's own shell", which is the local row and the
-    /// only case the terminal already knows how to start.
-    fn shell_for_row(&self, id: &str) -> Result<Option<Shell>, String> {
+    /// `None` shell means "the app's own shell", which is the local row and the
+    /// only case the terminal already knows how to start. The optional env is
+    /// for SSH password hosts (`SSH_ASKPASS`).
+    fn shell_for_row(
+        &self,
+        id: &str,
+    ) -> Result<(Option<Shell>, Option<Vec<(String, String)>>), String> {
         if id == hosts::LOCAL_ID {
-            return Ok(None);
+            return Ok((None, None));
         }
 
         if let Some(distro) = self.host_store.platform().distro_named(id) {
@@ -2705,14 +3042,54 @@ impl Screen<'_> {
                 ));
             }
 
-            return Ok(Some(Shell {
-                program: Some(exe.to_string_lossy().to_string()),
-                args: distro.launch_args(),
-            }));
+            return Ok((
+                Some(Shell {
+                    program: Some(exe.to_string_lossy().to_string()),
+                    args: distro.launch_args(),
+                }),
+                None,
+            ));
         }
 
         match self.host_store.hosts().iter().find(|host| host.id == id) {
-            Some(host) => Ok(Some(ssh_shell(host))),
+            Some(host) => {
+                let password = if host.auth_method == "password" {
+                    match self.host_store.resolve_host_password(id)? {
+                        Some(pw) => Some(pw),
+                        None => {
+                            return Err(
+                                "No saved password — edit the host and save one (vault unlocked)"
+                                    .into(),
+                            );
+                        }
+                    }
+                } else {
+                    None
+                };
+                let identity = if host.auth_method == "password" || host.auth_method == "gssapi"
+                {
+                    None
+                } else {
+                    match self.host_store.resolve_host_identity(id)? {
+                        Some(pair) => Some(pair),
+                        None => {
+                            return Err(
+                                "No saved SSH key — edit the host and select one (Settings → Managed SSH Keys)"
+                                    .into(),
+                            );
+                        }
+                    }
+                };
+                let (shell, env) = ssh_shell(
+                    host,
+                    password.as_deref(),
+                    identity.as_ref().map(|(pem, _)| pem.as_str()),
+                    identity
+                        .as_ref()
+                        .and_then(|(_, pass)| pass.as_deref()),
+                )?;
+                Ok((Some(shell), env))
+            }
             None => Err(format!("No session is configured for {id}")),
         }
     }
@@ -3401,6 +3778,7 @@ impl Screen<'_> {
         let (width, height) = self.chrome_viewport();
         let over_modal = self.chrome.settings_is_open()
             || self.chrome.add_host_is_open()
+            || self.chrome.vault_unlock_is_open()
             || self.chrome.connection.is_some();
         let over_rail = !self.chrome.activity.collapsed && x < self.chrome.reserved_width();
         if !over_modal && !over_rail {
@@ -6336,6 +6714,76 @@ fn request_windows_close(window: &rio_window::window::Window) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+
+    fn host_row(auth_method: &str) -> hosts::HostRow {
+        hosts::HostRow {
+            id: "host-1".into(),
+            name: "Box".into(),
+            hostname: "box.example".into(),
+            port: 22,
+            username: "alice".into(),
+            auth_method: auth_method.into(),
+            identity_id: None,
+            group_id: None,
+            os_id: None,
+            sort_order: 0,
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn gssapi_ssh_options_force_kerberos_mic() {
+        assert!(GSSAPI_SSH_OPTIONS.contains(&"GSSAPIAuthentication=yes"));
+        assert!(GSSAPI_SSH_OPTIONS.contains(&"PreferredAuthentications=gssapi-with-mic"));
+        assert!(GSSAPI_SSH_OPTIONS.contains(&"PubkeyAuthentication=no"));
+        assert!(GSSAPI_SSH_OPTIONS.contains(&"PasswordAuthentication=no"));
+    }
+
+    #[test]
+    fn gssapi_ssh_shell_sets_gssapi_options_without_identity_file() {
+        let host = host_row("gssapi");
+        let (shell, env) = ssh_shell(&host, None, None, None).expect("gssapi shell");
+        assert_eq!(shell.program.as_deref(), Some("ssh"));
+        assert!(shell.args.iter().any(|a| a == "GSSAPIAuthentication=yes"));
+        assert!(shell
+            .args
+            .iter()
+            .any(|a| a == "PreferredAuthentications=gssapi-with-mic"));
+        assert!(shell.args.iter().any(|a| a == "PubkeyAuthentication=no"));
+        assert!(!shell.args.windows(2).any(|w| w[0] == "-i"));
+        assert_eq!(shell.args.last().map(String::as_str), Some("alice@box.example"));
+        assert!(env.is_none());
+    }
+
+    #[test]
+    fn key_ssh_shell_passes_identity_file() {
+        let host = host_row("key");
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        let (shell, env) = ssh_shell(&host, None, Some(pem), None).expect("key shell");
+        assert!(shell.args.windows(2).any(|w| w[0] == "-i"));
+        assert!(shell.args.iter().any(|a| a == "IdentitiesOnly=yes"));
+        assert!(shell
+            .args
+            .iter()
+            .any(|a| a == "PreferredAuthentications=publickey"));
+        assert!(env.is_none());
+        // Cleanup the temp identity we just wrote.
+        if let Some(path) = shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1]) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn password_ssh_shell_disables_pubkey() {
+        let host = host_row("password");
+        let (shell, env) = ssh_shell(&host, Some("secret"), None, None).expect("password shell");
+        assert!(shell.args.iter().any(|a| a == "PreferredAuthentications=password"));
+        assert!(shell.args.iter().any(|a| a == "PubkeyAuthentication=no"));
+        assert!(!shell.args.windows(2).any(|w| w[0] == "-i"));
+        let env = env.expect("askpass env");
+        assert!(env.iter().any(|(k, _)| k == "SSH_ASKPASS"));
+    }
 
     #[test]
     fn chrome_press_validates_double_click() {

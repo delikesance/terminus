@@ -68,8 +68,12 @@ pub const NEW_GROUP_FORM_HEIGHT: f32 = 40.0;
 pub const NEW_GROUP_BUTTON_WIDTH: f32 = 88.0;
 /// Alias kept for callers that shared the dual-action header width.
 pub const HOSTS_HEADER_ACTION_WIDTH: f32 = NEW_GROUP_BUTTON_WIDTH;
-/// Height of the notice/error band, when one is showing.
-pub const NOTICE_HEIGHT: f32 = 24.0;
+/// Sticky success notice height at the bottom of the panel.
+pub const NOTICE_HEIGHT: f32 = 40.0;
+/// Sticky error banner height (two lines of wrapped text).
+pub const ERROR_BANNER_HEIGHT: f32 = 64.0;
+/// Inset of the sticky notice/error card from the panel edges.
+pub const NOTICE_MARGIN: f32 = 10.0;
 /// Horizontal inset of cards inside the drawer.
 pub const PAD_X: f32 = 10.0;
 /// Inner padding inside a card (icon/text inset).
@@ -359,7 +363,294 @@ pub struct RenameDraft {
     pub id: String,
     pub is_group: bool,
     pub name: String,
+    /// Character index of the caret inside [`Self::name`].
+    pub caret: usize,
+    /// When set, selection spans `[min(anchor, caret), max(anchor, caret))`.
+    pub sel_anchor: Option<usize>,
     pub focused: bool,
+}
+
+/// How a caret move should treat an existing selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameMoveKind {
+    /// Collapse selection (if any) then move the caret.
+    Collapse,
+    /// Extend or start a selection (Shift held).
+    Extend,
+}
+
+impl RenameDraft {
+    /// Inclusive-exclusive character range of the selection, if any.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.sel_anchor?;
+        let (a, b) = if anchor <= self.caret {
+            (anchor, self.caret)
+        } else {
+            (self.caret, anchor)
+        };
+        (a < b).then_some((a, b))
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.sel_anchor = None;
+    }
+
+    pub fn select_all(&mut self) -> bool {
+        let end = self.name.chars().count();
+        if end == 0 {
+            return false;
+        }
+        self.sel_anchor = Some(0);
+        self.caret = end;
+        true
+    }
+
+    /// Delete the selected range, if any. Returns whether anything changed.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range() else {
+            return false;
+        };
+        let from = rename_char_byte(&self.name, start);
+        let to = rename_char_byte(&self.name, end);
+        self.name.replace_range(from..to, "");
+        self.caret = start;
+        self.sel_anchor = None;
+        true
+    }
+
+    /// Insert printable text at the caret (replacing the selection).
+    pub fn insert(&mut self, text: &str, max_bytes: usize) -> bool {
+        if text.is_empty() || text.chars().any(char::is_control) {
+            return false;
+        }
+        self.delete_selection();
+        if self.name.len() + text.len() > max_bytes {
+            return false;
+        }
+        let byte = rename_char_byte(&self.name, self.caret);
+        self.name.insert_str(byte, text);
+        self.caret += text.chars().count();
+        self.sel_anchor = None;
+        true
+    }
+
+    /// Delete before the caret, or the selection, or the previous word.
+    pub fn backspace(&mut self, by_word: bool) -> bool {
+        if self.delete_selection() {
+            return true;
+        }
+        if by_word {
+            let start = word_boundary_left(&self.name, self.caret);
+            if start == self.caret {
+                return false;
+            }
+            let from = rename_char_byte(&self.name, start);
+            let to = rename_char_byte(&self.name, self.caret);
+            self.name.replace_range(from..to, "");
+            self.caret = start;
+            return true;
+        }
+        if self.caret == 0 {
+            return false;
+        }
+        let start = rename_char_byte(&self.name, self.caret - 1);
+        let end = rename_char_byte(&self.name, self.caret);
+        self.name.replace_range(start..end, "");
+        self.caret -= 1;
+        true
+    }
+
+    /// Delete after the caret, or the selection, or the next word.
+    pub fn delete_forward(&mut self, by_word: bool) -> bool {
+        if self.delete_selection() {
+            return true;
+        }
+        let len = self.name.chars().count();
+        if self.caret >= len {
+            return false;
+        }
+        if by_word {
+            let end = word_boundary_right(&self.name, self.caret);
+            if end == self.caret {
+                return false;
+            }
+            let from = rename_char_byte(&self.name, self.caret);
+            let to = rename_char_byte(&self.name, end);
+            self.name.replace_range(from..to, "");
+            return true;
+        }
+        let start = rename_char_byte(&self.name, self.caret);
+        let end = rename_char_byte(&self.name, self.caret + 1);
+        self.name.replace_range(start..end, "");
+        true
+    }
+
+    fn prepare_move(&mut self, kind: RenameMoveKind) {
+        match kind {
+            RenameMoveKind::Collapse => {
+                if let Some((start, end)) = self.selection_range() {
+                    // Bare arrow collapses to the edge in the move direction
+                    // after the caller adjusts caret — clear here first.
+                    let _ = (start, end);
+                }
+                self.sel_anchor = None;
+            }
+            RenameMoveKind::Extend => {
+                if self.sel_anchor.is_none() {
+                    self.sel_anchor = Some(self.caret);
+                }
+            }
+        }
+    }
+
+    pub fn move_left(&mut self, kind: RenameMoveKind, by_word: bool) -> bool {
+        if kind == RenameMoveKind::Collapse {
+            if let Some((start, _)) = self.selection_range() {
+                self.caret = start;
+                self.sel_anchor = None;
+                return true;
+            }
+        }
+        self.prepare_move(kind);
+        let next = if by_word {
+            word_boundary_left(&self.name, self.caret)
+        } else if self.caret == 0 {
+            self.caret
+        } else {
+            self.caret - 1
+        };
+        if next == self.caret && kind != RenameMoveKind::Extend {
+            return false;
+        }
+        let changed = next != self.caret || self.selection_range().is_some();
+        self.caret = next;
+        if kind == RenameMoveKind::Collapse {
+            self.sel_anchor = None;
+        }
+        changed || kind == RenameMoveKind::Extend
+    }
+
+    pub fn move_right(&mut self, kind: RenameMoveKind, by_word: bool) -> bool {
+        if kind == RenameMoveKind::Collapse {
+            if let Some((_, end)) = self.selection_range() {
+                self.caret = end;
+                self.sel_anchor = None;
+                return true;
+            }
+        }
+        self.prepare_move(kind);
+        let len = self.name.chars().count();
+        let next = if by_word {
+            word_boundary_right(&self.name, self.caret)
+        } else if self.caret >= len {
+            self.caret
+        } else {
+            self.caret + 1
+        };
+        let changed = next != self.caret;
+        self.caret = next;
+        if kind == RenameMoveKind::Collapse {
+            self.sel_anchor = None;
+        }
+        changed || kind == RenameMoveKind::Extend
+    }
+
+    pub fn move_home(&mut self, kind: RenameMoveKind) -> bool {
+        self.prepare_move(kind);
+        if self.caret == 0 && kind == RenameMoveKind::Collapse {
+            return false;
+        }
+        self.caret = 0;
+        if kind == RenameMoveKind::Collapse {
+            self.sel_anchor = None;
+        }
+        true
+    }
+
+    pub fn move_end(&mut self, kind: RenameMoveKind) -> bool {
+        self.prepare_move(kind);
+        let end = self.name.chars().count();
+        if self.caret == end && kind == RenameMoveKind::Collapse {
+            return false;
+        }
+        self.caret = end;
+        if kind == RenameMoveKind::Collapse {
+            self.sel_anchor = None;
+        }
+        true
+    }
+
+    /// Text before the caret, for painting the caret inline.
+    pub fn prefix(&self) -> String {
+        self.name.chars().take(self.caret).collect()
+    }
+
+    /// Text before the selection start (or caret if none).
+    pub fn before_selection(&self) -> String {
+        let start = self.selection_range().map(|(s, _)| s).unwrap_or(self.caret);
+        self.name.chars().take(start).collect()
+    }
+
+    /// Selected text, empty when nothing is selected.
+    pub fn selected_text(&self) -> String {
+        let Some((start, end)) = self.selection_range() else {
+            return String::new();
+        };
+        self.name.chars().skip(start).take(end - start).collect()
+    }
+}
+
+fn rename_char_byte(value: &str, chars: usize) -> usize {
+    value
+        .char_indices()
+        .nth(chars)
+        .map(|(byte, _)| byte)
+        .unwrap_or(value.len())
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
+}
+
+fn word_boundary_left(value: &str, caret: usize) -> usize {
+    let chars: Vec<char> = value.chars().collect();
+    if caret == 0 || chars.is_empty() {
+        return 0;
+    }
+    let mut i = caret.min(chars.len());
+    // Skip trailing whitespace left of caret.
+    while i > 0 && chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    if i == 0 {
+        return 0;
+    }
+    let word = is_word_char(chars[i - 1]);
+    while i > 0 && is_word_char(chars[i - 1]) == word && !chars[i - 1].is_whitespace() {
+        i -= 1;
+    }
+    i
+}
+
+fn word_boundary_right(value: &str, caret: usize) -> usize {
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    if caret >= len {
+        return len;
+    }
+    let mut i = caret;
+    // Skip whitespace under/after caret.
+    while i < len && chars[i].is_whitespace() {
+        i += 1;
+    }
+    if i >= len {
+        return len;
+    }
+    let word = is_word_char(chars[i]);
+    while i < len && is_word_char(chars[i]) == word && !chars[i].is_whitespace() {
+        i += 1;
+    }
+    i
 }
 
 /// Sidebar state.
@@ -434,28 +725,45 @@ impl HostPanel {
         )
     }
 
-    /// The notice/error band, when there is one to show.
-    pub fn notice_rect(&self, origin_y: f32) -> Option<Rect> {
+    /// Height reserved for a sticky notice/error card, including margin.
+    pub fn notice_reserve(&self) -> f32 {
+        if self.error.is_some() {
+            ERROR_BANNER_HEIGHT + NOTICE_MARGIN
+        } else if self.notice.is_some() {
+            NOTICE_HEIGHT + NOTICE_MARGIN
+        } else {
+            0.0
+        }
+    }
+
+    /// Sticky notice/error card anchored to the bottom of the panel.
+    pub fn notice_rect(&self, origin_y: f32, height: f32) -> Option<Rect> {
         let message = self.error.as_ref().or(self.notice.as_ref())?;
         debug_assert!(!message.is_empty());
+        let banner_h = if self.error.is_some() {
+            ERROR_BANNER_HEIGHT
+        } else {
+            NOTICE_HEIGHT
+        };
         Some(Rect::new(
-            ORIGIN_X,
-            origin_y + HEADER_HEIGHT,
-            WIDTH,
-            NOTICE_HEIGHT,
+            ORIGIN_X + NOTICE_MARGIN,
+            origin_y + height - NOTICE_MARGIN - banner_h,
+            WIDTH - 2.0 * NOTICE_MARGIN,
+            banner_h,
         ))
     }
 
-    /// The scroll viewport: everything between the header (and its
-    /// notice band) and the bottom of the panel.
+    /// The scroll viewport: everything between the header and the sticky
+    /// notice/error card (or the bottom of the panel when none is showing).
     pub fn body_rect(&self, origin_y: f32, height: f32) -> Rect {
         let top = self.content_top(origin_y);
-        let bottom = (origin_y + height - FOOTER_HEIGHT).max(top);
+        let bottom = (origin_y + height - FOOTER_HEIGHT - self.notice_reserve()).max(top);
         Rect::new(ORIGIN_X, top, WIDTH, bottom - top)
     }
 
     pub fn footer_rect(&self, origin_y: f32, height: f32) -> Rect {
-        let top = (origin_y + height - FOOTER_HEIGHT).max(origin_y);
+        let reserve = FOOTER_HEIGHT + self.notice_reserve();
+        let top = (origin_y + height - reserve).max(origin_y);
         Rect::new(ORIGIN_X, top, WIDTH, origin_y + height - top)
     }
 
@@ -577,10 +885,14 @@ impl HostPanel {
     pub fn begin_rename(&mut self, id: String, is_group: bool, current_name: &str) {
         self.filter_focused = false;
         self.new_group_focused = false;
+        let name = current_name.to_string();
+        let caret = name.chars().count();
         self.rename = Some(RenameDraft {
             id,
             is_group,
-            name: current_name.to_string(),
+            name,
+            caret,
+            sel_anchor: None,
             focused: true,
         });
     }
@@ -1108,12 +1420,9 @@ impl HostPanel {
         }
     }
 
-    /// Unscrolled top of the scrollable content.
+    /// Unscrolled top of the scrollable content (below the sticky header).
     fn content_top(&self, origin_y: f32) -> f32 {
-        match self.notice_rect(origin_y) {
-            Some(notice) => notice.bottom(),
-            None => origin_y + HEADER_HEIGHT,
-        }
+        origin_y + HEADER_HEIGHT
     }
 
     /// Row 0's unscrolled top edge: below the New Host CTA.
@@ -1952,14 +2261,22 @@ mod tests {
     }
 
     #[test]
-    fn the_notice_band_pushes_the_rows_down() {
+    fn the_error_banner_sits_at_the_bottom_without_pushing_rows() {
         let mut panel = panel(2);
         let (oy, h) = tall();
         let without = panel.item_rect(oy, 0).y;
 
         panel.error = Some("'x' is not a valid port".to_string());
         let with = panel.item_rect(oy, 0).y;
-        assert_eq!(with - without, NOTICE_HEIGHT);
+        assert_eq!(with, without, "sticky footer must not shift rows");
+
+        let banner = panel.notice_rect(oy, h).expect("error banner");
+        assert!(
+            (banner.bottom() - (oy + h - NOTICE_MARGIN)).abs() < 0.01,
+            "banner should hug the panel bottom"
+        );
+        assert!((banner.height - ERROR_BANNER_HEIGHT).abs() < 0.01);
+        assert!(panel.body_rect(oy, h).bottom() <= banner.y + 0.01);
 
         let row = panel.item_rect(oy, 0);
         assert_eq!(
@@ -1970,7 +2287,7 @@ mod tests {
 
     #[test]
     fn the_notice_never_overlaps_the_add_row() {
-        // A wide range of window heights: the footer is anchored to the
+        // A wide range of window heights: the sticky notice is anchored to the
         // bottom and the body must never extend under it.
         for height in [120.0, 200.0, 400.0, 1000.0] {
             let mut panel = panel(30);
@@ -1979,6 +2296,9 @@ mod tests {
             let footer = panel.footer_rect(0.0, height);
             assert!(body.bottom() <= footer.y, "height {height}");
             assert!(body.height >= 0.0, "height {height}");
+            if let Some(notice) = panel.notice_rect(0.0, height) {
+                assert!(body.bottom() <= notice.y + 0.01, "height {height}");
+            }
         }
     }
 
@@ -2317,5 +2637,54 @@ mod tests {
         // Drops when the host vanishes.
         panel.set_rows(vec![]);
         assert_eq!(panel.connecting_id, None);
+    }
+
+    #[test]
+    fn rename_draft_moves_caret_and_inserts_spaces() {
+        let mut panel = HostPanel::default();
+        panel.begin_rename("h1".into(), false, "web");
+        let draft = panel.rename.as_mut().unwrap();
+        assert_eq!(draft.caret, 3);
+        assert!(draft.move_left(RenameMoveKind::Collapse, false));
+        assert_eq!(draft.caret, 2);
+        assert!(draft.insert(" ", 64));
+        assert_eq!(draft.name, "we b");
+        assert_eq!(draft.caret, 3);
+        assert!(draft.insert("01", 64));
+        assert_eq!(draft.name, "we 01b");
+        assert_eq!(draft.prefix(), "we 01");
+        assert!(draft.move_home(RenameMoveKind::Collapse));
+        assert_eq!(draft.caret, 0);
+        assert!(draft.move_end(RenameMoveKind::Collapse));
+        assert_eq!(draft.caret, draft.name.chars().count());
+        assert!(draft.backspace(false));
+        assert_eq!(draft.name, "we 01");
+    }
+
+    #[test]
+    fn rename_draft_shift_selects_and_ctrl_skips_words() {
+        let mut panel = HostPanel::default();
+        panel.begin_rename("h1".into(), false, "main-server box");
+        let draft = panel.rename.as_mut().unwrap();
+        draft.move_home(RenameMoveKind::Collapse);
+        assert!(draft.move_right(RenameMoveKind::Extend, false));
+        assert!(draft.move_right(RenameMoveKind::Extend, false));
+        assert!(draft.move_right(RenameMoveKind::Extend, false));
+        assert_eq!(draft.selection_range(), Some((0, 3)));
+        assert_eq!(draft.selected_text(), "mai");
+        assert!(draft.move_right(RenameMoveKind::Collapse, true));
+        // Collapse to end of selection then word-jump would need two steps;
+        // after collapse-by-right with selection, caret is at 3.
+        assert_eq!(draft.caret, 3);
+        assert!(draft.selection_range().is_none());
+        assert!(draft.move_right(RenameMoveKind::Collapse, true));
+        assert_eq!(draft.caret, 11); // after "main-server"
+        assert!(draft.select_all());
+        assert_eq!(draft.selection_range(), Some((0, draft.name.chars().count())));
+        assert!(draft.insert("foo bar", 64));
+        assert_eq!(draft.name, "foo bar");
+        draft.move_end(RenameMoveKind::Collapse);
+        assert!(draft.backspace(true));
+        assert_eq!(draft.name, "foo ");
     }
 }

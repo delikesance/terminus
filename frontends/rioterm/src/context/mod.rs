@@ -130,6 +130,8 @@ pub struct ContextManagerConfig {
     #[cfg(test)]
     pub dead_pty: bool,
     pub shell: Shell,
+    /// Extra environment for the child PTY (e.g. SSH_ASKPASS).
+    pub env: Option<Vec<(String, String)>>,
     #[cfg(not(target_os = "windows"))]
     pub use_fork: bool,
     pub working_dir: Option<String>,
@@ -279,7 +281,8 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         let pty;
         #[cfg(not(target_os = "windows"))]
         {
-            if config.use_fork {
+            // Fork path cannot inject env (SSH_ASKPASS); force spawn when set.
+            if config.use_fork && config.env.is_none() {
                 tracing::info!("rio -> teletypewriter: create_pty_with_fork");
                 pty = match create_pty_with_fork(
                     config.shell.program.as_deref(),
@@ -301,7 +304,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                     config.shell.program.as_deref(),
                     config.shell.args.clone(),
                     &config.working_dir,
-                    None,
+                    config.env.clone(),
                     cols,
                     rows,
                     initial_winsize.width,
@@ -327,7 +330,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 config.shell.program.as_deref(),
                 config.shell.args.clone(),
                 &config.working_dir,
-                None,
+                config.env.clone(),
                 cols,
                 rows,
             ) {
@@ -1153,6 +1156,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             dead_pty: false,
             cwd: config.navigation.current_working_directory,
             shell,
+            env: None,
             working_dir,
             spawn_performer: true,
             #[cfg(not(target_os = "windows"))]
@@ -1199,7 +1203,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
 
     #[inline]
     pub fn add_context(&mut self, redirect: bool, rich_text_id: usize) {
-        let _ = self.add_context_with_shell(redirect, rich_text_id, None, None);
+        let _ = self.add_context_with_shell(redirect, rich_text_id, None, None, None);
     }
 
     /// Add a context, optionally running a different shell than the app's own.
@@ -1209,11 +1213,14 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     /// <name>` and an SSH host passes `ssh`. The failure is returned rather
     /// than only logged, because a row that silently does nothing is worse
     /// than one that says why.
+    ///
+    /// `env` is merged into the child process environment (SSH_ASKPASS, …).
     pub fn add_context_with_shell(
         &mut self,
         redirect: bool,
         rich_text_id: usize,
         shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
         host_id: Option<String>,
     ) -> Result<(), String> {
         let mut working_dir = self.config.working_dir.clone();
@@ -1259,6 +1266,9 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             }
             if let Some(shell) = shell {
                 cloned_config.shell = shell;
+            }
+            if env.is_some() {
+                cloned_config.env = env;
             }
 
             let current = self.current();

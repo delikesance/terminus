@@ -80,6 +80,9 @@ pub struct HostRow {
     pub hostname: String,
     pub port: u16,
     pub username: String,
+    /// `key` | `password` | `gssapi`.
+    pub auth_method: String,
+    pub identity_id: Option<String>,
     pub group_id: Option<String>,
     pub os_id: Option<String>,
     /// Manual order among peers (same group / ungrouped). Lower first.
@@ -96,6 +99,8 @@ impl HostRow {
             hostname: host.hostname.clone(),
             port: host.port,
             username: host.username.clone(),
+            auth_method: host.auth_method.clone(),
+            identity_id: host.identity_id.map(|id| id.to_string()),
             group_id: host.group_id.map(|id| id.to_string()),
             os_id: host.os_id.clone(),
             sort_order: host.sort_order,
@@ -161,7 +166,7 @@ pub fn discover_platform() -> PlatformFacts {
 
     let discovery = wsl::discover(&roots);
     let current = machine.wsl_distro.as_deref();
-    let distros = discovery
+    let distros: Vec<WslDistro> = discovery
         .distros
         .into_iter()
         .filter(|distro| {
@@ -272,21 +277,23 @@ pub fn sidebar_rows(
     );
 
     let local_sessions = sessions_for_host(sessions, LOCAL_ID);
+    let local_endpoint = local_subtitle(&platform.machine);
+    let local_os_id = {
+        let id = platform.machine.os_id.trim();
+        if id.is_empty() || id.eq_ignore_ascii_case("unknown") {
+            None
+        } else {
+            Some(id.to_string())
+        }
+    };
     rows.push(Row::Section(LOCAL_SECTION.to_string()));
     rows.push(Row::Host(HostItem {
         id: LOCAL_ID.to_string(),
         name: "This computer".to_string(),
-        endpoint: local_subtitle(&platform.machine),
+        endpoint: local_endpoint,
         badge: Badge::Local,
         stored: false,
-        os_id: {
-            let id = platform.machine.os_id.trim();
-            if id.is_empty() || id.eq_ignore_ascii_case("unknown") {
-                None
-            } else {
-                Some(id.to_string())
-            }
-        },
+        os_id: local_os_id,
         status: session_status(LOCAL_ID, open_host_ids),
         nested: false,
         session_count: local_sessions.len(),
@@ -391,35 +398,6 @@ pub fn sidebar_rows(
         }
     }
 
-    // #region agent log
-    {
-        let mut order: Vec<String> = Vec::new();
-        for row in &rows {
-            match row {
-                Row::Host(h) if h.stored && !h.nested => {
-                    order.push(format!("host:{}", h.name.replace('"', "")));
-                }
-                Row::Group { name, .. } => {
-                    order.push(format!("group:{}", name.replace('"', "")));
-                }
-                _ => {}
-            }
-        }
-        crate::agent_debug::log(
-            "H4",
-            "hosts.rs:sidebar_rows",
-            "hosts section root order",
-            &format!(
-                r#"{{"order":[{}],"runId":"post-fix"}}"#,
-                order
-                    .iter()
-                    .map(|s| format!(r#""{s}""#))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-        );
-    }
-    // #endregion
 
     rows
 }
@@ -473,6 +451,8 @@ fn distro_subtitle(distro: &WslDistro) -> String {
 /// What the host editor collected, before it becomes a stored [`Host`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HostDraft {
+    /// When set, update this host instead of creating a new one.
+    pub id: Option<String>,
     pub name: String,
     pub hostname: String,
     pub username: String,
@@ -483,6 +463,7 @@ pub struct HostDraft {
     /// Selected identity id when `auth_method == "key"`.
     pub identity_id: Option<String>,
     /// Plaintext password (memory only) when `auth_method == "password"`.
+    /// Empty while editing means keep the existing sealed credential.
     pub password: String,
 }
 
@@ -539,10 +520,11 @@ impl HostDraft {
             _ => None,
         };
 
+        let editing = self.id.is_some();
         let password = match method {
             terminus_core::HostAuthMethod::Password => {
                 let pw = self.password.clone();
-                if pw.is_empty() {
+                if pw.is_empty() && !editing {
                     return Err("Password is required".to_string());
                 }
                 pw
@@ -551,6 +533,7 @@ impl HostDraft {
         };
 
         Ok(HostDraft {
+            id: self.id.clone(),
             name,
             hostname: hostname.to_string(),
             username,
@@ -611,6 +594,8 @@ enum Command {
     Create(HostDraft),
     /// Probe SSH, then persist (+ seal password) on success.
     ProbeAndCreate(HostDraft),
+    /// Probe SSH, then update an existing host.
+    ProbeAndUpdate { id: String, draft: HostDraft },
     CreateGroup(String),
     /// Move a stored host into a group (`Some`) or out to the root list (`None`).
     SetHostGroup {
@@ -630,7 +615,11 @@ enum Command {
         before_host_id: Option<String>,
     },
     /// Unlock or create the vault with a passphrase (Settings).
-    UnlockVault(String),
+    UnlockVault {
+        passphrase: String,
+        /// Persist passphrase in the OS keyring after a successful unlock.
+        remember: bool,
+    },
     /// Generate and persist a new Ed25519 managed SSH key.
     CreateSshKey {
         name: String,
@@ -650,6 +639,16 @@ enum Command {
     /// Persist remote URI and run SyncEngine::sync_now.
     TestSync {
         uri: String,
+    },
+    /// Unseal a stored host password (vault must be unlocked).
+    ResolveHostPassword {
+        id: String,
+        reply: Sender<Result<Option<String>, String>>,
+    },
+    /// Load the managed private key PEM for a host (key auth).
+    ResolveHostIdentity {
+        id: String,
+        reply: Sender<Result<Option<(String, Option<String>)>, String>>,
     },
 }
 
@@ -871,7 +870,51 @@ impl HostRepository {
 
     /// Unlock or create the vault (Settings passphrase).
     pub fn unlock_vault(&mut self, passphrase: &str) {
-        self.send(Command::UnlockVault(passphrase.to_string()));
+        self.unlock_vault_remember(passphrase, false);
+    }
+
+    /// Unlock or create the vault, optionally remembering the passphrase.
+    pub fn unlock_vault_remember(&mut self, passphrase: &str, remember: bool) {
+        self.send(Command::UnlockVault {
+            passphrase: passphrase.to_string(),
+            remember,
+        });
+    }
+
+    /// Unseal the stored SSH password for `host_id`, if any.
+    ///
+    /// Returns `Ok(None)` when there is no sealed credential yet. Errors when
+    /// the vault is locked or the id is invalid.
+    pub fn resolve_host_password(&self, host_id: &str) -> Result<Option<String>, String> {
+        let (reply_tx, reply_rx) = channel();
+        self.commands
+            .send(Command::ResolveHostPassword {
+                id: host_id.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| "Host store is unavailable".to_string())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "Timed out reading the stored password".to_string())?
+    }
+
+    /// Load the managed OpenSSH private key for `host_id` (PEM + optional passphrase).
+    ///
+    /// Returns `Ok(None)` when the host is not key-auth or has no identity.
+    pub fn resolve_host_identity(
+        &self,
+        host_id: &str,
+    ) -> Result<Option<(String, Option<String>)>, String> {
+        let (reply_tx, reply_rx) = channel();
+        self.commands
+            .send(Command::ResolveHostIdentity {
+                id: host_id.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| "Host store is unavailable".to_string())?;
+        reply_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "Timed out reading the stored SSH key".to_string())?
     }
 
     /// Generate and persist a new Ed25519 managed SSH key.
@@ -943,6 +986,25 @@ impl HostRepository {
         match draft.normalize() {
             Ok(normalized) => {
                 self.send(Command::ProbeAndCreate(normalized));
+                Ok(())
+            }
+            Err(message) => {
+                self.error = Some(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    /// Probe SSH, then update an existing host.
+    pub fn probe_and_update(&mut self, id: &str, draft: &HostDraft) -> Result<(), String> {
+        let mut draft = draft.clone();
+        draft.id = Some(id.to_string());
+        match draft.normalize() {
+            Ok(normalized) => {
+                self.send(Command::ProbeAndUpdate {
+                    id: id.to_string(),
+                    draft: normalized,
+                });
                 Ok(())
             }
             Err(message) => {
@@ -1094,10 +1156,32 @@ fn worker(
         runtime.block_on(store.get_setting(terminus_core::VAULT_HEADER_SETTING))
     {
         if terminus_core::parse_vault_header(&raw).is_ok() {
-            let _ = events.send(HostEvent::VaultStatus {
-                unlocked: false,
-                message: None,
-            });
+            // Remembered passphrase → unlock without prompting.
+            if let Some(passphrase) = crate::vault_remember::load_remembered_passphrase() {
+                match unlock_or_create_vault(&runtime, &store, &passphrase) {
+                    Ok(unlocked) => {
+                        let shared = Arc::new(unlocked);
+                        runtime.block_on(sync_engine.attach_vault(Arc::clone(&shared)));
+                        vault = Some(shared);
+                        let _ = events.send(HostEvent::VaultStatus {
+                            unlocked: true,
+                            message: None,
+                        });
+                    }
+                    Err(_) => {
+                        crate::vault_remember::forget_passphrase();
+                        let _ = events.send(HostEvent::VaultStatus {
+                            unlocked: false,
+                            message: None,
+                        });
+                    }
+                }
+            } else {
+                let _ = events.send(HostEvent::VaultStatus {
+                    unlocked: false,
+                    message: None,
+                });
+            }
         }
     }
 
@@ -1144,6 +1228,18 @@ fn worker(
                 match probe_and_persist(&runtime, &store, &mut vault, draft) {
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(format!("Added {label}")));
+                        let _ = events.send(list(&runtime, &store));
+                        let _ = events.send(list_groups(&runtime, &store));
+                    }
+                    Err(message) => {
+                        let _ = events.send(HostEvent::Failed(message));
+                    }
+                }
+            }
+            Command::ProbeAndUpdate { id, draft } => {
+                match probe_and_update(&runtime, &store, &mut vault, &id, draft) {
+                    Ok(label) => {
+                        let _ = events.send(HostEvent::Stored(format!("Updated {label}")));
                         let _ = events.send(list(&runtime, &store));
                         let _ = events.send(list_groups(&runtime, &store));
                     }
@@ -1208,19 +1304,6 @@ fn worker(
                     before_group_id.as_deref(),
                 ) {
                     Ok(label) => {
-                        // #region agent log
-                        crate::agent_debug::log(
-                            "H2",
-                            "hosts.rs:ReorderHost",
-                            "reorder persisted",
-                            &format!(
-                                r#"{{"hostId":"{}","beforeHost":"{}","beforeGroup":"{}","runId":"post-fix"}}"#,
-                                host_id.replace('"', ""),
-                                before_host_id.as_deref().unwrap_or("").replace('"', ""),
-                                before_group_id.as_deref().unwrap_or("").replace('"', "")
-                            ),
-                        );
-                        // #endregion
                         let _ = events.send(HostEvent::Stored(label));
                         let _ = events.send(list(&runtime, &store));
                         let _ = events.send(list_groups(&runtime, &store));
@@ -1243,19 +1326,6 @@ fn worker(
                     before_host_id.as_deref(),
                 ) {
                     Ok(label) => {
-                        // #region agent log
-                        crate::agent_debug::log(
-                            "H3",
-                            "hosts.rs:ReorderGroup",
-                            "group reorder persisted",
-                            &format!(
-                                r#"{{"groupId":"{}","beforeGroup":"{}","beforeHost":"{}","runId":"post-fix"}}"#,
-                                group_id.replace('"', ""),
-                                before_group_id.as_deref().unwrap_or("").replace('"', ""),
-                                before_host_id.as_deref().unwrap_or("").replace('"', "")
-                            ),
-                        );
-                        // #endregion
                         let _ = events.send(HostEvent::Stored(label));
                         let _ = events.send(list_groups(&runtime, &store));
                         let _ = events.send(list(&runtime, &store));
@@ -1265,12 +1335,23 @@ fn worker(
                     }
                 }
             }
-            Command::UnlockVault(passphrase) => {
+            Command::UnlockVault {
+                passphrase,
+                remember,
+            } => {
                 match unlock_or_create_vault(&runtime, &store, &passphrase) {
                     Ok(unlocked) => {
                         let shared = Arc::new(unlocked);
                         runtime.block_on(sync_engine.attach_vault(Arc::clone(&shared)));
                         vault = Some(shared);
+                        if remember {
+                            if let Err(err) = crate::vault_remember::remember_passphrase(&passphrase)
+                            {
+                                tracing::warn!("vault remember failed: {err}");
+                            }
+                        } else {
+                            crate::vault_remember::forget_passphrase();
+                        }
                         let _ = events.send(HostEvent::VaultStatus {
                             unlocked: true,
                             message: Some("Vault unlocked".into()),
@@ -1312,14 +1393,6 @@ fn worker(
                 }
             }
             Command::DeleteHost { id } => {
-                // #region agent log
-                crate::agent_debug::log(
-                    "H4",
-                    "hosts.rs:DeleteHost",
-                    "worker received DeleteHost",
-                    &format!(r#"{{"id":"{}"}}"#, id.replace('"', "")),
-                );
-                // #endregion
                 match delete_host(&runtime, &store, &id) {
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(label));
@@ -1331,14 +1404,6 @@ fn worker(
                 }
             }
             Command::DeleteGroup { id } => {
-                // #region agent log
-                crate::agent_debug::log(
-                    "H4",
-                    "hosts.rs:DeleteGroup",
-                    "worker received DeleteGroup",
-                    &format!(r#"{{"id":"{}"}}"#, id.replace('"', "")),
-                );
-                // #endregion
                 match delete_group(&runtime, &store, &id) {
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(label));
@@ -1381,6 +1446,14 @@ fn worker(
                     &uri,
                 ));
                 let _ = events.send(status);
+            }
+            Command::ResolveHostPassword { id, reply } => {
+                let result = resolve_host_password(&runtime, &store, vault.as_ref(), &id);
+                let _ = reply.send(result);
+            }
+            Command::ResolveHostIdentity { id, reply } => {
+                let result = resolve_host_identity(&runtime, &store, &id);
+                let _ = reply.send(result);
             }
         }
         wake();
@@ -1485,6 +1558,170 @@ fn probe_and_persist(
     }
 
     Ok(host.name)
+}
+
+fn probe_and_update(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: &mut Option<Arc<terminus_core::UnlockedVault>>,
+    id: &str,
+    draft: HostDraft,
+) -> Result<String, String> {
+    use terminus_core::{seal_host_password, HostAuthMethod, OWNER_KIND_HOST};
+
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
+    let mut hosts = runtime
+        .block_on(store.list_hosts())
+        .map_err(|e| format!("Could not read hosts: {e}"))?;
+    let Some(existing) = hosts.iter_mut().find(|h| h.id == uuid) else {
+        return Err("Host not found".into());
+    };
+
+    let method = terminus_core::parse_host_auth_method(&draft.auth_method)
+        .map(|ok| ok.method)
+        .map_err(|e| format!("Unknown authentication method '{}'", e.raw))?;
+
+    let identity_id = draft
+        .identity_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    if method == HostAuthMethod::Key && identity_id.is_none() {
+        return Err("Select a saved SSH key".into());
+    }
+
+    if method == HostAuthMethod::Password && draft.password.is_empty() {
+        let creds = runtime
+            .block_on(store.list_credentials_for_owner(OWNER_KIND_HOST, uuid))
+            .map_err(|e| e.to_string())?;
+        let has_pw = creds
+            .iter()
+            .any(|c| c.kind == terminus_core::CREDENTIAL_KIND_HOST_PASSWORD);
+        if !has_pw {
+            return Err("Enter a password to save".into());
+        }
+    }
+
+    if method == HostAuthMethod::Password && !draft.password.is_empty() && vault.is_none() {
+        return Err(
+            "Unlock the vault before saving a password (Settings → Remote SQL Sync passphrase)"
+                .into(),
+        );
+    }
+
+    existing.name = draft.name.clone();
+    existing.hostname = draft.hostname.clone();
+    existing.port = draft.resolved_port().unwrap_or(DEFAULT_PORT);
+    existing.username = draft.username.clone();
+    existing.auth_method = draft.auth_method.clone();
+    existing.identity_id = identity_id;
+    existing.password = None;
+    existing.updated_at = Utc::now();
+
+    let label = existing.name.clone();
+    let host = existing.clone();
+
+    runtime
+        .block_on(store.upsert_host(&host))
+        .map_err(|e| format!("Could not save the host: {e}"))?;
+
+
+    if method == HostAuthMethod::Password && !draft.password.is_empty() {
+        let unlocked = vault
+            .as_ref()
+            .ok_or_else(|| "Unlock the vault before saving a password".to_string())?;
+        let cred = seal_host_password(unlocked.as_ref(), uuid, &draft.password)
+            .map_err(|e| format!("Could not encrypt the password: {e}"))?;
+        runtime
+            .block_on(store.upsert_credential(&cred))
+            .map_err(|e| format!("Could not store the encrypted password: {e}"))?;
+    }
+
+    Ok(label)
+}
+
+fn resolve_host_password(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: Option<&Arc<terminus_core::UnlockedVault>>,
+    id: &str,
+) -> Result<Option<String>, String> {
+    use terminus_core::{open_host_password, CREDENTIAL_KIND_HOST_PASSWORD, OWNER_KIND_HOST};
+
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
+    let hosts = runtime
+        .block_on(store.list_hosts())
+        .map_err(|e| format!("Could not read hosts: {e}"))?;
+    let Some(host) = hosts.iter().find(|h| h.id == uuid) else {
+        return Err("Host not found".into());
+    };
+
+    let method = terminus_core::parse_host_auth_method(&host.auth_method)
+        .map(|ok| ok.method)
+        .unwrap_or(terminus_core::HostAuthMethod::Key);
+    if method != terminus_core::HostAuthMethod::Password {
+        return Ok(None);
+    }
+
+    let creds = runtime
+        .block_on(store.list_credentials_for_owner(OWNER_KIND_HOST, uuid))
+        .map_err(|e| e.to_string())?;
+    let Some(cred) = creds
+        .iter()
+        .find(|c| c.kind == CREDENTIAL_KIND_HOST_PASSWORD)
+    else {
+        return Ok(None);
+    };
+
+    let Some(unlocked) = vault else {
+        return Err(
+            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)".into(),
+        );
+    };
+
+    let password = open_host_password(unlocked.as_ref(), uuid, cred)
+        .map_err(|e| format!("Could not decrypt the password: {e}"))?;
+    Ok(Some(password))
+}
+
+fn resolve_host_identity(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    id: &str,
+) -> Result<Option<(String, Option<String>)>, String> {
+    use terminus_core::HostAuthMethod;
+
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
+    let hosts = runtime
+        .block_on(store.list_hosts())
+        .map_err(|e| format!("Could not read hosts: {e}"))?;
+    let Some(host) = hosts.iter().find(|h| h.id == uuid) else {
+        return Err("Host not found".into());
+    };
+
+    let method = terminus_core::parse_host_auth_method(&host.auth_method)
+        .map(|ok| ok.method)
+        .unwrap_or(HostAuthMethod::Key);
+    if method != HostAuthMethod::Key {
+        return Ok(None);
+    }
+
+    let Some(identity_id) = host.identity_id else {
+        return Ok(None);
+    };
+
+    let identity = runtime
+        .block_on(store.get_identity(identity_id))
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Selected SSH key was not found".to_string())?;
+
+    let passphrase = identity.passphrase.filter(|p| !p.is_empty());
+    let Some(pem) = identity.private_key.filter(|p| !p.trim().is_empty()) else {
+        return Err("Selected SSH key has no private key material".into());
+    };
+
+
+    Ok(Some((pem, passphrase)))
 }
 
 /// Snapshot the SyncEngine into a UI event.
@@ -2013,6 +2250,8 @@ mod tests {
             hostname: format!("{name}.internal"),
             port: 22,
             username: "root".to_string(),
+            auth_method: "key".to_string(),
+            identity_id: None,
             group_id: None,
             os_id: None,
             sort_order: 0,
@@ -2319,6 +2558,14 @@ mod tests {
             ..HostDraft::default()
         };
         assert!(pw_missing.normalize().unwrap_err().contains("Password"));
+
+        let pw_keep = HostDraft {
+            id: Some("existing".into()),
+            hostname: "box".to_string(),
+            auth_method: "password".to_string(),
+            ..HostDraft::default()
+        };
+        assert!(pw_keep.normalize().is_ok());
     }
 
     #[test]
@@ -2329,6 +2576,8 @@ mod tests {
             hostname: "box.internal".to_string(),
             port: 22,
             username: "root".to_string(),
+            auth_method: "key".to_string(),
+            identity_id: None,
             group_id: None,
             os_id: None,
             sort_order: 0,
