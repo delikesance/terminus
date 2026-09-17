@@ -363,6 +363,30 @@ mod tests {
     }
 
     #[test]
+    fn sftp_empty_menu() {
+        let menu = ContextMenu::for_sftp_empty(10.0, 10.0).unwrap();
+        assert_eq!(menu.take_action(0), Some(ContextAction::SftpNewFolder));
+        assert_eq!(menu.take_action(1), Some(ContextAction::SftpRefresh));
+    }
+
+    #[test]
+    fn host_menu_includes_open_sftp_other_pane() {
+        let menu = ContextMenu::for_host_with_sftp(10.0, 10.0, "h1", true).unwrap();
+        assert!(menu.items.iter().any(|i| {
+            matches!(i.action, ContextAction::OpenSftpOtherPane(_))
+        }));
+        assert!(menu.items.iter().any(|i| {
+            matches!(i.action, ContextAction::OpenSftp(_))
+        }));
+    }
+
+    #[test]
+    fn sftp_dir_menu_offers_open() {
+        let menu = ContextMenu::for_sftp_entry(10.0, 10.0, true, Some("Download"), true).unwrap();
+        assert_eq!(menu.take_action(0), Some(ContextAction::SftpOpen));
+    }
+
+    #[test]
     fn sftp_remote_file_menu_offers_edit() {
         let menu = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true).unwrap();
         assert_eq!(menu.take_action(0), Some(ContextAction::SftpEdit));

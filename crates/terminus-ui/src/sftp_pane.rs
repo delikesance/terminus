@@ -255,6 +255,39 @@ impl SftpPaneState {
         }
     }
 
+    /// Both panes local (tests / dual-local harness).
+    pub fn new_local_local(
+        left_cwd: impl Into<String>,
+        right_cwd: impl Into<String>,
+    ) -> Self {
+        Self {
+            left: SftpSideState::local(left_cwd),
+            right: SftpSideState::local(right_cwd),
+            focus: SftpFocus::Left,
+            status: "Ready".into(),
+            error: None,
+            loading: false,
+            hover: None,
+            name_edit: None,
+            drag: None,
+        }
+    }
+
+    /// Breadcrumb segments for `focus`: `(label, absolute_path)` from root to cwd.
+    pub fn crumb_segments(&self, focus: SftpFocus) -> Vec<(String, String)> {
+        let cwd = self.side(focus).cwd.as_str();
+        crumb_segments_for_cwd(cwd, self.side(focus).is_local())
+    }
+
+    /// Path to navigate to when the user activates crumb `index` (0 = root).
+    /// Returns `None` if the index is out of range.
+    pub fn navigate_crumb_path(&self, focus: SftpFocus, index: usize) -> Option<String> {
+        self.crumb_segments(focus)
+            .into_iter()
+            .nth(index)
+            .map(|(_, path)| path)
+    }
+
     pub fn side(&self, focus: SftpFocus) -> &SftpSideState {
         match focus {
             SftpFocus::Left => &self.left,
@@ -604,6 +637,69 @@ pub fn join_remote(cwd: &str, name: &str) -> String {
     }
 }
 
+/// Split `cwd` into breadcrumb `(label, path)` pairs.
+pub fn crumb_segments_for_cwd(cwd: &str, is_local: bool) -> Vec<(String, String)> {
+    let cwd = if cwd.is_empty() {
+        if is_local {
+            return vec![(".".into(), ".".into())];
+        }
+        "/"
+    } else {
+        cwd
+    };
+    if !is_local && (cwd == "/" || cwd.is_empty()) {
+        return vec![("/".into(), "/".into())];
+    }
+    let mut out = Vec::new();
+    if is_local {
+        #[cfg(windows)]
+        {
+            // Keep drive letter as first segment when present.
+            let path = std::path::Path::new(cwd);
+            let mut acc = std::path::PathBuf::new();
+            for (i, comp) in path.components().enumerate() {
+                acc.push(comp.as_os_str());
+                let label = if i == 0 {
+                    acc.to_string_lossy().into_owned()
+                } else {
+                    comp.as_os_str().to_string_lossy().into_owned()
+                };
+                out.push((label, acc.to_string_lossy().into_owned()));
+            }
+            if out.is_empty() {
+                out.push((cwd.to_string(), cwd.to_string()));
+            }
+            return out;
+        }
+        #[cfg(not(windows))]
+        {
+            if cwd == "/" {
+                return vec![("/".into(), "/".into())];
+            }
+            out.push(("/".into(), "/".into()));
+            let mut acc = String::new();
+            for part in cwd.trim_start_matches('/').split('/').filter(|p| !p.is_empty()) {
+                acc.push('/');
+                acc.push_str(part);
+                out.push((part.to_string(), acc.clone()));
+            }
+            return out;
+        }
+    }
+    // Remote POSIX-style
+    if cwd == "/" {
+        return vec![("/".into(), "/".into())];
+    }
+    out.push(("/".into(), "/".into()));
+    let mut acc = String::new();
+    for part in cwd.trim_start_matches('/').split('/').filter(|p| !p.is_empty()) {
+        acc.push('/');
+        acc.push_str(part);
+        out.push((part.to_string(), acc.clone()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,5 +830,108 @@ mod tests {
         assert_eq!(state.left.selected, Some(1));
         state.move_selection(-10);
         assert_eq!(state.left.selected, Some(0));
+    }
+
+    #[test]
+    fn hit_test_covers_all_primary_targets() {
+        let mut state = sample_state();
+        state.begin_mkdir();
+        let layout = SftpPaneLayout::from_state(Rect::new(0.0, 0.0, 640.0, 400.0), &state);
+
+        assert_eq!(
+            layout.hit_test(&state, layout.left_header.x + 4.0, layout.left_header.y + 4.0),
+            SftpHit::LeftCrumb
+        );
+        assert_eq!(
+            layout.hit_test(&state, layout.right_header.x + 4.0, layout.right_header.y + 4.0),
+            SftpHit::RightCrumb
+        );
+        assert_eq!(
+            layout.hit_test(
+                &state,
+                layout.right_parent_btn.x + 2.0,
+                layout.right_parent_btn.y + 2.0
+            ),
+            SftpHit::RightParent
+        );
+        assert_eq!(
+            layout.hit_test(&state, layout.name_field.x + 4.0, layout.name_field.y + 4.0),
+            SftpHit::NameField
+        );
+        assert_eq!(
+            layout.hit_test(
+                &state,
+                layout.name_confirm.x + 2.0,
+                layout.name_confirm.y + 2.0
+            ),
+            SftpHit::NameConfirm
+        );
+        assert_eq!(
+            layout.hit_test(
+                &state,
+                layout.name_cancel.x + 2.0,
+                layout.name_cancel.y + 2.0
+            ),
+            SftpHit::NameCancel
+        );
+        assert_eq!(
+            layout.hit_test(&state, layout.footer.x + 8.0, layout.footer.y + 4.0),
+            SftpHit::Footer
+        );
+        let right_row = layout.right_row_rect(0, 0.0);
+        assert_eq!(
+            layout.hit_test(&state, right_row.x + 4.0, right_row.y + 4.0),
+            SftpHit::RightRow(0)
+        );
+    }
+
+    #[test]
+    fn crumb_segments_and_navigate() {
+        let state = sample_state();
+        let segs = state.crumb_segments(SftpFocus::Left);
+        assert!(
+            segs.len() >= 2,
+            "expected root + home/user segments, got {segs:?}"
+        );
+        assert_eq!(segs.last().map(|(_, p)| p.as_str()), Some("/home/user"));
+        let root = state.navigate_crumb_path(SftpFocus::Left, 0).unwrap();
+        assert_eq!(root, "/");
+        let mid = state.navigate_crumb_path(SftpFocus::Left, segs.len() - 1);
+        assert_eq!(mid.as_deref(), Some("/home/user"));
+    }
+
+    #[test]
+    fn name_edit_rename_label() {
+        let mut state = sample_state();
+        state.focus = SftpFocus::Left;
+        state.left.selected = Some(1);
+        assert!(state.begin_rename());
+        let edit = state.name_edit.as_ref().unwrap();
+        assert_eq!(edit.kind, SftpNameKind::Rename);
+        assert_eq!(edit.field_label(), "New name");
+        assert_eq!(edit.draft.value, "a.txt");
+    }
+
+    #[test]
+    fn local_local_constructor() {
+        let state = SftpPaneState::new_local_local("/tmp/a", "/tmp/b");
+        assert!(state.left.is_local());
+        assert!(state.right.is_local());
+        assert_eq!(state.left.cwd, "/tmp/a");
+        assert_eq!(state.right.cwd, "/tmp/b");
+    }
+
+    #[test]
+    fn drag_struct_carries_dir_flag() {
+        let drag = SftpDrag {
+            from: SftpFocus::Left,
+            row_index: 0,
+            name: "docs".into(),
+            path: "/home/user/docs".into(),
+            is_dir: true,
+            pointer_x: 10.0,
+            pointer_y: 20.0,
+        };
+        assert!(drag.is_dir);
     }
 }

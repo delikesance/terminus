@@ -306,6 +306,29 @@ impl SftpSession {
         }
     }
 
+    /// Recursively delete a remote path (files and directory trees).
+    pub async fn remove_recursive(&self, path: &str) -> Result<()> {
+        let resolved = self.resolve(path)?;
+        match self
+            .op("stat", self.inner.symlink_metadata(resolved.clone()))
+            .await
+        {
+            Ok(metadata) if metadata.is_dir() => {
+                let entries = self.list(&resolved).await?;
+                for entry in entries {
+                    if entry.is_dir {
+                        Box::pin(self.remove_recursive(&entry.path)).await?;
+                    } else {
+                        self.remove(&entry.path).await?;
+                    }
+                }
+                self.remove(&resolved).await
+            }
+            Ok(_) => self.remove(&resolved).await,
+            Err(_) => self.remove(&resolved).await,
+        }
+    }
+
     /// Creates a single remote directory.
     pub async fn mkdir(&self, path: &str) -> Result<()> {
         let resolved = self.resolve(path)?;
@@ -516,5 +539,26 @@ mod tests {
             modified: None,
         };
         assert_eq!(entry.extension().as_deref(), Some("txt"));
+    }
+
+    #[test]
+    fn remove_remote_recursive_desired() {
+        // Live recursive delete is covered by bridge `e2e_delete_remote_dir_tree`.
+        // Guard against the Phase-A stub error string returning to the impl body.
+        let src = include_str!("sftp.rs");
+        let impl_start = src
+            .find("pub async fn remove_recursive")
+            .expect("remove_recursive API must remain public");
+        let impl_body = &src[impl_start..];
+        let impl_end = impl_body.find("\n    pub async fn mkdir").unwrap_or(impl_body.len());
+        let body = &impl_body[..impl_end];
+        assert!(
+            !body.contains("not implemented yet"),
+            "remove_recursive must list+delete instead of returning a stub error"
+        );
+        assert!(
+            body.contains("self.list(") && body.contains("self.remove("),
+            "remove_recursive should walk entries then remove"
+        );
     }
 }
