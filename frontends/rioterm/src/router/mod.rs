@@ -291,6 +291,12 @@ impl Route<'_> {
                 }
                 true
             }
+            Some(Modal::AddSnippet) => {
+                if self.window.screen.chrome_snippet_commit_text(text) {
+                    self.request_overlay_redraw();
+                }
+                true
+            }
             Some(Modal::VaultUnlock) => {
                 if self.window.screen.chrome_vault_unlock_commit_text(text) {
                     self.request_overlay_redraw();

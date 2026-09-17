@@ -29,6 +29,8 @@ pub struct DynamicFormState {
     pub error: Option<String>,
     pub closing: bool,
     pub save_label: String,
+    /// Save / Cancel under the pointer (visual hover only).
+    pub btn_hover: Option<DynamicFormHit>,
 }
 
 impl DynamicFormState {
@@ -40,6 +42,7 @@ impl DynamicFormState {
             error: None,
             closing: false,
             save_label: save_label.into(),
+            btn_hover: None,
         }
     }
 
@@ -67,11 +70,17 @@ impl DynamicFormState {
     }
 
     pub fn cycle_focus(&mut self, reverse: bool) {
-        if self.fields.is_empty() { return; }
+        if self.fields.is_empty() {
+            return;
+        }
         if reverse {
-            self.focused_index = (self.focused_index + self.fields.len() - 1) % self.fields.len();
+            self.focused_index =
+                (self.focused_index + self.fields.len() - 1) % self.fields.len();
         } else {
             self.focused_index = (self.focused_index + 1) % self.fields.len();
+        }
+        if let Some(draft) = self.focused_draft_mut() {
+            draft.sel_anchor = None;
         }
     }
 
@@ -80,42 +89,93 @@ impl DynamicFormState {
         self.fields.get_mut(i).map(|f| &mut f.draft)
     }
 
-    pub fn handle_key(&mut self, key: &str) {
-        if let Some(draft) = self.focused_draft_mut() {
-            draft.insert(key, usize::MAX, false);
+    pub fn focused_draft(&self) -> Option<&TextDraft> {
+        self.fields.get(self.focused_index).map(|f| &f.draft)
+    }
+
+    /// Insert printable text (spaces included) into the focused field.
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        let Some(draft) = self.focused_draft_mut() else {
+            return false;
+        };
+        if draft.insert(text, usize::MAX, false) {
             self.error = None;
+            true
+        } else {
+            false
         }
+    }
+
+    pub fn backspace(&mut self, by_word: bool) -> bool {
+        let Some(draft) = self.focused_draft_mut() else {
+            return false;
+        };
+        if draft.backspace(by_word) {
+            self.error = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn delete_forward(&mut self, by_word: bool) -> bool {
+        let Some(draft) = self.focused_draft_mut() else {
+            return false;
+        };
+        if draft.delete_forward(by_word) {
+            self.error = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn move_left(&mut self, kind: TextMoveKind, by_word: bool) -> bool {
+        self.focused_draft_mut()
+            .is_some_and(|d| d.move_left(kind, by_word))
+    }
+
+    pub fn move_right(&mut self, kind: TextMoveKind, by_word: bool) -> bool {
+        self.focused_draft_mut()
+            .is_some_and(|d| d.move_right(kind, by_word))
+    }
+
+    pub fn move_home(&mut self, kind: TextMoveKind) -> bool {
+        self.focused_draft_mut().is_some_and(|d| d.move_home(kind))
+    }
+
+    pub fn move_end(&mut self, kind: TextMoveKind) -> bool {
+        self.focused_draft_mut().is_some_and(|d| d.move_end(kind))
+    }
+
+    pub fn select_all(&mut self) -> bool {
+        self.focused_draft_mut().is_some_and(|d| d.select_all())
+    }
+
+    /// Legacy single-char insert path (kept for older call sites).
+    pub fn handle_key(&mut self, key: &str) {
+        let _ = self.insert_text(key);
     }
 
     pub fn handle_backspace(&mut self) {
-        if let Some(draft) = self.focused_draft_mut() {
-            draft.backspace(false);
-            self.error = None;
-        }
+        let _ = self.backspace(false);
     }
-    
+
     pub fn handle_delete(&mut self) {
-        if let Some(draft) = self.focused_draft_mut() {
-            draft.delete_forward(false);
-            self.error = None;
-        }
+        let _ = self.delete_forward(false);
     }
-    
+
     pub fn move_caret(&mut self, offset: isize) {
-        use crate::text_field::TextMoveKind;
-        if let Some(draft) = self.focused_draft_mut() {
-            if offset < 0 {
-                for _ in 0..offset.abs() {
-                    draft.move_left(TextMoveKind::Collapse, false);
-                }
-            } else {
-                for _ in 0..offset.abs() {
-                    draft.move_right(TextMoveKind::Collapse, false);
-                }
+        if offset < 0 {
+            for _ in 0..offset.abs() {
+                let _ = self.move_left(TextMoveKind::Collapse, false);
+            }
+        } else {
+            for _ in 0..offset.abs() {
+                let _ = self.move_right(TextMoveKind::Collapse, false);
             }
         }
     }
-
 }
 
 pub struct DialogFormLayout {
@@ -217,6 +277,7 @@ impl DialogFormLayout {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DynamicFormHit {
     Field(usize),
     Save,

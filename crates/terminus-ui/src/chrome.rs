@@ -866,14 +866,25 @@ impl Chrome {
         }
 
         if self.snippet_form.is_open() {
-            return true;
-        }
-
-
-
-
-        if self.snippet_form.is_open() {
-            return true;
+            let layout = crate::dialog_form::DialogFormLayout::compute(
+                &self.snippet_form.inner,
+                window_width,
+                window_height,
+            );
+            let next = match layout.hit_test(x, y) {
+                Some(crate::dialog_form::DynamicFormHit::Save) => {
+                    Some(crate::dialog_form::DynamicFormHit::Save)
+                }
+                Some(crate::dialog_form::DynamicFormHit::Cancel) => {
+                    Some(crate::dialog_form::DynamicFormHit::Cancel)
+                }
+                _ => None,
+            };
+            if self.snippet_form.inner.btn_hover != next {
+                self.snippet_form.inner.btn_hover = next;
+                return true;
+            }
+            return false;
         }
 
         if self.form.is_open() {

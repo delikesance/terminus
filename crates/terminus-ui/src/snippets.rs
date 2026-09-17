@@ -3,10 +3,13 @@
 use crate::geom::Rect;
 use crate::sidebar::{ORIGIN_X, PAD_X, TITLE_HEIGHT, WIDTH};
 
-/// Height of one snippet card.
-pub const ITEM_HEIGHT: f32 = 100.0;
-/// Gap between cards (`space-y-2`).
-pub const ITEM_GAP: f32 = 8.0;
+/// Height of one compact snippet row (title + command).
+pub const ITEM_HEIGHT: f32 = 56.0;
+/// Gap between cards.
+pub const ITEM_GAP: f32 = 6.0;
+/// Sticky footer CTA height.
+pub const ADD_BUTTON_HEIGHT: f32 = 40.0;
+const FOOTER_PAD: f32 = 10.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetItem {
@@ -40,14 +43,20 @@ impl SnippetsPanel {
 
     pub fn body_rect(&self, origin_y: f32, height: f32) -> Rect {
         let top = origin_y + TITLE_HEIGHT;
-        Rect::new(ORIGIN_X, top, WIDTH, (origin_y + height - top).max(0.0))
+        let footer = ADD_BUTTON_HEIGHT + FOOTER_PAD * 2.0;
+        Rect::new(
+            ORIGIN_X,
+            top,
+            WIDTH,
+            (origin_y + height - top - footer).max(0.0),
+        )
     }
 
     pub fn item_rect(&self, origin_y: f32, index: usize) -> Rect {
         let body = self.body_rect(origin_y, 10_000.0);
         Rect::new(
             ORIGIN_X + PAD_X,
-            body.y + 12.0 + index as f32 * (ITEM_HEIGHT + ITEM_GAP) - self.scroll,
+            body.y + 10.0 + index as f32 * (ITEM_HEIGHT + ITEM_GAP) - self.scroll,
             WIDTH - 2.0 * PAD_X,
             ITEM_HEIGHT,
         )
@@ -55,29 +64,26 @@ impl SnippetsPanel {
 
     pub fn content_height(&self) -> f32 {
         if self.items.is_empty() {
-            return 44.0 + 24.0; // Room for add button
+            return 48.0;
         }
-        12.0 + self.items.len() as f32 * ITEM_HEIGHT
+        10.0 + self.items.len() as f32 * ITEM_HEIGHT
             + (self.items.len().saturating_sub(1) as f32) * ITEM_GAP
-            + 12.0 + 44.0 + 12.0 // padding + CTA height + trailing
+            + 10.0
     }
 
     pub fn delete_button_rect(&self, origin_y: f32, index: usize) -> Rect {
         let row = self.item_rect(origin_y, index);
-        Rect::new(row.right() - 28.0, row.y + 12.0, 16.0, 16.0)
+        Rect::new(row.right() - 26.0, row.y + 10.0, 16.0, 16.0)
     }
 
+    /// Sticky "Add snippet" at the bottom of the drawer (does not scroll).
     pub fn add_button_rect(&self, origin_y: f32, height: f32) -> Rect {
-        let body = self.body_rect(origin_y, height);
-        let content_y = 12.0 + self.items.len() as f32 * ITEM_HEIGHT
-            + (self.items.len().saturating_sub(1) as f32) * ITEM_GAP
-            + 12.0;
-
+        let bottom = origin_y + height;
         Rect::new(
             ORIGIN_X + PAD_X,
-            body.y + content_y - self.scroll,
+            bottom - FOOTER_PAD - ADD_BUTTON_HEIGHT,
             WIDTH - 2.0 * PAD_X,
-            44.0, // CTA height
+            ADD_BUTTON_HEIGHT,
         )
     }
 
@@ -95,6 +101,10 @@ impl SnippetsPanel {
         if self.add_button_rect(origin_y, height).contains(x, y) {
             return Some(SnippetHit::AddButton);
         }
+        let body = self.body_rect(origin_y, height);
+        if !body.contains(x, y) {
+            return Some(SnippetHit::Background);
+        }
         for index in 0..self.items.len() {
             if self.delete_button_rect(origin_y, index).contains(x, y) {
                 return Some(SnippetHit::DeleteButton(index));
@@ -107,7 +117,6 @@ impl SnippetsPanel {
     }
 
     pub fn set_hover(&mut self, hit: Option<SnippetHit>) -> bool {
-        // Just store the hover state
         let next_hover = match hit {
             Some(SnippetHit::Item(i)) | Some(SnippetHit::DeleteButton(i)) => Some(i),
             _ => None,
