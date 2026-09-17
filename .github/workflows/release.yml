@@ -1,231 +1,191 @@
+# Optimized multi-platform release (no Goreleaser Pro).
+#
+# Artifacts:
+#   - Windows x86_64 zip (rio.exe)
+#   - macOS aarch64 tarball (rio)
+#   - Fedora/RHEL RPM (rioterm)
+#   - NixOS: nix build + Cachix push + rio binary upload
+#
+# Secrets: CACHIX_AUTH_TOKEN (optional but recommended for the nix job).
+# Triggers: v*.*.* tags and workflow_dispatch (artifacts only, no GitHub Release).
+
 name: Release
+
 on:
   push:
-    branches: [main]
     tags:
       - "v*.*.*"
-    paths:
-      - ".github/workflows/release.yml"
-      - ".goreleaser.yaml"
   workflow_dispatch:
+
 concurrency:
   group: release-${{ github.event_name }}-${{ github.ref_name }}
   cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
-      discussions: write
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            cache-subdir: darwin
-          - os: ubuntu-22.04
-            cache-subdir: linux
-            _ids: --id linux-x64-wayland --id linux-x64-x11
-          - os: ubuntu-22.04-arm
-            cache-subdir: linux
-            _ids: --id linux-arm64-wayland --id linux-arm64-x11
-          - os: windows-latest
-            cache-subdir: windows
-      fail-fast: false
-    outputs:
-      cache-hit: ${{ steps.cache-check.outputs.cache-hit }}
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
-      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
-      MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
-      MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
-      MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
-      MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      MACOS_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.MACOS_NOTARY_KEYCHAIN_PROFILE }}
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          fetch-depth: 0
-      - name: Metainfo carries this release
-        # Flathub builds from the tag, so the AppStream release entry
-        # must be in the tagged tree; a post-tag fixup is forever one
-        # release behind (the list once drifted 17 releases).
-        # misc/prepare-release.sh adds it together with the version
-        # bump; this gate makes skipping that impossible.
-        if: startsWith(github.ref, 'refs/tags/v')
+          shared-key: release-windows
+          cache-targets: true
+          cache-all-crates: true
+      - name: Build
+        run: cargo build --release -p rioterm --features wgpu
+      - name: Package
         shell: bash
         run: |
-          v="${GITHUB_REF_NAME#v}"
-          if ! grep -qF "release version=\"$v\"" misc/com.rioterm.Rio.metainfo.xml; then
-            echo "misc/com.rioterm.Rio.metainfo.xml has no <release> entry for $v." >&2
-            echo "Run misc/prepare-release.sh $v before tagging (it adds the entry" >&2
-            echo "alongside the workspace version bump)." >&2
-            echo "The tag already exists, so after fixing: retag with" >&2
-            echo "  git tag -f v$v && git push -f origin v$v" >&2
-            exit 1
-          fi
-      - uses: actions/cache@v5
+          mkdir -p dist
+          cp target/release/rio.exe dist/rio.exe
+          (
+            cd dist
+            7z a -tzip rio-windows-x86_64.zip rio.exe
+          )
+      - uses: actions/upload-artifact@v4
         with:
-          path: dist/${{ matrix.cache-subdir }}
-          key: goreleaser-${{ matrix.os }}-${{ github.sha }}
-          enableCrossOsArchive: ${{ matrix.os == 'windows-latest' }}
-          lookup-only: true
-          fail-on-cache-miss: false
-        id: cache-check
-      - if: startsWith(matrix.os, 'ubuntu')
+          name: windows-x86_64
+          path: dist/rio-windows-x86_64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS aarch64
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos
+          cache-targets: true
+          cache-all-crates: true
+      - name: Build
+        run: cargo build --release -p rioterm --features wgpu
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/rio dist/rio
+          chmod +x dist/rio
+          tar -C dist -czf dist/rio-macos-aarch64.tar.gz rio
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: dist/rio-macos-aarch64.tar.gz
+          if-no-files-found: error
+
+  linux-rpm:
+    name: Linux RPM (Fedora)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev pkg-config libfontconfig1-dev glslang-tools
-      - if: matrix.os == 'macos-latest'
-        run: rustup target add x86_64-apple-darwin
-      - if: matrix.os == 'windows-latest'
-        run: rustup target add aarch64-pc-windows-msvc
-      - if: matrix.os == 'macos-latest'
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev pkg-config libfontconfig1-dev \
+            libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev \
+            libxrandr-dev libxss-dev glslang-tools rpm
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux-rpm
+          cache-targets: true
+          cache-all-crates: true
+      - name: Build
+        # Single x11+wgpu RPM for speed (wayland variant can be added later).
+        run: >
+          cargo build --release -p rioterm
+          --no-default-features --features x11,wgpu
+      - name: Install nfpm
+        env:
+          NFPM_VERSION: "2.41.2"
         run: |
-          # create variables
-          CERTIFICATE_PATH=$RUNNER_TEMP/goreleaser.p12
-          KEY_PATH=$RUNNER_TEMP/goreleaser.p8
-          KEYCHAIN_PATH=$RUNNER_TEMP/goreleaser.keychain-db
-
-          # import certificate and key from secrets
-          echo -n "$MACOS_SIGN_P12" | base64 --decode -o $CERTIFICATE_PATH
-          echo -n "$MACOS_NOTARY_KEY" | base64 --decode -o $KEY_PATH
-
-          # create temporary keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-
-          # import certificate to keychain
-          security import $CERTIFICATE_PATH -P "$MACOS_SIGN_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
-
-          # create notary profile
-          xcrun notarytool store-credentials "$MACOS_NOTARY_KEYCHAIN_PROFILE" \
-            --key "$KEY_PATH" \
-            --key-id "$MACOS_NOTARY_KEY_ID" \
-            --issuer "$MACOS_NOTARY_ISSUER_ID" \
-            --keychain $KEYCHAIN_PATH
-
-          # export the keychain path
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >>$GITHUB_ENV
-
-      - if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && steps.cache-check.outputs.cache-hit != 'true'
-        uses: goreleaser/goreleaser-action@v7
+          curl -sL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin nfpm
+          nfpm --version
+      - name: Package RPM
+        run: |
+          mkdir -p dist
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$(perl -ne 'print $1 and exit if /^version = \"([^\"]+)\"/' Cargo.toml)-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          export VERSION
+          nfpm package --packager rpm --target dist/ --config misc/nfpm-rioterm.yaml
+          ls -la dist/*.rpm
+      - uses: actions/upload-artifact@v4
         with:
-          distribution: goreleaser-pro
-          version: nightly
-          args: release --clean --split ${{ matrix._ids }} --skip=winget
-      - if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v'))) && steps.cache-check.outputs.cache-hit != 'true'
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser-pro
-          version: nightly
-          args: release --clean --split ${{ matrix._ids }} --nightly --skip=winget
-  # Full gnu-toolchain coverage (LTO release profile on all three MSYS2
-  # flavors) runs here as a release gate instead of on every push.
-  msys2-build:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      matrix:
-        sys: [MINGW64, UCRT64, CLANG64]
-    runs-on: windows-latest
-    timeout-minutes: 60
+          name: linux-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  nix:
+    name: NixOS (flake + Cachix)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
-      - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: cachix/cachix-action@v17
         with:
-          msystem: ${{ matrix.sys }}
-          release: false
-          update: false
-          install: base-devel git
-          pacboy: >-
-            rust:p
-            cc:p
-            pkgconf:p
-            cmake:p
-            freetype:p
-            python:p
-            fontconfig:p
-      - name: Build (release)
-        shell: msys2 {0}
-        run: cargo build --release --features wgpu
+          name: rioterm
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Empty token → skip push (binary artifact still uploaded).
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
+      - name: Build flake
+        run: nix build --max-jobs auto --print-build-logs
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          BIN="$(readlink -f result/bin/rio || true)"
+          if [ -z "$BIN" ] || [ ! -e "$BIN" ]; then
+            BIN="$(find result -type f -name rio | head -1)"
+          fi
+          test -n "$BIN" && test -x "$BIN"
+          cp "$BIN" dist/rio-nixos-x86_64
+          chmod +x dist/rio-nixos-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nixos-x86_64
+          path: dist/rio-nixos-x86_64
+          if-no-files-found: error
 
-  release:
-    # skip if cache exists for same commit, since we probably already released
-    if: needs.build.outputs.cache-hit != 'true'
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/cache@v5
-        with:
-          key: goreleaser-macos-latest-${{ github.sha }}
-          path: dist/darwin
-          fail-on-cache-miss: true
-      - uses: actions/cache@v5
-        with:
-          key: goreleaser-windows-latest-${{ github.sha }}
-          path: dist/windows
-          fail-on-cache-miss: true
-      - uses: actions/cache@v5
-        with:
-          key: goreleaser-ubuntu-22.04-arm-${{ github.sha }}
-          path: dist/linux
-          fail-on-cache-miss: true
-      - name: workaround to avoid conflicts b/w linux x64/arm64 caches
-        run: |
-          # rename linux to linux-arm64, to avoid cache restore conflicts
-          mv dist/linux dist/linux-arm64
-          # update paths in artifacts.json (dist/linux -> dist/linux-arm64)
-          sed -i 's/dist\/linux/dist\/linux-arm64/g' dist/linux-arm64/artifacts.json
-      - uses: actions/cache@v5
-        with:
-          key: goreleaser-ubuntu-22.04-${{ github.sha }}
-          path: dist/linux
-          fail-on-cache-miss: true
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser-pro
-          version: nightly
-          args: continue --merge
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
-      # The release body cannot come from goreleaser's release.header, because
-      # changelog.disable skips the pipe that renders it, leaving the body
-      # empty. Set it here instead.
-      - name: Set release notes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG='${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}'
-          gh release edit "$TAG" --notes '**Full Changelog**: https://rioterm.com/changelog'
-  librio-xcframework:
-    needs: release
-    runs-on: macos-latest
-    timeout-minutes: 30
+  publish:
+    name: Publish GitHub Release
+    needs: [windows, macos, linux-rpm, nix]
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
-      - name: Build RioKit.xcframework
-        run: make librio-xcframework
-      - name: Package
-        run: ditto -c -k --keepParent target/librio/RioKit.xcframework RioKit.xcframework.zip
-      - name: Upload to release
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect + checksums
+        run: |
+          mkdir -p release
+          find artifacts -type f -print0 | xargs -0 -I{} cp {} release/
+          cd release
+          sha256sum * > checksums.txt
+          ls -la
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG='${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}'
-          gh release upload "$TAG" \
-            RioKit.xcframework.zip \
-            target/librio/RioKit.xcframework/macos-arm64/librio.a \
-            librio/include/librio.h \
-            --clobber
