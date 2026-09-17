@@ -845,6 +845,11 @@ pub struct Renderer {
     instances: Vec<batch::QuadInstance>,
     vertices: Vec<Vertex>,
     draw_cmds: Vec<batch::DrawCmd>,
+    /// Overlay-layer display list (after normal UI text). Filled by
+    /// `comp.finish_overlay` in `prepare`.
+    overlay_instances: Vec<batch::QuadInstance>,
+    overlay_vertices: Vec<Vertex>,
+    overlay_draw_cmds: Vec<batch::DrawCmd>,
     images: ImageCache,
     /// Per-image GPU textures (one map, any backend).
     image_textures: FxHashMap<u64, ImageTextureEntry>,
@@ -1028,6 +1033,9 @@ impl Renderer {
             instances: vec![],
             vertices: vec![],
             draw_cmds: vec![],
+            overlay_instances: vec![],
+            overlay_vertices: vec![],
+            overlay_draw_cmds: vec![],
             images: ImageCache::new(context),
             image_textures: FxHashMap::default(),
             image_texture_bytes: 0,
@@ -1051,6 +1059,7 @@ impl Renderer {
     #[inline]
     pub(crate) fn discard_frame_batches(&mut self) {
         self.comp.batches.reset();
+        self.comp.overlay_batches.reset();
     }
 
     /// Replace the background image. Pass `None` to clear it. The pixels
@@ -1083,6 +1092,9 @@ impl Renderer {
         self.instances.clear();
         self.vertices.clear();
         self.draw_cmds.clear();
+        self.overlay_instances.clear();
+        self.overlay_vertices.clear();
+        self.overlay_draw_cmds.clear();
 
         // The per-id `Content.states` walk is gone — non-Text content
         // arms (Rect/RoundedRect/Line/Triangle/Polygon/Arc/Image) had
@@ -1133,9 +1145,17 @@ impl Renderer {
         self.instances.clear();
         self.vertices.clear();
         self.draw_cmds.clear();
+        self.overlay_instances.clear();
+        self.overlay_vertices.clear();
+        self.overlay_draw_cmds.clear();
         self.images.process_atlases(context);
         self.comp
             .finish(&mut self.instances, &mut self.vertices, &mut self.draw_cmds);
+        self.comp.finish_overlay(
+            &mut self.overlay_instances,
+            &mut self.overlay_vertices,
+            &mut self.overlay_draw_cmds,
+        );
 
         // Useful for debug occasionally
         // let inst_bytes =
@@ -1708,6 +1728,31 @@ impl Renderer {
         );
     }
 
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn overlay_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],
+        depth: f32,
+        order: u8,
+    ) {
+        self.comp.overlay_batches.rect(
+            &Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            depth,
+            &color,
+            order,
+        );
+    }
+
     /// Add a rounded rectangle with the specified border radius
     #[inline]
     #[allow(clippy::too_many_arguments)]
@@ -1736,6 +1781,33 @@ impl Renderer {
         );
     }
 
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn overlay_rounded_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],
+        depth: f32,
+        border_radius: f32,
+        order: u8,
+    ) {
+        self.comp.overlay_batches.rounded_rect(
+            &Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            depth,
+            &color,
+            border_radius,
+            order,
+        );
+    }
+
     /// Add a quad with per-corner radii
     #[inline]
     #[allow(clippy::too_many_arguments)]
@@ -1751,6 +1823,33 @@ impl Renderer {
         order: u8,
     ) {
         self.comp.batches.quad(
+            &Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            depth,
+            &background_color,
+            corner_radii,
+            order,
+        );
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn overlay_quad(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        background_color: [f32; 4],
+        corner_radii: [f32; 4],
+        depth: f32,
+        order: u8,
+    ) {
+        self.comp.overlay_batches.quad(
             &Rect {
                 x,
                 y,
@@ -1799,6 +1898,13 @@ impl Renderer {
     }
 
     #[inline]
+    pub fn overlay_polygon(&mut self, points: &[(f32, f32)], depth: f32, color: [f32; 4]) {
+        self.comp
+            .overlay_batches
+            .add_antialiased_polygon(points, depth, color);
+    }
+
+    #[inline]
     #[allow(clippy::too_many_arguments)]
     pub fn triangle(
         &mut self,
@@ -1818,6 +1924,24 @@ impl Renderer {
 
     #[inline]
     #[allow(clippy::too_many_arguments)]
+    pub fn overlay_triangle(
+        &mut self,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        x3: f32,
+        y3: f32,
+        depth: f32,
+        color: [f32; 4],
+    ) {
+        self.comp
+            .overlay_batches
+            .add_triangle(x1, y1, x2, y2, x3, y3, depth, color);
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn line(
         &mut self,
         x1: f32,
@@ -1831,6 +1955,24 @@ impl Renderer {
     ) {
         self.comp
             .batches
+            .add_line(x1, y1, x2, y2, width, depth, color, order);
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn overlay_line(
+        &mut self,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        width: f32,
+        depth: f32,
+        color: [f32; 4],
+        order: u8,
+    ) {
+        self.comp
+            .overlay_batches
             .add_line(x1, y1, x2, y2, width, depth, color, order);
     }
 
@@ -1860,11 +2002,36 @@ impl Renderer {
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn overlay_arc(
+        &mut self,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        start_angle_deg: f32,
+        end_angle_deg: f32,
+        stroke_width: f32,
+        depth: f32,
+        color: [f32; 4],
+    ) {
+        self.comp.overlay_batches.add_arc(
+            center_x,
+            center_y,
+            radius,
+            start_angle_deg,
+            end_angle_deg,
+            stroke_width,
+            depth,
+            &color,
+        );
+    }
+
+    #[inline]
     #[cfg(feature = "wgpu")]
-    pub fn render<'pass>(
-        &'pass mut self,
+    pub fn render(
+        &mut self,
         ctx: &mut WgpuContext,
-        rpass: &mut wgpu::RenderPass<'pass>,
+        rpass: &mut wgpu::RenderPass<'_>,
     ) {
         // Destructure to get independent borrows of different fields
         let Self {
@@ -2152,6 +2319,167 @@ impl Renderer {
         }
     }
 
+    /// Draw overlay quads after normal UI text (wgpu). Appends overlay
+    /// instances after the normal buffer contents left by [`Self::render`]
+    /// so earlier draws keep valid data at submit time.
+    #[inline]
+    #[cfg(feature = "wgpu")]
+    pub fn render_overlay(
+        &mut self,
+        ctx: &mut WgpuContext,
+        rpass: &mut wgpu::RenderPass<'_>,
+    ) {
+        if self.overlay_instances.is_empty() && self.overlay_vertices.is_empty() {
+            return;
+        }
+
+        let Self {
+            brush_type,
+            images,
+            instances,
+            vertices,
+            overlay_instances,
+            overlay_vertices,
+            overlay_draw_cmds,
+            ..
+        } = self;
+
+        let RendererType::Wgpu(brush) = brush_type else {
+            return;
+        };
+
+        let color_views = images.get_texture_views();
+        if color_views.is_empty() {
+            return;
+        }
+        let mask_texture_view = images.get_mask_texture_view();
+
+        let inst_base = instances.len();
+        let vert_base = vertices.len();
+        let inst_total = inst_base + overlay_instances.len();
+        let vert_total = vert_base + overlay_vertices.len();
+
+        // Grow + rewrite if needed; otherwise append overlay only.
+        if !overlay_instances.is_empty() {
+            if inst_total > brush.supported_instance_buffer {
+                brush.instance_buffer.destroy();
+                brush.supported_instance_buffer = (inst_total as f32 * 1.25) as usize;
+                brush.instance_buffer =
+                    ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("rich_text::Instance Buffer (overlay resize)"),
+                        size: mem::size_of::<batch::QuadInstance>() as u64
+                            * brush.supported_instance_buffer as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                if !instances.is_empty() {
+                    ctx.queue.write_buffer(
+                        &brush.instance_buffer,
+                        0,
+                        bytemuck::cast_slice(instances),
+                    );
+                }
+            }
+            let byte_offset =
+                (inst_base * mem::size_of::<batch::QuadInstance>()) as u64;
+            ctx.queue.write_buffer(
+                &brush.instance_buffer,
+                byte_offset,
+                bytemuck::cast_slice(overlay_instances),
+            );
+        }
+
+        if !overlay_vertices.is_empty() {
+            if vert_total > brush.supported_vertex_buffer {
+                brush.vertex_buffer.destroy();
+                brush.supported_vertex_buffer = (vert_total as f32 * 1.25) as usize;
+                brush.vertex_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("rich_text::Vertices Buffer (overlay resize)"),
+                    size: mem::size_of::<Vertex>() as u64
+                        * brush.supported_vertex_buffer as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                if !vertices.is_empty() {
+                    ctx.queue.write_buffer(
+                        &brush.vertex_buffer,
+                        0,
+                        bytemuck::cast_slice(vertices),
+                    );
+                }
+            }
+            let byte_offset = (vert_base * mem::size_of::<Vertex>()) as u64;
+            ctx.queue.write_buffer(
+                &brush.vertex_buffer,
+                byte_offset,
+                bytemuck::cast_slice(overlay_vertices),
+            );
+        }
+
+        let mut current_pipeline_instanced = false;
+        let mut pipeline_set = false;
+
+        for cmd in overlay_draw_cmds.iter() {
+            let (color_layer, mask_layer) = match cmd {
+                batch::DrawCmd::Instanced {
+                    color_layer,
+                    mask_layer,
+                    ..
+                } => (*color_layer, *mask_layer),
+                batch::DrawCmd::Vertices {
+                    color_layer,
+                    mask_layer,
+                    ..
+                } => (*color_layer, *mask_layer),
+            };
+
+            let color_view = if color_layer > 0 {
+                let idx = (color_layer - 1) as usize;
+                color_views.get(idx).unwrap_or(&color_views[0])
+            } else {
+                &color_views[0]
+            };
+            let final_mask_view = if mask_layer > 0 {
+                mask_texture_view.unwrap_or(color_views[0])
+            } else {
+                color_views[0]
+            };
+            brush.update_bind_group(ctx, color_view, final_mask_view);
+
+            match cmd {
+                batch::DrawCmd::Instanced { offset, count, .. } => {
+                    if !pipeline_set || !current_pipeline_instanced {
+                        rpass.set_pipeline(&brush.instanced_pipeline);
+                        rpass.set_bind_group(0, &brush.constant_bind_group, &[]);
+                        current_pipeline_instanced = true;
+                        pipeline_set = true;
+                    }
+                    rpass.set_bind_group(1, &brush.layout_bind_group, &[]);
+                    let byte_offset = ((inst_base + *offset as usize)
+                        * mem::size_of::<batch::QuadInstance>())
+                        as u64;
+                    rpass.set_vertex_buffer(
+                        0,
+                        brush.instance_buffer.slice(byte_offset..),
+                    );
+                    rpass.draw(0..4, 0..*count);
+                }
+                batch::DrawCmd::Vertices { offset, count, .. } => {
+                    if !pipeline_set || current_pipeline_instanced {
+                        rpass.set_pipeline(&brush.pipeline);
+                        rpass.set_bind_group(0, &brush.constant_bind_group, &[]);
+                        rpass.set_vertex_buffer(0, brush.vertex_buffer.slice(..));
+                        current_pipeline_instanced = false;
+                        pipeline_set = true;
+                    }
+                    rpass.set_bind_group(1, &brush.layout_bind_group, &[]);
+                    let start = (vert_base as u32) + *offset;
+                    rpass.draw(start..start + *count, 0..1);
+                }
+            }
+        }
+    }
+
     /// Drive an entire Metal frame: acquire a pooled buffer, encode all
     /// passes (bg fill, bg image, BelowText images, text/quads, AboveText
     /// images) into a single render command encoder, present and commit.
@@ -2360,9 +2688,30 @@ impl Renderer {
                     // UI text pass. Lazy-init on the first frame with
                     // a Metal ctx; subsequent calls are no-ops. Runs
                     // after brush.render / above-text images so UI
-                    // labels sit on top of everything else.
+                    // labels sit on top of panel chrome.
+                    //
+                    // Frame order (post-grid):
+                    //   1. normal quads  2. normal UI text
+                    //   3. overlay quads 4. overlay UI text
                     text.init_metal(&context.device, &context.command_queue);
                     text.render_metal(
+                        render_encoder,
+                        [context.size.width, context.size.height],
+                        frame,
+                    );
+                    if !brush.render(
+                        &self.overlay_instances,
+                        &self.overlay_vertices,
+                        &self.overlay_draw_cmds,
+                        &self.images,
+                        render_encoder,
+                        context,
+                        &instance_buffer,
+                        &mut instance_offset,
+                    ) {
+                        return false;
+                    }
+                    text.render_overlay_metal(
                         render_encoder,
                         [context.size.width, context.size.height],
                         frame,
@@ -2540,10 +2889,49 @@ impl Renderer {
             }
 
             brush.render_image_overlays(cmd, slot, viewport, &below);
-            brush.render_quads(cmd, slot, viewport, &self.instances);
-            brush.render_geometry(cmd, slot, viewport, &self.vertices);
+            // Upload normal + overlay quads contiguously so the overlay
+            // pass can draw the suffix without overwriting host-visible
+            // memory that earlier draws still reference.
+            brush.render_quads_layered(
+                cmd,
+                slot,
+                viewport,
+                &self.instances,
+                &self.overlay_instances,
+            );
+            brush.render_geometry_layered(
+                cmd,
+                slot,
+                viewport,
+                &self.vertices,
+                &self.overlay_vertices,
+            );
             brush.render_image_overlays(cmd, slot, viewport, &above);
             brush.draw_bootstrap(cmd);
+        }
+    }
+
+    /// Draw overlay quads/geometry after normal UI text (Vulkan).
+    #[cfg(target_os = "linux")]
+    pub fn render_overlay_vulkan(
+        &mut self,
+        cmd: ash::vk::CommandBuffer,
+        frame: &crate::context::vulkan::VulkanFrame,
+    ) {
+        let slot = frame.slot;
+        if let RendererType::Vulkan(brush) = &mut self.brush_type {
+            brush.draw_overlay_quads_suffix(
+                cmd,
+                slot,
+                self.instances.len(),
+                self.overlay_instances.len(),
+            );
+            brush.draw_overlay_geometry_suffix(
+                cmd,
+                slot,
+                self.vertices.len(),
+                self.overlay_vertices.len(),
+            );
         }
     }
 
@@ -2559,6 +2947,17 @@ impl Renderer {
     /// upload them to a per-instance vertex buffer; we just iterate.
     pub(crate) fn instances(&self) -> &[crate::renderer::batch::QuadInstance] {
         &self.instances
+    }
+
+    /// Overlay-layer quad instances (composited after normal UI text).
+    pub(crate) fn overlay_instances(&self) -> &[crate::renderer::batch::QuadInstance] {
+        &self.overlay_instances
+    }
+
+    /// Overlay-layer vertices (polygons / lines / arcs in overlay mode).
+    #[allow(dead_code)] // reserved for CPU geometry overlay; GPU paths read the field
+    pub(crate) fn overlay_vertices(&self) -> &[Vertex] {
+        &self.overlay_vertices
     }
 
     /// Image cache for CPU rasterizer atlas sampling.

@@ -8,8 +8,9 @@
 //! (no connection) or a remote SFTP session ([`SftpConnection`]).
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use terminus_core::local_fs::{self, LocalEntry};
 use terminus_core::sftp::SftpEntry;
@@ -78,6 +79,12 @@ pub enum SftpCommand {
         to_cwd: String,
         name: String,
     },
+    /// Download a remote file to OS temp, then watch for local edits and reupload.
+    EditRemote {
+        side: SftpSide,
+        remote_path: String,
+        name: String,
+    },
     /// Tear down both sessions and stop the worker.
     Close,
 }
@@ -129,6 +136,18 @@ pub enum SftpEvent {
         label: String,
         done: u64,
         total: u64,
+    },
+    /// Remote file downloaded to `local_path`; UI should open it with the default app.
+    EditReady {
+        id: u64,
+        side: SftpSide,
+        remote_path: String,
+        local_path: PathBuf,
+    },
+    /// Local edit was reuploaded to the remote path.
+    EditSaved {
+        id: u64,
+        remote_path: String,
     },
     Failed(String),
     Closed,
@@ -295,159 +314,407 @@ fn worker(
     runtime.block_on(async move {
         let mut left_conn: Option<SftpConnection> = None;
         let mut right_conn: Option<SftpConnection> = None;
+        let mut edit_sessions: Vec<EditSession> = Vec::new();
+        let mut next_edit_id: u64 = 1;
 
-        while let Ok(cmd) = commands.recv() {
-            match cmd {
-                SftpCommand::Connect { side, opts } => {
-                    *conn_mut(&mut left_conn, &mut right_conn, side) = None;
-                    match connect_sftp_for_host(&opts).await {
-                        Ok(conn) => {
-                            *conn_mut(&mut left_conn, &mut right_conn, side) = Some(conn);
-                            emit(&events, &wake, SftpEvent::Ready { side });
-                        }
-                        Err(err) => {
-                            emit(&events, &wake, SftpEvent::Failed(err.to_string()));
-                        }
-                    }
-                }
-                SftpCommand::Disconnect { side } => {
-                    drop(conn_mut(&mut left_conn, &mut right_conn, side).take());
-                    debug!(?side, "sftp worker disconnected side");
-                }
-                SftpCommand::ListLocal { side, path } => {
-                    emit_listed_local(&events, &wake, side, &path).await;
-                }
-                SftpCommand::ListRemote { side, path } => {
-                    let Some(conn) = conn_ref(&left_conn, &right_conn, side) else {
-                        emit(&events, &wake, SftpEvent::Failed(not_connected(side)));
-                        continue;
-                    };
-                    emit_listed_remote(&events, &wake, side, conn, &path).await;
-                }
-                SftpCommand::MkdirLocal { side, path } => {
-                    match local_fs::create_dir_all(&path).await {
-                        Ok(()) => {
-                            if let Some(parent) = path.parent() {
-                                emit_listed_local(&events, &wake, side, parent).await;
-                            }
-                        }
-                        Err(err) => emit(&events, &wake, SftpEvent::Failed(err.to_string())),
-                    }
-                }
-                SftpCommand::MkdirRemote { side, path } => {
-                    let Some(conn) = conn_ref(&left_conn, &right_conn, side) else {
-                        emit(&events, &wake, SftpEvent::Failed(not_connected(side)));
-                        continue;
-                    };
-                    match conn.mkdir(&path).await {
-                        Ok(()) => {
-                            let parent = parent_remote(&path);
-                            emit_listed_remote(&events, &wake, side, conn, &parent).await;
-                        }
-                        Err(err) => emit(&events, &wake, SftpEvent::Failed(err.to_string())),
-                    }
-                }
-                SftpCommand::RemoveLocal {
-                    side,
-                    path,
-                    recursive,
-                } => {
-                    let parent = path
-                        .parent()
-                        .map(Path::to_path_buf)
-                        .unwrap_or_else(|| PathBuf::from("/"));
-                    match local_fs::remove_local_path(&path, recursive).await {
-                        Ok(()) => emit_listed_local(&events, &wake, side, &parent).await,
-                        Err(err) => emit(&events, &wake, SftpEvent::Failed(err.to_string())),
-                    }
-                }
-                SftpCommand::RemoveRemote { side, path } => {
-                    let Some(conn) = conn_ref(&left_conn, &right_conn, side) else {
-                        emit(&events, &wake, SftpEvent::Failed(not_connected(side)));
-                        continue;
-                    };
-                    let parent = parent_remote(&path);
-                    match conn.remove(&path).await {
-                        Ok(()) => emit_listed_remote(&events, &wake, side, conn, &parent).await,
-                        Err(err) => emit(&events, &wake, SftpEvent::Failed(err.to_string())),
-                    }
-                }
-                SftpCommand::RenameLocal { side, from, to } => {
-                    let parent = to
-                        .parent()
-                        .map(Path::to_path_buf)
-                        .unwrap_or_else(|| PathBuf::from("/"));
-                    match local_fs::rename_local(&from, &to).await {
-                        Ok(()) => emit_listed_local(&events, &wake, side, &parent).await,
-                        Err(err) => emit(&events, &wake, SftpEvent::Failed(err.to_string())),
-                    }
-                }
-                SftpCommand::RenameRemote { side, from, to } => {
-                    let Some(conn) = conn_ref(&left_conn, &right_conn, side) else {
-                        emit(&events, &wake, SftpEvent::Failed(not_connected(side)));
-                        continue;
-                    };
-                    let parent = parent_remote(&to);
-                    match conn.rename(&from, &to).await {
-                        Ok(()) => emit_listed_remote(&events, &wake, side, conn, &parent).await,
-                        Err(err) => emit(&events, &wake, SftpEvent::Failed(err.to_string())),
-                    }
-                }
-                SftpCommand::Transfer {
-                    from_side,
-                    from_path,
-                    to_side,
-                    to_cwd,
-                    name,
-                } => {
-                    match transfer(
-                        &left_conn,
-                        &right_conn,
-                        from_side,
-                        &from_path,
-                        to_side,
-                        &to_cwd,
-                        &name,
+        loop {
+            match commands.recv_timeout(Duration::from_millis(500)) {
+                Ok(cmd) => {
+                    let should_break = handle_command(
+                        cmd,
+                        &mut left_conn,
+                        &mut right_conn,
+                        &mut edit_sessions,
+                        &mut next_edit_id,
                         &events,
                         &wake,
                     )
-                    .await
-                    {
-                        Ok(()) => {
-                            let to_remote =
-                                side_is_remote(&left_conn, &right_conn, to_side);
-                            if to_remote {
-                                if let Some(conn) =
-                                    conn_ref(&left_conn, &right_conn, to_side)
-                                {
-                                    emit_listed_remote(
-                                        &events, &wake, to_side, conn, &to_cwd,
-                                    )
-                                    .await;
-                                }
-                            } else {
-                                emit_listed_local(
-                                    &events,
-                                    &wake,
-                                    to_side,
-                                    Path::new(&to_cwd),
-                                )
-                                .await;
-                            }
-                        }
-                        Err(err) => emit(&events, &wake, SftpEvent::Failed(err)),
+                    .await;
+                    if should_break {
+                        break;
                     }
                 }
-                SftpCommand::Close => {
-                    drop(left_conn.take());
-                    drop(right_conn.take());
-                    emit(&events, &wake, SftpEvent::Closed);
-                    debug!("sftp worker closed");
-                    break;
-                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
             }
+
+            poll_edit_sessions(
+                &mut edit_sessions,
+                &left_conn,
+                &right_conn,
+                &events,
+                &wake,
+            )
+            .await;
         }
     });
+}
+
+/// Tracked remote-edit: local temp file watched for mtime/size changes.
+struct EditSession {
+    id: u64,
+    side: SftpSide,
+    remote_path: String,
+    local_path: PathBuf,
+    last_mtime: SystemTime,
+    last_len: u64,
+    /// True after a local change is detected; upload after one stable poll.
+    dirty: bool,
+    stable_polls: u8,
+}
+
+async fn handle_command(
+    cmd: SftpCommand,
+    left_conn: &mut Option<SftpConnection>,
+    right_conn: &mut Option<SftpConnection>,
+    edit_sessions: &mut Vec<EditSession>,
+    next_edit_id: &mut u64,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> bool {
+    match cmd {
+        SftpCommand::Connect { side, opts } => {
+            drop_edit_sessions_for_side(edit_sessions, side);
+            *conn_mut(left_conn, right_conn, side) = None;
+            match connect_sftp_for_host(&opts).await {
+                Ok(conn) => {
+                    *conn_mut(left_conn, right_conn, side) = Some(conn);
+                    emit(events, wake, SftpEvent::Ready { side });
+                }
+                Err(err) => {
+                    emit(events, wake, SftpEvent::Failed(err.to_string()));
+                }
+            }
+            false
+        }
+        SftpCommand::Disconnect { side } => {
+            drop_edit_sessions_for_side(edit_sessions, side);
+            drop(conn_mut(left_conn, right_conn, side).take());
+            debug!(?side, "sftp worker disconnected side");
+            false
+        }
+        SftpCommand::ListLocal { side, path } => {
+            emit_listed_local(events, wake, side, &path).await;
+            false
+        }
+        SftpCommand::ListRemote { side, path } => {
+            let Some(conn) = conn_ref(left_conn, right_conn, side) else {
+                emit(events, wake, SftpEvent::Failed(not_connected(side)));
+                return false;
+            };
+            emit_listed_remote(events, wake, side, conn, &path).await;
+            false
+        }
+        SftpCommand::MkdirLocal { side, path } => {
+            match local_fs::create_dir_all(&path).await {
+                Ok(()) => {
+                    if let Some(parent) = path.parent() {
+                        emit_listed_local(events, wake, side, parent).await;
+                    }
+                }
+                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+            }
+            false
+        }
+        SftpCommand::MkdirRemote { side, path } => {
+            let Some(conn) = conn_ref(left_conn, right_conn, side) else {
+                emit(events, wake, SftpEvent::Failed(not_connected(side)));
+                return false;
+            };
+            match conn.mkdir(&path).await {
+                Ok(()) => {
+                    let parent = parent_remote(&path);
+                    emit_listed_remote(events, wake, side, conn, &parent).await;
+                }
+                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+            }
+            false
+        }
+        SftpCommand::RemoveLocal {
+            side,
+            path,
+            recursive,
+        } => {
+            let parent = path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/"));
+            match local_fs::remove_local_path(&path, recursive).await {
+                Ok(()) => emit_listed_local(events, wake, side, &parent).await,
+                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+            }
+            false
+        }
+        SftpCommand::RemoveRemote { side, path } => {
+            let Some(conn) = conn_ref(left_conn, right_conn, side) else {
+                emit(events, wake, SftpEvent::Failed(not_connected(side)));
+                return false;
+            };
+            let parent = parent_remote(&path);
+            match conn.remove(&path).await {
+                Ok(()) => emit_listed_remote(events, wake, side, conn, &parent).await,
+                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+            }
+            false
+        }
+        SftpCommand::RenameLocal { side, from, to } => {
+            let parent = to
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/"));
+            match local_fs::rename_local(&from, &to).await {
+                Ok(()) => emit_listed_local(events, wake, side, &parent).await,
+                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+            }
+            false
+        }
+        SftpCommand::RenameRemote { side, from, to } => {
+            let Some(conn) = conn_ref(left_conn, right_conn, side) else {
+                emit(events, wake, SftpEvent::Failed(not_connected(side)));
+                return false;
+            };
+            let parent = parent_remote(&to);
+            match conn.rename(&from, &to).await {
+                Ok(()) => emit_listed_remote(events, wake, side, conn, &parent).await,
+                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+            }
+            false
+        }
+        SftpCommand::Transfer {
+            from_side,
+            from_path,
+            to_side,
+            to_cwd,
+            name,
+        } => {
+            match transfer(
+                left_conn,
+                right_conn,
+                from_side,
+                &from_path,
+                to_side,
+                &to_cwd,
+                &name,
+                events,
+                wake,
+            )
+            .await
+            {
+                Ok(()) => {
+                    let to_remote = side_is_remote(left_conn, right_conn, to_side);
+                    if to_remote {
+                        if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
+                            emit_listed_remote(events, wake, to_side, conn, &to_cwd).await;
+                        }
+                    } else {
+                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd)).await;
+                    }
+                }
+                Err(err) => emit(events, wake, SftpEvent::Failed(err)),
+            }
+            false
+        }
+        SftpCommand::EditRemote {
+            side,
+            remote_path,
+            name,
+        } => {
+            match start_edit_remote(
+                left_conn,
+                right_conn,
+                side,
+                &remote_path,
+                &name,
+                edit_sessions,
+                next_edit_id,
+                events,
+                wake,
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(err) => emit(events, wake, SftpEvent::Failed(err)),
+            }
+            false
+        }
+        SftpCommand::Close => {
+            drop_all_edit_sessions(edit_sessions);
+            drop(left_conn.take());
+            drop(right_conn.take());
+            emit(events, wake, SftpEvent::Closed);
+            debug!("sftp worker closed");
+            true
+        }
+    }
+}
+
+fn drop_edit_sessions_for_side(sessions: &mut Vec<EditSession>, side: SftpSide) {
+    sessions.retain(|s| {
+        if s.side == side {
+            cleanup_edit_temp(&s.local_path);
+            false
+        } else {
+            true
+        }
+    });
+}
+
+fn drop_all_edit_sessions(sessions: &mut Vec<EditSession>) {
+    for session in sessions.drain(..) {
+        cleanup_edit_temp(&session.local_path);
+    }
+}
+
+fn cleanup_edit_temp(local_path: &Path) {
+    let _ = std::fs::remove_file(local_path);
+    if let Some(parent) = local_path.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
+}
+
+async fn start_edit_remote(
+    left: &Option<SftpConnection>,
+    right: &Option<SftpConnection>,
+    side: SftpSide,
+    remote_path: &str,
+    name: &str,
+    sessions: &mut Vec<EditSession>,
+    next_id: &mut u64,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    if !side_is_remote(left, right, side) {
+        return Err("Edit is only available for remote files".into());
+    }
+    let conn = conn_ref(left, right, side).ok_or_else(|| not_connected(side))?;
+
+    if is_directory(left, right, side, remote_path, true).await? {
+        return Err("folders aren't supported yet".into());
+    }
+
+    let dir = std::env::temp_dir()
+        .join("terminus-sftp-edit")
+        .join(uuid::Uuid::new_v4().to_string());
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let local_path = dir.join(name);
+
+    transfer_download(conn, remote_path, &local_path, events, wake).await?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&local_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    let meta = std::fs::metadata(&local_path).map_err(|e| e.to_string())?;
+    let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    let len = meta.len();
+    let id = *next_id;
+    *next_id = next_id.saturating_add(1);
+
+    sessions.push(EditSession {
+        id,
+        side,
+        remote_path: remote_path.to_string(),
+        local_path: local_path.clone(),
+        last_mtime: mtime,
+        last_len: len,
+        dirty: false,
+        stable_polls: 0,
+    });
+
+    emit(
+        events,
+        wake,
+        SftpEvent::EditReady {
+            id,
+            side,
+            remote_path: remote_path.to_string(),
+            local_path,
+        },
+    );
+    Ok(())
+}
+
+async fn poll_edit_sessions(
+    sessions: &mut Vec<EditSession>,
+    left: &Option<SftpConnection>,
+    right: &Option<SftpConnection>,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) {
+    // Collect uploads first so we don't hold overlapping borrows across await.
+    let mut to_upload: Vec<(usize, u64, SftpSide, String, PathBuf)> = Vec::new();
+
+    for (idx, session) in sessions.iter_mut().enumerate() {
+        let meta = match std::fs::metadata(&session.local_path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let len = meta.len();
+
+        if mtime != session.last_mtime || len != session.last_len {
+            session.last_mtime = mtime;
+            session.last_len = len;
+            session.dirty = true;
+            session.stable_polls = 0;
+            continue;
+        }
+
+        if !session.dirty {
+            continue;
+        }
+
+        session.stable_polls = session.stable_polls.saturating_add(1);
+        // Two stable polls (~1s) avoids half-written saves from editors that
+        // truncate-then-write or rewrite via temp+rename.
+        if session.stable_polls < 2 {
+            continue;
+        }
+
+        to_upload.push((
+            idx,
+            session.id,
+            session.side,
+            session.remote_path.clone(),
+            session.local_path.clone(),
+        ));
+        session.dirty = false;
+        session.stable_polls = 0;
+    }
+
+    for (_idx, id, side, remote_path, local_path) in to_upload {
+        let Some(conn) = conn_ref(left, right, side) else {
+            emit(events, wake, SftpEvent::Failed(not_connected(side)));
+            continue;
+        };
+        match transfer_upload(conn, &local_path, &remote_path, events, wake).await {
+            Ok(()) => {
+                // Refresh baseline after upload in case the editor touched the file again.
+                if let Ok(meta) = std::fs::metadata(&local_path) {
+                    if let Some(session) = sessions.iter_mut().find(|s| s.id == id) {
+                        session.last_mtime =
+                            meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                        session.last_len = meta.len();
+                    }
+                }
+                emit(
+                    events,
+                    wake,
+                    SftpEvent::EditSaved {
+                        id,
+                        remote_path: remote_path.clone(),
+                    },
+                );
+                let parent = parent_remote(&remote_path);
+                emit_listed_remote(events, wake, side, conn, &parent).await;
+            }
+            Err(err) => emit(events, wake, SftpEvent::Failed(err)),
+        }
+    }
 }
 
 async fn transfer(
@@ -749,5 +1016,18 @@ mod tests {
         assert_eq!(join_remote("/home/alice", "file.txt"), "/home/alice/file.txt");
         assert_eq!(join_remote("/", "file.txt"), "/file.txt");
         assert_eq!(join_remote("/home/", "file.txt"), "/home/file.txt");
+    }
+
+    #[test]
+    fn edit_temp_path_keeps_basename_under_terminus_sftp_edit() {
+        let name = "config.yaml";
+        let dir = std::env::temp_dir()
+            .join("terminus-sftp-edit")
+            .join("00000000-0000-0000-0000-000000000001");
+        let local = dir.join(name);
+        assert!(local
+            .to_string_lossy()
+            .contains("terminus-sftp-edit"));
+        assert_eq!(local.file_name().unwrap(), name);
     }
 }

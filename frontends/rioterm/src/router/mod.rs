@@ -53,6 +53,7 @@ pub enum Modal {
     VaultUnlock,
     /// Host editor (add/edit host configuration).
     HostEditor,
+    AddSnippet,
     /// Settings modal (SQL Sync text fields).
     Settings,
     /// SFTP dual-pane browser overlay.
@@ -200,6 +201,9 @@ impl Route<'_> {
         }
         if self.window.screen.chrome.add_host_is_open() {
             return Some(Modal::HostEditor);
+        }
+        if self.window.screen.chrome.add_snippet_is_open() {
+            return Some(Modal::AddSnippet);
         }
         if self.window.screen.chrome.settings_is_open() {
             return Some(Modal::Settings);
@@ -408,77 +412,9 @@ impl Route<'_> {
                             self.request_overlay_redraw();
                         }
                         Key::Named(NamedKey::Enter) => {
-                            // Snapshot what the palette wants to do FIRST,
-                            // before taking a mut-borrow on it, so we can
-                            // freely call other `self.window.screen.*`
-                            // methods in the match arms without tripping
-                            // the borrow checker on nested disjoint borrows.
-                            let selected_font = self
-                                .window
+                            self.window
                                 .screen
-                                .renderer
-                                .command_palette
-                                .get_selected_font();
-                            let selected_action = self
-                                .window
-                                .screen
-                                .renderer
-                                .command_palette
-                                .get_selected_action();
-                            use crate::renderer::command_palette::PaletteAction;
-
-                            // Fonts-mode Enter: copy the family name to
-                            // the system clipboard and close. The copy
-                            // icon on each row advertises this.
-                            if let Some(font) = selected_font {
-                                clipboard.set(
-                                    rio_backend::clipboard::ClipboardType::Clipboard,
-                                    font,
-                                );
-                                self.window
-                                    .screen
-                                    .renderer
-                                    .command_palette
-                                    .set_enabled(false);
-                                self.request_overlay_redraw();
-                                return true;
-                            }
-
-                            match selected_action {
-                                // `ListFonts` stays inside the palette:
-                                // swap the palette's contents from the
-                                // command list to the registered font
-                                // family names and keep it open.
-                                Some(PaletteAction::ListFonts) => {
-                                    let fonts =
-                                        self.window.screen.sugarloaf.font_family_names();
-                                    self.window
-                                        .screen
-                                        .renderer
-                                        .command_palette
-                                        .enter_fonts_mode(fonts);
-                                }
-                                // Any other command is a one-shot: close
-                                // the palette first, then dispatch.
-                                Some(action) => {
-                                    self.window
-                                        .screen
-                                        .renderer
-                                        .command_palette
-                                        .set_enabled(false);
-                                    self.window
-                                        .screen
-                                        .execute_palette_action(action, clipboard);
-                                }
-                                // No match at all: Enter just closes.
-                                None => {
-                                    self.window
-                                        .screen
-                                        .renderer
-                                        .command_palette
-                                        .set_enabled(false);
-                                }
-                            }
+                                .confirm_palette_selection(clipboard);
                             self.request_overlay_redraw();
                         }
                         Key::Named(NamedKey::Backspace) => {
@@ -569,6 +505,17 @@ impl Route<'_> {
             // The add-host editor is a modal text sink: it owns every
             // key while it is open, and Enter is a request to save
             // rather than a dismissal (only the store can accept a host).
+
+            Modal::AddSnippet => {
+                if let Some(terminus_ui::add_snippet::FormOutcome::Submit) =
+                    self.window.screen.chrome_snippet_key_input(key_event)
+                {
+                    self.window.screen.submit_snippet_form();
+                }
+                self.request_overlay_redraw();
+                true
+            }
+
             Modal::HostEditor => {
                 use terminus_ui::add_host::FormOutcome;
                 if let Some(FormOutcome::Submit) =
@@ -829,7 +776,7 @@ impl Route<'_> {
             // Terminus overlays (TOFU host-key approval, vault unlock,
             // SFTP dual-pane): scaffolding placeholders — swallow input
             // until their handlers land (see milestone.md).
-            Modal::TofuHostKeyApproval | Modal::VaultUnlock | Modal::SftpPane => true,
+            Modal::TofuHostKeyApproval | Modal::VaultUnlock | Modal::SftpPane | Modal::AddSnippet => true,
         }
     }
 }

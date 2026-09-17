@@ -976,6 +976,8 @@ impl Renderer {
         // Painted from the same rectangles the mouse hit-tests against;
         // its orders (4..7, and 30 for the editor) put it above the grid
         // and the panel chrome, below the command palette.
+        // Overlay dialogs (Edit Host / Settings / …) use Sugarloaf
+        // begin_overlay so they composite after underlay UI text.
         chrome::render(
             sugarloaf,
             chrome,

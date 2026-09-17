@@ -37,6 +37,9 @@ pub enum ChromeAction {
     Consumed,
     /// The add-host row was pressed: open the editor.
     AddHost,
+    OpenAddSnippet,
+    SubmitAddSnippet(crate::add_snippet::SnippetFormValues),
+    DeleteSnippet(String),
     /// The new-group control was pressed: toggle the inline form.
     NewGroup,
     /// Confirm creating a group from the inline form.
@@ -101,6 +104,8 @@ pub enum ChromeAction {
     SftpDelete,
     /// SFTP context: transfer selection to the other pane.
     SftpTransfer,
+    /// SFTP context: edit remote file via temp + default app.
+    SftpEdit,
     /// SFTP context: enter selected directory.
     SftpOpen,
     /// SFTP context: refresh focused pane.
@@ -146,6 +151,7 @@ pub struct Chrome {
     pub snippets: SnippetsPanel,
     pub settings: SettingsModal,
     pub form: AddHostForm,
+    pub snippet_form: crate::add_snippet::AddSnippetForm,
     /// Prompt when a sealed secret is needed and the vault is locked.
     pub vault_unlock: VaultUnlockPrompt,
     /// Live SSH/WSL connecting modal, when a session is starting.
@@ -169,6 +175,7 @@ impl Default for Chrome {
             snippets: SnippetsPanel::with_defaults(),
             settings: SettingsModal::default(),
             form: AddHostForm::default(),
+            snippet_form: crate::add_snippet::AddSnippetForm::default(),
             vault_unlock: VaultUnlockPrompt::default(),
             connection: None,
             context_menu: None,
@@ -219,6 +226,10 @@ impl Chrome {
 
     pub fn add_host_is_open(&self) -> bool {
         self.form.is_open()
+    }
+
+    pub fn add_snippet_is_open(&self) -> bool {
+        self.snippet_form.is_open()
     }
 
     pub fn settings_is_open(&self) -> bool {
@@ -328,7 +339,7 @@ impl Chrome {
         sftp_open: bool,
     ) -> ChromeAction {
         // Modals / overlays own the pointer; don't open under them.
-        if self.settings.open || self.connection.is_some() || self.form.is_open()
+        if self.settings.open || self.connection.is_some() || self.form.is_open() || self.snippet_form.is_open()
             || self.vault_unlock.is_open()
         {
             self.close_context_menu();
@@ -409,6 +420,7 @@ impl Chrome {
                     Some(ContextAction::SftpRename) => ChromeAction::SftpRename,
                     Some(ContextAction::SftpDelete) => ChromeAction::SftpDelete,
                     Some(ContextAction::SftpTransfer) => ChromeAction::SftpTransfer,
+                    Some(ContextAction::SftpEdit) => ChromeAction::SftpEdit,
                     Some(ContextAction::SftpOpen) => ChromeAction::SftpOpen,
                     Some(ContextAction::SftpRefresh) => ChromeAction::SftpRefresh,
                     None => ChromeAction::Consumed,
@@ -552,6 +564,35 @@ impl Chrome {
             };
         }
 
+        if self.snippet_form.is_open() {
+            let layout = crate::dialog_form::DialogFormLayout::compute(&self.snippet_form.inner, window_width, window_height);
+            let action = match layout.hit_test(x, y) {
+                Some(hit) => {
+                    match hit {
+                        crate::dialog_form::DynamicFormHit::Field(i) => {
+                            self.snippet_form.inner.focused_index = i;
+                            ChromeAction::Consumed
+                        }
+                        crate::dialog_form::DynamicFormHit::Save => {
+                            ChromeAction::SubmitAddSnippet(self.snippet_form.values())
+                        }
+                        crate::dialog_form::DynamicFormHit::Cancel | crate::dialog_form::DynamicFormHit::Background => {
+                            self.snippet_form.inner.closing = true;
+                            ChromeAction::Consumed
+                        }
+                    }
+                }
+                None => ChromeAction::Ignored,
+            };
+            if action != ChromeAction::Ignored {
+                return action;
+            }
+        }
+
+
+
+
+
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let dialog = layout.rect(self.form.height());
@@ -649,6 +690,14 @@ impl Chrome {
             return match self.snippets.hit_test(origin_y, chrome_height, x, y) {
                 Some(SnippetHit::Item(index)) => match self.snippets.items.get(index) {
                     Some(item) => ChromeAction::RunSnippet(item.cmd.clone()),
+                    None => ChromeAction::Consumed,
+                },
+                Some(SnippetHit::AddButton) => {
+                    self.snippet_form.inner.closing = false;
+                    ChromeAction::OpenAddSnippet
+                }
+                Some(SnippetHit::DeleteButton(index)) => match self.snippets.items.get(index) {
+                    Some(item) => ChromeAction::DeleteSnippet(item.id.clone()),
                     None => ChromeAction::Consumed,
                 },
                 Some(SnippetHit::Background) => ChromeAction::Consumed,
@@ -815,6 +864,18 @@ impl Chrome {
         if self.connection.is_some() || self.activity.collapsed {
             return false;
         }
+
+        if self.snippet_form.is_open() {
+            return true;
+        }
+
+
+
+
+        if self.snippet_form.is_open() {
+            return true;
+        }
+
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let mut changed = false;
@@ -900,6 +961,19 @@ impl Chrome {
                 ConnectionHit::Consume => ChromeCursor::Default,
             };
         }
+
+        if self.snippet_form.is_open() {
+            let layout = crate::dialog_form::DialogFormLayout::compute(&self.snippet_form.inner, window_width, window_height);
+            return match layout.hit_test(x, y) {
+                Some(crate::dialog_form::DynamicFormHit::Field(_)) => ChromeCursor::Text,
+                Some(crate::dialog_form::DynamicFormHit::Save) | Some(crate::dialog_form::DynamicFormHit::Cancel) => ChromeCursor::Pointer,
+                _ => ChromeCursor::Default,
+            };
+        }
+
+
+
+
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let dialog = layout.rect(self.form.height());
@@ -936,7 +1010,7 @@ impl Chrome {
         }
         if self.snippets_visible() {
             return match self.snippets.hit_test(origin_y, height, x, y) {
-                Some(SnippetHit::Item(_)) => ChromeCursor::Pointer,
+                Some(SnippetHit::Item(_)) | Some(SnippetHit::AddButton) | Some(SnippetHit::DeleteButton(_)) => ChromeCursor::Pointer,
                 Some(SnippetHit::Background) | None => ChromeCursor::Default,
             };
         }
@@ -1156,6 +1230,22 @@ impl Chrome {
     /// Route keyboard input to the vault unlock prompt.
     ///
     /// Returns `Some(true)` when Unlock should be submitted.
+
+    pub fn handle_snippet_form_input(
+        &mut self,
+        input: crate::add_snippet::FormInput,
+        text: &str,
+    ) -> Option<crate::add_snippet::FormOutcome> {
+        if !self.snippet_form.is_open() {
+            return None;
+        }
+        let outcome = self.snippet_form.handle_input(input, text);
+        if outcome == crate::add_snippet::FormOutcome::Cancel {
+            self.snippet_form.inner.closing = true;
+        }
+        Some(outcome)
+    }
+
     pub fn handle_vault_unlock_input(
         &mut self,
         input: FormInput,

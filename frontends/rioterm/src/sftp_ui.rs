@@ -1,6 +1,6 @@
 //! Active SFTP dual-pane session owned by [`crate::screen::Screen`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use terminus_bridge::{SftpCommand, SftpEvent, SftpListEntry, SftpSide, SftpWorker};
@@ -131,6 +131,27 @@ impl ActiveSftp {
                     } else {
                         self.state.status = format!("{label} ({done}/{total})");
                     }
+                    self.state.error = None;
+                }
+                SftpEvent::EditReady {
+                    local_path,
+                    remote_path,
+                    ..
+                } => {
+                    self.state.error = None;
+                    let name = Path::new(&remote_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| remote_path.clone());
+                    self.state.status = format!("Editing {name}…");
+                    open_path_with_default_app(&local_path);
+                }
+                SftpEvent::EditSaved { remote_path, .. } => {
+                    let name = Path::new(&remote_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| remote_path.clone());
+                    self.state.status = format!("Saved {name}");
                     self.state.error = None;
                 }
                 SftpEvent::Failed(msg) => {
@@ -327,14 +348,16 @@ impl ActiveSftp {
                 self.state.left.selected = Some(i);
                 let row = self.state.left.entries.get(i)?;
                 let transfer = (!row.is_dir).then_some(self.transfer_label(SftpFocus::Left));
-                terminus_ui::ContextMenu::for_sftp_entry(x, y, row.is_dir, transfer)
+                let can_edit = !row.is_dir && !self.state.left.is_local();
+                terminus_ui::ContextMenu::for_sftp_entry(x, y, row.is_dir, transfer, can_edit)
             }
             SftpHit::RightRow(i) => {
                 self.state.focus = SftpFocus::Right;
                 self.state.right.selected = Some(i);
                 let row = self.state.right.entries.get(i)?;
                 let transfer = (!row.is_dir).then_some(self.transfer_label(SftpFocus::Right));
-                terminus_ui::ContextMenu::for_sftp_entry(x, y, row.is_dir, transfer)
+                let can_edit = !row.is_dir && !self.state.right.is_local();
+                terminus_ui::ContextMenu::for_sftp_entry(x, y, row.is_dir, transfer, can_edit)
             }
             SftpHit::LeftParent | SftpHit::LeftCrumb => {
                 self.state.focus = SftpFocus::Left;
@@ -589,6 +612,30 @@ impl ActiveSftp {
         self.transfer_row(focus, &row);
     }
 
+    /// Download a remote file to OS temp, open with the default app, reupload on change.
+    pub fn edit_selected(&mut self) {
+        let focus = self.state.focus;
+        let Some(row) = self.state.selected(focus).cloned() else {
+            self.state.error = Some("Select a file to edit".into());
+            return;
+        };
+        if row.is_dir {
+            self.state.error = Some("Pick a file (folders can’t be edited yet)".into());
+            return;
+        }
+        if self.state.side(focus).is_local() {
+            self.state.error = Some("Edit is only available for remote files".into());
+            return;
+        }
+        self.state.status = format!("Opening {}…", row.name);
+        self.state.error = None;
+        self.worker.send(SftpCommand::EditRemote {
+            side: side_from_focus(focus),
+            remote_path: row.path.clone(),
+            name: row.name.clone(),
+        });
+    }
+
     pub fn refresh_focused(&mut self) {
         let cwd = self.state.side(self.state.focus).cwd.clone();
         self.cd(self.state.focus, cwd);
@@ -725,4 +772,47 @@ fn connect_options_for_host(
         connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         keepalive_interval: Some(DEFAULT_KEEPALIVE_INTERVAL),
     })
+}
+
+/// Open a local path with the OS default application for its file type.
+fn open_path_with_default_app(path: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(err) = std::process::Command::new("open").arg(path).spawn() {
+            tracing::warn!(error = %err, path = %path.display(), "failed to open edited file");
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Err(err) = std::process::Command::new("xdg-open").arg(path).spawn() {
+            tracing::warn!(error = %err, path = %path.display(), "failed to open edited file");
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide_target: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let operation: Vec<u16> = "open\0".encode_utf16().collect();
+        let result = unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                wide_target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+            )
+        };
+        if (result as isize) <= 32 {
+            tracing::warn!(
+                path = %path.display(),
+                code = result as isize,
+                "ShellExecuteW could not open edited file"
+            );
+        }
+    }
 }

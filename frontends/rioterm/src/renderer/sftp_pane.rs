@@ -18,6 +18,10 @@ const ORDER: u8 = 8;
 const ICON_IN_BTN: f32 = 16.0;
 
 /// Paint the dual-pane SFTP UI into `bounds` (logical pixels).
+///
+/// Always paints quads + glyphs. Overlay dialogs (Edit Host, Settings, …)
+/// must use `Sugarloaf::begin_overlay` so they composite *after* this
+/// underlay text — never suppress SFTP glyphs for stacking.
 pub fn paint(
     sugarloaf: &mut Sugarloaf,
     state: &SftpPaneState,
@@ -112,8 +116,6 @@ fn paint_toolbar(
         DEPTH,
         ORDER,
     );
-
-    // Actions live in the right-click context menu; toolbar keeps Close + rename field.
 
     if let Some(edit) = state.name_edit.as_ref() {
         let paint = edit.field_paint();

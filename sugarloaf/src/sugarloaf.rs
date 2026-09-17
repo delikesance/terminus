@@ -64,6 +64,9 @@ pub struct Sugarloaf<'a> {
     /// Rebuilt by `Renderer::run` for dirty panels each frame.
     pub image_overlays:
         rustc_hash::FxHashMap<usize, Vec<crate::sugarloaf::graphics::GraphicOverlay>>,
+    /// When true, chrome primitives and `text_mut()` draws go to the
+    /// post-UI-text overlay layer (see [`Self::begin_overlay`]).
+    overlay_mode: bool,
     /// Owned context (device + swapchain + queue). Last so the device
     /// outlives every Vulkan-handle-owning field above. See note at
     /// the top of the struct.
@@ -263,6 +266,7 @@ impl Sugarloaf<'_> {
             font_cache,
             text,
             image_overlays: rustc_hash::FxHashMap::default(),
+            overlay_mode: false,
         };
 
         Ok(instance)
@@ -556,6 +560,28 @@ impl Sugarloaf<'_> {
         self.background_image = None;
     }
 
+    /// Begin the post-UI-text overlay layer.
+    ///
+    /// While active, `quad` / `rect` / `rounded_rect` / polygon helpers
+    /// and `text_mut()` draws enqueue into overlay batches composited
+    /// after normal UI text:
+    ///   grid → normal quads → normal UI text → **overlay quads** → **overlay UI text**
+    ///
+    /// Call around modal painters so underlay glyphs (e.g. SFTP/sidebar)
+    /// stay visible beneath the modal without being suppressed.
+    #[inline]
+    pub fn begin_overlay(&mut self) {
+        self.overlay_mode = true;
+        self.text.set_overlay_mode(true);
+    }
+
+    /// End overlay mode; subsequent draws go to the normal layer again.
+    #[inline]
+    pub fn end_overlay(&mut self) {
+        self.overlay_mode = false;
+        self.text.set_overlay_mode(false);
+    }
+
     /// Add a rectangle to content system
     /// - `id: None` - not cached, rendered immediately
     /// - `id: Some(n)` - cached with id n, overwrites existing content
@@ -580,15 +606,27 @@ impl Sugarloaf<'_> {
         // The `Some(id)` cached arm has no rio caller — every
         // ephemeral rect goes through `Renderer.batches`. Argument
         // kept for API stability with the other primitive helpers.
-        self.renderer.rect(
-            scaled_x,
-            scaled_y,
-            scaled_width,
-            scaled_height,
-            color,
-            depth,
-            order,
-        );
+        if self.overlay_mode {
+            self.renderer.overlay_rect(
+                scaled_x,
+                scaled_y,
+                scaled_width,
+                scaled_height,
+                color,
+                depth,
+                order,
+            );
+        } else {
+            self.renderer.rect(
+                scaled_x,
+                scaled_y,
+                scaled_width,
+                scaled_height,
+                color,
+                depth,
+                order,
+            );
+        }
     }
 
     /// Add a rounded rectangle. Always immediate-mode now — see `rect`.
@@ -611,16 +649,29 @@ impl Sugarloaf<'_> {
         let scaled_width = width * self.state.style.scale_factor;
         let scaled_height = height * self.state.style.scale_factor;
         let scaled_border_radius = border_radius * self.state.style.scale_factor;
-        self.renderer.rounded_rect(
-            scaled_x,
-            scaled_y,
-            scaled_width,
-            scaled_height,
-            color,
-            depth,
-            scaled_border_radius,
-            order,
-        );
+        if self.overlay_mode {
+            self.renderer.overlay_rounded_rect(
+                scaled_x,
+                scaled_y,
+                scaled_width,
+                scaled_height,
+                color,
+                depth,
+                scaled_border_radius,
+                order,
+            );
+        } else {
+            self.renderer.rounded_rect(
+                scaled_x,
+                scaled_y,
+                scaled_width,
+                scaled_height,
+                color,
+                depth,
+                scaled_border_radius,
+                order,
+            );
+        }
     }
 
     /// Add a quad with per-corner radii and per-edge border widths
@@ -653,16 +704,29 @@ impl Sugarloaf<'_> {
         ];
 
         // For now, quad is always rendered immediately (no caching support yet)
-        self.renderer.quad(
-            scaled_x,
-            scaled_y,
-            scaled_width,
-            scaled_height,
-            background_color,
-            scaled_corner_radii,
-            depth,
-            order,
-        );
+        if self.overlay_mode {
+            self.renderer.overlay_quad(
+                scaled_x,
+                scaled_y,
+                scaled_width,
+                scaled_height,
+                background_color,
+                scaled_corner_radii,
+                depth,
+                order,
+            );
+        } else {
+            self.renderer.quad(
+                scaled_x,
+                scaled_y,
+                scaled_width,
+                scaled_height,
+                background_color,
+                scaled_corner_radii,
+                depth,
+                order,
+            );
+        }
     }
 
     /// Add an image rectangle. Always immediate-mode now — see `rect`.
@@ -704,7 +768,11 @@ impl Sugarloaf<'_> {
         let scale = self.state.style.scale_factor;
         let scaled: Vec<(f32, f32)> =
             points.iter().map(|(x, y)| (x * scale, y * scale)).collect();
-        self.renderer.polygon(&scaled, depth, color);
+        if self.overlay_mode {
+            self.renderer.overlay_polygon(&scaled, depth, color);
+        } else {
+            self.renderer.polygon(&scaled, depth, color);
+        }
     }
 
     /// Draw a triangle.
@@ -723,16 +791,29 @@ impl Sugarloaf<'_> {
         color: [f32; 4],
     ) {
         let s = self.state.style.scale_factor;
-        self.renderer.triangle(
-            x1 * s,
-            y1 * s,
-            x2 * s,
-            y2 * s,
-            x3 * s,
-            y3 * s,
-            depth,
-            color,
-        );
+        if self.overlay_mode {
+            self.renderer.overlay_triangle(
+                x1 * s,
+                y1 * s,
+                x2 * s,
+                y2 * s,
+                x3 * s,
+                y3 * s,
+                depth,
+                color,
+            );
+        } else {
+            self.renderer.triangle(
+                x1 * s,
+                y1 * s,
+                x2 * s,
+                y2 * s,
+                x3 * s,
+                y3 * s,
+                depth,
+                color,
+            );
+        }
     }
 
     /// Draw a line between two points.
@@ -751,16 +832,29 @@ impl Sugarloaf<'_> {
         order: u8,
     ) {
         let s = self.state.style.scale_factor;
-        self.renderer.line(
-            x1 * s,
-            y1 * s,
-            x2 * s,
-            y2 * s,
-            width * s,
-            depth,
-            color,
-            order,
-        );
+        if self.overlay_mode {
+            self.renderer.overlay_line(
+                x1 * s,
+                y1 * s,
+                x2 * s,
+                y2 * s,
+                width * s,
+                depth,
+                color,
+                order,
+            );
+        } else {
+            self.renderer.line(
+                x1 * s,
+                y1 * s,
+                x2 * s,
+                y2 * s,
+                width * s,
+                depth,
+                color,
+                order,
+            );
+        }
     }
 
     /// Draw an arc (stroke only).
@@ -779,16 +873,29 @@ impl Sugarloaf<'_> {
         color: [f32; 4],
     ) {
         let s = self.state.style.scale_factor;
-        self.renderer.arc(
-            center_x * s,
-            center_y * s,
-            radius * s,
-            start_angle_deg,
-            end_angle_deg,
-            stroke_width * s,
-            depth,
-            color,
-        );
+        if self.overlay_mode {
+            self.renderer.overlay_arc(
+                center_x * s,
+                center_y * s,
+                radius * s,
+                start_angle_deg,
+                end_angle_deg,
+                stroke_width * s,
+                depth,
+                color,
+            );
+        } else {
+            self.renderer.arc(
+                center_x * s,
+                center_y * s,
+                radius * s,
+                start_angle_deg,
+                end_angle_deg,
+                stroke_width * s,
+                depth,
+                color,
+            );
+        }
     }
 
     /// Immediate-mode text recorder for UI overlays. The per-sugarloaf
@@ -862,6 +969,8 @@ impl Sugarloaf<'_> {
         self.state.reset();
         // Drop this frame's UI text instances — overlays re-record
         // next frame (immediate mode).
+        self.overlay_mode = false;
+        self.text.set_overlay_mode(false);
         self.text.clear();
     }
 
@@ -893,6 +1002,8 @@ impl Sugarloaf<'_> {
     pub fn discard_frame(&mut self) {
         self.renderer.discard_frame_batches();
         self.state.reset();
+        self.overlay_mode = false;
+        self.text.set_overlay_mode(false);
         self.text.clear();
     }
 
@@ -1109,9 +1220,18 @@ impl Sugarloaf<'_> {
         self.renderer.render_vulkan(cmd, &frame);
 
         // UI text overlay (tab titles, search overlay labels,
-        // command palette items, etc.). Drawn last so labels sit on
-        // top of the panel chrome.
+        // command palette items, etc.). Drawn after normal quads.
+        //
+        // Frame order (post-grid):
+        //   1. normal quads  2. normal UI text
+        //   3. overlay quads 4. overlay UI text
         self.text.render_vulkan(
+            cmd,
+            frame.slot,
+            [frame.extent.width as f32, frame.extent.height as f32],
+        );
+        self.renderer.render_overlay_vulkan(cmd, &frame);
+        self.text.render_overlay_vulkan(
             cmd,
             frame.slot,
             [frame.extent.width as f32, frame.extent.height as f32],
@@ -1228,11 +1348,18 @@ impl Sugarloaf<'_> {
             // the Metal path from a different sugarloaf
             // call instead (today macOS always takes the
             // Metal branch).
+            //
+            // Frame order (post-grid):
+            //   1. normal quads  2. normal UI text
+            //   3. overlay quads 4. overlay UI text
             #[cfg(not(target_os = "macos"))]
             {
                 self.text.init_wgpu(&ctx.device, &ctx.queue, ctx.format);
                 self.text
                     .render_wgpu(&mut rpass, [ctx.size.width, ctx.size.height]);
+                self.renderer.render_overlay(ctx, &mut rpass);
+                self.text
+                    .render_overlay_wgpu(&mut rpass, [ctx.size.width, ctx.size.height]);
             }
         }
 
