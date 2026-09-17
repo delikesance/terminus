@@ -85,6 +85,19 @@ pub enum SftpCommand {
         remote_path: String,
         name: String,
     },
+    /// Copy a directory tree between panes (roadmap 2.3 — stub until implemented).
+    TransferFolder {
+        from_side: SftpSide,
+        from_path: String,
+        to_side: SftpSide,
+        to_cwd: String,
+        name: String,
+    },
+    /// Recursively delete a remote path (roadmap gap — stub until implemented).
+    RemoveRemoteRecursive {
+        side: SftpSide,
+        path: String,
+    },
     /// Tear down both sessions and stop the worker.
     Close,
 }
@@ -537,6 +550,52 @@ async fn handle_command(
             }
             false
         }
+        SftpCommand::TransferFolder {
+            from_side,
+            from_path,
+            to_side,
+            to_cwd,
+            name,
+        } => {
+            match transfer_folder(
+                left_conn,
+                right_conn,
+                from_side,
+                &from_path,
+                to_side,
+                &to_cwd,
+                &name,
+                events,
+                wake,
+            )
+            .await
+            {
+                Ok(()) => {
+                    let to_remote = side_is_remote(left_conn, right_conn, to_side);
+                    if to_remote {
+                        if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
+                            emit_listed_remote(events, wake, to_side, conn, &to_cwd).await;
+                        }
+                    } else {
+                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd)).await;
+                    }
+                }
+                Err(err) => emit(events, wake, SftpEvent::Failed(err)),
+            }
+            false
+        }
+        SftpCommand::RemoveRemoteRecursive { side, path } => {
+            let Some(conn) = conn_ref(left_conn, right_conn, side) else {
+                emit(events, wake, SftpEvent::Failed(not_connected(side)));
+                return false;
+            };
+            let parent = parent_remote(&path);
+            match conn.remove_recursive(&path).await {
+                Ok(()) => emit_listed_remote(events, wake, side, conn, &parent).await,
+                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+            }
+            false
+        }
         SftpCommand::Close => {
             drop_all_edit_sessions(edit_sessions);
             drop(left_conn.take());
@@ -732,9 +791,31 @@ async fn transfer(
     let to_remote = side_is_remote(left, right, to_side);
 
     if is_directory(left, right, from_side, from_path, from_remote).await? {
-        return Err("folders aren't supported yet".into());
+        return Box::pin(transfer_folder(
+            left, right, from_side, from_path, to_side, to_cwd, name, events, wake,
+        ))
+        .await;
     }
 
+    transfer_file(
+        left, right, from_side, from_path, to_side, to_cwd, name, from_remote, to_remote, events, wake,
+    )
+    .await
+}
+
+async fn transfer_file(
+    left: &Option<SftpConnection>,
+    right: &Option<SftpConnection>,
+    from_side: SftpSide,
+    from_path: &str,
+    to_side: SftpSide,
+    to_cwd: &str,
+    name: &str,
+    from_remote: bool,
+    to_remote: bool,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
     let to_path_remote = join_remote(to_cwd, name);
     let to_path_local = PathBuf::from(to_cwd).join(name);
     let from_path_local = PathBuf::from(from_path);
@@ -812,6 +893,492 @@ async fn transfer(
             Ok(())
         }
     }
+}
+
+/// Copy a directory tree by staging through a zip archive:
+/// zip source → transfer the zip → unzip at destination.
+async fn transfer_folder(
+    left: &Option<SftpConnection>,
+    right: &Option<SftpConnection>,
+    from_side: SftpSide,
+    from_path: &str,
+    to_side: SftpSide,
+    to_cwd: &str,
+    name: &str,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    let from_remote = side_is_remote(left, right, from_side);
+    let to_remote = side_is_remote(left, right, to_side);
+
+    let zip_path = std::env::temp_dir().join(format!(
+        "terminus-sftp-folder-{}-{}-{}.{}",
+        std::process::id(),
+        uuid::Uuid::new_v4(),
+        sanitize_temp_name(name),
+        if from_remote { "tar.gz" } else { "zip" }
+    ));
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Zipping {name}…"),
+            done: 0,
+            total: 0,
+        },
+    );
+
+    let pack_result = if from_remote {
+        let conn = conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
+        zip_remote_tree(conn, from_path, name, &zip_path, events, wake).await
+    } else {
+        let src = PathBuf::from(from_path);
+        let zip = zip_path.clone();
+        let root = name.to_string();
+        tokio::task::spawn_blocking(move || zip_local_tree(&src, &root, &zip))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    if let Err(err) = pack_result {
+        let _ = tokio::fs::remove_file(&zip_path).await;
+        return Err(err);
+    }
+
+    let zip_len = tokio::fs::metadata(&zip_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Zip ready ({zip_len} bytes)"),
+            done: 0,
+            total: zip_len,
+        },
+    );
+
+    // Remote dest: upload zip to remote /tmp and unzip via SSH exec.
+    // Local dest: unzip straight from the staged archive.
+    if to_remote {
+        let conn = conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
+        let unzip = match archive_remote_extract(conn, &zip_path, to_cwd, name, events, wake)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(_exec_err) => {
+                emit(
+                    events,
+                    wake,
+                    SftpEvent::TransferProgress {
+                        label: format!("Unpacking {name} via SFTP…"),
+                        done: 0,
+                        total: zip_len,
+                    },
+                );
+                unzip_to_remote(conn, &zip_path, to_cwd, events, wake).await
+            }
+        };
+        let _ = tokio::fs::remove_file(&zip_path).await;
+        unzip?;
+    } else {
+        emit(
+            events,
+            wake,
+            SftpEvent::TransferProgress {
+                label: format!("Unpacking {name}…"),
+                done: 0,
+                total: zip_len,
+            },
+        );
+        let dest = PathBuf::from(to_cwd);
+        let archive = zip_path.clone();
+        let unzip = tokio::task::spawn_blocking(move || extract_local_archive(&archive, &dest))
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tokio::fs::remove_file(&zip_path).await;
+        unzip??;
+    }
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Copied folder {name}"),
+            done: zip_len,
+            total: zip_len,
+        },
+    );
+    Ok(())
+}
+
+fn sanitize_temp_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn zip_options() -> zip::write::SimpleFileOptions {
+    zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644)
+}
+
+fn zip_local_tree(src: &Path, root_name: &str, zip_path: &Path) -> Result<(), String> {
+    let file = std::fs::File::create(zip_path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip_options();
+    zip.add_directory(format!("{root_name}/"), options)
+        .map_err(|e| e.to_string())?;
+    zip_local_dir_recursive(&mut zip, src, root_name, options)?;
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn zip_local_dir_recursive(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    dir: &Path,
+    prefix: &str,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let rel = format!("{prefix}/{name}");
+        let path = entry.path();
+        let ft = entry.file_type().map_err(|e| e.to_string())?;
+        if ft.is_dir() {
+            zip.add_directory(format!("{rel}/"), options)
+                .map_err(|e| e.to_string())?;
+            zip_local_dir_recursive(zip, &path, &rel, options)?;
+        } else if ft.is_file() {
+            zip.start_file(&rel, options).map_err(|e| e.to_string())?;
+            let mut input = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut input, zip).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+async fn zip_remote_tree(
+    conn: &SftpConnection,
+    remote_path: &str,
+    root_name: &str,
+    zip_path: &Path,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    // Create one archive on the remote (next to the folder, SFTP-visible), then
+    // download that single file. Never fall back to per-file download.
+    let remote_zip = archive_remote_create(conn, remote_path, root_name, events, wake).await?;
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Downloading {root_name} archive…"),
+            done: 0,
+            total: 0,
+        },
+    );
+    let download = transfer_download(conn, &remote_zip, zip_path, events, wake).await;
+    let _ = conn.remove(&remote_zip).await;
+    download?;
+    Ok(())
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn remote_basename(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    trimmed
+        .rsplit_once('/')
+        .map(|(_, name)| name.to_string())
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+/// Create an archive of `remote_path` on the remote host via SSH exec.
+///
+/// The archive is written next to the folder (SFTP-visible), not only in `/tmp`,
+/// so the subsequent SFTP download works even with chrooted SFTP homes.
+async fn archive_remote_create(
+    conn: &SftpConnection,
+    remote_path: &str,
+    root_name: &str,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<String, String> {
+    let parent = parent_remote(remote_path);
+    let base = remote_basename(remote_path);
+    let id = uuid::Uuid::new_v4();
+    // Prefer sibling of the folder (same SFTP namespace). Fall back to /tmp only
+    // when parent is "/" (still try HOME afterwards in the script).
+    let out_tar = if parent == "/" {
+        format!("/tmp/terminus-xfer-{id}.tar.gz")
+    } else {
+        join_remote(&parent, &format!(".terminus-xfer-{id}.tar.gz"))
+    };
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Archiving {root_name} on server…"),
+            done: 0,
+            total: 0,
+        },
+    );
+
+    // Always use tar.gz (ubiquitous; keeps local extension consistent).
+    // TERMINUS_ARCHIVE_* markers keep the mock SFTP server in sync.
+    let script = format!(
+        r#"
+# terminus-sftp-archive-v1
+TERMINUS_ARCHIVE_MODE='create'
+TERMINUS_ARCHIVE_PARENT={parent}
+TERMINUS_ARCHIVE_BASE={base}
+TERMINUS_ARCHIVE_OUT={out_tar}
+set -euo pipefail
+PARENT={parent}
+BASE={base}
+OUT={out_tar}
+mkdir -p "$PARENT" 2>/dev/null || true
+if [ ! -d "$PARENT/$BASE" ]; then
+  echo "missing directory: $PARENT/$BASE" >&2
+  exit 2
+fi
+tar -C "$PARENT" -czf "$OUT" "$BASE"
+test -s "$OUT"
+printf '%s\n' "$OUT"
+"#,
+        parent = shell_quote(&parent),
+        base = shell_quote(&base),
+        out_tar = shell_quote(&out_tar),
+    );
+
+    let (code, stdout, stderr) = conn.exec(&script).await.map_err(|e| e.to_string())?;
+    if code != 0 {
+        return Err(format!(
+            "remote archive failed (exit {code}): {}",
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    let remote_zip = String::from_utf8_lossy(&stdout).trim().to_string();
+    if remote_zip.is_empty() {
+        return Err("remote archive produced no path".into());
+    }
+    Ok(remote_zip)
+}
+
+/// Upload a local archive to the remote and extract into `to_cwd` via SSH exec.
+async fn archive_remote_extract(
+    conn: &SftpConnection,
+    local_archive: &Path,
+    to_cwd: &str,
+    name: &str,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    let id = uuid::Uuid::new_v4();
+    let ext = if local_archive
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
+        || local_archive
+            .to_string_lossy()
+            .ends_with(".tar.gz")
+    {
+        "tar.gz"
+    } else {
+        "zip"
+    };
+    let remote_zip = if to_cwd == "/" {
+        format!("/tmp/terminus-xfer-{id}.{ext}")
+    } else {
+        join_remote(to_cwd, &format!(".terminus-xfer-{id}.{ext}"))
+    };
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Uploading {name} archive…"),
+            done: 0,
+            total: 0,
+        },
+    );
+    transfer_upload(conn, local_archive, &remote_zip, events, wake).await?;
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Unpacking {name} on server…"),
+            done: 0,
+            total: 0,
+        },
+    );
+
+    let script = format!(
+        r#"
+# terminus-sftp-archive-v1
+TERMINUS_ARCHIVE_MODE='extract'
+TERMINUS_ARCHIVE_PARENT={dest}
+TERMINUS_ARCHIVE_BASE={base}
+TERMINUS_ARCHIVE_OUT={zip}
+set -euo pipefail
+DEST={dest}
+ZIP={zip}
+mkdir -p "$DEST"
+case "$ZIP" in
+  *.tar.gz|*.tgz)
+    tar -C "$DEST" -xzf "$ZIP"
+    ;;
+  *)
+    if command -v unzip >/dev/null 2>&1; then
+      unzip -qo "$ZIP" -d "$DEST"
+    else
+      echo "unzip not installed and archive is not tar.gz" >&2
+      exit 127
+    fi
+    ;;
+esac
+rm -f "$ZIP"
+"#,
+        dest = shell_quote(to_cwd),
+        base = shell_quote(name),
+        zip = shell_quote(&remote_zip),
+    );
+
+    let (code, _stdout, stderr) = conn.exec(&script).await.map_err(|e| e.to_string())?;
+    let _ = conn.remove(&remote_zip).await;
+    if code != 0 {
+        return Err(format!(
+            "remote unpack failed (exit {code}): {}",
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn unzip_local(zip_path: &Path, dest_cwd: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            continue;
+        };
+        let out = dest_cwd.join(&rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut outfile = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut outfile).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn extract_local_archive(archive: &Path, dest_cwd: &Path) -> Result<(), String> {
+    let name = archive.to_string_lossy();
+    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        std::fs::create_dir_all(dest_cwd).map_err(|e| e.to_string())?;
+        let status = std::process::Command::new("tar")
+            .arg("-C")
+            .arg(dest_cwd)
+            .arg("-xzf")
+            .arg(archive)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("tar extract failed for {}", archive.display()));
+        }
+        Ok(())
+    } else {
+        unzip_local(archive, dest_cwd)
+    }
+}
+
+async fn unzip_to_remote(
+    conn: &SftpConnection,
+    zip_path: &Path,
+    to_cwd: &str,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    use std::io::Read;
+    let zip = zip_path.to_path_buf();
+    let entries: Vec<(String, bool, Vec<u8>)> = tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&zip).map_err(|e| e.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if entry.is_dir() {
+                out.push((rel.trim_end_matches('/').to_string(), true, Vec::new()));
+            } else {
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).map_err(|e| e.to_string())?;
+                out.push((rel, false, data));
+            }
+        }
+        Ok::<_, String>(out)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let total = entries.len() as u64;
+    for (i, (rel, is_dir, data)) in entries.into_iter().enumerate() {
+        let remote = if to_cwd == "/" {
+            format!("/{rel}")
+        } else {
+            format!("{}/{}", to_cwd.trim_end_matches('/'), rel)
+        };
+        if is_dir {
+            conn.mkdir_all(&remote)
+                .await
+                .map_err(|e| e.to_string())?;
+        } else {
+            let parent = parent_remote(&remote);
+            if parent != remote {
+                conn.mkdir_all(&parent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            conn.write(&remote, &data)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        emit(
+            events,
+            wake,
+            SftpEvent::TransferProgress {
+                label: format!("Unpacking {rel}"),
+                done: (i as u64).saturating_add(1),
+                total,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Best-effort directory check: local via metadata; remote via `list` succeeding.
@@ -1029,5 +1596,186 @@ mod tests {
             .to_string_lossy()
             .contains("terminus-sftp-edit"));
         assert_eq!(local.file_name().unwrap(), name);
+    }
+
+    #[test]
+    fn transfer_folder_command_exists() {
+        let worker = SftpWorker::spawn(None);
+        let dir = std::env::temp_dir().join(format!(
+            "terminus-sftp-xfer-folder-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let left = dir.join("L");
+        let right = dir.join("R");
+        std::fs::create_dir_all(left.join("tree")).unwrap();
+        std::fs::write(left.join("tree").join("a.txt"), b"a").unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        worker.send(SftpCommand::ListLocal {
+            side: SftpSide::Left,
+            path: left.clone(),
+        });
+        worker.send(SftpCommand::ListLocal {
+            side: SftpSide::Right,
+            path: right.clone(),
+        });
+        for _ in 0..50 {
+            let _ = worker.drain();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        worker.send(SftpCommand::TransferFolder {
+            from_side: SftpSide::Left,
+            from_path: left.join("tree").to_string_lossy().into_owned(),
+            to_side: SftpSide::Right,
+            to_cwd: right.to_string_lossy().into_owned(),
+            name: "tree".into(),
+        });
+        let mut listed = false;
+        for _ in 0..80 {
+            for event in worker.drain() {
+                if let SftpEvent::Listed {
+                    side: SftpSide::Right,
+                    entries,
+                    ..
+                } = event
+                {
+                    if entries.iter().any(|e| e.name == "tree") {
+                        listed = true;
+                    }
+                }
+            }
+            if right.join("tree").join("a.txt").is_file() {
+                listed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            listed && right.join("tree").join("a.txt").is_file(),
+            "TransferFolder should copy the tree"
+        );
+        worker.send(SftpCommand::Close);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transfer_queue_events_desired() {
+        let worker = SftpWorker::spawn(None);
+        let dir = std::env::temp_dir().join(format!(
+            "terminus-sftp-queue-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let left = dir.join("L");
+        let right = dir.join("R");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("payload.bin"), b"xyz").unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        worker.send(SftpCommand::Transfer {
+            from_side: SftpSide::Left,
+            from_path: left.join("payload.bin").to_string_lossy().into_owned(),
+            to_side: SftpSide::Right,
+            to_cwd: right.to_string_lossy().into_owned(),
+            name: "payload.bin".into(),
+        });
+        let mut saw_progress = false;
+        for _ in 0..80 {
+            for event in worker.drain() {
+                if let SftpEvent::TransferProgress { .. } = event {
+                    saw_progress = true;
+                }
+            }
+            if saw_progress && right.join("payload.bin").is_file() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            saw_progress,
+            "transfer should emit TransferProgress queue events"
+        );
+        assert_eq!(std::fs::read(right.join("payload.bin")).unwrap(), b"xyz");
+        worker.send(SftpCommand::Close);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_local_file() {
+        let worker = SftpWorker::spawn(None);
+        let dir = std::env::temp_dir().join(format!(
+            "terminus-sftp-rm-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x.txt");
+        std::fs::write(&file, b"x").unwrap();
+        worker.send(SftpCommand::RemoveLocal {
+            side: SftpSide::Left,
+            path: file.clone(),
+            recursive: false,
+        });
+        let mut listed = false;
+        for _ in 0..50 {
+            for event in worker.drain() {
+                if let SftpEvent::Listed { entries, .. } = event {
+                    assert!(!entries.iter().any(|e| e.name == "x.txt"));
+                    listed = true;
+                }
+            }
+            if listed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(listed);
+        assert!(!file.exists());
+        worker.send(SftpCommand::Close);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transfer_local_to_local() {
+        let worker = SftpWorker::spawn(None);
+        let root = std::env::temp_dir().join(format!(
+            "terminus-sftp-xfer-ll-{}",
+            std::process::id()
+        ));
+        let left = root.join("L");
+        let right = root.join("R");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("p.txt"), b"payload").unwrap();
+        worker.send(SftpCommand::Transfer {
+            from_side: SftpSide::Left,
+            from_path: left.join("p.txt").to_string_lossy().into_owned(),
+            to_side: SftpSide::Right,
+            to_cwd: right.to_string_lossy().into_owned(),
+            name: "p.txt".into(),
+        });
+        let mut ok = false;
+        for _ in 0..80 {
+            for event in worker.drain() {
+                if let SftpEvent::Listed {
+                    side: SftpSide::Right,
+                    entries,
+                    ..
+                } = event
+                {
+                    if entries.iter().any(|e| e.name == "p.txt") {
+                        ok = true;
+                    }
+                }
+            }
+            if ok {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ok);
+        assert_eq!(std::fs::read(right.join("p.txt")).unwrap(), b"payload");
+        worker.send(SftpCommand::Close);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
