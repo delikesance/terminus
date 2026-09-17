@@ -630,7 +630,7 @@ pub async fn probe_ssh_auth(opts: &SshConnectOptions) -> std::result::Result<(),
 /// Terminal tabs use the OpenSSH CLI; SFTP opens an independent russh session
 /// (same auth as the host) and requests the `sftp` subsystem.
 pub struct SftpConnection {
-    _handle: Handle<ClientHandler>,
+    handle: Handle<ClientHandler>,
     session: crate::sftp::SftpSession,
 }
 
@@ -643,6 +643,45 @@ impl SftpConnection {
     /// Mutable borrow of the wrapped session.
     pub fn session_mut(&mut self) -> &mut crate::sftp::SftpSession {
         &mut self.session
+    }
+
+    /// Run a remote command on a new session channel (not the SFTP subsystem).
+    ///
+    /// Returns `(exit_status, stdout, stderr)`.
+    pub async fn exec(&self, command: &str) -> Result<(u32, Vec<u8>, Vec<u8>)> {
+        use russh::ChannelMsg;
+
+        let mut channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| Error::SshError(format!("cannot open exec channel: {e}")))?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| Error::SshError(format!("exec request failed: {e}")))?;
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut code = None;
+        loop {
+            let Some(msg) = channel.wait().await else {
+                break;
+            };
+            match msg {
+                ChannelMsg::Data { ref data } => {
+                    stdout.extend_from_slice(data);
+                }
+                ChannelMsg::ExtendedData { ref data, .. } => {
+                    stderr.extend_from_slice(data);
+                }
+                ChannelMsg::ExitStatus { exit_status } => {
+                    code = Some(exit_status);
+                }
+                _ => {}
+            }
+        }
+        Ok((code.unwrap_or(255), stdout, stderr))
     }
 }
 
@@ -720,7 +759,7 @@ pub async fn connect_sftp(opts: &SshConnectOptions) -> Result<SftpConnection> {
         "SFTP session established"
     );
     Ok(SftpConnection {
-        _handle: handle,
+        handle,
         session,
     })
 }

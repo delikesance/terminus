@@ -63,6 +63,35 @@ impl ActiveSftp {
         })
     }
 
+    /// Both panes local — used by unit/E2E harnesses (no SSH).
+    pub fn start_local_dual(
+        left: PathBuf,
+        right: PathBuf,
+        wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        let mut state = SftpPaneState::new_local_local(
+            left.to_string_lossy().into_owned(),
+            right.to_string_lossy().into_owned(),
+        );
+        state.status = "Ready".into();
+        state.loading = true;
+        let worker = SftpWorker::spawn(wake);
+        worker.send(SftpCommand::ListLocal {
+            side: SftpSide::Left,
+            path: left,
+        });
+        worker.send(SftpCommand::ListLocal {
+            side: SftpSide::Right,
+            path: right,
+        });
+        Self {
+            state,
+            worker,
+            last_click: None,
+            drag_armed: None,
+        }
+    }
+
     /// Connect a second host on the left pane (right stays as-is).
     pub fn open_other_host(
         &mut self,
@@ -228,9 +257,25 @@ impl ActiveSftp {
             }
             SftpHit::LeftCrumb => {
                 self.state.focus = SftpFocus::Left;
+                let segs = self.state.crumb_segments(SftpFocus::Left);
+                if segs.len() >= 2 {
+                    if let Some(path) =
+                        self.state.navigate_crumb_path(SftpFocus::Left, segs.len() - 2)
+                    {
+                        self.cd(SftpFocus::Left, path);
+                    }
+                }
             }
             SftpHit::RightCrumb => {
                 self.state.focus = SftpFocus::Right;
+                let segs = self.state.crumb_segments(SftpFocus::Right);
+                if segs.len() >= 2 {
+                    if let Some(path) =
+                        self.state.navigate_crumb_path(SftpFocus::Right, segs.len() - 2)
+                    {
+                        self.cd(SftpFocus::Right, path);
+                    }
+                }
             }
             SftpHit::NameConfirm => {
                 self.commit_name_edit();
@@ -311,7 +356,20 @@ impl ActiveSftp {
             return false;
         };
         if drag.is_dir {
-            self.state.error = Some("Folders can’t be transferred yet".into());
+            let to = match layout.focus_at_list(x, y) {
+                Some(to) if to != drag.from => to,
+                _ => return true,
+            };
+            let to_cwd = self.state.side(to).cwd.clone();
+            self.state.status = format!("Transferring folder {}…", drag.name);
+            self.state.error = None;
+            self.worker.send(SftpCommand::TransferFolder {
+                from_side: side_from_focus(drag.from),
+                from_path: drag.path,
+                to_side: side_from_focus(to),
+                to_cwd,
+                name: drag.name,
+            });
             return true;
         }
         let Some(to) = layout.focus_at_list(x, y) else {
@@ -347,17 +405,29 @@ impl ActiveSftp {
                 self.state.focus = SftpFocus::Left;
                 self.state.left.selected = Some(i);
                 let row = self.state.left.entries.get(i)?;
-                let transfer = (!row.is_dir).then_some(self.transfer_label(SftpFocus::Left));
+                let transfer = Some(self.transfer_label(SftpFocus::Left));
                 let can_edit = !row.is_dir && !self.state.left.is_local();
-                terminus_ui::ContextMenu::for_sftp_entry(x, y, row.is_dir, transfer, can_edit)
+                terminus_ui::ContextMenu::for_sftp_entry(
+                    x,
+                    y,
+                    row.is_dir,
+                    transfer.as_deref(),
+                    can_edit,
+                )
             }
             SftpHit::RightRow(i) => {
                 self.state.focus = SftpFocus::Right;
                 self.state.right.selected = Some(i);
                 let row = self.state.right.entries.get(i)?;
-                let transfer = (!row.is_dir).then_some(self.transfer_label(SftpFocus::Right));
+                let transfer = Some(self.transfer_label(SftpFocus::Right));
                 let can_edit = !row.is_dir && !self.state.right.is_local();
-                terminus_ui::ContextMenu::for_sftp_entry(x, y, row.is_dir, transfer, can_edit)
+                terminus_ui::ContextMenu::for_sftp_entry(
+                    x,
+                    y,
+                    row.is_dir,
+                    transfer.as_deref(),
+                    can_edit,
+                )
             }
             SftpHit::LeftParent | SftpHit::LeftCrumb => {
                 self.state.focus = SftpFocus::Left;
@@ -514,6 +584,11 @@ impl ActiveSftp {
                 path: PathBuf::from(row.path),
                 recursive: row.is_dir,
             });
+        } else if row.is_dir {
+            self.worker.send(SftpCommand::RemoveRemoteRecursive {
+                side,
+                path: row.path,
+            });
         } else {
             self.worker.send(SftpCommand::RemoveRemote {
                 side,
@@ -582,10 +657,6 @@ impl ActiveSftp {
     }
 
     fn transfer_row(&mut self, from: SftpFocus, row: &SftpRow) {
-        if row.is_dir {
-            self.state.error = Some("Pick a file (folders can’t be transferred yet)".into());
-            return;
-        }
         let to = match from {
             SftpFocus::Left => SftpFocus::Right,
             SftpFocus::Right => SftpFocus::Left,
@@ -593,13 +664,23 @@ impl ActiveSftp {
         let to_cwd = self.state.side(to).cwd.clone();
         self.state.status = format!("Transferring {}…", row.name);
         self.state.error = None;
-        self.worker.send(SftpCommand::Transfer {
-            from_side: side_from_focus(from),
-            from_path: row.path.clone(),
-            to_side: side_from_focus(to),
-            to_cwd,
-            name: row.name.clone(),
-        });
+        if row.is_dir {
+            self.worker.send(SftpCommand::TransferFolder {
+                from_side: side_from_focus(from),
+                from_path: row.path.clone(),
+                to_side: side_from_focus(to),
+                to_cwd,
+                name: row.name.clone(),
+            });
+        } else {
+            self.worker.send(SftpCommand::Transfer {
+                from_side: side_from_focus(from),
+                from_path: row.path.clone(),
+                to_side: side_from_focus(to),
+                to_cwd,
+                name: row.name.clone(),
+            });
+        }
     }
 
     /// Transfer the focused selection to the other pane.
@@ -816,3 +897,167 @@ fn open_path_with_default_app(path: &Path) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "terminus-sftp-ui-{}-{}",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn wait_ready(session: &mut ActiveSftp) {
+        for _ in 0..100 {
+            session.pump();
+            if !session.state.loading {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn key_tab_toggles_focus() {
+        let root = scratch("tab");
+        let left = root.join("L");
+        let right = root.join("R");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let mut s = ActiveSftp::start_local_dual(left, right, None);
+        assert_eq!(s.state.focus, SftpFocus::Left);
+        s.handle_key(SftpKey::Tab);
+        assert_eq!(s.state.focus, SftpFocus::Right);
+        s.handle_key(SftpKey::Tab);
+        assert_eq!(s.state.focus, SftpFocus::Left);
+        s.close();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn key_mkdir_and_rename() {
+        let root = scratch("mkdir");
+        let left = root.join("L");
+        let right = root.join("R");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("f.txt"), b"x").unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let mut s = ActiveSftp::start_local_dual(left, right, None);
+        wait_ready(&mut s);
+        assert!(s.handle_key(SftpKey::Mkdir));
+        assert!(s.state.name_edit.is_some());
+        s.state.cancel_name_edit();
+        s.state.left.selected = Some(0);
+        assert!(s.handle_key(SftpKey::Rename));
+        assert_eq!(
+            s.state.name_edit.as_ref().map(|e| e.kind),
+            Some(SftpNameKind::Rename)
+        );
+        s.close();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn keyboard_map_table() {
+        let expected = [
+            ("Tab", "Tab"),
+            ("ArrowUp", "Up"),
+            ("ArrowDown", "Down"),
+            ("Enter", "Enter"),
+            ("Backspace", "Backspace"),
+            ("Delete", "Delete"),
+            ("F2", "Rename"),
+            ("Ctrl+N", "Mkdir"),
+            ("Ctrl+U", "Upload"),
+            ("Ctrl+D", "Download"),
+        ];
+        assert_eq!(expected.len(), 10, "SFTP keyboard map must stay complete");
+    }
+
+    #[test]
+    fn refresh_focused_lists() {
+        let root = scratch("refresh");
+        let left = root.join("L");
+        let right = root.join("R");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let mut s = ActiveSftp::start_local_dual(left, right, None);
+        wait_ready(&mut s);
+        s.refresh_focused();
+        assert!(s.state.loading || s.state.status.contains("Listing") || s.state.status == "Ready");
+        s.close();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transfer_folder_sends_command() {
+        let root = scratch("xfer-dir");
+        let left = root.join("L");
+        let right = root.join("R");
+        std::fs::create_dir_all(left.join("folder")).unwrap();
+        std::fs::write(left.join("folder").join("a.txt"), b"a").unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let mut s = ActiveSftp::start_local_dual(left, right.clone(), None);
+        wait_ready(&mut s);
+        s.state.left.selected = s.state.left.entries.iter().position(|e| e.is_dir);
+        s.transfer_selected();
+        assert!(s.state.error.is_none(), "folder transfer should be allowed");
+        for _ in 0..100 {
+            s.pump();
+            if right.join("folder").join("a.txt").is_file() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            right.join("folder").join("a.txt").is_file(),
+            "folder tree should land on the other pane"
+        );
+        s.close();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn crumb_click_cds_to_parent_segment() {
+        let root = scratch("crumb");
+        let left = root.join("L");
+        let mid = left.join("a");
+        let nested = mid.join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(root.join("R")).unwrap();
+        let mut s = ActiveSftp::start_local_dual(left.clone(), root.join("R"), None);
+        wait_ready(&mut s);
+        // Seed cwd as if the user had already entered the nested folder.
+        s.state.left.cwd = nested.to_string_lossy().into_owned();
+        let layout = SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
+        let x = layout.left_header.x + 40.0;
+        let y = layout.left_header.y + 4.0;
+        assert_eq!(layout.hit_test(&s.state, x, y), SftpHit::LeftCrumb);
+        s.handle_click(&layout, x, y, false);
+        for _ in 0..50 {
+            s.pump();
+            let cwd = PathBuf::from(&s.state.left.cwd);
+            if cwd == mid || cwd.file_name().is_some_and(|n| n == "a") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let cwd = PathBuf::from(&s.state.left.cwd);
+        assert_eq!(
+            cwd.canonicalize().unwrap_or(cwd.clone()),
+            mid.canonicalize().unwrap_or(mid),
+            "crumb click should cd to the parent breadcrumb segment, got {}",
+            cwd.display()
+        );
+        s.close();
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+

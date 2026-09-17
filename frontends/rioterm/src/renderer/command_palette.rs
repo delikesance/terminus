@@ -129,6 +129,8 @@ pub enum PaletteAction {
     /// Browse stored SSH hosts. Same stay-open mode-switch pattern as
     /// [`Self::ListFonts`]. Enter on a host opens a session.
     ListHosts,
+    /// Open the SFTP dual-pane for a host (roadmap 2.4 — not wired yet).
+    OpenSftp,
     Quit,
 }
 
@@ -263,6 +265,11 @@ const COMMANDS: &[Command] = &[
         title: "Open Host…",
         shortcut: "",
         action: PaletteAction::ListHosts,
+    },
+    Command {
+        title: "Open SFTP",
+        shortcut: "",
+        action: PaletteAction::OpenSftp,
     },
     Command {
         title: "Quit",
@@ -1434,6 +1441,21 @@ mod tests {
         assert_eq!(
             palette.get_selected_action(),
             Some(PaletteAction::ListFonts)
+        );
+    }
+
+    #[test]
+    fn sftp_action_listed() {
+        let mut palette = CommandPalette::new();
+        palette.set_query("sftp".to_string());
+        let filtered = palette.filtered_rows();
+        let found = filtered.iter().any(|(_, row)| {
+            matches!(row.action(), Some(PaletteAction::OpenSftp))
+                || row.title().to_lowercase().contains("sftp")
+        });
+        assert!(
+            found,
+            "SFTP: Palette >sftp — not implemented yet"
         );
     }
 }
