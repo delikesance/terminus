@@ -20,6 +20,7 @@ depends:
   - libXcursor
   - libXi
   - libXrandr
+  - krb5-libs
 contents:
   - src: ./target/release/rio
     dst: /usr/bin/rio
