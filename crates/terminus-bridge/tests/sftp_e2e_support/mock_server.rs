@@ -275,23 +275,14 @@ fn mock_run_exec(root: &Path, script: &str) -> (u32, Vec<u8>, Vec<u8>) {
                 );
             }
             let is_tar = meta.out.ends_with(".tar.gz") || meta.out.ends_with(".tgz");
+            let root_name = if meta.name.is_empty() {
+                meta.base.clone()
+            } else {
+                meta.name.clone()
+            };
             let result = if is_tar {
-                std::process::Command::new("tar")
-                    .arg("-C")
-                    .arg(&parent)
-                    .arg("-czf")
-                    .arg(&out)
-                    .arg(&meta.base)
-                    .status()
-                    .map(|s| {
-                        if s.success() {
-                            Ok(())
-                        } else {
-                            Err("tar create failed".into())
-                        }
-                    })
-                    .unwrap_or_else(|e| Err(e.to_string()))
-            } else if which_zip() {
+                mock_tar_create(&parent, &meta.base, &root_name, &out)
+            } else if which_zip() && root_name == meta.base {
                 std::process::Command::new("sh")
                     .arg("-c")
                     .arg(format!(
@@ -310,7 +301,7 @@ fn mock_run_exec(root: &Path, script: &str) -> (u32, Vec<u8>, Vec<u8>) {
                     })
                     .unwrap_or_else(|e| Err(e.to_string()))
             } else {
-                mock_zip_dir(&src, &meta.base, &out)
+                mock_zip_dir(&src, &root_name, &out)
             };
             match result {
                 Ok(()) => (0, format!("{}\n", meta.out).into_bytes(), Vec::new()),
@@ -367,6 +358,61 @@ fn mock_run_exec(root: &Path, script: &str) -> (u32, Vec<u8>, Vec<u8>) {
             format!("unknown archive mode: {other}").into_bytes(),
         ),
     }
+}
+
+fn mock_tar_create(
+    parent: &Path,
+    base: &str,
+    root_name: &str,
+    out: &Path,
+) -> Result<(), String> {
+    if root_name == base {
+        return std::process::Command::new("tar")
+            .arg("-C")
+            .arg(parent)
+            .arg("-czhf")
+            .arg(out)
+            .arg(base)
+            .status()
+            .map(|s| {
+                if s.success() {
+                    Ok(())
+                } else {
+                    Err("tar create failed".into())
+                }
+            })
+            .unwrap_or_else(|e| Err(e.to_string()));
+    }
+
+    // Pack under a different root name via a temporary symlink (Unix mock).
+    let link = parent.join(root_name);
+    let _ = fs::remove_file(&link);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(base, &link).map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &link;
+        return Err("renamed tar root requires unix symlink in mock".into());
+    }
+    let status = std::process::Command::new("tar")
+        .arg("-C")
+        .arg(parent)
+        .arg("-czhf")
+        .arg(out)
+        .arg(root_name)
+        .status();
+    let _ = fs::remove_file(&link);
+    status
+        .map(|s| {
+            if s.success() {
+                Ok(())
+            } else {
+                Err("tar create failed".into())
+            }
+        })
+        .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 fn mock_zip_dir(src: &Path, root_name: &str, zip_path: &Path) -> Result<(), String> {
@@ -427,6 +473,8 @@ struct ArchiveMeta {
     mode: String,
     parent: String,
     base: String,
+    /// Desired root name inside the archive (defaults to `base`).
+    name: String,
     out: String,
 }
 
@@ -437,6 +485,7 @@ fn parse_archive_meta(script: &str) -> Option<ArchiveMeta> {
     let mut mode = None;
     let mut parent = None;
     let mut base = None;
+    let mut name = None;
     let mut out = None;
     for line in script.lines() {
         let line = line.trim();
@@ -446,14 +495,19 @@ fn parse_archive_meta(script: &str) -> Option<ArchiveMeta> {
             parent = Some(unquote(v));
         } else if let Some(v) = line.strip_prefix("TERMINUS_ARCHIVE_BASE=") {
             base = Some(unquote(v));
+        } else if let Some(v) = line.strip_prefix("TERMINUS_ARCHIVE_NAME=") {
+            name = Some(unquote(v));
         } else if let Some(v) = line.strip_prefix("TERMINUS_ARCHIVE_OUT=") {
             out = Some(unquote(v));
         }
     }
+    let base = base.unwrap_or_default();
+    let name = name.unwrap_or_else(|| base.clone());
     Some(ArchiveMeta {
         mode: mode?,
         parent: parent?,
-        base: base.unwrap_or_default(),
+        base,
+        name,
         out: out?,
     })
 }
