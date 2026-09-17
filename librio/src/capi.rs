@@ -1680,12 +1680,14 @@ mod color_tests {
         assert_eq!(c.kind, RIO_COLOR_NAMED);
         assert_eq!((c.r, c.g, c.b), (0xff, 0x12, 0x61));
 
+        // Default background matches `rio_vt::config::colors::defaults::background`
+        // (#18181b — Terminus / zinc dark).
         let bg = color_to_c(AnsiColor::Named(NamedColor::Background));
-        assert_eq!((bg.r, bg.g, bg.b), (0x0f, 0x0d, 0x0e));
+        assert_eq!((bg.r, bg.g, bg.b), (0x18, 0x18, 0x1b));
 
-        // Rio's signature pink cursor.
+        // Default cursor (#0A84FF).
         let cur = color_to_c(AnsiColor::Named(NamedColor::Cursor));
-        assert_eq!((cur.r, cur.g, cur.b), (0xf7, 0x12, 0xff));
+        assert_eq!((cur.r, cur.g, cur.b), (0x0a, 0x84, 0xff));
 
         // Swap in a scheme and every resolution path follows it.
         let mut scheme = rio_colors_s {
