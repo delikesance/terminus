@@ -303,7 +303,9 @@ pub fn render_cpu(
 
     let vertices = renderer.vertices();
     let quad_instances = renderer.instances();
+    let overlay_quads = renderer.overlay_instances();
     let text_instances = text.instances();
+    let overlay_text = text.overlay_instances();
 
     // Frame skip.
     //
@@ -329,6 +331,8 @@ pub fn render_cpu(
         h.write(bytes);
         let inst_bytes: &[u8] = bytemuck::cast_slice(quad_instances);
         h.write(inst_bytes);
+        let overlay_inst_bytes: &[u8] = bytemuck::cast_slice(overlay_quads);
+        h.write(overlay_inst_bytes);
         for (grid, uniforms) in grids.iter() {
             h.write(bytemuck::bytes_of(uniforms));
             if let crate::grid::GridRenderer::Cpu(cpu_grid) = &**grid {
@@ -364,6 +368,16 @@ pub fn render_cpu(
                 std::slice::from_raw_parts(
                     text_instances.as_ptr() as *const u8,
                     std::mem::size_of_val(text_instances),
+                )
+            };
+            h.write(bytes);
+        }
+        h.write_usize(overlay_text.len());
+        if !overlay_text.is_empty() {
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    overlay_text.as_ptr() as *const u8,
+                    std::mem::size_of_val(overlay_text),
                 )
             };
             h.write(bytes);
@@ -553,7 +567,26 @@ pub fn render_cpu(
     // UI text pass — tab labels, search, command palette, assistant,
     // island, etc. Sits on top of grids + UI quads so labels never
     // get hidden by panel borders or the cursor.
+    //
+    // Frame order (post-grid):
+    //   1. normal quads  2. normal UI text
+    //   3. overlay quads 4. overlay UI text
     text.render_cpu(&mut buffer, ctx.width_px, ctx.height_px);
+
+    // Overlay quads (modal chrome) then overlay UI text.
+    if !overlay_quads.is_empty() {
+        let buf_slice: &mut [u32] = &mut buffer;
+        for inst in overlay_quads {
+            if inst.layers[0] != 0 || inst.layers[1] != 0 {
+                continue;
+            }
+            if inst.underline_style > 1 {
+                continue;
+            }
+            draw_quad_instance(buf_slice, buf_w, buf_h, inst);
+        }
+    }
+    text.render_overlay_cpu(&mut buffer, ctx.width_px, ctx.height_px);
 
     if let Err(e) = buffer.present() {
         tracing::error!("softbuffer present failed: {e}");

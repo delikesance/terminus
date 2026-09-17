@@ -65,8 +65,13 @@ const MAX_SEARCH_WHILE_TYPING: Option<usize> = Some(1000);
 /// Maximum number of search terms stored in the history.
 const MAX_SEARCH_HISTORY_SIZE: usize = 255;
 
-/// The shell that opens an SSH host: the system `ssh`, the way a terminal
-/// would run it.
+/// Build the local PTY program for an SSH host tab (**accepted MVP path**).
+///
+/// **Architecture decision (Option A, see `milestone.md`):** interactive shells
+/// spawn the system `ssh` binary in a local PTY. They do **not** use
+/// [`terminus_bridge::ssh_transport::SshTransport`] / `SessionSpec::Ssh`. SFTP
+/// keeps its dedicated russh worker. Unifying on russh is tracked as roadmap
+/// item **1.4-debt**.
 ///
 /// The port is always passed, default included: the row shows a port and the
 /// command uses the same one, so a host that is *not* on 22 cannot silently
@@ -745,10 +750,18 @@ impl Screen<'_> {
             &open_host_ids,
             &sessions,
         );
-        let rows_changed = rows != self.chrome.panel.rows;
+        let mut rows_changed = rows != self.chrome.panel.rows;
         if rows_changed {
             self.chrome.set_rows(rows);
         }
+
+        let snips = self.host_store.snippet_items.clone();
+        if snips != self.chrome.snippets.items {
+            self.chrome.snippets.items = snips;
+            self.chrome.snippet_form.inner.closing = true;
+            rows_changed = true;
+        }
+
 
         if !store_changed && !rows_changed {
             return false;
@@ -794,6 +807,9 @@ impl Screen<'_> {
                 }
                 if self.chrome.add_host_is_open() {
                     self.chrome.form.close();
+                }
+                if self.chrome.add_snippet_is_open() {
+                    self.chrome.snippet_form.inner.closing = true;
                 }
             }
             if let Some(message) = self.host_store.error().map(str::to_string) {
@@ -1183,6 +1199,67 @@ impl Screen<'_> {
     }
 
     /// Forward composed (IME) text to the editor.
+
+    pub fn chrome_snippet_key_input(
+        &mut self,
+        key_event: &rio_window::event::KeyEvent,
+    ) -> Option<terminus_ui::add_snippet::FormOutcome> {
+        use rio_window::event::ElementState;
+        use rio_window::keyboard::{Key, NamedKey};
+        use terminus_ui::add_snippet::{FormInput, FormOutcome};
+
+        if key_event.state != ElementState::Pressed {
+            return None;
+        }
+
+        let input = match &key_event.logical_key {
+            Key::Named(NamedKey::Backspace) => FormInput::Backspace,
+            Key::Named(NamedKey::Delete) => FormInput::Delete,
+            Key::Named(NamedKey::Tab) => {
+                if self.modifiers.state().shift_key() {
+                    FormInput::Previous
+                } else {
+                    FormInput::Next
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => FormInput::Left,
+            Key::Named(NamedKey::ArrowRight) => FormInput::Right,
+            Key::Named(NamedKey::Home) => FormInput::Home,
+            Key::Named(NamedKey::End) => FormInput::End,
+            Key::Named(NamedKey::ArrowDown) => FormInput::Next,
+            Key::Named(NamedKey::ArrowUp) => FormInput::Previous,
+            Key::Named(NamedKey::Enter) => FormInput::Enter,
+            Key::Named(NamedKey::Escape) => FormInput::Escape,
+            Key::Character(s) => match s.as_str() {
+                // Ignore raw control characters that bypass the IME
+                // (Ctrl+C, Ctrl+V).
+                s if s.chars().all(|c| c.is_ascii_control()) => return None,
+                _ => FormInput::Text,
+            },
+            _ => return Some(FormOutcome::Ignored),
+        };
+
+        let text = if input == FormInput::Text {
+            key_event.text.as_deref().unwrap_or_default()
+        } else {
+            ""
+        };
+        self.chrome.handle_snippet_form_input(input, text)
+    }
+
+    pub fn submit_snippet_form(&mut self) {
+        let values = self.chrome.snippet_form.values();
+        self.host_store.create_snippet(
+            terminus_ui::snippets::SnippetItem {
+                id: "".to_string(), // new UUID generated in host thread
+                name: values.name,
+                cmd: values.command,
+                desc: values.description,
+            }
+        );
+        self.chrome.snippet_form.inner.closing = true;
+    }
+
     pub fn chrome_commit_text(&mut self, text: &str) -> bool {
         if !self.chrome.add_host_is_open() {
             return false;
@@ -2435,6 +2512,8 @@ impl Screen<'_> {
                         // re-firing while the palette is already open
                         // must NOT wipe the user's in-progress query.
                         if !self.renderer.command_palette.is_enabled() {
+                            let hosts = self.palette_host_items();
+                            self.renderer.command_palette.set_hosts(hosts);
                             self.renderer.command_palette.set_enabled(true);
                             self.mark_dirty();
                         }
@@ -2709,6 +2788,9 @@ impl Screen<'_> {
     }
 
     /// Open the session a sidebar row stands for.
+    ///
+    /// SSH hosts use the OpenSSH CLI MVP (`ssh_shell`); see that helper's docs
+    /// and `milestone.md` (Option A / 1.4-debt).
     ///
     /// Returns the message to show the user when it cannot open: the panel
     /// has one error line, and a row that does nothing at all is the one
@@ -4310,15 +4392,8 @@ impl Screen<'_> {
             scale_factor,
         ) {
             Ok(Some(index)) => {
-                // Clicked a result row — select and execute
-                if let Some(action) = {
-                    // Temporarily set selected index to the clicked row
-                    self.renderer.command_palette.selected_index = index;
-                    self.renderer.command_palette.get_selected_action()
-                } {
-                    self.renderer.command_palette.set_enabled(false);
-                    self.execute_palette_action(action, clipboard);
-                }
+                self.renderer.command_palette.selected_index = index;
+                self.confirm_palette_selection(clipboard);
                 self.mark_dirty();
                 true
             }
@@ -4331,6 +4406,59 @@ impl Screen<'_> {
                 self.renderer.command_palette.set_enabled(false);
                 self.mark_dirty();
                 true
+            }
+        }
+    }
+
+    /// Snapshot stored SSH hosts for the command palette.
+    pub fn palette_host_items(&self) -> Vec<crate::renderer::command_palette::HostPaletteItem> {
+        self.host_store
+            .hosts()
+            .iter()
+            .map(|h| crate::renderer::command_palette::HostPaletteItem {
+                id: h.id.clone(),
+                title: h.name.clone(),
+                subtitle: h.endpoint(),
+            })
+            .collect()
+    }
+
+    /// Enter / click confirmation for the open command palette.
+    ///
+    /// Handles host open, font copy, mode switches (ListFonts / ListHosts),
+    /// and one-shot actions — shared by keyboard and mouse so they cannot drift.
+    pub fn confirm_palette_selection(&mut self, clipboard: &mut Clipboard) {
+        use crate::renderer::command_palette::PaletteAction;
+
+        if let Some(host_id) = self.renderer.command_palette.get_selected_host_id() {
+            self.renderer.command_palette.set_enabled(false);
+            if let Err(err) = self.open_host_session(&host_id, clipboard) {
+                self.chrome.panel.error = Some(err);
+            }
+            return;
+        }
+
+        if let Some(font) = self.renderer.command_palette.get_selected_font() {
+            clipboard.set(ClipboardType::Clipboard, font);
+            self.renderer.command_palette.set_enabled(false);
+            return;
+        }
+
+        match self.renderer.command_palette.get_selected_action() {
+            Some(PaletteAction::ListFonts) => {
+                let fonts = self.sugarloaf.font_family_names();
+                self.renderer.command_palette.enter_fonts_mode(fonts);
+            }
+            Some(PaletteAction::ListHosts) => {
+                let hosts = self.palette_host_items();
+                self.renderer.command_palette.enter_hosts_mode(hosts);
+            }
+            Some(action) => {
+                self.renderer.command_palette.set_enabled(false);
+                self.execute_palette_action(action, clipboard);
+            }
+            None => {
+                self.renderer.command_palette.set_enabled(false);
             }
         }
     }
@@ -5724,11 +5852,12 @@ impl Screen<'_> {
                 terminal.clear_saved_history();
             }
             PaletteAction::ListFonts => {
-                // Handled in the router: switches the palette into fonts
-                // mode and keeps it open. If we land here it's either a
-                // bug (router should have intercepted) or an external
-                // caller firing the action directly — do nothing so the
-                // palette just closes without side effects.
+                // Handled in confirm_palette_selection: switches into fonts
+                // mode and keeps the palette open. If we land here it's a
+                // no-op so the palette just closes without side effects.
+            }
+            PaletteAction::ListHosts => {
+                // Same stay-open mode switch as ListFonts (confirm path).
             }
             PaletteAction::Quit => {
                 self.context_manager.quit();

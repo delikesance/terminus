@@ -590,6 +590,8 @@ fn host_from_draft(draft: &HostDraft) -> Host {
 
 enum Command {
     Refresh,
+    CreateSnippet(terminus_ui::snippets::SnippetItem),
+    DeleteSnippet(String),
     /// Persist without SSH probe (tests / legacy).
     Create(HostDraft),
     /// Probe SSH, then persist (+ seal password) on success.
@@ -655,6 +657,7 @@ enum Command {
 /// Answers coming back from the worker.
 #[derive(Debug)]
 enum HostEvent {
+    SnippetsLoaded(Vec<terminus_ui::snippets::SnippetItem>),
     Loaded(Vec<HostRow>),
     GroupsLoaded(Vec<(String, String, i64)>),
     IdentitiesLoaded(Vec<(String, String, String, String)>),
@@ -689,6 +692,7 @@ pub struct HostRepository {
     /// `(id, name, fingerprint)` for Settings + add-host picker.
     identities: Vec<(String, String, String, String)>,
     platform: PlatformFacts,
+    pub snippet_items: Vec<terminus_ui::snippets::SnippetItem>,
     loading: bool,
     /// Commands sent but not yet answered.
     in_flight: usize,
@@ -727,6 +731,7 @@ impl HostRepository {
             hosts: Vec::new(),
             groups: Vec::new(),
             identities: Vec::new(),
+            snippet_items: Vec::new(),
             platform: PlatformFacts::default(),
             loading: true,
             in_flight: 1,
@@ -760,6 +765,15 @@ impl HostRepository {
 
     pub fn vault_unlocked(&self) -> bool {
         self.vault_unlocked
+    }
+
+
+    pub fn create_snippet(&mut self, snippet: terminus_ui::snippets::SnippetItem) {
+        let _ = self.commands.send(Command::CreateSnippet(snippet));
+    }
+    
+    pub fn delete_snippet(&mut self, id: String) {
+        let _ = self.commands.send(Command::DeleteSnippet(id));
     }
 
     pub fn take_vault_message(&mut self) -> Option<String> {
@@ -1073,6 +1087,10 @@ impl HostRepository {
                     self.error = Some(message);
                     changed = true;
                 }
+                Ok(HostEvent::SnippetsLoaded(snippets)) => {
+                    self.snippet_items = snippets;
+                }
+                Ok(HostEvent::SnippetsLoaded(_)) => {}
                 Ok(HostEvent::VaultStatus { unlocked, message }) => {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.vault_unlocked = unlocked;
@@ -1191,6 +1209,7 @@ fn worker(
                 let _ = events.send(list(&runtime, &store));
                 let _ = events.send(list_groups(&runtime, &store));
                 let _ = events.send(list_identities(&runtime, &store));
+                let _ = events.send(list_snippets(&runtime, &store));
                 let _ = events.send(sync_status_event(
                     &runtime,
                     &sync_engine,
@@ -1248,6 +1267,52 @@ fn worker(
                     }
                 }
             }
+
+            Command::CreateSnippet(item) => {
+                let r = runtime.block_on(async {
+                    let snippet = terminus_core::models::Snippet {
+                        id: uuid::Uuid::new_v4(),
+                        title: item.name,
+                        content: item.cmd,
+                        tags: Vec::new(),
+                        shortcut: Some(item.desc),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                        deleted_at: None,
+                    };
+                    store.upsert_snippet(&snippet).await
+                });
+                match r {
+                    Ok(_) => {
+                        let _ = events.send(HostEvent::Stored("Saved snippet".into()));
+                        let _ = events.send(list_snippets(&runtime, &store));
+                    }
+                    Err(e) => {
+                        let _ = events.send(HostEvent::Failed(e.to_string()));
+                    }
+                }
+            }
+            Command::DeleteSnippet(id_str) => {
+                let r = runtime.block_on(async {
+                    if let Ok(id_uuid) = uuid::Uuid::parse_str(&id_str) {
+                        let mut all = store.list_snippets().await.unwrap_or_default();
+                        if let Some(mut snip) = all.into_iter().find(|s| s.id == id_uuid) {
+                            snip.deleted_at = Some(chrono::Utc::now());
+                            return store.upsert_snippet(&snip).await;
+                        }
+                    }
+                    Ok(())
+                });
+                match r {
+                    Ok(_) => {
+                        let _ = events.send(list_snippets(&runtime, &store));
+                    }
+                    Err(e) => {
+                        let _ = events.send(HostEvent::Failed(e.to_string()));
+                    }
+                }
+            }
+
             Command::CreateGroup(name) => {
                 let now = Utc::now();
                 let sort_order = match runtime.block_on(store.next_group_sort_order()) {
@@ -1375,6 +1440,7 @@ fn worker(
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(label));
                         let _ = events.send(list_identities(&runtime, &store));
+                let _ = events.send(list_snippets(&runtime, &store));
                     }
                     Err(err) => {
                         let _ = events.send(HostEvent::Failed(err));
@@ -1386,6 +1452,7 @@ fn worker(
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(label));
                         let _ = events.send(list_identities(&runtime, &store));
+                let _ = events.send(list_snippets(&runtime, &store));
                     }
                     Err(err) => {
                         let _ = events.send(HostEvent::Failed(err));
@@ -2815,4 +2882,20 @@ mod tests {
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+
+fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
+    let mut mapped = Vec::new();
+    if let Ok(snippets) = runtime.block_on(store.list_snippets()) {
+        for s in snippets {
+            mapped.push(terminus_ui::snippets::SnippetItem {
+                id: s.id.to_string(),
+                name: s.title,
+                cmd: s.content,
+                desc: s.shortcut.unwrap_or_default(),
+            });
+        }
+    }
+    HostEvent::SnippetsLoaded(mapped)
 }

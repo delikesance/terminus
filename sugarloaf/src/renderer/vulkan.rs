@@ -319,7 +319,21 @@ impl VulkanRenderer {
         viewport: [f32; 2],
         vertices: &[Vertex],
     ) {
-        if vertices.is_empty() {
+        self.render_geometry_layered(cmd, slot, viewport, vertices, &[]);
+    }
+
+    /// Upload `normal` then `overlay` vertices contiguously; draw only
+    /// the normal prefix. See [`Self::draw_overlay_geometry_suffix`].
+    pub fn render_geometry_layered(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        slot: usize,
+        viewport: [f32; 2],
+        normal: &[Vertex],
+        overlay: &[Vertex],
+    ) {
+        let total = normal.len() + overlay.len();
+        if total == 0 {
             return;
         }
         debug_assert!(slot < FRAMES_IN_FLIGHT);
@@ -340,10 +354,8 @@ impl VulkanRenderer {
         }
 
         // Grow per-slot vertex buffer if needed.
-        let vertex_count = vertices.len();
-        let needed_bytes = std::mem::size_of_val(vertices);
-        if vertex_count > self.geometry_vertex_capacity[slot] {
-            let new_cap = vertex_count.next_power_of_two().max(256);
+        if total > self.geometry_vertex_capacity[slot] {
+            let new_cap = total.next_power_of_two().max(256);
             self.geometry_vertex_buffers[slot] = Some(allocate_host_visible_buffer_raw(
                 &self.shared,
                 (new_cap * std::mem::size_of::<Vertex>()) as u64,
@@ -353,11 +365,25 @@ impl VulkanRenderer {
         }
         let vertex_buf = self.geometry_vertex_buffers[slot].as_ref().unwrap();
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                vertices.as_ptr() as *const u8,
-                vertex_buf.as_mut_ptr(),
-                needed_bytes,
-            );
+            if !normal.is_empty() {
+                std::ptr::copy_nonoverlapping(
+                    normal.as_ptr() as *const u8,
+                    vertex_buf.as_mut_ptr(),
+                    std::mem::size_of_val(normal),
+                );
+            }
+            if !overlay.is_empty() {
+                let dst = vertex_buf.as_mut_ptr().add(std::mem::size_of_val(normal));
+                std::ptr::copy_nonoverlapping(
+                    overlay.as_ptr() as *const u8,
+                    dst,
+                    std::mem::size_of_val(overlay),
+                );
+            }
+        }
+
+        if normal.is_empty() {
+            return;
         }
 
         unsafe {
@@ -379,7 +405,48 @@ impl VulkanRenderer {
             // Caller-provided vertices are TRIANGLE_LIST — the emit
             // path tessellates polygons / arcs / lines into
             // triangles before pushing.
-            self.shared.cmd_draw(cmd, vertex_count as u32, 1, 0, 0);
+            self.shared.cmd_draw(cmd, normal.len() as u32, 1, 0, 0);
+        }
+    }
+
+    /// Draw overlay geometry previously uploaded by
+    /// [`Self::render_geometry_layered`].
+    pub fn draw_overlay_geometry_suffix(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        slot: usize,
+        normal_count: usize,
+        overlay_count: usize,
+    ) {
+        if overlay_count == 0 {
+            return;
+        }
+        let Some(vertex_buf) = self.geometry_vertex_buffers[slot].as_ref() else {
+            return;
+        };
+        let byte_offset = (normal_count * std::mem::size_of::<Vertex>()) as u64;
+        unsafe {
+            self.shared.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.geometry_pipeline,
+            );
+            self.shared.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.quad_pipeline_layout,
+                0,
+                &[self.quad_descriptor_sets[slot]],
+                &[],
+            );
+            self.shared.cmd_bind_vertex_buffers(
+                cmd,
+                0,
+                &[vertex_buf.handle()],
+                &[byte_offset],
+            );
+            self.shared
+                .cmd_draw(cmd, overlay_count as u32, 1, 0, 0);
         }
     }
 
@@ -556,7 +623,23 @@ impl VulkanRenderer {
         viewport: [f32; 2],
         instances: &[QuadInstance],
     ) {
-        if instances.is_empty() {
+        self.render_quads_layered(cmd, slot, viewport, instances, &[]);
+    }
+
+    /// Upload `normal` then `overlay` contiguously and draw only the
+    /// normal prefix. Call [`Self::draw_overlay_quads_suffix`] after UI
+    /// text to draw the overlay instances without overwriting the
+    /// host-visible buffer.
+    pub fn render_quads_layered(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        slot: usize,
+        viewport: [f32; 2],
+        normal: &[QuadInstance],
+        overlay: &[QuadInstance],
+    ) {
+        let total = normal.len() + overlay.len();
+        if total == 0 {
             return;
         }
         debug_assert!(slot < FRAMES_IN_FLIGHT);
@@ -575,10 +658,8 @@ impl VulkanRenderer {
         }
 
         // Grow per-slot instance buffer if needed.
-        let instance_count = instances.len();
-        let needed_bytes = std::mem::size_of_val(instances);
-        if instance_count > self.quad_instance_capacity[slot] {
-            let new_cap = instance_count.next_power_of_two().max(256);
+        if total > self.quad_instance_capacity[slot] {
+            let new_cap = total.next_power_of_two().max(256);
             self.quad_instance_buffers[slot] = Some(allocate_host_visible_buffer_raw(
                 &self.shared,
                 (new_cap * std::mem::size_of::<QuadInstance>()) as u64,
@@ -588,11 +669,25 @@ impl VulkanRenderer {
         }
         let instance_buf = self.quad_instance_buffers[slot].as_ref().unwrap();
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                instances.as_ptr() as *const u8,
-                instance_buf.as_mut_ptr(),
-                needed_bytes,
-            );
+            if !normal.is_empty() {
+                std::ptr::copy_nonoverlapping(
+                    normal.as_ptr() as *const u8,
+                    instance_buf.as_mut_ptr(),
+                    std::mem::size_of_val(normal),
+                );
+            }
+            if !overlay.is_empty() {
+                let dst = instance_buf.as_mut_ptr().add(std::mem::size_of_val(normal));
+                std::ptr::copy_nonoverlapping(
+                    overlay.as_ptr() as *const u8,
+                    dst,
+                    std::mem::size_of_val(overlay),
+                );
+            }
+        }
+
+        if normal.is_empty() {
+            return;
         }
 
         unsafe {
@@ -612,7 +707,43 @@ impl VulkanRenderer {
             self.shared
                 .cmd_bind_vertex_buffers(cmd, 0, &[instance_buf.handle()], &[0]);
             // 4 vertices per instance (TRIANGLE_STRIP quad).
-            self.shared.cmd_draw(cmd, 4, instance_count as u32, 0, 0);
+            self.shared.cmd_draw(cmd, 4, normal.len() as u32, 0, 0);
+        }
+    }
+
+    /// Draw overlay quads previously uploaded by
+    /// [`Self::render_quads_layered`].
+    pub fn draw_overlay_quads_suffix(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        slot: usize,
+        normal_count: usize,
+        overlay_count: usize,
+    ) {
+        if overlay_count == 0 {
+            return;
+        }
+        let Some(instance_buf) = self.quad_instance_buffers[slot].as_ref() else {
+            return;
+        };
+        unsafe {
+            self.shared.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.quad_pipeline,
+            );
+            self.shared.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.quad_pipeline_layout,
+                0,
+                &[self.quad_descriptor_sets[slot]],
+                &[],
+            );
+            self.shared
+                .cmd_bind_vertex_buffers(cmd, 0, &[instance_buf.handle()], &[0]);
+            self.shared
+                .cmd_draw(cmd, 4, overlay_count as u32, 0, normal_count as u32);
         }
     }
 

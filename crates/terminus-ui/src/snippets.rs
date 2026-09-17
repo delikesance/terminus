@@ -4,7 +4,7 @@ use crate::geom::Rect;
 use crate::sidebar::{ORIGIN_X, PAD_X, TITLE_HEIGHT, WIDTH};
 
 /// Height of one snippet card.
-pub const ITEM_HEIGHT: f32 = 92.0;
+pub const ITEM_HEIGHT: f32 = 100.0;
 /// Gap between cards (`space-y-2`).
 pub const ITEM_GAP: f32 = 8.0;
 
@@ -21,11 +21,15 @@ pub struct SnippetsPanel {
     pub items: Vec<SnippetItem>,
     pub scroll: f32,
     pub hover: Option<usize>,
+    pub add_hover: bool,
+    pub delete_hover: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnippetHit {
     Item(usize),
+    AddButton,
+    DeleteButton(usize),
     Background,
 }
 
@@ -51,11 +55,30 @@ impl SnippetsPanel {
 
     pub fn content_height(&self) -> f32 {
         if self.items.is_empty() {
-            return 0.0;
+            return 44.0 + 24.0; // Room for add button
         }
         12.0 + self.items.len() as f32 * ITEM_HEIGHT
             + (self.items.len().saturating_sub(1) as f32) * ITEM_GAP
-            + 12.0
+            + 12.0 + 44.0 + 12.0 // padding + CTA height + trailing
+    }
+
+    pub fn delete_button_rect(&self, origin_y: f32, index: usize) -> Rect {
+        let row = self.item_rect(origin_y, index);
+        Rect::new(row.right() - 28.0, row.y + 12.0, 16.0, 16.0)
+    }
+
+    pub fn add_button_rect(&self, origin_y: f32, height: f32) -> Rect {
+        let body = self.body_rect(origin_y, height);
+        let content_y = 12.0 + self.items.len() as f32 * ITEM_HEIGHT
+            + (self.items.len().saturating_sub(1) as f32) * ITEM_GAP
+            + 12.0;
+
+        Rect::new(
+            ORIGIN_X + PAD_X,
+            body.y + content_y - self.scroll,
+            WIDTH - 2.0 * PAD_X,
+            44.0, // CTA height
+        )
     }
 
     pub fn hit_test(
@@ -69,7 +92,13 @@ impl SnippetsPanel {
         if !panel.contains(x, y) {
             return None;
         }
+        if self.add_button_rect(origin_y, height).contains(x, y) {
+            return Some(SnippetHit::AddButton);
+        }
         for index in 0..self.items.len() {
+            if self.delete_button_rect(origin_y, index).contains(x, y) {
+                return Some(SnippetHit::DeleteButton(index));
+            }
             if self.item_rect(origin_y, index).contains(x, y) {
                 return Some(SnippetHit::Item(index));
             }
@@ -78,14 +107,23 @@ impl SnippetsPanel {
     }
 
     pub fn set_hover(&mut self, hit: Option<SnippetHit>) -> bool {
-        let next = match hit {
-            Some(SnippetHit::Item(i)) => Some(i),
+        // Just store the hover state
+        let next_hover = match hit {
+            Some(SnippetHit::Item(i)) | Some(SnippetHit::DeleteButton(i)) => Some(i),
             _ => None,
         };
-        if next == self.hover {
+        let next_add = hit == Some(SnippetHit::AddButton);
+        let next_del = match hit {
+            Some(SnippetHit::DeleteButton(i)) => Some(i),
+            _ => None,
+        };
+
+        if next_hover == self.hover && next_add == self.add_hover && next_del == self.delete_hover {
             return false;
         }
-        self.hover = next;
+        self.hover = next_hover;
+        self.add_hover = next_add;
+        self.delete_hover = next_del;
         true
     }
 
@@ -122,6 +160,8 @@ impl SnippetsPanel {
             ],
             scroll: 0.0,
             hover: None,
+            add_hover: false,
+            delete_hover: None,
         }
     }
 }

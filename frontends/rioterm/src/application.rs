@@ -1425,6 +1425,25 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let mx = route.window.screen.mouse.x as f32 / scale;
                                 let my = route.window.screen.mouse.y as f32 / scale;
                                 match route.window.screen.chrome_press(mx, my) {
+
+                                    ChromeAction::OpenAddSnippet => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::SubmitAddSnippet(values) => {
+                                        route.window.screen.submit_snippet_form();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::DeleteSnippet(id) => {
+                                        route.window.screen.host_store.delete_snippet(id);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::RunSnippet(_) => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::Ignored => {
                                         // Click outside the drawer: drop search focus
                                         // so keys reach the terminal again.
@@ -1795,6 +1814,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         }
                                         return;
                                     }
+                                    ChromeAction::SftpEdit => {
+                                        if let Some(s) = route.window.screen.sftp.as_mut()
+                                        {
+                                            s.edit_selected();
+                                            route.window.screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
                                     ChromeAction::SftpOpen => {
                                         if let Some(s) = route.window.screen.sftp.as_mut()
                                         {
@@ -1975,6 +2003,25 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 }
 
                                 match route.window.screen.chrome_context_press(mx, my) {
+
+                                    ChromeAction::OpenAddSnippet => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::SubmitAddSnippet(values) => {
+                                        route.window.screen.submit_snippet_form();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::DeleteSnippet(id) => {
+                                        route.window.screen.host_store.delete_snippet(id);
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::RunSnippet(_) => {
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::Ignored => {}
                                     ChromeAction::Consumed => {
                                         route.request_overlay_redraw();

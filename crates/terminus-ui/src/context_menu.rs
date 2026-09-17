@@ -46,6 +46,8 @@ pub enum ContextAction {
     SftpDelete,
     /// SFTP: transfer the selected file to the other pane.
     SftpTransfer,
+    /// SFTP: download a remote file to temp, open in the default app, reupload on change.
+    SftpEdit,
     /// SFTP: enter the selected directory.
     SftpOpen,
     /// SFTP: refresh the focused pane listing.
@@ -163,15 +165,20 @@ impl ContextMenu {
     /// SFTP row context for a file or directory.
     ///
     /// `transfer_label` is typically "Upload", "Download", or "Copy to other pane".
+    /// `can_edit` enables remote-file "Edit" (temp download + default app + reupload).
     pub fn for_sftp_entry(
         x: f32,
         y: f32,
         is_dir: bool,
         transfer_label: Option<&str>,
+        can_edit: bool,
     ) -> Option<Self> {
         let mut items = Vec::new();
         if is_dir {
             items.push(ContextItem::new("Open", ContextAction::SftpOpen));
+        }
+        if !is_dir && can_edit {
+            items.push(ContextItem::new("Edit", ContextAction::SftpEdit));
         }
         if let Some(label) = transfer_label {
             items.push(ContextItem::new(label, ContextAction::SftpTransfer));
@@ -353,5 +360,14 @@ mod tests {
             .clamped(800.0, 600.0);
         assert!(menu.x + menu.width <= 800.0);
         assert!(menu.y + menu.height() <= 600.0);
+    }
+
+    #[test]
+    fn sftp_remote_file_menu_offers_edit() {
+        let menu = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true).unwrap();
+        assert_eq!(menu.take_action(0), Some(ContextAction::SftpEdit));
+        assert_eq!(menu.take_action(1), Some(ContextAction::SftpTransfer));
+        let local = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), false).unwrap();
+        assert_ne!(local.take_action(0), Some(ContextAction::SftpEdit));
     }
 }
