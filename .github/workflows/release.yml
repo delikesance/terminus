@@ -96,7 +96,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwayland-dev pkg-config libfontconfig1-dev \
             libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev \
-            libxrandr-dev libxss-dev glslang-tools rpm
+            libxrandr-dev libxss-dev glslang-tools rpm \
+            libkrb5-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-linux-rpm
@@ -104,6 +105,8 @@ jobs:
           cache-all-crates: true
       - name: Build
         # Single x11+wgpu RPM for speed (wayland variant can be added later).
+        env:
+          LIBGSSAPI_IMPL: mit
         run: >
           cargo build --release -p rioterm
           --no-default-features --features x11,wgpu
