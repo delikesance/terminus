@@ -15,7 +15,8 @@ Status: **green** = passing.
 | Delete file | `sftp_worker::remove_local_file` | `e2e_delete_file` | green |
 | Delete dir recursive (remote) | `sftp::remove_remote_recursive_desired` | `e2e_delete_remote_dir_tree` | green |
 | Transfer file | `sftp_worker::transfer_local_to_local` | `e2e_transfer_file` | green |
-| Transfer folder (2.3) | `sftp_worker::transfer_folder_command_exists` | `e2e_transfer_folder` | green |
+| Transfer folder (2.3) | `sftp_worker::transfer_folder_command_exists` | `e2e_transfer_folder`, `e2e_transfer_folder_remote_to_local` | green (zip when a side is local) |
+| Transfer folder Host\|Host | — | `e2e_transfer_folder_host_to_host` | green (remote tar/zip or PowerShell Compress-Archive; error if none) |
 | Edit remote | `sftp_worker::edit_temp_path_*` | `e2e_edit_remote_ready` | green |
 | Refresh | `sftp_ui::refresh_focused_lists` | `e2e_refresh` | green |
 | Close / Esc | `sftp_pane::hit_test_close_*` | `e2e_close_emits_closed` | green |

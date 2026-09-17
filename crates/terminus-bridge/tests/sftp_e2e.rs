@@ -488,6 +488,124 @@ fn e2e_host_host_two_remotes() {
 }
 
 #[test]
+fn e2e_transfer_folder_host_to_host() {
+    let server = sftp_e2e_support::mock_server::try_spawn().expect("mock sftp");
+    std::fs::create_dir_all(server.root.join("src").join("nested")).unwrap();
+    // Larger than a tiny buffer to exercise chunked copy.
+    let payload = vec![b'x'; 300_000];
+    std::fs::write(server.root.join("src").join("nested").join("big.bin"), &payload).unwrap();
+    std::fs::write(server.root.join("src").join("a.txt"), b"alpha").unwrap();
+
+    let before_zips: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("terminus-sftp-folder-")
+        })
+        .map(|e| e.path())
+        .collect();
+
+    let opts = || SshConnectOptions {
+        hostname: "127.0.0.1".into(),
+        port: server.port,
+        auth: SshAuth {
+            username: "test".into(),
+            password: Some("test".into()),
+            ..SshAuth::default()
+        },
+        policy: HostKeyPolicy::AcceptAll,
+        known_hosts: KnownHosts::default(),
+        connect_timeout: Duration::from_secs(5),
+        keepalive_interval: None,
+    };
+    let worker = SftpWorker::spawn(None);
+    worker.send(SftpCommand::Connect {
+        side: SftpSide::Left,
+        opts: opts(),
+    });
+    let _ = wait_event(&worker, |e| {
+        matches!(e, SftpEvent::Ready { side: SftpSide::Left })
+    });
+    worker.send(SftpCommand::Connect {
+        side: SftpSide::Right,
+        opts: opts(),
+    });
+    let _ = wait_event(&worker, |e| {
+        matches!(e, SftpEvent::Ready { side: SftpSide::Right })
+    });
+
+    worker.send(SftpCommand::TransferFolder {
+        from_side: SftpSide::Left,
+        from_path: "/src".into(),
+        to_side: SftpSide::Right,
+        to_cwd: "/".into(),
+        name: "dst".into(),
+    });
+
+    let mut failed = None;
+    let mut ok = false;
+    for _ in 0..300 {
+        for event in worker.drain() {
+            if let SftpEvent::Failed(err) = event {
+                failed = Some(err);
+            }
+        }
+        let small = server.root.join("dst").join("a.txt");
+        let big = server.root.join("dst").join("nested").join("big.bin");
+        if small.is_file()
+            && big.is_file()
+            && std::fs::read(&small).ok().as_deref() == Some(b"alpha".as_slice())
+            && std::fs::metadata(&big).map(|m| m.len()).unwrap_or(0) == payload.len() as u64
+        {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    assert!(
+        failed.is_none(),
+        "Host|Host transfer failed: {:?}",
+        failed
+    );
+    assert!(ok, "Host|Host relay did not finish copying src → dst");
+
+    assert_eq!(
+        std::fs::read(server.root.join("dst").join("a.txt")).unwrap(),
+        b"alpha",
+        "Host|Host relay should copy small files"
+    );
+    assert_eq!(
+        std::fs::read(server.root.join("dst").join("nested").join("big.bin")).unwrap(),
+        payload,
+        "Host|Host relay should chunk-copy large files"
+    );
+
+    let after_zips: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("terminus-sftp-folder-")
+        })
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(
+        before_zips, after_zips,
+        "Host|Host folder transfer must not stage a client zip"
+    );
+
+    worker.send(SftpCommand::Close);
+    wait_closed(&worker);
+    server.shutdown();
+}
+
+#[test]
 fn e2e_edit_remote_ready() {
     let server = sftp_e2e_support::mock_server::try_spawn().expect("mock sftp");
     let opts = SshConnectOptions {

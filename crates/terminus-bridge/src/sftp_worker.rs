@@ -833,31 +833,45 @@ async fn transfer_file(
                 .ok_or_else(|| not_connected(from_side))?;
             transfer_download(conn, from_path, &to_path_local, events, wake).await
         }
-        // Remote → Remote: download to temp, then upload
+        // Remote → Remote: chunked SFTP relay (no temp file).
         (true, true) => {
             let from_conn = conn_ref(left, right, from_side)
                 .ok_or_else(|| not_connected(from_side))?;
             let to_conn = conn_ref(left, right, to_side)
                 .ok_or_else(|| not_connected(to_side))?;
-
-            let temp = std::env::temp_dir().join(format!(
-                "terminus-xfer-{}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0),
-                name
-            ));
-
-            let result = async {
-                transfer_download(from_conn, from_path, &temp, events, wake).await?;
-                transfer_upload(to_conn, &temp, &to_path_remote, events, wake).await
-            }
-            .await;
-
-            let _ = tokio::fs::remove_file(&temp).await;
-            result
+            emit(
+                events,
+                wake,
+                SftpEvent::TransferProgress {
+                    label: format!("Copy {name}"),
+                    done: 0,
+                    total: 0,
+                },
+            );
+            let total = from_conn
+                .copy_to(from_path, to_conn, &to_path_remote, |n| {
+                    emit(
+                        events,
+                        wake,
+                        SftpEvent::TransferProgress {
+                            label: format!("Copy {name}"),
+                            done: n,
+                            total: 0,
+                        },
+                    );
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+            emit(
+                events,
+                wake,
+                SftpEvent::TransferProgress {
+                    label: format!("Copy {name}"),
+                    done: total,
+                    total,
+                },
+            );
+            Ok(())
         }
         // Local → Local: copy
         (false, false) => {
@@ -895,8 +909,503 @@ async fn transfer_file(
     }
 }
 
-/// Copy a directory tree by staging through a zip archive:
-/// zip source → transfer the zip → unzip at destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveKind {
+    TarGz,
+    Zip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteFamily {
+    Unix,
+    Windows,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackEngine {
+    NativeTar,
+    NativeZip,
+    /// Windows built-in `Compress-Archive` / `Expand-Archive`.
+    PowerShell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RemoteArchiveTools {
+    tar: bool,
+    zip: bool,
+    unzip: bool,
+    powershell: bool,
+}
+
+impl RemoteArchiveTools {
+    fn none() -> Self {
+        Self {
+            tar: false,
+            zip: false,
+            unzip: false,
+            powershell: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RemoteEnv {
+    tools: RemoteArchiveTools,
+    family: RemoteFamily,
+    #[allow(dead_code)]
+    arch: String,
+    tmp: String,
+}
+
+const NO_REMOTE_ARCHIVE_TOOLS: &str =
+    "Remote has no tar, zip/unzip, or PowerShell Compress-Archive; cannot transfer folders.";
+
+/// Active pack/extract capability for one remote (native tools only).
+struct RemotePackSession {
+    env: RemoteEnv,
+    engine: PackEngine,
+    kind: ArchiveKind,
+}
+
+fn parse_probe_stdout(stdout: &str) -> RemoteEnv {
+    let mut tools = RemoteArchiveTools::none();
+    let mut family = RemoteFamily::Unix;
+    let mut arch = "x86_64".to_string();
+    let mut tmp = "/tmp".to_string();
+    for part in stdout.split_whitespace() {
+        if let Some(v) = part.strip_prefix("tar=") {
+            tools.tar = v == "1" || v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = part.strip_prefix("zip=") {
+            tools.zip = v == "1" || v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = part.strip_prefix("unzip=") {
+            tools.unzip = v == "1" || v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = part.strip_prefix("ps=") {
+            tools.powershell = v == "1" || v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = part.strip_prefix("family=") {
+            family = if v.eq_ignore_ascii_case("windows") {
+                RemoteFamily::Windows
+            } else {
+                RemoteFamily::Unix
+            };
+        } else if let Some(v) = part.strip_prefix("arch=") {
+            arch = normalize_arch(v);
+        } else if let Some(v) = part.strip_prefix("tmp=") {
+            if !v.is_empty() {
+                tmp = v.to_string();
+            }
+        }
+    }
+    RemoteEnv {
+        tools,
+        family,
+        arch,
+        tmp,
+    }
+}
+
+fn normalize_arch(raw: &str) -> String {
+    match raw.to_ascii_lowercase().as_str() {
+        "x86_64" | "amd64" | "x64" => "x86_64".into(),
+        "aarch64" | "arm64" => "aarch64".into(),
+        "i386" | "i686" | "x86" => "x86".into(),
+        other => other.to_string(),
+    }
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn remote_parent_base(path: &str) -> (String, String) {
+    let path = path.trim_end_matches('/');
+    match path.rsplit_once('/') {
+        Some(("", base)) => ("/".into(), base.to_string()),
+        Some((parent, base)) => (parent.to_string(), base.to_string()),
+        None => (".".into(), path.to_string()),
+    }
+}
+
+fn archive_ext(kind: ArchiveKind) -> &'static str {
+    match kind {
+        ArchiveKind::TarGz => "tar.gz",
+        ArchiveKind::Zip => "zip",
+    }
+}
+
+fn join_tmp(tmp: &str, name: &str) -> String {
+    let tmp = tmp.trim_end_matches(['/', '\\']);
+    if tmp.contains('\\') || tmp.chars().nth(1) == Some(':') {
+        format!("{tmp}\\{name}")
+    } else if tmp == "/" {
+        format!("/{name}")
+    } else {
+        format!("{tmp}/{name}")
+    }
+}
+
+/// Probe remote OS family, arch, temp dir, and archive tools.
+async fn probe_remote_env(conn: &SftpConnection) -> RemoteEnv {
+    let script = concat!(
+        "# terminus-sftp-probe-v2\n",
+        "TAR=0; ZIP=0; UNZIP=0; PS=0\n",
+        "command -v tar >/dev/null 2>&1 && TAR=1\n",
+        "command -v zip >/dev/null 2>&1 && ZIP=1\n",
+        "command -v unzip >/dev/null 2>&1 && UNZIP=1\n",
+        "(command -v powershell.exe >/dev/null 2>&1 || command -v pwsh >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1) && PS=1\n",
+        "UNAME=$(uname -s 2>/dev/null || printf unknown)\n",
+        "ARCH=$(uname -m 2>/dev/null || printf x86_64)\n",
+        "FAMILY=unix\n",
+        "case \"$UNAME\" in\n",
+        "  MINGW*|MSYS*|CYGWIN*|Windows_NT|windows*) FAMILY=windows ;;\n",
+        "esac\n",
+        "if [ -n \"${WINDIR:-}${SYSTEMROOT:-}\" ]; then FAMILY=windows; fi\n",
+        "TMP=${TMPDIR:-/tmp}\n",
+        "if [ \"$FAMILY\" = windows ]; then\n",
+        "  TMP=${TEMP:-${TMPDIR:-/tmp}}\n",
+        "elif [ -d /tmp ] && [ -w /tmp ]; then\n",
+        "  TMP=/tmp\n",
+        "fi\n",
+        "printf 'tar=%s zip=%s unzip=%s ps=%s family=%s arch=%s tmp=%s\\n' \\\n",
+        "  \"$TAR\" \"$ZIP\" \"$UNZIP\" \"$PS\" \"$FAMILY\" \"$ARCH\" \"$TMP\"\n",
+    );
+    match conn.exec(script).await {
+        Ok((0, stdout, _)) => parse_probe_stdout(&String::from_utf8_lossy(&stdout)),
+        Ok((code, _, err)) => {
+            debug!(
+                code,
+                stderr = %String::from_utf8_lossy(&err),
+                "archive env probe non-zero"
+            );
+            RemoteEnv {
+                tools: RemoteArchiveTools::none(),
+                family: RemoteFamily::Unix,
+                arch: "x86_64".into(),
+                tmp: "/tmp".into(),
+            }
+        }
+        Err(err) => {
+            debug!(error = %err, "archive env probe failed");
+            RemoteEnv {
+                tools: RemoteArchiveTools::none(),
+                family: RemoteFamily::Unix,
+                arch: "x86_64".into(),
+                tmp: "/tmp".into(),
+            }
+        }
+    }
+}
+
+/// Pick native tar/zip/PowerShell; error if the remote has none.
+async fn acquire_pack_session(conn: &SftpConnection) -> Result<RemotePackSession, String> {
+    let env = probe_remote_env(conn).await;
+
+    if env.tools.tar {
+        return Ok(RemotePackSession {
+            env,
+            engine: PackEngine::NativeTar,
+            kind: ArchiveKind::TarGz,
+        });
+    }
+    if env.tools.zip {
+        return Ok(RemotePackSession {
+            env,
+            engine: PackEngine::NativeZip,
+            kind: ArchiveKind::Zip,
+        });
+    }
+    if env.family == RemoteFamily::Windows && env.tools.powershell {
+        return Ok(RemotePackSession {
+            env,
+            engine: PackEngine::PowerShell,
+            kind: ArchiveKind::Zip,
+        });
+    }
+
+    Err(NO_REMOTE_ARCHIVE_TOOLS.into())
+}
+
+/// Acquire a session that can **extract** `kind` with native tools only.
+async fn acquire_extract_session(
+    conn: &SftpConnection,
+    kind: ArchiveKind,
+) -> Result<RemotePackSession, String> {
+    let env = probe_remote_env(conn).await;
+    match kind {
+        ArchiveKind::TarGz => {
+            if env.tools.tar {
+                Ok(RemotePackSession {
+                    env,
+                    engine: PackEngine::NativeTar,
+                    kind,
+                })
+            } else {
+                Err(NO_REMOTE_ARCHIVE_TOOLS.into())
+            }
+        }
+        ArchiveKind::Zip => {
+            if env.tools.unzip {
+                return Ok(RemotePackSession {
+                    env,
+                    engine: PackEngine::NativeZip,
+                    kind,
+                });
+            }
+            if env.family == RemoteFamily::Windows && env.tools.powershell {
+                return Ok(RemotePackSession {
+                    env,
+                    engine: PackEngine::PowerShell,
+                    kind,
+                });
+            }
+            Err(NO_REMOTE_ARCHIVE_TOOLS.into())
+        }
+    }
+}
+
+fn archive_create_script(
+    parent: &str,
+    base: &str,
+    name: &str,
+    out: &str,
+    session: &RemotePackSession,
+) -> String {
+    match session.engine {
+        PackEngine::NativeTar => format!(
+            concat!(
+                "# terminus-sftp-archive-v1\n",
+                "TERMINUS_ARCHIVE_MODE=create\n",
+                "TERMINUS_ARCHIVE_PARENT={parent}\n",
+                "TERMINUS_ARCHIVE_BASE={base}\n",
+                "TERMINUS_ARCHIVE_NAME={name}\n",
+                "TERMINUS_ARCHIVE_OUT={out}\n",
+                "set -e\n",
+                "cd {parent}\n",
+                "ROOT={base}\n",
+                "CLEANUP=\n",
+                "if [ {base} != {name} ]; then\n",
+                "  ln -snf {base} {name}\n",
+                "  ROOT={name}\n",
+                "  CLEANUP=1\n",
+                "fi\n",
+                "tar -czhf {out} -h \"$ROOT\"\n",
+                "if [ -n \"$CLEANUP\" ]; then rm -f {name}; fi\n",
+                "printf '%s\\n' {out}\n",
+            ),
+            parent = sh_quote(parent),
+            base = sh_quote(base),
+            name = sh_quote(name),
+            out = sh_quote(out),
+        ),
+        PackEngine::NativeZip => format!(
+            concat!(
+                "# terminus-sftp-archive-v1\n",
+                "TERMINUS_ARCHIVE_MODE=create\n",
+                "TERMINUS_ARCHIVE_PARENT={parent}\n",
+                "TERMINUS_ARCHIVE_BASE={base}\n",
+                "TERMINUS_ARCHIVE_NAME={name}\n",
+                "TERMINUS_ARCHIVE_OUT={out}\n",
+                "set -e\n",
+                "cd {parent}\n",
+                "ROOT={base}\n",
+                "CLEANUP=\n",
+                "if [ {base} != {name} ]; then\n",
+                "  ln -snf {base} {name}\n",
+                "  ROOT={name}\n",
+                "  CLEANUP=1\n",
+                "fi\n",
+                "zip -rq {out} \"$ROOT\"\n",
+                "if [ -n \"$CLEANUP\" ]; then rm -f {name}; fi\n",
+                "printf '%s\\n' {out}\n",
+            ),
+            parent = sh_quote(parent),
+            base = sh_quote(base),
+            name = sh_quote(name),
+            out = sh_quote(out),
+        ),
+        PackEngine::PowerShell => {
+            let src = if parent == "/" {
+                format!("/{base}")
+            } else if parent.contains('\\') {
+                format!("{parent}\\{base}")
+            } else {
+                format!("{parent}/{base}")
+            };
+            // Compress-Archive uses the leaf folder name as zip root.
+            format!(
+                "powershell -NoProfile -Command \"Compress-Archive -Path {} -DestinationPath {} -Force\"",
+                ps_quote(&src),
+                ps_quote(out),
+            )
+        }
+    }
+}
+
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+fn archive_extract_script(dest: &str, archive: &str, session: &RemotePackSession) -> String {
+    match session.engine {
+        PackEngine::NativeTar => format!(
+            concat!(
+                "# terminus-sftp-archive-v1\n",
+                "TERMINUS_ARCHIVE_MODE=extract\n",
+                "TERMINUS_ARCHIVE_PARENT={dest}\n",
+                "TERMINUS_ARCHIVE_BASE=\n",
+                "TERMINUS_ARCHIVE_OUT={archive}\n",
+                "set -e\n",
+                "mkdir -p {dest}\n",
+                "tar -C {dest} -xzf {archive}\n",
+            ),
+            dest = sh_quote(dest),
+            archive = sh_quote(archive),
+        ),
+        PackEngine::NativeZip => format!(
+            concat!(
+                "# terminus-sftp-archive-v1\n",
+                "TERMINUS_ARCHIVE_MODE=extract\n",
+                "TERMINUS_ARCHIVE_PARENT={dest}\n",
+                "TERMINUS_ARCHIVE_BASE=\n",
+                "TERMINUS_ARCHIVE_OUT={archive}\n",
+                "set -e\n",
+                "mkdir -p {dest}\n",
+                "unzip -qo {archive} -d {dest}\n",
+            ),
+            dest = sh_quote(dest),
+            archive = sh_quote(archive),
+        ),
+        PackEngine::PowerShell => format!(
+            "powershell -NoProfile -Command \"Expand-Archive -Path {} -DestinationPath {} -Force\"",
+            ps_quote(archive),
+            ps_quote(dest),
+        ),
+    }
+}
+
+async fn remote_create_archive(
+    conn: &SftpConnection,
+    from_path: &str,
+    name: &str,
+    session: &RemotePackSession,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<String, String> {
+    let (parent, base) = remote_parent_base(from_path);
+    let out = join_tmp(
+        &session.env.tmp,
+        &format!(
+            "terminus-sftp-{}-{}.{}",
+            std::process::id(),
+            uuid::Uuid::new_v4(),
+            archive_ext(session.kind)
+        ),
+    );
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Creating remote {}…", archive_ext(session.kind)),
+            done: 0,
+            total: 0,
+        },
+    );
+
+    let script = archive_create_script(&parent, &base, name, &out, session);
+    let (code, stdout, stderr) = conn.exec(&script).await.map_err(|e| e.to_string())?;
+    if code != 0 {
+        return Err(format!(
+            "remote archive create failed (exit {code}): {}",
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    let reported = String::from_utf8_lossy(&stdout);
+    let remote = reported
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.contains('='))
+        .unwrap_or(&out)
+        .to_string();
+    Ok(remote)
+}
+
+async fn try_remote_pack_to_local(
+    conn: &SftpConnection,
+    from_path: &str,
+    name: &str,
+    staging: &Path,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<ArchiveKind, String> {
+    let session = acquire_pack_session(conn).await?;
+    let local = staging_with_ext(staging, session.kind);
+    let remote = remote_create_archive(conn, from_path, name, &session, events, wake).await?;
+    let download = transfer_download(conn, &remote, &local, events, wake).await;
+    let _ = conn.remove(&remote).await;
+    download?;
+    Ok(session.kind)
+}
+
+async fn remote_extract_uploaded(
+    conn: &SftpConnection,
+    local_archive: &Path,
+    to_cwd: &str,
+    _name: &str,
+    kind: ArchiveKind,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    let session = acquire_extract_session(conn, kind).await?;
+    let remote_name = format!(
+        "terminus-sftp-in-{}-{}.{}",
+        std::process::id(),
+        uuid::Uuid::new_v4(),
+        archive_ext(kind)
+    );
+    let remote = join_tmp(&session.env.tmp, &remote_name);
+    transfer_upload(conn, local_archive, &remote, events, wake).await?;
+    let script = archive_extract_script(to_cwd, &remote, &session);
+    let (code, _stdout, stderr) = conn.exec(&script).await.map_err(|e| e.to_string())?;
+    let _ = conn.remove(&remote).await;
+    if code != 0 {
+        return Err(format!(
+            "remote archive extract failed (exit {code}): {}",
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn extract_local_archive(
+    archive: &Path,
+    dest_cwd: &Path,
+    kind: ArchiveKind,
+) -> Result<(), String> {
+    match kind {
+        ArchiveKind::Zip => unzip_local(archive, dest_cwd),
+        ArchiveKind::TarGz => {
+            std::fs::create_dir_all(dest_cwd).map_err(|e| e.to_string())?;
+            let status = std::process::Command::new("tar")
+                .arg("-C")
+                .arg(dest_cwd)
+                .arg("-xzf")
+                .arg(archive)
+                .status()
+                .map_err(|e| format!("local tar extract: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("local tar extract failed ({status})"))
+            }
+        }
+    }
+}
+
+/// Copy a directory tree with as few SFTP round-trips as possible.
+///
+/// Remote side archives in one shot via native `tar`/`zip` or PowerShell
+/// `Compress-Archive`. If the remote has none of these tools, the transfer
+/// fails with a clear error (no per-file SFTP fallback).
 async fn transfer_folder(
     left: &Option<SftpConnection>,
     right: &Option<SftpConnection>,
@@ -911,42 +1420,50 @@ async fn transfer_folder(
     let from_remote = side_is_remote(left, right, from_side);
     let to_remote = side_is_remote(left, right, to_side);
 
-    let zip_path = std::env::temp_dir().join(format!(
-        "terminus-sftp-folder-{}-{}-{}.{}",
+    if from_remote && to_remote {
+        let from_conn = conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
+        let to_conn = conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
+        return transfer_folder_remote_to_remote(
+            from_conn, to_conn, from_path, to_cwd, name, events, wake,
+        )
+        .await;
+    }
+
+    // --- paths with a local side ---
+    let staging = std::env::temp_dir().join(format!(
+        "terminus-sftp-folder-{}-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4(),
-        sanitize_temp_name(name),
-        if from_remote { "tar.gz" } else { "zip" }
+        sanitize_temp_name(name)
     ));
 
     emit(
         events,
         wake,
         SftpEvent::TransferProgress {
-            label: format!("Zipping {name}…"),
+            label: format!("Packing {name}…"),
             done: 0,
             total: 0,
         },
     );
 
-    let pack_result = if from_remote {
+    let (archive_path, kind) = if from_remote {
         let conn = conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
-        zip_remote_tree(conn, from_path, name, &zip_path, events, wake).await
+        let kind =
+            try_remote_pack_to_local(conn, from_path, name, &staging, events, wake).await?;
+        (staging_with_ext(&staging, kind), kind)
     } else {
+        let zip_path = staging_with_ext(&staging, ArchiveKind::Zip);
         let src = PathBuf::from(from_path);
         let zip = zip_path.clone();
         let root = name.to_string();
         tokio::task::spawn_blocking(move || zip_local_tree(&src, &root, &zip))
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())??;
+        (zip_path, ArchiveKind::Zip)
     };
 
-    if let Err(err) = pack_result {
-        let _ = tokio::fs::remove_file(&zip_path).await;
-        return Err(err);
-    }
-
-    let zip_len = tokio::fs::metadata(&zip_path)
+    let zip_len = tokio::fs::metadata(&archive_path)
         .await
         .map(|m| m.len())
         .unwrap_or(0);
@@ -954,35 +1471,24 @@ async fn transfer_folder(
         events,
         wake,
         SftpEvent::TransferProgress {
-            label: format!("Zip ready ({zip_len} bytes)"),
+            label: format!("Archive ready ({zip_len} bytes)"),
             done: 0,
             total: zip_len,
         },
     );
 
-    // Remote dest: upload zip to remote /tmp and unzip via SSH exec.
-    // Local dest: unzip straight from the staged archive.
-    if to_remote {
+    let unpack = if to_remote {
         let conn = conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
-        let unzip = match archive_remote_extract(conn, &zip_path, to_cwd, name, events, wake)
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(_exec_err) => {
-                emit(
-                    events,
-                    wake,
-                    SftpEvent::TransferProgress {
-                        label: format!("Unpacking {name} via SFTP…"),
-                        done: 0,
-                        total: zip_len,
-                    },
-                );
-                unzip_to_remote(conn, &zip_path, to_cwd, events, wake).await
-            }
-        };
-        let _ = tokio::fs::remove_file(&zip_path).await;
-        unzip?;
+        emit(
+            events,
+            wake,
+            SftpEvent::TransferProgress {
+                label: format!("Unpacking {name} on server…"),
+                done: 0,
+                total: zip_len,
+            },
+        );
+        remote_extract_uploaded(conn, &archive_path, to_cwd, name, kind, events, wake).await
     } else {
         emit(
             events,
@@ -994,13 +1500,14 @@ async fn transfer_folder(
             },
         );
         let dest = PathBuf::from(to_cwd);
-        let archive = zip_path.clone();
-        let unzip = tokio::task::spawn_blocking(move || extract_local_archive(&archive, &dest))
+        let archive = archive_path.clone();
+        tokio::task::spawn_blocking(move || extract_local_archive(&archive, &dest, kind))
             .await
-            .map_err(|e| e.to_string());
-        let _ = tokio::fs::remove_file(&zip_path).await;
-        unzip??;
-    }
+            .map_err(|e| e.to_string())?
+    };
+
+    let _ = tokio::fs::remove_file(&archive_path).await;
+    unpack?;
 
     emit(
         events,
@@ -1009,6 +1516,113 @@ async fn transfer_folder(
             label: format!("Copied folder {name}"),
             done: zip_len,
             total: zip_len,
+        },
+    );
+    Ok(())
+}
+
+fn staging_with_ext(base: &Path, kind: ArchiveKind) -> PathBuf {
+    match kind {
+        ArchiveKind::TarGz => base.with_extension("tar.gz"),
+        ArchiveKind::Zip => base.with_extension("zip"),
+    }
+}
+
+/// Host A → Host B: archive via native tools on both sides (error if missing).
+async fn transfer_folder_remote_to_remote(
+    from: &SftpConnection,
+    to: &SftpConnection,
+    from_path: &str,
+    to_cwd: &str,
+    name: &str,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    transfer_folder_remote_to_remote_via_archive(
+        from, to, from_path, to_cwd, name, events, wake,
+    )
+    .await
+}
+
+async fn transfer_folder_remote_to_remote_via_archive(
+    from: &SftpConnection,
+    to: &SftpConnection,
+    from_path: &str,
+    to_cwd: &str,
+    name: &str,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<(), String> {
+    let from_session = acquire_pack_session(from).await?;
+    let to_session = acquire_extract_session(to, from_session.kind).await?;
+
+    let local = std::env::temp_dir().join(format!(
+        "terminus-sftp-ab-{}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4(),
+        sanitize_temp_name(name)
+    ));
+    let local = staging_with_ext(&local, from_session.kind);
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Archiving {name} on source…"),
+            done: 0,
+            total: 0,
+        },
+    );
+    let remote_archive =
+        remote_create_archive(from, from_path, name, &from_session, events, wake).await?;
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Downloading {name} archive…"),
+            done: 0,
+            total: 0,
+        },
+    );
+    let download = transfer_download(from, &remote_archive, &local, events, wake).await;
+    let _ = from.remove(&remote_archive).await;
+    download?;
+
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Uploading {name} archive…"),
+            done: 0,
+            total: 0,
+        },
+    );
+    let remote_name = format!(
+        "terminus-sftp-in-{}-{}.{}",
+        std::process::id(),
+        uuid::Uuid::new_v4(),
+        archive_ext(from_session.kind)
+    );
+    let remote_in = join_tmp(&to_session.env.tmp, &remote_name);
+    transfer_upload(to, &local, &remote_in, events, wake).await?;
+    let script = archive_extract_script(to_cwd, &remote_in, &to_session);
+    let (code, _stdout, stderr) = to.exec(&script).await.map_err(|e| e.to_string())?;
+    let _ = to.remove(&remote_in).await;
+    if code != 0 {
+        return Err(format!(
+            "remote archive extract failed (exit {code}): {}",
+            String::from_utf8_lossy(&stderr)
+        ));
+    }
+    let _ = tokio::fs::remove_file(&local).await;
+    emit(
+        events,
+        wake,
+        SftpEvent::TransferProgress {
+            label: format!("Copied folder {name}"),
+            done: 1,
+            total: 1,
         },
     );
     Ok(())
@@ -1061,217 +1675,18 @@ fn zip_local_dir_recursive(
             zip.add_directory(format!("{rel}/"), options)
                 .map_err(|e| e.to_string())?;
             zip_local_dir_recursive(zip, &path, &rel, options)?;
-        } else if ft.is_file() {
-            zip.start_file(&rel, options).map_err(|e| e.to_string())?;
+        } else if ft.is_file() || ft.is_symlink() {
+            // Follow symlinks (npm .bin) so the zip stores real file bytes —
+            // Windows extract cannot recreate Unix symlinks.
             let mut input = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            zip.start_file(&rel, options).map_err(|e| e.to_string())?;
             std::io::copy(&mut input, zip).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
 }
 
-async fn zip_remote_tree(
-    conn: &SftpConnection,
-    remote_path: &str,
-    root_name: &str,
-    zip_path: &Path,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-) -> Result<(), String> {
-    // Create one archive on the remote (next to the folder, SFTP-visible), then
-    // download that single file. Never fall back to per-file download.
-    let remote_zip = archive_remote_create(conn, remote_path, root_name, events, wake).await?;
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label: format!("Downloading {root_name} archive…"),
-            done: 0,
-            total: 0,
-        },
-    );
-    let download = transfer_download(conn, &remote_zip, zip_path, events, wake).await;
-    let _ = conn.remove(&remote_zip).await;
-    download?;
-    Ok(())
-}
-
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn remote_basename(path: &str) -> String {
-    let trimmed = path.trim_end_matches('/');
-    trimmed
-        .rsplit_once('/')
-        .map(|(_, name)| name.to_string())
-        .unwrap_or_else(|| trimmed.to_string())
-}
-
-/// Create an archive of `remote_path` on the remote host via SSH exec.
-///
-/// The archive is written next to the folder (SFTP-visible), not only in `/tmp`,
-/// so the subsequent SFTP download works even with chrooted SFTP homes.
-async fn archive_remote_create(
-    conn: &SftpConnection,
-    remote_path: &str,
-    root_name: &str,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-) -> Result<String, String> {
-    let parent = parent_remote(remote_path);
-    let base = remote_basename(remote_path);
-    let id = uuid::Uuid::new_v4();
-    // Prefer sibling of the folder (same SFTP namespace). Fall back to /tmp only
-    // when parent is "/" (still try HOME afterwards in the script).
-    let out_tar = if parent == "/" {
-        format!("/tmp/terminus-xfer-{id}.tar.gz")
-    } else {
-        join_remote(&parent, &format!(".terminus-xfer-{id}.tar.gz"))
-    };
-
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label: format!("Archiving {root_name} on server…"),
-            done: 0,
-            total: 0,
-        },
-    );
-
-    // Always use tar.gz (ubiquitous; keeps local extension consistent).
-    // TERMINUS_ARCHIVE_* markers keep the mock SFTP server in sync.
-    let script = format!(
-        r#"
-# terminus-sftp-archive-v1
-TERMINUS_ARCHIVE_MODE='create'
-TERMINUS_ARCHIVE_PARENT={parent}
-TERMINUS_ARCHIVE_BASE={base}
-TERMINUS_ARCHIVE_OUT={out_tar}
-set -euo pipefail
-PARENT={parent}
-BASE={base}
-OUT={out_tar}
-mkdir -p "$PARENT" 2>/dev/null || true
-if [ ! -d "$PARENT/$BASE" ]; then
-  echo "missing directory: $PARENT/$BASE" >&2
-  exit 2
-fi
-tar -C "$PARENT" -czf "$OUT" "$BASE"
-test -s "$OUT"
-printf '%s\n' "$OUT"
-"#,
-        parent = shell_quote(&parent),
-        base = shell_quote(&base),
-        out_tar = shell_quote(&out_tar),
-    );
-
-    let (code, stdout, stderr) = conn.exec(&script).await.map_err(|e| e.to_string())?;
-    if code != 0 {
-        return Err(format!(
-            "remote archive failed (exit {code}): {}",
-            String::from_utf8_lossy(&stderr)
-        ));
-    }
-    let remote_zip = String::from_utf8_lossy(&stdout).trim().to_string();
-    if remote_zip.is_empty() {
-        return Err("remote archive produced no path".into());
-    }
-    Ok(remote_zip)
-}
-
-/// Upload a local archive to the remote and extract into `to_cwd` via SSH exec.
-async fn archive_remote_extract(
-    conn: &SftpConnection,
-    local_archive: &Path,
-    to_cwd: &str,
-    name: &str,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-) -> Result<(), String> {
-    let id = uuid::Uuid::new_v4();
-    let ext = if local_archive
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("gz"))
-        || local_archive
-            .to_string_lossy()
-            .ends_with(".tar.gz")
-    {
-        "tar.gz"
-    } else {
-        "zip"
-    };
-    let remote_zip = if to_cwd == "/" {
-        format!("/tmp/terminus-xfer-{id}.{ext}")
-    } else {
-        join_remote(to_cwd, &format!(".terminus-xfer-{id}.{ext}"))
-    };
-
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label: format!("Uploading {name} archive…"),
-            done: 0,
-            total: 0,
-        },
-    );
-    transfer_upload(conn, local_archive, &remote_zip, events, wake).await?;
-
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label: format!("Unpacking {name} on server…"),
-            done: 0,
-            total: 0,
-        },
-    );
-
-    let script = format!(
-        r#"
-# terminus-sftp-archive-v1
-TERMINUS_ARCHIVE_MODE='extract'
-TERMINUS_ARCHIVE_PARENT={dest}
-TERMINUS_ARCHIVE_BASE={base}
-TERMINUS_ARCHIVE_OUT={zip}
-set -euo pipefail
-DEST={dest}
-ZIP={zip}
-mkdir -p "$DEST"
-case "$ZIP" in
-  *.tar.gz|*.tgz)
-    tar -C "$DEST" -xzf "$ZIP"
-    ;;
-  *)
-    if command -v unzip >/dev/null 2>&1; then
-      unzip -qo "$ZIP" -d "$DEST"
-    else
-      echo "unzip not installed and archive is not tar.gz" >&2
-      exit 127
-    fi
-    ;;
-esac
-rm -f "$ZIP"
-"#,
-        dest = shell_quote(to_cwd),
-        base = shell_quote(name),
-        zip = shell_quote(&remote_zip),
-    );
-
-    let (code, _stdout, stderr) = conn.exec(&script).await.map_err(|e| e.to_string())?;
-    let _ = conn.remove(&remote_zip).await;
-    if code != 0 {
-        return Err(format!(
-            "remote unpack failed (exit {code}): {}",
-            String::from_utf8_lossy(&stderr)
-        ));
-    }
-    Ok(())
-}
-
+/// Local zip extract (client-side dest).
 fn unzip_local(zip_path: &Path, dest_cwd: &Path) -> Result<(), String> {
     let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -1290,93 +1705,6 @@ fn unzip_local(zip_path: &Path, dest_cwd: &Path) -> Result<(), String> {
             let mut outfile = std::fs::File::create(&out).map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut outfile).map_err(|e| e.to_string())?;
         }
-    }
-    Ok(())
-}
-
-fn extract_local_archive(archive: &Path, dest_cwd: &Path) -> Result<(), String> {
-    let name = archive.to_string_lossy();
-    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-        std::fs::create_dir_all(dest_cwd).map_err(|e| e.to_string())?;
-        let status = std::process::Command::new("tar")
-            .arg("-C")
-            .arg(dest_cwd)
-            .arg("-xzf")
-            .arg(archive)
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err(format!("tar extract failed for {}", archive.display()));
-        }
-        Ok(())
-    } else {
-        unzip_local(archive, dest_cwd)
-    }
-}
-
-async fn unzip_to_remote(
-    conn: &SftpConnection,
-    zip_path: &Path,
-    to_cwd: &str,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-) -> Result<(), String> {
-    use std::io::Read;
-    let zip = zip_path.to_path_buf();
-    let entries: Vec<(String, bool, Vec<u8>)> = tokio::task::spawn_blocking(move || {
-        let file = std::fs::File::open(&zip).map_err(|e| e.to_string())?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        for i in 0..archive.len() {
-            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
-            let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
-                continue;
-            };
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            if entry.is_dir() {
-                out.push((rel.trim_end_matches('/').to_string(), true, Vec::new()));
-            } else {
-                let mut data = Vec::new();
-                entry.read_to_end(&mut data).map_err(|e| e.to_string())?;
-                out.push((rel, false, data));
-            }
-        }
-        Ok::<_, String>(out)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    let total = entries.len() as u64;
-    for (i, (rel, is_dir, data)) in entries.into_iter().enumerate() {
-        let remote = if to_cwd == "/" {
-            format!("/{rel}")
-        } else {
-            format!("{}/{}", to_cwd.trim_end_matches('/'), rel)
-        };
-        if is_dir {
-            conn.mkdir_all(&remote)
-                .await
-                .map_err(|e| e.to_string())?;
-        } else {
-            let parent = parent_remote(&remote);
-            if parent != remote {
-                conn.mkdir_all(&parent)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            conn.write(&remote, &data)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-        emit(
-            events,
-            wake,
-            SftpEvent::TransferProgress {
-                label: format!("Unpacking {rel}"),
-                done: (i as u64).saturating_add(1),
-                total,
-            },
-        );
     }
     Ok(())
 }
@@ -1583,6 +1911,49 @@ mod tests {
         assert_eq!(join_remote("/home/alice", "file.txt"), "/home/alice/file.txt");
         assert_eq!(join_remote("/", "file.txt"), "/file.txt");
         assert_eq!(join_remote("/home/", "file.txt"), "/home/file.txt");
+    }
+
+    #[test]
+    fn parse_probe_stdout_reads_flags() {
+        let env = parse_probe_stdout(
+            "tar=1 zip=0 unzip=1 ps=0 family=unix arch=x86_64 tmp=/tmp\n",
+        );
+        assert!(env.tools.tar && !env.tools.zip && env.tools.unzip);
+        assert_eq!(env.family, RemoteFamily::Unix);
+        assert_eq!(env.tmp, "/tmp");
+        assert_eq!(env.arch, "x86_64");
+
+        let none = parse_probe_stdout(
+            "tar=0 zip=0 unzip=0 ps=0 family=unix arch=aarch64 tmp=/var/tmp",
+        );
+        assert!(!none.tools.tar && !none.tools.zip);
+        assert_eq!(none.arch, "aarch64");
+
+        let win = parse_probe_stdout(
+            "tar=0 zip=0 unzip=0 ps=1 family=windows arch=AMD64 tmp=C:\\Users\\a\\AppData\\Local\\Temp",
+        );
+        assert!(win.tools.powershell);
+        assert_eq!(win.family, RemoteFamily::Windows);
+        assert_eq!(win.arch, "x86_64");
+    }
+
+    #[test]
+    fn remote_parent_base_splits_path() {
+        assert_eq!(remote_parent_base("/src"), ("/".into(), "src".into()));
+        assert_eq!(
+            remote_parent_base("/home/alice/proj"),
+            ("/home/alice".into(), "proj".into())
+        );
+        assert_eq!(remote_parent_base("relative"), (".".into(), "relative".into()));
+    }
+
+    #[test]
+    fn join_tmp_respects_windows_style() {
+        assert_eq!(join_tmp("/tmp", "a.bin"), "/tmp/a.bin");
+        assert_eq!(
+            join_tmp(r"C:\Users\x\AppData\Local\Temp", "a.exe"),
+            r"C:\Users\x\AppData\Local\Temp\a.exe"
+        );
     }
 
     #[test]

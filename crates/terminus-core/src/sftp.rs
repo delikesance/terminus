@@ -281,6 +281,85 @@ impl SftpSession {
         self.op("write", self.inner.write(resolved, data)).await
     }
 
+    /// Opens `path` for streaming reads (`AsyncRead`).
+    ///
+    /// Prefer this over [`Self::read`] for large files or Host→Host copies.
+    /// OpenSSH follows symlinks on open/read, so npm `.bin` links yield file bytes.
+    pub async fn open_read(&self, path: &str) -> Result<russh_sftp::client::fs::File> {
+        let resolved = self.resolve(path)?;
+        self.op("open", self.inner.open(resolved)).await
+    }
+
+    /// Creates/truncates `path` for streaming writes (`AsyncWrite`).
+    pub async fn create_write(&self, path: &str) -> Result<russh_sftp::client::fs::File> {
+        let resolved = self.resolve(path)?;
+        self.op("create", self.inner.create(resolved)).await
+    }
+
+    /// Stream-copy `from_path` on `self` to `to_path` on `dest` in chunks.
+    ///
+    /// Each read/write is bounded by [`Self::timeout`]; the overall copy may
+    /// run longer than one budget (progress via `on_progress(bytes_copied)`).
+    pub async fn copy_to<F>(
+        &self,
+        from_path: &str,
+        dest: &Self,
+        to_path: &str,
+        mut on_progress: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64),
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut reader = self.open_read(from_path).await?;
+        let mut writer = dest.create_write(to_path).await?;
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut total = 0u64;
+        loop {
+            let n = match timeout(self.timeout, reader.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => n,
+                Ok(Err(err)) => {
+                    return Err(Error::SshError(format!("sftp copy read: {err}")));
+                }
+                Err(_) => {
+                    return Err(Error::TimeoutError(format!(
+                        "sftp copy read timed out after {:?}",
+                        self.timeout
+                    )));
+                }
+            };
+            match timeout(dest.timeout, writer.write_all(&buf[..n])).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    return Err(Error::SshError(format!("sftp copy write: {err}")));
+                }
+                Err(_) => {
+                    return Err(Error::TimeoutError(format!(
+                        "sftp copy write timed out after {:?}",
+                        dest.timeout
+                    )));
+                }
+            }
+            total = total.saturating_add(n as u64);
+            on_progress(total);
+        }
+        match timeout(dest.timeout, writer.shutdown()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(Error::SshError(format!("sftp copy close: {err}")));
+            }
+            Err(_) => {
+                return Err(Error::TimeoutError(format!(
+                    "sftp copy close timed out after {:?}",
+                    dest.timeout
+                )));
+            }
+        }
+        Ok(total)
+    }
+
     /// Renames/moves `old` to `new` (both resolved inside the root).
     pub async fn rename(&self, old: &str, new: &str) -> Result<()> {
         let from = self.resolve(old)?;
