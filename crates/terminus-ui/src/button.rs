@@ -24,6 +24,8 @@ pub struct ButtonSpec {
     pub radius: f32,
     /// When set on a secondary button, the label uses the muted text color.
     pub muted_label: bool,
+    /// Brighten fill / surface while the pointer is over the control.
+    pub hovered: bool,
 }
 
 impl ButtonSpec {
@@ -33,6 +35,7 @@ impl ButtonSpec {
             kind: ButtonKind::Primary,
             radius: 8.0,
             muted_label: false,
+            hovered: false,
         }
     }
 
@@ -42,6 +45,7 @@ impl ButtonSpec {
             kind: ButtonKind::Secondary,
             radius: 8.0,
             muted_label: false,
+            hovered: false,
         }
     }
 
@@ -52,6 +56,7 @@ impl ButtonSpec {
             kind: ButtonKind::Ghost,
             radius: 8.0,
             muted_label: false,
+            hovered: false,
         }
     }
 
@@ -67,11 +72,34 @@ impl ButtonSpec {
         self
     }
 
+    /// Mark the control as hovered for fill brightening.
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.hovered = hovered;
+        self
+    }
+
     /// Fill color for the outer capsule, given theme accents.
     pub fn fill(self, accent: [f32; 4], surface: [f32; 4]) -> [f32; 4] {
-        match self.kind {
+        let base = match self.kind {
             ButtonKind::Primary => accent,
             ButtonKind::Secondary | ButtonKind::Ghost => surface,
+        };
+        if !self.hovered {
+            return base;
+        }
+        match self.kind {
+            ButtonKind::Primary => [
+                (base[0] + 0.12).min(1.0),
+                (base[1] + 0.12).min(1.0),
+                (base[2] + 0.12).min(1.0),
+                base[3],
+            ],
+            ButtonKind::Secondary | ButtonKind::Ghost => [
+                (base[0] + 0.08).min(1.0),
+                (base[1] + 0.08).min(1.0),
+                (base[2] + 0.08).min(1.0),
+                base[3],
+            ],
         }
     }
 
@@ -150,5 +178,14 @@ mod tests {
         assert!((badge.x - 12.0).abs() < 0.01);
         assert!((badge.y - 12.0).abs() < 0.01);
         assert!((badge.width - 32.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn hovered_primary_brightens() {
+        let base = ButtonSpec::primary(Rect::new(0.0, 0.0, 10.0, 10.0));
+        let hot = base.hovered(true);
+        let accent = [0.2, 0.4, 0.6, 1.0];
+        let surface = [0.0, 0.0, 0.0, 1.0];
+        assert!(hot.fill(accent, surface)[0] > base.fill(accent, surface)[0]);
     }
 }

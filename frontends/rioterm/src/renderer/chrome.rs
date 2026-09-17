@@ -796,6 +796,26 @@ fn render_snippets(
     device_scale: f32,
 ) {
     let body = chrome.snippets.body_rect(origin_y, height);
+    if chrome.snippets.items.is_empty() && labels {
+        draw_text(
+            sugarloaf,
+            body.x + 16.0,
+            body.y + 18.0,
+            "No snippets yet",
+            ROW_TITLE_SIZE,
+            theme.text_muted,
+            false,
+        );
+        draw_text(
+            sugarloaf,
+            body.x + 16.0,
+            body.y + 38.0,
+            "Save frequent commands here.",
+            ROW_SUB_SIZE,
+            theme.text_muted,
+            false,
+        );
+    }
     for (index, item) in chrome.snippets.items.iter().enumerate() {
         let row = chrome.snippets.item_rect(origin_y, index);
         let Some((top, bottom)) = row.clip_rows(body.y, body.bottom()) else {
@@ -821,79 +841,59 @@ fn render_snippets(
             false,
         );
         if labels {
-            let pad_x = 16.0;
-            
-            // 1. Title
-            let title_color = if hovered { color_from_f32(theme.accent) } else { theme.text };
+            let pad_x = 12.0;
+            let title_color = if hovered {
+                color_from_f32(theme.accent)
+            } else {
+                theme.text
+            };
+            let title_w = row.width - pad_x * 2.0 - if hovered { 22.0 } else { 0.0 };
+            let name = elide(
+                sugarloaf,
+                &item.name,
+                title_w,
+                &opts(ROW_TITLE_SIZE, title_color, true),
+            );
             draw_text(
                 sugarloaf,
                 row.x + pad_x,
-                row.y + 14.0,
-                &item.name,
+                row.y + 10.0,
+                &name,
                 ROW_TITLE_SIZE,
                 title_color,
                 true,
             );
-            
-            // 2. Description
-            let desc_y = row.y + 32.0;
-            let desc = elide(
-                sugarloaf,
-                &item.desc,
-                row.width - pad_x * 2.0,
-                &opts(ROW_SUB_SIZE, theme.text_muted, false),
-            );
-            draw_text(
-                sugarloaf,
-                row.x + pad_x,
-                desc_y,
-                &desc,
-                ROW_SUB_SIZE,
-                theme.text_muted,
-                false,
-            );
 
-            // 3. Command Box (Code styling)
-            let cmd_box = Rect::new(row.x + pad_x, row.y + 54.0, row.width - pad_x * 2.0, 34.0);
-            paint_surface(
-                sugarloaf,
-                &cmd_box,
-                theme.field_bg,
-                Some(theme.panel_border), // Adds a nice subtle outline
-                6.0, // Slightly tighter radius for the inner code box
-                DEPTH_CONTENT + 0.02,
-                ORDER_CONTENT,
-                false,
-            );
-
-            // Icon to indicate execution context (Terminal icon)
-            draw_icon(
-                sugarloaf,
-                Icon::SquareTerminal,
-                IconPlacement::new(cmd_box.x + 8.0, cmd_box.y + 9.0, 16.0),
-                [theme.text_muted[0] as f32 / 255.0, theme.text_muted[1] as f32 / 255.0, theme.text_muted[2] as f32 / 255.0, theme.text_muted[3] as f32 / 255.0],
-                device_scale,
-            );
-
-            // The command string itself
-            let max_cmd_w = cmd_box.width - 36.0;
+            let cmd_y = row.y + 30.0;
+            let max_cmd_w = row.width - pad_x * 2.0 - 22.0;
             let cmd = elide(
                 sugarloaf,
                 &item.cmd,
                 max_cmd_w,
-                &opts(HINT_SIZE, color_from_f32(theme.accent), false),
+                &opts(HINT_SIZE, theme.text_muted, false),
+            );
+            draw_icon(
+                sugarloaf,
+                Icon::SquareTerminal,
+                IconPlacement::new(row.x + pad_x, cmd_y, 14.0),
+                [
+                    theme.text_muted[0] as f32 / 255.0,
+                    theme.text_muted[1] as f32 / 255.0,
+                    theme.text_muted[2] as f32 / 255.0,
+                    theme.text_muted[3] as f32 / 255.0,
+                ],
+                device_scale,
             );
             draw_text(
                 sugarloaf,
-                cmd_box.x + 30.0,
-                cmd_box.y + 11.0,
+                row.x + pad_x + 20.0,
+                cmd_y + 1.0,
                 &cmd,
                 HINT_SIZE,
-                color_from_f32(theme.accent),
+                theme.text_muted,
                 false,
             );
-            
-            // Delete icon
+
             if hovered {
                 let del_rect = chrome.snippets.delete_button_rect(origin_y, index);
                 let del_hover = chrome.snippets.delete_hover == Some(index);
@@ -902,18 +902,22 @@ fn render_snippets(
                 } else {
                     theme.text_muted
                 };
-                
                 draw_icon(
                     sugarloaf,
                     Icon::X,
                     IconPlacement::new(del_rect.x, del_rect.y, 16.0),
-                    [del_color[0] as f32 / 255.0, del_color[1] as f32 / 255.0, del_color[2] as f32 / 255.0, del_color[3] as f32 / 255.0],
+                    [
+                        del_color[0] as f32 / 255.0,
+                        del_color[1] as f32 / 255.0,
+                        del_color[2] as f32 / 255.0,
+                        del_color[3] as f32 / 255.0,
+                    ],
                     device_scale,
                 );
             }
         }
     }
-    
+
     render_footer_button(
         sugarloaf,
         chrome.snippets.add_button_rect(origin_y, height),
@@ -5343,20 +5347,36 @@ fn render_add_snippet(
 
         let text_x = input.x + 8.0;
         let text_y = input.y + (input.height - 12.0) / 2.0;
-        let caret = input_data.draft.caret;
-        let shown = &input_data.draft.value;
-        
-        let before: String = shown.chars().take(caret).collect();
-        let after: String = shown.chars().skip(caret).collect();
-        
-        let drawn = sugarloaf.text_mut().draw(
-            text_x,
-            text_y,
-            &before,
-            &opts(12.0, theme.text, false),
-        );
-        
+        let draft = &input_data.draft;
+        let shown = draft.display_line();
+        let text_opts = opts(12.0, theme.text, false);
+
         if focused {
+            if let Some((start, end)) = draft.selection_range() {
+                let before: String = shown.chars().take(start).collect();
+                let selected: String = shown.chars().skip(start).take(end - start).collect();
+                let bx = sugarloaf.text_mut().measure(&before, &text_opts);
+                let sw = sugarloaf
+                    .text_mut()
+                    .measure(&selected, &text_opts)
+                    .max(2.0);
+                paint_flat(
+                    sugarloaf,
+                    &Rect::new(text_x + bx, input.y + 6.0, sw, input.height - 12.0),
+                    with_alpha(theme.accent, 0.35),
+                    DEPTH_DIALOG_BG + 0.02,
+                    ORDER_DIALOG,
+                );
+            }
+        }
+
+        sugarloaf
+            .text_mut()
+            .draw(text_x, text_y, &shown, &text_opts);
+
+        if focused {
+            let prefix = draft.prefix_display();
+            let drawn = sugarloaf.text_mut().measure(&prefix, &text_opts);
             paint_caret(
                 sugarloaf,
                 text_x + drawn,
@@ -5365,15 +5385,6 @@ fn render_add_snippet(
                 theme.accent,
                 DEPTH_DIALOG_BG + 0.03,
                 ORDER_DIALOG,
-            );
-        }
-        
-        if !after.is_empty() {
-            sugarloaf.text_mut().draw(
-                text_x + drawn,
-                text_y,
-                &after,
-                &opts(12.0, theme.text, false),
             );
         }
     }
@@ -5393,7 +5404,9 @@ fn render_add_snippet(
     paint_chrome_button(
         sugarloaf,
         theme,
-        terminus_ui::ButtonSpec::primary(layout.save_btn),
+        terminus_ui::ButtonSpec::primary(layout.save_btn).hovered(
+            form.btn_hover == Some(terminus_ui::dialog_form::DynamicFormHit::Save),
+        ),
         &form.save_label,
         ROW_TITLE_SIZE,
         DEPTH_DIALOG,
@@ -5403,7 +5416,9 @@ fn render_add_snippet(
     paint_chrome_button(
         sugarloaf,
         theme,
-        terminus_ui::ButtonSpec::ghost(layout.cancel_btn),
+        terminus_ui::ButtonSpec::ghost(layout.cancel_btn).hovered(
+            form.btn_hover == Some(terminus_ui::dialog_form::DynamicFormHit::Cancel),
+        ),
         "Cancel",
         ROW_TITLE_SIZE,
         DEPTH_DIALOG,

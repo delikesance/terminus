@@ -1207,44 +1207,86 @@ impl Screen<'_> {
         use rio_window::event::ElementState;
         use rio_window::keyboard::{Key, NamedKey};
         use terminus_ui::add_snippet::{FormInput, FormOutcome};
+        use terminus_ui::TextMoveKind;
 
         if key_event.state != ElementState::Pressed {
             return None;
         }
 
+        let mods = self.modifiers.state();
+        let shift = mods.shift_key();
+        // Windows/Linux: Ctrl+Arrow = word. macOS: Option/Alt = word.
+        let by_word = mods.control_key() || mods.alt_key();
+        let select_mod = mods.control_key() || mods.super_key();
+        let move_kind = if shift {
+            TextMoveKind::Extend
+        } else {
+            TextMoveKind::Collapse
+        };
+
         let input = match &key_event.logical_key {
-            Key::Named(NamedKey::Backspace) => FormInput::Backspace,
-            Key::Named(NamedKey::Delete) => FormInput::Delete,
+            Key::Named(NamedKey::Backspace) => FormInput::Backspace { by_word },
+            Key::Named(NamedKey::Delete) => FormInput::Delete { by_word },
             Key::Named(NamedKey::Tab) => {
-                if self.modifiers.state().shift_key() {
+                if shift {
                     FormInput::Previous
                 } else {
                     FormInput::Next
                 }
             }
-            Key::Named(NamedKey::ArrowLeft) => FormInput::Left,
-            Key::Named(NamedKey::ArrowRight) => FormInput::Right,
-            Key::Named(NamedKey::Home) => FormInput::Home,
-            Key::Named(NamedKey::End) => FormInput::End,
+            Key::Named(NamedKey::ArrowLeft) => FormInput::Left {
+                kind: move_kind,
+                by_word,
+            },
+            Key::Named(NamedKey::ArrowRight) => FormInput::Right {
+                kind: move_kind,
+                by_word,
+            },
+            Key::Named(NamedKey::Home) => FormInput::Home { kind: move_kind },
+            Key::Named(NamedKey::End) => FormInput::End { kind: move_kind },
             Key::Named(NamedKey::ArrowDown) => FormInput::Next,
             Key::Named(NamedKey::ArrowUp) => FormInput::Previous,
             Key::Named(NamedKey::Enter) => FormInput::Enter,
             Key::Named(NamedKey::Escape) => FormInput::Escape,
-            Key::Character(s) => match s.as_str() {
-                // Ignore raw control characters that bypass the IME
-                // (Ctrl+C, Ctrl+V).
-                s if s.chars().all(|c| c.is_ascii_control()) => return None,
-                _ => FormInput::Text,
-            },
+            Key::Named(NamedKey::Space) => FormInput::Text,
+            Key::Character(ch) => {
+                if select_mod && ch.eq_ignore_ascii_case("a") {
+                    FormInput::SelectAll
+                } else if select_mod {
+                    // Leave other Ctrl/Cmd chords alone (no insert of "c"/"v").
+                    return Some(FormOutcome::Ignored);
+                } else if ch.chars().all(|c| c.is_ascii_control()) {
+                    return None;
+                } else {
+                    FormInput::Text
+                }
+            }
             _ => return Some(FormOutcome::Ignored),
         };
 
         let text = if input == FormInput::Text {
-            key_event.text.as_deref().unwrap_or_default()
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Space) => " ",
+                _ => key_event.text.as_deref().unwrap_or_default(),
+            }
         } else {
             ""
         };
+
         self.chrome.handle_snippet_form_input(input, text)
+    }
+
+    pub fn chrome_snippet_commit_text(&mut self, text: &str) -> bool {
+        if !self.chrome.add_snippet_is_open() {
+            return false;
+        }
+        matches!(
+            self.chrome.handle_snippet_form_input(
+                terminus_ui::add_snippet::FormInput::Text,
+                text
+            ),
+            Some(terminus_ui::add_snippet::FormOutcome::Changed)
+        )
     }
 
     pub fn submit_snippet_form(&mut self) {
@@ -4203,10 +4245,7 @@ impl Screen<'_> {
     /// should decide.
     pub fn chrome_cursor_at(&self, x: f32, y: f32) -> Option<CursorIcon> {
         let (width, height) = self.chrome_viewport();
-        let over_modal = self.chrome.settings_is_open()
-            || self.chrome.add_host_is_open()
-            || self.chrome.vault_unlock_is_open()
-            || self.chrome.connection.is_some();
+        let over_modal = self.chrome_overlay_dialog_open();
         let over_rail = !self.chrome.activity.collapsed && x < self.chrome.reserved_width();
         if !over_modal && !over_rail {
             return None;
@@ -4216,6 +4255,15 @@ impl Screen<'_> {
             terminus_ui::ChromeCursor::Text => CursorIcon::Text,
             terminus_ui::ChromeCursor::Default => CursorIcon::Default,
         })
+    }
+
+    /// True when a chrome dialog must own the cursor over the grid/SFTP.
+    pub fn chrome_overlay_dialog_open(&self) -> bool {
+        self.chrome.settings_is_open()
+            || self.chrome.add_host_is_open()
+            || self.chrome.add_snippet_is_open()
+            || self.chrome.vault_unlock_is_open()
+            || self.chrome.connection.is_some()
     }
 
     /// Execute a hint latched at press time. The latched match is the
@@ -5858,6 +5906,20 @@ impl Screen<'_> {
             }
             PaletteAction::ListHosts => {
                 // Same stay-open mode switch as ListFonts (confirm path).
+            }
+            PaletteAction::OpenSftp => {
+                let hosts = self.palette_host_items();
+                match hosts.first() {
+                    Some(host) => {
+                        if let Err(err) = self.open_sftp_pane(&host.id) {
+                            self.chrome.panel.notice = Some(err);
+                        }
+                    }
+                    None => {
+                        self.chrome.panel.notice =
+                            Some("Add a host first to open SFTP".into());
+                    }
+                }
             }
             PaletteAction::Quit => {
                 self.context_manager.quit();

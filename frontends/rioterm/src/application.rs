@@ -1440,7 +1440,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::RunSnippet(_) => {
+                                    ChromeAction::RunSnippet(cmd) => {
+                                        // Non-bracketed write + CR so shells treat it as typed Enter.
+                                        let line = format!("{cmd}\r");
+                                        route.window.screen.paste(&line, false);
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1924,7 +1927,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::RunSnippet(cmd) => {
-                                        let line = format!("{cmd}\n");
+                                        let line = format!("{cmd}\r");
                                         route.window.screen.paste(&line, false);
                                         route.request_overlay_redraw();
                                         return;
@@ -2018,7 +2021,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::RunSnippet(_) => {
+                                    ChromeAction::RunSnippet(cmd) => {
+                                        // Non-bracketed write + CR so shells treat it as typed Enter.
+                                        let line = format!("{cmd}\r");
+                                        route.window.screen.paste(&line, false);
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -2476,9 +2482,21 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     } else if route.window.screen.chrome_hover(lx, ly) {
                         chrome_dirty = true;
                     }
-                    if let Some(icon) = route.window.screen.sftp_cursor_at(lx, ly) {
-                        route.window.winit_window.set_cursor(icon);
-                    } else if let Some(icon) = route.window.screen.chrome_cursor_at(lx, ly) {
+                    // Overlay dialogs own the pointer; prefer chrome over SFTP.
+                    let icon = if route.window.screen.chrome_overlay_dialog_open() {
+                        route
+                            .window
+                            .screen
+                            .chrome_cursor_at(lx, ly)
+                            .or_else(|| route.window.screen.sftp_cursor_at(lx, ly))
+                    } else {
+                        route
+                            .window
+                            .screen
+                            .sftp_cursor_at(lx, ly)
+                            .or_else(|| route.window.screen.chrome_cursor_at(lx, ly))
+                    };
+                    if let Some(icon) = icon {
                         route.window.winit_window.set_cursor(icon);
                     }
                     if chrome_dirty {
@@ -2668,12 +2686,21 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     let scale = route.window.screen.sugarloaf.scale_factor();
                     let lx = x as f32 / scale;
                     let ly = y as f32 / scale;
-                    let icon = route
-                        .window
-                        .screen
-                        .sftp_cursor_at(lx, ly)
-                        .or_else(|| route.window.screen.chrome_cursor_at(lx, ly))
-                        .unwrap_or_else(|| route.window.screen.mouse_cursor_icon());
+                    let icon = if route.window.screen.chrome_overlay_dialog_open() {
+                        route
+                            .window
+                            .screen
+                            .chrome_cursor_at(lx, ly)
+                            .or_else(|| route.window.screen.sftp_cursor_at(lx, ly))
+                            .unwrap_or_else(|| route.window.screen.mouse_cursor_icon())
+                    } else {
+                        route
+                            .window
+                            .screen
+                            .sftp_cursor_at(lx, ly)
+                            .or_else(|| route.window.screen.chrome_cursor_at(lx, ly))
+                            .unwrap_or_else(|| route.window.screen.mouse_cursor_icon())
+                    };
                     route.window.winit_window.set_cursor(icon);
 
                     if hint_changed {
