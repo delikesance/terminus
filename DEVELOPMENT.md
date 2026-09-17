@@ -309,3 +309,23 @@ Four things to know:
   cannot be exercised this way, and rendering is software (lavapipe): good enough
   to judge layout and logic, not animation or GPU performance. For how it really
   looks on hardware, run `make dev-hot-win` (cross-build + Windows watcher).
+
+## Releases
+
+Tag a version (`vX.Y.Z`) after `misc/prepare-release.sh X.Y.Z` and push the tag.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds in parallel:
+
+| Target | Artifact |
+| --- | --- |
+| Windows | `rio-windows-x86_64.zip` |
+| macOS (aarch64) | `rio-macos-aarch64.tar.gz` |
+| Fedora / RHEL | `rioterm-*.rpm` (via [`misc/nfpm-rioterm.yaml`](misc/nfpm-rioterm.yaml)) |
+| NixOS | `rio-nixos-x86_64` + push to the `rioterm` Cachix cache |
+
+Builds use `Swatinem/rust-cache` (and Cachix for the flake job). Set the
+repository secret `CACHIX_AUTH_TOKEN` so Nix store paths are published; without
+it the Nix job still builds and uploads the binary artifact but skips the cache
+push.
+
+`workflow_dispatch` runs the same matrix and uploads run artifacts without
+creating a GitHub Release (useful to warm caches).
