@@ -58,6 +58,21 @@ Rules that hold this together:
   the terminal, so the terminal reflows beside it. `reapply_chrome_inset`
   re-runs on any change to the reserved width, including a config hot-reload.
 
+## SSH paths (accepted MVP)
+
+Interactive host tabs and SFTP intentionally use **different** stacks today
+(roadmap Option A in `milestone.md`):
+
+| Path | Implementation | Entry |
+| --- | --- | --- |
+| Shell tab | Local PTY + system `ssh` | `frontends/rioterm/src/screen/mod.rs` → `ssh_shell` / `open_host_session` |
+| SFTP pane | russh + worker | `terminus-bridge::sftp_worker` ← `sftp_ui.rs` |
+| Future unified shell | `SshTransport` (`EventedPty`) | Ready in bridge, **not wired** — debt **1.4-debt** |
+
+Do not switch host tabs to `SshTransport` without updating the roadmap and
+TOFU / auth UX. CLI shells currently use OpenSSH
+`StrictHostKeyChecking=accept-new`.
+
 ## The host list
 
 The panel shows three groups, and only the last one is yours to edit:

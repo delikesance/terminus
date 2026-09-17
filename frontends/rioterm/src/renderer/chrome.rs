@@ -98,6 +98,7 @@ pub fn render(
         // is painted — but the editor is a dialog, not part of the
         // panel, and must still show if it is open.
         if chrome.add_host_is_open() {
+            sugarloaf.begin_overlay();
             render_add_host(
                 sugarloaf,
                 chrome,
@@ -106,8 +107,10 @@ pub fn render(
                 window_height,
                 device_scale,
             );
+            sugarloaf.end_overlay();
         }
         if chrome.vault_unlock_is_open() {
+            sugarloaf.begin_overlay();
             render_vault_unlock(
                 sugarloaf,
                 chrome,
@@ -116,6 +119,7 @@ pub fn render(
                 window_height,
                 device_scale,
             );
+            sugarloaf.end_overlay();
         }
         return;
     }
@@ -142,7 +146,10 @@ pub fn render(
         );
     }
 
+    // Overlay dialogs: underlay (SFTP, sidebar, …) still paints fully;
+    // sugarloaf composites these after all normal UI text.
     if chrome.connection.is_some() {
+        sugarloaf.begin_overlay();
         render_connection_modal(
             sugarloaf,
             chrome,
@@ -152,9 +159,11 @@ pub fn render(
             device_scale,
             connecting_phase.unwrap_or(0.0),
         );
+        sugarloaf.end_overlay();
     }
 
     if chrome.add_host_is_open() {
+        sugarloaf.begin_overlay();
         render_add_host(
             sugarloaf,
             chrome,
@@ -163,13 +172,31 @@ pub fn render(
             window_height,
             device_scale,
         );
+        sugarloaf.end_overlay();
+    }
+
+    
+    if chrome.snippet_form.is_open() {
+        sugarloaf.begin_overlay();
+        render_add_snippet(
+            sugarloaf,
+            chrome,
+            theme,
+            window_width,
+            window_height,
+            device_scale,
+        );
+        sugarloaf.end_overlay();
     }
 
     if chrome.settings_is_open() {
+        sugarloaf.begin_overlay();
         render_settings_modal(sugarloaf, chrome, theme, window_width, window_height, device_scale);
+        sugarloaf.end_overlay();
     }
 
     if chrome.vault_unlock_is_open() {
+        sugarloaf.begin_overlay();
         render_vault_unlock(
             sugarloaf,
             chrome,
@@ -178,6 +205,7 @@ pub fn render(
             window_height,
             device_scale,
         );
+        sugarloaf.end_overlay();
     }
 
     if let Some(menu) = chrome.context_menu.as_ref() {
@@ -767,7 +795,6 @@ fn render_snippets(
     labels: bool,
     device_scale: f32,
 ) {
-    let _ = device_scale;
     let body = chrome.snippets.body_rect(origin_y, height);
     for (index, item) in chrome.snippets.items.iter().enumerate() {
         let row = chrome.snippets.item_rect(origin_y, index);
@@ -794,70 +821,109 @@ fn render_snippets(
             false,
         );
         if labels {
+            let pad_x = 16.0;
+            
+            // 1. Title
+            let title_color = if hovered { color_from_f32(theme.accent) } else { theme.text };
             draw_text(
                 sugarloaf,
-                row.x + 14.0,
+                row.x + pad_x,
                 row.y + 14.0,
                 &item.name,
                 ROW_TITLE_SIZE,
-                if hovered {
-                    color_from_f32(theme.accent)
-                } else {
-                    theme.text
-                },
+                title_color,
                 true,
             );
-            // Run chip — mock bordered pill.
-            let chip_w = 48.0;
-            let chip_h = 18.0;
-            let chip = Rect::new(row.right() - 14.0 - chip_w, row.y + 12.0, chip_w, chip_h);
-            paint_surface(
+            
+            // 2. Description
+            let desc_y = row.y + 32.0;
+            let desc = elide(
                 sugarloaf,
-                &chip,
-                theme.field_bg,
-                Some(theme.panel_border),
-                8.0,
-                DEPTH_CONTENT + 0.02,
-                ORDER_CONTENT,
-                false,
+                &item.desc,
+                row.width - pad_x * 2.0,
+                &opts(ROW_SUB_SIZE, theme.text_muted, false),
             );
             draw_text(
                 sugarloaf,
-                chip.x + 8.0,
-                chip.y + 3.0,
-                "Run ↵",
-                HINT_SIZE,
-                [0x22, 0xd3, 0xee, 255], // cyan-400
+                row.x + pad_x,
+                desc_y,
+                &desc,
+                ROW_SUB_SIZE,
+                theme.text_muted,
                 false,
             );
-            let cmd_box = Rect::new(row.x + 12.0, row.y + 40.0, row.width - 24.0, 36.0);
+
+            // 3. Command Box (Code styling)
+            let cmd_box = Rect::new(row.x + pad_x, row.y + 54.0, row.width - pad_x * 2.0, 34.0);
             paint_surface(
                 sugarloaf,
                 &cmd_box,
                 theme.field_bg,
-                Some(theme.panel_border),
-                8.0,
+                Some(theme.panel_border), // Adds a nice subtle outline
+                6.0, // Slightly tighter radius for the inner code box
                 DEPTH_CONTENT + 0.02,
                 ORDER_CONTENT,
                 false,
             );
+
+            // Icon to indicate execution context (Terminal icon)
+            draw_icon(
+                sugarloaf,
+                Icon::SquareTerminal,
+                IconPlacement::new(cmd_box.x + 8.0, cmd_box.y + 9.0, 16.0),
+                [theme.text_muted[0] as f32 / 255.0, theme.text_muted[1] as f32 / 255.0, theme.text_muted[2] as f32 / 255.0, theme.text_muted[3] as f32 / 255.0],
+                device_scale,
+            );
+
+            // The command string itself
+            let max_cmd_w = cmd_box.width - 36.0;
             let cmd = elide(
                 sugarloaf,
                 &item.cmd,
-                row.width - 48.0,
-                &opts(HINT_SIZE, theme.text_muted, false),
+                max_cmd_w,
+                &opts(HINT_SIZE, color_from_f32(theme.accent), false),
             );
             draw_text(
                 sugarloaf,
-                row.x + 20.0,
-                row.y + 50.0,
+                cmd_box.x + 30.0,
+                cmd_box.y + 11.0,
                 &cmd,
                 HINT_SIZE,
-                theme.text_muted,
+                color_from_f32(theme.accent),
                 false,
             );
+            
+            // Delete icon
+            if hovered {
+                let del_rect = chrome.snippets.delete_button_rect(origin_y, index);
+                let del_hover = chrome.snippets.delete_hover == Some(index);
+                let del_color = if del_hover {
+                    theme.danger
+                } else {
+                    theme.text_muted
+                };
+                
+                draw_icon(
+                    sugarloaf,
+                    Icon::X,
+                    IconPlacement::new(del_rect.x, del_rect.y, 16.0),
+                    [del_color[0] as f32 / 255.0, del_color[1] as f32 / 255.0, del_color[2] as f32 / 255.0, del_color[3] as f32 / 255.0],
+                    device_scale,
+                );
+            }
         }
     }
+    
+    render_footer_button(
+        sugarloaf,
+        chrome.snippets.add_button_rect(origin_y, height),
+        chrome.snippets.add_hover,
+        Icon::Plus,
+        "Add snippet",
+        theme,
+        labels,
+        device_scale,
+    );
 }
 
 fn render_settings_modal(
@@ -1706,6 +1772,8 @@ fn text_blocked_by(cover: Option<&Rect>, item: &Rect) -> bool {
 
 /// Dialog (+ open auth/identity menus) that must not have background glyphs
 /// painted underneath — sugarloaf text always composites above quads.
+/// Prefer [`Sugarloaf::begin_overlay`] for full dialogs; this cover remains
+/// for sidebar host-row labels under the add-host panel.
 fn add_host_label_cover(
     chrome: &Chrome,
     window_width: f32,
@@ -5181,4 +5249,164 @@ mod tests {
     fn the_dialog_depth_is_above_the_scrim() {
         assert!(DEPTH_DIALOG_BG > DEPTH_DIALOG);
     }
+}
+
+
+fn render_add_snippet(
+    sugarloaf: &mut Sugarloaf,
+    chrome: &Chrome,
+    theme: &ChromeTheme,
+    window_width: f32,
+    window_height: f32,
+    device_scale: f32,
+) {
+    let form = &chrome.snippet_form.inner;
+    paint_scrim(
+        sugarloaf,
+        window_width,
+        window_height,
+        theme.scrim,
+        DEPTH_DIALOG_BG,
+        ORDER_DIALOG,
+    );
+
+    let layout = terminus_ui::dialog_form::DialogFormLayout::compute(
+        form,
+        window_width,
+        window_height,
+    );
+
+    paint_dialog_shell(
+        sugarloaf,
+        theme,
+        window_width,
+        window_height,
+        &layout.dialog,
+        terminus_ui::dialog_form::DIALOG_RADIUS,
+        DialogBorderMode::Outward,
+        DEPTH_DIALOG_BG,
+        DEPTH_DIALOG,
+        ORDER_DIALOG,
+        None,
+    );
+
+    draw_text(
+        sugarloaf,
+        layout.title.x,
+        layout.title.y + 4.0,
+        &form.title,
+        DIALOG_TITLE_SIZE,
+        theme.text,
+        true,
+    );
+
+    for (i, input_data) in form.fields.iter().enumerate() {
+        let field_frame = layout.fields[i];
+        let focused = form.focused_index == i;
+
+        let input_top = 18.0;
+        let input_height = 32.0;
+
+        let caption = Rect::new(field_frame.x + 2.0, field_frame.y, field_frame.width - 4.0, input_top);
+        let input = Rect::new(field_frame.x, field_frame.y + input_top, field_frame.width, input_height);
+
+        let shell = Rect::new(
+            input.x - BORDER_WIDTH,
+            input.y - BORDER_WIDTH,
+            input.width + 2.0 * BORDER_WIDTH,
+            input.height + 2.0 * BORDER_WIDTH,
+        );
+        paint_surface(
+            sugarloaf,
+            &shell,
+            theme.button_bg,
+            Some(if focused {
+                theme.field_border_focus
+            } else {
+                theme.field_border
+            }),
+            12.0,
+            DEPTH_DIALOG_BG + 0.015,
+            ORDER_DIALOG,
+            false,
+        );
+
+        draw_text(
+            sugarloaf,
+            caption.x,
+            caption.y + 2.0,
+            &input_data.label,
+            CAPTION_SIZE,
+            [0xcb, 0xd5, 0xe1, 255],
+            false,
+        );
+
+        let text_x = input.x + 8.0;
+        let text_y = input.y + (input.height - 12.0) / 2.0;
+        let caret = input_data.draft.caret;
+        let shown = &input_data.draft.value;
+        
+        let before: String = shown.chars().take(caret).collect();
+        let after: String = shown.chars().skip(caret).collect();
+        
+        let drawn = sugarloaf.text_mut().draw(
+            text_x,
+            text_y,
+            &before,
+            &opts(12.0, theme.text, false),
+        );
+        
+        if focused {
+            paint_caret(
+                sugarloaf,
+                text_x + drawn,
+                input.y + 6.0,
+                input.height - 12.0,
+                theme.accent,
+                DEPTH_DIALOG_BG + 0.03,
+                ORDER_DIALOG,
+            );
+        }
+        
+        if !after.is_empty() {
+            sugarloaf.text_mut().draw(
+                text_x + drawn,
+                text_y,
+                &after,
+                &opts(12.0, theme.text, false),
+            );
+        }
+    }
+    
+    if let Some(err_box) = layout.error_line {
+        draw_text(
+            sugarloaf,
+            err_box.x,
+            err_box.y + 16.0,
+            form.error.as_deref().unwrap_or(""),
+            HINT_SIZE,
+            theme.danger,
+            true,
+        );
+    }
+
+    paint_chrome_button(
+        sugarloaf,
+        theme,
+        terminus_ui::ButtonSpec::primary(layout.save_btn),
+        &form.save_label,
+        ROW_TITLE_SIZE,
+        DEPTH_DIALOG,
+        ORDER_DIALOG,
+    );
+
+    paint_chrome_button(
+        sugarloaf,
+        theme,
+        terminus_ui::ButtonSpec::ghost(layout.cancel_btn),
+        "Cancel",
+        ROW_TITLE_SIZE,
+        DEPTH_DIALOG,
+        ORDER_DIALOG,
+    );
 }

@@ -5,6 +5,11 @@
 //! local PTY/ConPTY: nothing in the renderer or the VT parser needs to know the
 //! bytes came from the network.
 //!
+//! **Status:** library + tests are ready, but rioterm does **not** open host
+//! tabs through this type yet. Interactive sessions use system `ssh` in a local
+//! PTY (`screen::ssh_shell`, milestone Option A). Wiring this transport into
+//! `SessionSpec::Ssh` is roadmap **1.4-debt**.
+//!
 //! corcovado (Rio's poll loop: a thread with a mio fork) and russh (tokio)
 //! cannot share a reactor, so the two halves are kept strictly apart and talk
 //! through this module:

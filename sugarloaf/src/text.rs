@@ -204,6 +204,13 @@ pub struct Text {
     /// Drawn after [`Self::instances`] so callers can overlay chrome
     /// (e.g. context menus) on top of earlier UI labels/icons.
     late_instances: Vec<TextInstance>,
+    /// Drawn in a third pass after overlay quads (see
+    /// `Sugarloaf::begin_overlay`). Late vs early is collapsed here —
+    /// overlay mode uses a single list.
+    overlay_instances: Vec<TextInstance>,
+    /// When true, `draw` / `draw_late` / `draw_mask*` push into
+    /// [`Self::overlay_instances`] instead of the normal lists.
+    overlay_mode: bool,
     scale_factor: f32,
     font_library: FontLibrary,
     font_resolve: FxHashMap<(char, u8), (u32, bool)>,
@@ -236,6 +243,8 @@ impl Text {
         Self {
             instances: Vec::new(),
             late_instances: Vec::new(),
+            overlay_instances: Vec::new(),
+            overlay_mode: false,
             scale_factor: 1.0,
             font_library: font_library.clone(),
             font_resolve: FxHashMap::default(),
@@ -283,18 +292,31 @@ impl Text {
 
     #[inline]
     pub fn instance_count(&self) -> usize {
-        self.instances.len() + self.late_instances.len()
+        self.instances.len() + self.late_instances.len() + self.overlay_instances.len()
     }
 
     #[inline]
     pub fn clear(&mut self) {
         self.instances.clear();
         self.late_instances.clear();
+        self.overlay_instances.clear();
+    }
+
+    /// Route subsequent `draw` / `draw_late` / `draw_mask*` into the
+    /// overlay instance list (composited after overlay quads).
+    #[inline]
+    pub fn set_overlay_mode(&mut self, enabled: bool) {
+        self.overlay_mode = enabled;
     }
 
     #[inline]
     pub fn instances(&self) -> &[TextInstance] {
         &self.instances
+    }
+
+    #[inline]
+    pub fn overlay_instances(&self) -> &[TextInstance] {
+        &self.overlay_instances
     }
 
     /// Same as [`Self::draw`], but composited after every regular UI text
@@ -426,7 +448,9 @@ impl Text {
             page: slot.page,
             _pad: [0; 2],
         };
-        if late {
+        if self.overlay_mode {
+            self.overlay_instances.push(inst);
+        } else if late {
             self.late_instances.push(inst);
         } else {
             self.instances.push(inst);
@@ -668,7 +692,9 @@ impl Text {
                 page: slot.page,
                 _pad: [0; 2],
             };
-            if late {
+            if self.overlay_mode {
+                self.overlay_instances.push(inst);
+            } else if late {
                 self.late_instances.push(inst);
             } else {
                 self.instances.push(inst);
@@ -1052,6 +1078,7 @@ impl Text {
     /// `grid_text_fragment`: glyph origin = `pos + bearings`; mask
     /// glyphs use `instance.color`, color glyphs sample directly.
     /// No-op when CPU state is absent or no instances were queued.
+    /// Does **not** draw overlay instances — use [`Self::render_overlay_cpu`].
     pub fn render_cpu(&self, buf: &mut [u32], buf_w: u32, buf_h: u32) {
         if self.instances.is_empty() && self.late_instances.is_empty() {
             return;
@@ -1059,6 +1086,33 @@ impl Text {
         let Some(state) = self.cpu.as_ref() else {
             return;
         };
+        Self::blit_instances_cpu(
+            buf,
+            buf_w,
+            buf_h,
+            state,
+            self.instances.iter().chain(self.late_instances.iter()),
+        );
+    }
+
+    /// Paint overlay UI text after overlay quads.
+    pub fn render_overlay_cpu(&self, buf: &mut [u32], buf_w: u32, buf_h: u32) {
+        if self.overlay_instances.is_empty() {
+            return;
+        }
+        let Some(state) = self.cpu.as_ref() else {
+            return;
+        };
+        Self::blit_instances_cpu(buf, buf_w, buf_h, state, self.overlay_instances.iter());
+    }
+
+    fn blit_instances_cpu<'a>(
+        buf: &mut [u32],
+        buf_w: u32,
+        buf_h: u32,
+        state: &TextCpuState,
+        instances: impl Iterator<Item = &'a TextInstance>,
+    ) {
         let buf_w_i = buf_w as i32;
         let buf_h_i = buf_h as i32;
         let mask = state.atlas_grayscale.pixels();
@@ -1066,7 +1120,7 @@ impl Text {
         let color_atlas = state.atlas_color.pixels();
         let color_side = state.atlas_color.side() as usize;
 
-        for inst in self.instances.iter().chain(self.late_instances.iter()) {
+        for inst in instances {
             let gw = inst.glyph_size[0] as i32;
             let gh = inst.glyph_size[1] as i32;
             if gw <= 0 || gh <= 0 {
@@ -1143,9 +1197,12 @@ impl Text {
             return;
         };
 
+        // Capacity covers overlay too so `render_overlay_metal` can
+        // append without reallocating mid-frame.
+        let total = instance_count + self.overlay_instances.len();
         let slot = frame % state.instance_buffers.len();
-        if instance_count > state.instance_capacities[slot] {
-            let new_cap = instance_count.next_power_of_two().max(256);
+        if total > state.instance_capacities[slot] {
+            let new_cap = total.next_power_of_two().max(256);
             state.instance_buffers[slot] =
                 alloc_instance_buffer_metal(&state.device, new_cap);
             state.instance_capacities[slot] = new_cap;
@@ -1164,6 +1221,13 @@ impl Text {
                     self.late_instances.len(),
                 );
             }
+            if !self.overlay_instances.is_empty() {
+                std::ptr::copy_nonoverlapping(
+                    self.overlay_instances.as_ptr(),
+                    dst.add(instance_count),
+                    self.overlay_instances.len(),
+                );
+            }
         }
 
         encoder.set_render_pipeline_state(&state.pipeline);
@@ -1177,11 +1241,71 @@ impl Text {
         encoder.set_fragment_texture(0, Some(&state.atlas_grayscale.texture));
         encoder.set_fragment_texture(1, Some(&state.atlas_color.texture));
 
+        // Normal pass only — overlay drawn later via render_overlay_metal.
         encoder.draw_primitives_instanced(
             metal::MTLPrimitiveType::TriangleStrip,
             0,
             4,
             instance_count as u64,
+        );
+    }
+
+    /// Draw overlay UI text after overlay quads. Requires
+    /// [`Self::render_metal`] to have already uploaded the combined
+    /// instance buffer this frame (or a no-op when empty).
+    #[cfg(target_os = "macos")]
+    pub fn render_overlay_metal(
+        &mut self,
+        encoder: &metal::RenderCommandEncoderRef,
+        viewport: [f32; 2],
+        frame: usize,
+    ) {
+        let overlay_count = self.overlay_instances.len();
+        if overlay_count == 0 {
+            return;
+        }
+        let Some(state) = self.metal.as_mut() else {
+            return;
+        };
+        let base = self.instances.len() + self.late_instances.len();
+        let slot = frame % state.instance_buffers.len();
+
+        // If render_metal was skipped (no normal text), upload overlay now.
+        if base == 0 {
+            let total = overlay_count;
+            if total > state.instance_capacities[slot] {
+                let new_cap = total.next_power_of_two().max(256);
+                state.instance_buffers[slot] =
+                    alloc_instance_buffer_metal(&state.device, new_cap);
+                state.instance_capacities[slot] = new_cap;
+            }
+            unsafe {
+                let dst = state.instance_buffers[slot].contents() as *mut TextInstance;
+                std::ptr::copy_nonoverlapping(
+                    self.overlay_instances.as_ptr(),
+                    dst,
+                    overlay_count,
+                );
+            }
+        }
+
+        encoder.set_render_pipeline_state(&state.pipeline);
+        let byte_offset = (base * std::mem::size_of::<TextInstance>()) as u64;
+        encoder.set_vertex_buffer(0, Some(&state.instance_buffers[slot]), byte_offset);
+        let vp: [f32; 2] = viewport;
+        encoder.set_vertex_bytes(
+            1,
+            std::mem::size_of::<[f32; 2]>() as u64,
+            vp.as_ptr() as *const std::ffi::c_void,
+        );
+        encoder.set_fragment_texture(0, Some(&state.atlas_grayscale.texture));
+        encoder.set_fragment_texture(1, Some(&state.atlas_color.texture));
+
+        encoder.draw_primitives_instanced(
+            metal::MTLPrimitiveType::TriangleStrip,
+            0,
+            4,
+            overlay_count as u64,
         );
     }
 
@@ -1264,17 +1388,20 @@ impl Text {
     }
 
     /// Record the UI text pass into `render_pass`. No-op if wgpu state
-    /// isn't initialised or there are no instances this frame.
+    /// isn't initialised or there are no normal instances this frame.
+    /// Does **not** draw overlay instances — use [`Self::render_overlay_wgpu`].
     #[cfg(all(feature = "wgpu", not(target_os = "macos")))]
-    pub fn render_wgpu<'pass>(
-        &'pass mut self,
-        render_pass: &mut wgpu::RenderPass<'pass>,
+    pub fn render_wgpu(
+        &mut self,
+        render_pass: &mut wgpu::RenderPass<'_>,
         viewport: [f32; 2],
     ) {
         let early = self.instances.len();
         let late = self.late_instances.len();
+        let overlay = self.overlay_instances.len();
         let instance_count = early + late;
         if instance_count == 0 {
+            // Overlay-only frames upload in render_overlay_wgpu.
             return;
         }
         let Some(state) = self.wgpu.as_mut() else {
@@ -1289,17 +1416,19 @@ impl Text {
             bytemuck::cast_slice(&uniforms),
         );
 
-        // Grow instance buffer if necessary.
-        if instance_count > state.instance_capacity {
-            let new_cap = instance_count.next_power_of_two().max(256);
+        // Grow for normal + overlay so overlay pass can draw the suffix.
+        let total = instance_count + overlay;
+        if total > state.instance_capacity {
+            let new_cap = total.next_power_of_two().max(256);
             state.instance_buffer = alloc_instance_buffer_wgpu(&state.device, new_cap);
             state.instance_capacity = new_cap;
         }
 
-        // Early then late — wgpu draws in buffer order, so late sits on top.
-        let mut all = Vec::with_capacity(instance_count);
+        // Early + late + overlay contiguous; draw only early+late here.
+        let mut all = Vec::with_capacity(total);
         all.extend_from_slice(&self.instances);
         all.extend_from_slice(&self.late_instances);
+        all.extend_from_slice(&self.overlay_instances);
         state.queue.write_buffer(
             &state.instance_buffer,
             0,
@@ -1311,6 +1440,57 @@ impl Text {
         render_pass.set_bind_group(1, &state.atlas_bind_group, &[]);
         render_pass.set_vertex_buffer(0, state.instance_buffer.slice(..));
         render_pass.draw(0..4, 0..instance_count as u32);
+    }
+
+    /// Draw overlay UI text after overlay quads.
+    #[cfg(all(feature = "wgpu", not(target_os = "macos")))]
+    pub fn render_overlay_wgpu(
+        &mut self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        viewport: [f32; 2],
+    ) {
+        let overlay = self.overlay_instances.len();
+        if overlay == 0 {
+            return;
+        }
+        let Some(state) = self.wgpu.as_mut() else {
+            return;
+        };
+        let base = self.instances.len() + self.late_instances.len();
+
+        if base == 0 {
+            // Overlay-only frame: upload uniforms + overlay instances.
+            let uniforms: [f32; 4] = [viewport[0], viewport[1], 0.0, 0.0];
+            state.queue.write_buffer(
+                &state.uniform_buffer,
+                0,
+                bytemuck::cast_slice(&uniforms),
+            );
+            if overlay > state.instance_capacity {
+                let new_cap = overlay.next_power_of_two().max(256);
+                state.instance_buffer = alloc_instance_buffer_wgpu(&state.device, new_cap);
+                state.instance_capacity = new_cap;
+            }
+            state.queue.write_buffer(
+                &state.instance_buffer,
+                0,
+                bytemuck_instances(&self.overlay_instances),
+            );
+            render_pass.set_pipeline(&state.pipeline);
+            render_pass.set_bind_group(0, &state.uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &state.atlas_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, state.instance_buffer.slice(..));
+            render_pass.draw(0..4, 0..overlay as u32);
+            return;
+        }
+
+        // Data already uploaded by render_wgpu; draw the overlay suffix.
+        let byte_offset = (base * std::mem::size_of::<TextInstance>()) as u64;
+        render_pass.set_pipeline(&state.pipeline);
+        render_pass.set_bind_group(0, &state.uniform_bind_group, &[]);
+        render_pass.set_bind_group(1, &state.atlas_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, state.instance_buffer.slice(byte_offset..));
+        render_pass.draw(0..4, 0..overlay as u32);
     }
 
     //  Vulkan GPU backend
@@ -1348,6 +1528,7 @@ impl Text {
     /// the dynamic-rendering pass and set viewport/scissor. No-op
     /// when no instances were recorded this frame or the Vulkan
     /// state isn't initialised.
+    /// Does **not** draw overlay instances — use [`Self::render_overlay_vulkan`].
     #[cfg(target_os = "linux")]
     pub fn render_vulkan(
         &mut self,
@@ -1377,6 +1558,36 @@ impl Text {
         Self::render_vulkan_list(state, cmd, slot, &late);
         self.instances = early;
         self.late_instances = late;
+    }
+
+    /// Draw overlay UI text after overlay quads. Uses a separate list
+    /// upload so it does not overwrite the normal-text vertex buffer
+    /// that earlier draws still reference.
+    #[cfg(target_os = "linux")]
+    pub fn render_overlay_vulkan(
+        &mut self,
+        cmd: ash::vk::CommandBuffer,
+        slot: usize,
+        viewport: [f32; 2],
+    ) {
+        if self.overlay_instances.is_empty() {
+            return;
+        }
+        let Some(state) = self.vulkan.as_mut() else {
+            return;
+        };
+
+        // Uniforms may already be set by render_vulkan; refresh in case
+        // this is an overlay-only frame.
+        let uniforms: [f32; 4] = [viewport[0], viewport[1], 0.0, 0.0];
+        unsafe {
+            let dst = state.uniform_buffers[slot].as_mut_ptr() as *mut [f32; 4];
+            std::ptr::write(dst, uniforms);
+        }
+
+        let overlay = std::mem::take(&mut self.overlay_instances);
+        Self::render_vulkan_list(state, cmd, slot, &overlay);
+        self.overlay_instances = overlay;
     }
 
     #[cfg(target_os = "linux")]

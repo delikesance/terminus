@@ -126,6 +126,9 @@ pub enum PaletteAction {
     /// font list as its contents. Handled by `router`, not
     /// `Screen::execute_palette_action`.
     ListFonts,
+    /// Browse stored SSH hosts. Same stay-open mode-switch pattern as
+    /// [`Self::ListFonts`]. Enter on a host opens a session.
+    ListHosts,
     Quit,
 }
 
@@ -257,6 +260,11 @@ const COMMANDS: &[Command] = &[
         action: PaletteAction::ListFonts,
     },
     Command {
+        title: "Open Host…",
+        shortcut: "",
+        action: PaletteAction::ListHosts,
+    },
+    Command {
         title: "Quit",
         shortcut: "Cmd+Q",
         action: PaletteAction::Quit,
@@ -266,16 +274,31 @@ const COMMANDS: &[Command] = &[
 /// What the palette is currently browsing and filtering over.
 ///
 /// `Commands` is the default — fuzzy-matches against the static
-/// `COMMANDS` list and dispatches a `PaletteAction` on Enter.
+/// `COMMANDS` list (and matching hosts when the query is non-empty)
+/// and dispatches a `PaletteAction` / opens a host on Enter.
 ///
 /// `Fonts` is entered via the `ListFonts` command. The palette stays
 /// open, its content is replaced with the owned list of font family
 /// names, and Enter closes the palette (no font-switching action yet).
 /// The list is owned so the filter pass doesn't keep a borrow on the
 /// sugarloaf FontLibrary.
+///
+/// `Hosts` is entered via `ListHosts` ("Open Host…"). Same stay-open
+/// pattern as Fonts; Enter opens an SSH session for the selected host.
 enum PaletteMode {
     Commands,
     Fonts(Vec<String>),
+    Hosts(Vec<HostPaletteItem>),
+}
+
+/// One stored SSH host as the palette needs it (no secrets).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPaletteItem {
+    pub id: String,
+    /// Display name from the store.
+    pub title: String,
+    /// `user@host[:port]` for secondary matching / hint.
+    pub subtitle: String,
 }
 
 /// One row in the filtered result list. Variants carry exactly the
@@ -290,6 +313,11 @@ enum PaletteRow<'a> {
     Font {
         family: &'a str,
     },
+    Host {
+        id: &'a str,
+        title: &'a str,
+        subtitle: &'a str,
+    },
 }
 
 impl<'a> PaletteRow<'a> {
@@ -297,20 +325,21 @@ impl<'a> PaletteRow<'a> {
         match *self {
             PaletteRow::Command { title, .. } => title,
             PaletteRow::Font { family } => family,
+            PaletteRow::Host { title, .. } => title,
         }
     }
 
     fn shortcut(&self) -> &'a str {
         match *self {
             PaletteRow::Command { shortcut, .. } => shortcut,
-            PaletteRow::Font { .. } => "",
+            PaletteRow::Font { .. } | PaletteRow::Host { .. } => "",
         }
     }
 
     fn action(&self) -> Option<PaletteAction> {
         match *self {
             PaletteRow::Command { action, .. } => Some(action),
-            PaletteRow::Font { .. } => None,
+            PaletteRow::Font { .. } | PaletteRow::Host { .. } => None,
         }
     }
 }
@@ -442,6 +471,21 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
     Some(score)
 }
 
+/// Best fuzzy score across a host's searchable fields (empty query → 0).
+fn host_fuzzy_score(query: &str, host: &HostPaletteItem) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    [
+        fuzzy_score(query, &host.title),
+        fuzzy_score(query, &host.subtitle),
+        fuzzy_score(query, &host.id),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
 /// Command palette UI component (Raycast-style)
 pub struct CommandPalette {
     enabled: bool,
@@ -449,8 +493,11 @@ pub struct CommandPalette {
     pub selected_index: usize,
     scroll_offset: usize,
     pub has_adaptive_theme: bool,
-    /// Which list the palette is showing (commands or fonts).
+    /// Which list the palette is showing (commands, fonts, or hosts).
     mode: PaletteMode,
+    /// Snapshot of stored hosts for Commands-mode inline matching.
+    /// Refreshed when the palette opens / when entering Hosts mode.
+    hosts_cache: Vec<HostPaletteItem>,
     /// Timestamp for caret blinking
     caret_blink_start: Instant,
     /// Timestamp of the last event that actually changed `scroll_offset`.
@@ -470,6 +517,7 @@ impl Default for CommandPalette {
             scroll_offset: 0,
             has_adaptive_theme: false,
             mode: PaletteMode::Commands,
+            hosts_cache: Vec::new(),
             caret_blink_start: Instant::now(),
             last_scroll_time: None,
         }
@@ -495,12 +543,15 @@ impl CommandPalette {
             // Clear scrollbar history so reopening the palette never
             // flashes a leftover scrollbar from the previous session.
             self.last_scroll_time = None;
-            // Always re-open into Commands mode — a stale Fonts list
-            // from a previous session would be misleading (fonts may
-            // have changed) and surprising (user toggles palette and
-            // finds themselves on the font list).
+            // Always re-open into Commands mode — a stale Fonts/Hosts list
+            // from a previous session would be misleading and surprising.
             self.mode = PaletteMode::Commands;
         }
+    }
+
+    /// Refresh the host snapshot used by Commands-mode inline matching.
+    pub fn set_hosts(&mut self, hosts: Vec<HostPaletteItem>) {
+        self.hosts_cache = hosts;
     }
 
     /// Swap the palette into font-browsing mode with the given family
@@ -509,6 +560,17 @@ impl CommandPalette {
     /// `List Fonts` command.
     pub fn enter_fonts_mode(&mut self, fonts: Vec<String>) {
         self.mode = PaletteMode::Fonts(fonts);
+        self.query.clear();
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+        self.caret_blink_start = Instant::now();
+        self.last_scroll_time = None;
+    }
+
+    /// Swap into host-browsing mode (same stay-open pattern as fonts).
+    pub fn enter_hosts_mode(&mut self, hosts: Vec<HostPaletteItem>) {
+        self.hosts_cache = hosts.clone();
+        self.mode = PaletteMode::Hosts(hosts);
         self.query.clear();
         self.selected_index = 0;
         self.scroll_offset = 0;
@@ -575,18 +637,27 @@ impl CommandPalette {
             .get(self.selected_index)
             .and_then(|(_, row)| match row {
                 PaletteRow::Font { family } => Some((*family).to_owned()),
-                PaletteRow::Command { .. } => None,
+                PaletteRow::Command { .. } | PaletteRow::Host { .. } => None,
             })
     }
 
-    /// Filtered list of rows for the current mode. Both modes share
-    /// the same fuzzy-score + sort pipeline so typing behaves
-    /// identically in either view.
+    /// Selected host id when the current row is a host (Commands or Hosts mode).
+    pub fn get_selected_host_id(&self) -> Option<String> {
+        self.filtered_rows()
+            .get(self.selected_index)
+            .and_then(|(_, row)| match row {
+                PaletteRow::Host { id, .. } => Some((*id).to_owned()),
+                PaletteRow::Command { .. } | PaletteRow::Font { .. } => None,
+            })
+    }
+
+    /// Filtered list of rows for the current mode. Modes share the same
+    /// fuzzy-score + sort pipeline so typing behaves identically.
     fn filtered_rows(&self) -> Vec<(i32, PaletteRow<'_>)> {
         let mut results: Vec<(i32, PaletteRow<'_>)> = match &self.mode {
             PaletteMode::Commands => {
                 let has_adaptive = self.has_adaptive_theme;
-                COMMANDS
+                let mut rows: Vec<(i32, PaletteRow<'_>)> = COMMANDS
                     .iter()
                     .filter(|cmd| {
                         if cmd.action == PaletteAction::ToggleAppearanceTheme {
@@ -605,13 +676,46 @@ impl CommandPalette {
                             },
                         ))
                     })
-                    .collect()
+                    .collect();
+                // Inline host jump: when the user is already typing, also
+                // surface matching hosts so Ctrl+Shift+P → "prod" → Enter works
+                // without entering Hosts mode first. Empty query keeps the
+                // catalog command-only to avoid dumping a long host list.
+                if !self.query.is_empty() {
+                    for host in &self.hosts_cache {
+                        if let Some(score) = host_fuzzy_score(&self.query, host) {
+                            rows.push((
+                                score,
+                                PaletteRow::Host {
+                                    id: host.id.as_str(),
+                                    title: host.title.as_str(),
+                                    subtitle: host.subtitle.as_str(),
+                                },
+                            ));
+                        }
+                    }
+                }
+                rows
             }
             PaletteMode::Fonts(fonts) => fonts
                 .iter()
                 .filter_map(|family| {
                     let score = fuzzy_score(&self.query, family)?;
                     Some((score, PaletteRow::Font { family }))
+                })
+                .collect(),
+            PaletteMode::Hosts(hosts) => hosts
+                .iter()
+                .filter_map(|host| {
+                    let score = host_fuzzy_score(&self.query, host)?;
+                    Some((
+                        score,
+                        PaletteRow::Host {
+                            id: host.id.as_str(),
+                            title: host.title.as_str(),
+                            subtitle: host.subtitle.as_str(),
+                        },
+                    ))
                 })
                 .collect(),
         };
@@ -727,8 +831,9 @@ impl CommandPalette {
         // No separate input background — blends with palette bg for minimalism
 
         let placeholder = match self.mode {
-            PaletteMode::Commands => "Type a command...",
+            PaletteMode::Commands => "Type a command or host…",
             PaletteMode::Fonts(_) => "Type a font name...",
+            PaletteMode::Hosts(_) => "Type a host name…",
         };
         let display_text = if self.query.is_empty() {
             placeholder
@@ -843,16 +948,26 @@ impl CommandPalette {
                 .text_mut()
                 .draw(row_text_x, row_text_y, row.title(), &result_opts);
 
-            // Right-side hint: shortcut for commands, copy icon for
-            // font rows (signals "Enter copies this to clipboard").
+            // Right-side hint: shortcut for commands, endpoint for hosts,
+            // copy icon for font rows (signals "Enter copies this").
             let shortcut = row.shortcut();
             let is_font_row = matches!(row, PaletteRow::Font { .. });
+            let host_hint = match row {
+                PaletteRow::Host { subtitle, .. } => Some(*subtitle),
+                _ => None,
+            };
             if !shortcut.is_empty() {
                 let ui = sugarloaf.text_mut();
                 let shortcut_width = ui.measure(shortcut, &shortcut_opts);
                 let shortcut_x = input_x + input_width - INPUT_PADDING_X - shortcut_width;
                 let shortcut_y = item_y + (RESULT_ITEM_HEIGHT - SHORTCUT_FONT_SIZE) / 2.0;
                 ui.draw(shortcut_x, shortcut_y, shortcut, &shortcut_opts);
+            } else if let Some(hint) = host_hint.filter(|s| !s.is_empty()) {
+                let ui = sugarloaf.text_mut();
+                let hint_width = ui.measure(hint, &shortcut_opts);
+                let hint_x = input_x + input_width - INPUT_PADDING_X - hint_width;
+                let hint_y = item_y + (RESULT_ITEM_HEIGHT - SHORTCUT_FONT_SIZE) / 2.0;
+                ui.draw(hint_x, hint_y, hint, &shortcut_opts);
             }
 
             if is_font_row {
@@ -1175,6 +1290,75 @@ mod tests {
         palette.set_query("zzzz".to_string());
         // Query doesn't match anything → no selected font.
         assert!(palette.get_selected_font().is_none());
+    }
+
+    fn sample_hosts() -> Vec<HostPaletteItem> {
+        vec![
+            HostPaletteItem {
+                id: "h1".into(),
+                title: "Production".into(),
+                subtitle: "root@prod.example".into(),
+            },
+            HostPaletteItem {
+                id: "h2".into(),
+                title: "Staging".into(),
+                subtitle: "deploy@staging.example:2222".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn enter_hosts_mode_lists_all_hosts() {
+        let mut palette = CommandPalette::new();
+        palette.set_enabled(true);
+        palette.enter_hosts_mode(sample_hosts());
+        assert!(palette.query.is_empty());
+        assert_eq!(palette.filtered_rows().len(), 2);
+        assert!(palette.get_selected_action().is_none());
+        assert!(palette.get_selected_host_id().is_some());
+    }
+
+    #[test]
+    fn hosts_mode_filters_by_name_or_endpoint() {
+        let mut palette = CommandPalette::new();
+        palette.enter_hosts_mode(sample_hosts());
+        palette.set_query("stag".to_string());
+        let filtered = palette.filtered_rows();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1.title(), "Staging");
+        assert_eq!(palette.get_selected_host_id().as_deref(), Some("h2"));
+    }
+
+    #[test]
+    fn commands_mode_surfaces_hosts_only_when_querying() {
+        let mut palette = CommandPalette::new();
+        palette.set_hosts(sample_hosts());
+        // Empty query: commands only (no host dump).
+        let empty = palette.filtered_rows();
+        assert!(empty
+            .iter()
+            .all(|(_, r)| !matches!(r, PaletteRow::Host { .. })));
+        assert!(empty.iter().any(|(_, r)| r.title() == "Open Host…"));
+
+        palette.set_query("prod".to_string());
+        let mixed = palette.filtered_rows();
+        assert!(
+            mixed
+                .iter()
+                .any(|(_, r)| matches!(r, PaletteRow::Host { title: "Production", .. })),
+            "expected Production host in mixed results: {:?}",
+            mixed.iter().map(|(_, r)| r.title()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn set_enabled_resets_hosts_mode_to_commands() {
+        let mut palette = CommandPalette::new();
+        palette.enter_hosts_mode(sample_hosts());
+        palette.enabled = true;
+        palette.set_enabled(false);
+        palette.set_enabled(true);
+        assert!(matches!(palette.mode, PaletteMode::Commands));
     }
 
     // Scrollbar geometry + fade math live in `renderer::scrollbar` and

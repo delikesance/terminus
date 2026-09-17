@@ -17,7 +17,9 @@
 
 pub mod activity_bar;
 pub mod add_host;
+pub mod add_snippet;
 pub mod anim;
+pub mod dialog_form;
 pub mod button;
 pub mod chrome;
 pub mod connection;
