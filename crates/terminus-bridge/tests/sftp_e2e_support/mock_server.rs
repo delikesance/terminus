@@ -387,17 +387,23 @@ fn mock_tar_create(
             .unwrap_or_else(|e| Err(e.to_string()));
     }
 
-    // Pack under a different root name via a temporary symlink (Unix mock).
+    // Pack under a different root name: symlink on Unix, temp rename elsewhere.
     let link = parent.join(root_name);
-    let _ = fs::remove_file(&link);
+    let src = parent.join(base);
     #[cfg(unix)]
     {
+        let _ = fs::remove_file(&link);
         std::os::unix::fs::symlink(base, &link).map_err(|e| e.to_string())?;
     }
     #[cfg(not(unix))]
     {
-        let _ = &link;
-        return Err("renamed tar root requires unix symlink in mock".into());
+        if link.exists() {
+            return Err(format!(
+                "renamed tar root target already exists: {}",
+                link.display()
+            ));
+        }
+        fs::rename(&src, &link).map_err(|e| e.to_string())?;
     }
     let status = std::process::Command::new("tar")
         .arg("-C")
@@ -406,7 +412,14 @@ fn mock_tar_create(
         .arg(out)
         .arg(root_name)
         .status();
-    let _ = fs::remove_file(&link);
+    #[cfg(unix)]
+    {
+        let _ = fs::remove_file(&link);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fs::rename(&link, &src);
+    }
     status
         .map(|s| {
             if s.success() {
