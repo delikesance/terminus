@@ -82,17 +82,16 @@ const INACTIVE_CUSTOM_MUTE: f32 = 0.55;
 /// strip (+ / search), or a small gap + actions elsewhere.
 #[inline]
 fn island_margin_right() -> f32 {
-    action_strip_width()
-        + {
-            #[cfg(target_os = "windows")]
-            {
-                crate::renderer::window_controls::MARGIN_RIGHT
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                ISLAND_MARGIN_RIGHT
-            }
+    action_strip_width() + {
+        #[cfg(target_os = "windows")]
+        {
+            crate::renderer::window_controls::MARGIN_RIGHT
         }
+        #[cfg(not(target_os = "windows"))]
+        {
+            ISLAND_MARGIN_RIGHT
+        }
+    }
 }
 
 /// Left inset for the app logo (or macOS traffic lights).
@@ -243,12 +242,12 @@ const CLOSE_RESERVE: f32 = CLOSE_MARGIN_RIGHT + CLOSE_HIT_HALF_WIDTH;
 /// Layout: `[gap/2 | pad | dot | gap | icon? | title | pad | close? | gap/2]`
 /// — the pill hugs its content; closable tabs keep a trailing × slot so
 /// the hover affordance does not reflow the strip.
-pub fn tab_slot_width_for_content(text_width: f32, has_icon: bool, closable: bool) -> f32 {
-    let icon = if has_icon {
-        TITLEBAR_ICON + 4.0
-    } else {
-        0.0
-    };
+pub fn tab_slot_width_for_content(
+    text_width: f32,
+    has_icon: bool,
+    closable: bool,
+) -> f32 {
+    let icon = if has_icon { TITLEBAR_ICON + 4.0 } else { 0.0 };
     let close = if closable { CLOSE_RESERVE } else { 0.0 };
     TAB_GAP
         + TAB_PADDING_X
@@ -272,8 +271,7 @@ pub fn tab_strip_layout_from_widths(
 ) -> TabStripLayout {
     let left_margin = island_margin_left();
     let right_margin = island_margin_right();
-    let available =
-        ((window_width / scale_factor) - right_margin - left_margin).max(0.0);
+    let available = ((window_width / scale_factor) - right_margin - left_margin).max(0.0);
     let cap = max_tab_width.max(0.0);
 
     let mut widths: SmallVec<[f32; 12]> = natural_widths
@@ -437,15 +435,7 @@ fn draw_island(
         }
         None => {
             crate::renderer::chrome::paint_surface_stroke(
-                sugarloaf,
-                &card,
-                fill,
-                None,
-                radius,
-                1.0,
-                0.05,
-                order,
-                false,
+                sugarloaf, &card, fill, None, radius, 1.0, 0.05, order, false,
             );
         }
     }
@@ -460,7 +450,6 @@ fn island_rect(slot_x: f32, tab_width: f32) -> (f32, f32, f32, f32, f32) {
     let radius = TAB_RADIUS.min(w / 2.0).min(h / 2.0);
     (x, y, w, h, radius)
 }
-
 
 #[inline]
 fn close_button_center(island_x: f32, island_w: f32) -> Option<f32> {
@@ -604,12 +593,7 @@ impl Island {
             progress_started_at: None,
             progress_last_seen: None,
             // Default progress bar color (blue-ish)
-            progress_bar_color: [
-                0x0a as f32 / 255.0,
-                0x84 as f32 / 255.0,
-                1.0,
-                1.0,
-            ],
+            progress_bar_color: [0x0a as f32 / 255.0, 0x84 as f32 / 255.0, 1.0, 1.0],
             // Default error color (red-ish)
             progress_bar_error_color: [1.0, 0.3, 0.3, 1.0],
             color_picker_tab: None,
@@ -1330,7 +1314,13 @@ impl Island {
             );
 
             if let Some(cx) = close_button_center(ix, iw) {
-                draw_close_button(sugarloaf, cx, self.active_text_color, false, scale_factor);
+                draw_close_button(
+                    sugarloaf,
+                    cx,
+                    self.active_text_color,
+                    false,
+                    scale_factor,
+                );
             }
 
             let raw_title = self.get_title_for_tab(context_manager, drag_idx);
@@ -1811,8 +1801,7 @@ impl Island {
         }
 
         if let Some(context_title) = context_manager.title(tab_index) {
-            if !context_title.content.is_empty()
-                && !context_title.content.contains("{{")
+            if !context_title.content.is_empty() && !context_title.content.contains("{{")
             {
                 return context_title.content.clone();
             }
@@ -1866,8 +1855,7 @@ mod tests {
     #[test]
     fn single_tab_uses_content_hug_width() {
         let natural = tab_slot_width_for_content(80.0, false, false);
-        let layout =
-            tab_strip_layout_from_widths(1600.0, 2.0, 240.0, &[natural]);
+        let layout = tab_strip_layout_from_widths(1600.0, 2.0, 240.0, &[natural]);
         assert_eq!(layout.width_at(0), natural.max(MIN_TAB_WIDTH));
         assert_eq!(layout.tabs_width(), layout.width_at(0));
         let logical_w = 800.0;
@@ -1878,8 +1866,7 @@ mod tests {
     fn content_hug_keeps_tabs_different_widths() {
         let short = tab_slot_width_for_content(40.0, false, false);
         let long = tab_slot_width_for_content(120.0, true, true);
-        let layout =
-            tab_strip_layout_from_widths(3000.0, 2.0, 240.0, &[short, long]);
+        let layout = tab_strip_layout_from_widths(3000.0, 2.0, 240.0, &[short, long]);
         assert!(layout.width_at(0) < layout.width_at(1));
         assert_eq!(layout.tabs_width(), layout.width_at(0) + layout.width_at(1));
     }
@@ -2147,8 +2134,7 @@ mod tests {
     fn tab_strip_layout_geometry() {
         // Overflow: four equal naturals compress proportionally to fill.
         let natural = 168.0;
-        let layout =
-            tab_strip_layout_from_widths(1000.0, 2.0, 240.0, &[natural; 4]);
+        let layout = tab_strip_layout_from_widths(1000.0, 2.0, 240.0, &[natural; 4]);
         let left = island_margin_left();
         let right = island_margin_right();
         assert_eq!(layout.left_margin, left);
@@ -2162,14 +2148,12 @@ mod tests {
     #[test]
     fn tab_strip_layout_caps_slot_width() {
         let wide = tab_slot_width_for_content(200.0, true, true);
-        let layout =
-            tab_strip_layout_from_widths(3000.0, 2.0, 240.0, &[wide, wide]);
+        let layout = tab_strip_layout_from_widths(3000.0, 2.0, 240.0, &[wide, wide]);
         assert_eq!(layout.width_at(0), 240.0);
         assert_eq!(layout.tabs_width(), 480.0);
         assert!(layout.left_margin + layout.tabs_width() < 1500.0);
 
-        let layout =
-            tab_strip_layout_from_widths(10.0, 2.0, 240.0, &[wide; 4]);
+        let layout = tab_strip_layout_from_widths(10.0, 2.0, 240.0, &[wide; 4]);
         assert_eq!(layout.width_at(0), 0.0);
         assert_eq!(layout.tabs_width(), 0.0);
     }

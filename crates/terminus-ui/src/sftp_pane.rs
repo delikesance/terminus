@@ -401,7 +401,9 @@ impl SftpPaneState {
                 SftpFocus::Left => "left",
                 SftpFocus::Right => "right",
             };
-            self.error = Some(format!("Select a file or folder on the {side} pane to rename"));
+            self.error = Some(format!(
+                "Select a file or folder on the {side} pane to rename"
+            ));
             return false;
         };
         let mut draft = TextDraft::new(row.name);
@@ -799,7 +801,11 @@ pub fn crumb_segments_for_cwd(cwd: &str, is_local: bool) -> Vec<(String, String)
             }
             out.push(("/".into(), "/".into()));
             let mut acc = String::new();
-            for part in cwd.trim_start_matches('/').split('/').filter(|p| !p.is_empty()) {
+            for part in cwd
+                .trim_start_matches('/')
+                .split('/')
+                .filter(|p| !p.is_empty())
+            {
                 acc.push('/');
                 acc.push_str(part);
                 out.push((part.to_string(), acc.clone()));
@@ -813,7 +819,11 @@ pub fn crumb_segments_for_cwd(cwd: &str, is_local: bool) -> Vec<(String, String)
     }
     out.push(("/".into(), "/".into()));
     let mut acc = String::new();
-    for part in cwd.trim_start_matches('/').split('/').filter(|p| !p.is_empty()) {
+    for part in cwd
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|p| !p.is_empty())
+    {
         acc.push('/');
         acc.push_str(part);
         out.push((part.to_string(), acc.clone()));
@@ -860,7 +870,8 @@ mod tests {
 
     #[test]
     fn layout_name_edit_uses_field_card_height() {
-        let layout = SftpPaneLayout::with_name_edit(Rect::new(0.0, 0.0, 640.0, 400.0), true);
+        let layout =
+            SftpPaneLayout::with_name_edit(Rect::new(0.0, 0.0, 640.0, 400.0), true);
         assert!(
             (layout.name_field.height - FIELD_CARD_HEIGHT).abs() < 0.01,
             "name field should be FIELD_CARD_HEIGHT, got {}",
@@ -888,11 +899,7 @@ mod tests {
         let state = sample_state();
         let layout = SftpPaneLayout::from_bounds(Rect::new(0.0, 0.0, 500.0, 360.0));
         assert_eq!(
-            layout.hit_test(
-                &state,
-                layout.btn_close.x + 4.0,
-                layout.btn_close.y + 4.0
-            ),
+            layout.hit_test(&state, layout.btn_close.x + 4.0, layout.btn_close.y + 4.0),
             SftpHit::Close
         );
         // Slim toolbar: no mkdir/upload/download action hits.
@@ -981,14 +988,23 @@ mod tests {
     fn hit_test_covers_all_primary_targets() {
         let mut state = sample_state();
         state.begin_mkdir();
-        let layout = SftpPaneLayout::from_state(Rect::new(0.0, 0.0, 640.0, 400.0), &state);
+        let layout =
+            SftpPaneLayout::from_state(Rect::new(0.0, 0.0, 640.0, 400.0), &state);
 
         assert_eq!(
-            layout.hit_test(&state, layout.left_header.x + 4.0, layout.left_header.y + 4.0),
+            layout.hit_test(
+                &state,
+                layout.left_header.x + 4.0,
+                layout.left_header.y + 4.0
+            ),
             SftpHit::LeftCrumb
         );
         assert_eq!(
-            layout.hit_test(&state, layout.right_header.x + 4.0, layout.right_header.y + 4.0),
+            layout.hit_test(
+                &state,
+                layout.right_header.x + 4.0,
+                layout.right_header.y + 4.0
+            ),
             SftpHit::RightCrumb
         );
         assert_eq!(

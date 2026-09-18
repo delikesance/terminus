@@ -310,12 +310,7 @@ impl AddHostForm {
     /// Prefill the form for editing an existing host. Password stays empty
     /// (leave blank to keep the stored credential).
     pub fn open_edit(&mut self, values: HostFormValues, host_id: String) {
-        self.values = [
-            values.name,
-            values.hostname,
-            values.username,
-            values.port,
-        ];
+        self.values = [values.name, values.hostname, values.username, values.port];
         self.carets = [
             self.values[0].chars().count(),
             self.values[1].chars().count(),
@@ -330,9 +325,9 @@ impl AddHostForm {
         self.password.clear();
         self.password_caret = 0;
         self.password_visible = false;
-        self.identity_id = values.identity_id.or_else(|| {
-            self.identities.first().map(|(id, _)| id.clone())
-        });
+        self.identity_id = values
+            .identity_id
+            .or_else(|| self.identities.first().map(|(id, _)| id.clone()));
         let still_valid = self
             .identity_id
             .as_ref()

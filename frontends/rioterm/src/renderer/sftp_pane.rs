@@ -4,8 +4,8 @@ use rio_backend::sugarloaf::text::DrawOpts;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::sftp_pane::{
-    SftpFocus, SftpHit, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState, BTN_SIZE, PANE_PAD,
-    ROW_HEIGHT,
+    SftpFocus, SftpHit, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState, BTN_SIZE,
+    PANE_PAD, ROW_HEIGHT,
 };
 use terminus_ui::{ChromeTheme, Rect};
 
@@ -61,10 +61,7 @@ pub fn paint(
     );
 
     paint_flat(sugarloaf, &layout.footer, theme.button_bg, DEPTH, ORDER);
-    let footer_text = state
-        .error
-        .as_deref()
-        .unwrap_or(state.status.as_str());
+    let footer_text = state.error.as_deref().unwrap_or(state.status.as_str());
     let footer_color = if state.error.is_some() {
         theme.danger
     } else {

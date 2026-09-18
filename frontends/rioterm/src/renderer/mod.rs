@@ -176,11 +176,7 @@ fn render_context_bar<T: rio_backend::event::EventListener + Clone + Send + 'sta
     let session = context_manager
         .custom_title(idx)
         .map(str::to_string)
-        .or_else(|| {
-            context_manager
-                .title(idx)
-                .map(|t| t.content.clone())
-        })
+        .or_else(|| context_manager.title(idx).map(|t| t.content.clone()))
         .unwrap_or_else(|| "Terminal".to_string());
     let label = format!("● {host} · {session}");
     let opts = DrawOpts {

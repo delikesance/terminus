@@ -747,7 +747,8 @@ impl HostPanel {
         };
         // Never climb into the sticky header when the panel is shorter than
         // header + notice (tiny windows / tests).
-        let y = (origin_y + height - NOTICE_MARGIN - banner_h).max(self.content_top(origin_y));
+        let y = (origin_y + height - NOTICE_MARGIN - banner_h)
+            .max(self.content_top(origin_y));
         Some(Rect::new(
             ORIGIN_X + NOTICE_MARGIN,
             y,
@@ -1151,11 +1152,7 @@ impl HostPanel {
                     }
                 }
                 Some(PanelHit::Group(index)) => {
-                    if let Some(Row::Group {
-                        id,
-                        host_count,
-                        ..
-                    }) = self.rows.get(index)
+                    if let Some(Row::Group { id, host_count, .. }) = self.rows.get(index)
                     {
                         if *host_count == 0 {
                             let card = self.card_rect(origin_y, index);
@@ -1179,7 +1176,10 @@ impl HostPanel {
     }
 
     /// Root cards (ungrouped stored hosts + groups) in paint order.
-    fn root_reorder_cards(&self, origin_y: f32) -> Vec<(crate::geom::Rect, HostDropTarget)> {
+    fn root_reorder_cards(
+        &self,
+        origin_y: f32,
+    ) -> Vec<(crate::geom::Rect, HostDropTarget)> {
         let mut out = Vec::new();
         for (index, row) in self.rows.iter().enumerate() {
             match row {
@@ -2683,7 +2683,10 @@ mod tests {
         assert!(draft.move_right(RenameMoveKind::Collapse, true));
         assert_eq!(draft.caret, 11); // after "main-server"
         assert!(draft.select_all());
-        assert_eq!(draft.selection_range(), Some((0, draft.name.chars().count())));
+        assert_eq!(
+            draft.selection_range(),
+            Some((0, draft.name.chars().count()))
+        );
         assert!(draft.insert("foo bar", 64));
         assert_eq!(draft.name, "foo bar");
         draft.move_end(RenameMoveKind::Collapse);

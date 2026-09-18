@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use terminus_bridge::{
-    ConflictAction, ConflictKind, SftpCommand, SftpEvent, SftpListEntry, SftpSide, SftpWorker,
+    ConflictAction, ConflictKind, SftpCommand, SftpEvent, SftpListEntry, SftpSide,
+    SftpWorker,
 };
 use terminus_core::auth_method::HostAuthMethod;
 use terminus_core::local_fs;
@@ -13,9 +14,9 @@ use terminus_core::ssh::{
     DEFAULT_KEEPALIVE_INTERVAL,
 };
 use terminus_ui::sftp_pane::{
-    join_remote, parent_path, SftpBackend, SftpClickResult, SftpConflictKind, SftpDrag, SftpFocus,
-    SftpHit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState,
-    SFTP_DRAG_THRESHOLD,
+    join_remote, parent_path, SftpBackend, SftpClickResult, SftpConflictKind, SftpDrag,
+    SftpFocus, SftpHit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow,
+    SftpSideState, SFTP_DRAG_THRESHOLD,
 };
 
 use crate::hosts::HostRow;
@@ -153,11 +154,7 @@ impl ActiveSftp {
                     self.state.set_listed(focus_from_side(side), path, rows);
                     self.state.status = "Ready".into();
                 }
-                SftpEvent::TransferProgress {
-                    label,
-                    done,
-                    total,
-                } => {
+                SftpEvent::TransferProgress { label, done, total } => {
                     if total == 0 {
                         self.state.status = label;
                     } else {
@@ -229,12 +226,9 @@ impl ActiveSftp {
         }
 
         let is_double = double
-            || self
-                .last_click
-                .as_ref()
-                .is_some_and(|(prev, at)| {
-                    prev == &hit && at.elapsed() < std::time::Duration::from_millis(400)
-                });
+            || self.last_click.as_ref().is_some_and(|(prev, at)| {
+                prev == &hit && at.elapsed() < std::time::Duration::from_millis(400)
+            });
         self.last_click = Some((hit.clone(), std::time::Instant::now()));
 
         match hit {
@@ -276,8 +270,9 @@ impl ActiveSftp {
                 self.state.focus = SftpFocus::Left;
                 let segs = self.state.crumb_segments(SftpFocus::Left);
                 if segs.len() >= 2 {
-                    if let Some(path) =
-                        self.state.navigate_crumb_path(SftpFocus::Left, segs.len() - 2)
+                    if let Some(path) = self
+                        .state
+                        .navigate_crumb_path(SftpFocus::Left, segs.len() - 2)
                     {
                         self.cd(SftpFocus::Left, path);
                     }
@@ -287,8 +282,9 @@ impl ActiveSftp {
                 self.state.focus = SftpFocus::Right;
                 let segs = self.state.crumb_segments(SftpFocus::Right);
                 if segs.len() >= 2 {
-                    if let Some(path) =
-                        self.state.navigate_crumb_path(SftpFocus::Right, segs.len() - 2)
+                    if let Some(path) = self
+                        .state
+                        .navigate_crumb_path(SftpFocus::Right, segs.len() - 2)
                     {
                         self.cd(SftpFocus::Right, path);
                     }
@@ -571,7 +567,13 @@ impl ActiveSftp {
         }
     }
 
-    pub fn scroll(&mut self, layout: &SftpPaneLayout, x: f32, y: f32, delta_y: f32) -> bool {
+    pub fn scroll(
+        &mut self,
+        layout: &SftpPaneLayout,
+        x: f32,
+        y: f32,
+        delta_y: f32,
+    ) -> bool {
         let step = delta_y * 20.0;
         if layout.left.contains(x, y) {
             self.state.left.scroll = (self.state.left.scroll - step).max(0.0);
@@ -688,7 +690,8 @@ impl ActiveSftp {
                     let parent = parent_path(&from);
                     let to = join_remote(&parent, &name);
                     self.state.status = format!("Renaming → {name}…");
-                    self.worker.send(SftpCommand::RenameRemote { side, from, to });
+                    self.worker
+                        .send(SftpCommand::RenameRemote { side, from, to });
                 }
             }
         }
@@ -1051,7 +1054,11 @@ mod tests {
         let mut s = ActiveSftp::start_local_dual(left, right, None);
         wait_ready(&mut s);
         s.refresh_focused();
-        assert!(s.state.loading || s.state.status.contains("Listing") || s.state.status == "Ready");
+        assert!(
+            s.state.loading
+                || s.state.status.contains("Listing")
+                || s.state.status == "Ready"
+        );
         s.close();
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1101,7 +1108,8 @@ mod tests {
             .iter()
             .position(|e| e.name == "notes.txt" && !e.is_dir)
             .expect("notes.txt listed");
-        let layout = SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
+        let layout =
+            SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
         let menu = s
             .context_menu_for_hit(&layout, SftpHit::LeftRow(file_idx), 40.0, 120.0)
             .expect("menu for local file");
@@ -1160,7 +1168,8 @@ mod tests {
         wait_ready(&mut s);
         // Seed cwd as if the user had already entered the nested folder.
         s.state.left.cwd = nested.to_string_lossy().into_owned();
-        let layout = SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
+        let layout =
+            SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
         let x = layout.left_header.x + 40.0;
         let y = layout.left_header.y + 4.0;
         assert_eq!(layout.hit_test(&s.state, x, y), SftpHit::LeftCrumb);
@@ -1184,4 +1193,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
-

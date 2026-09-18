@@ -10,7 +10,9 @@ fn main() {
         .and_then(|p| p.parent())
         .expect("crates/terminus-bridge → workspace")
         .to_path_buf();
-    let triple = match env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".into()).as_str()
+    let triple = match env::var("CARGO_CFG_TARGET_ARCH")
+        .unwrap_or_else(|_| "x86_64".into())
+        .as_str()
     {
         "aarch64" => "aarch64-unknown-linux-musl",
         _ => "x86_64-unknown-linux-musl",

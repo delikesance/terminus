@@ -445,8 +445,7 @@ impl VulkanRenderer {
                 &[vertex_buf.handle()],
                 &[byte_offset],
             );
-            self.shared
-                .cmd_draw(cmd, overlay_count as u32, 1, 0, 0);
+            self.shared.cmd_draw(cmd, overlay_count as u32, 1, 0, 0);
         }
     }
 

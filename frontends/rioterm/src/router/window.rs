@@ -92,10 +92,7 @@ pub fn create_window_builder(
         if config.navigation.is_enabled() {
             window_builder = window_builder.with_decorations(false);
             // DWM shadow looks wrong without it on a frameless window.
-            let use_shadow = config
-                .window
-                .windows_use_undecorated_shadow
-                .unwrap_or(true);
+            let use_shadow = config.window.windows_use_undecorated_shadow.unwrap_or(true);
             window_builder = window_builder.with_undecorated_shadow(use_shadow);
         } else if let Some(use_undecorated_shadow) =
             config.window.windows_use_undecorated_shadow

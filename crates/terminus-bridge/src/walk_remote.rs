@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use terminus_core::ssh::SftpConnection;
 use terminus_walk::{
-    hash_paths, parse_digests, parse_meta, snapshot_meta, MetaMap, TOOL_NAME, TOOL_VERSION,
+    hash_paths, parse_digests, parse_meta, snapshot_meta, MetaMap, TOOL_NAME,
+    TOOL_VERSION,
 };
 
 use super::{probe_remote_env, shell_quote, RemoteEnv, RemoteFamily};
@@ -42,13 +43,17 @@ fn extract_embedded_walk_binary() -> Result<PathBuf, String> {
     }
     let dir = std::env::temp_dir().join("terminus-walk-bin");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let dest = dir.join(format!("{TOOL_NAME}-v{TOOL_VERSION}-{}", std::env::consts::ARCH));
+    let dest = dir.join(format!(
+        "{TOOL_NAME}-v{TOOL_VERSION}-{}",
+        std::env::consts::ARCH
+    ));
     let need_write = match std::fs::metadata(&dest) {
         Ok(m) => m.len() != bytes.len() as u64,
         Err(_) => true,
     };
     if need_write {
-        std::fs::write(&dest, bytes).map_err(|e| format!("extract terminus-walk: {e}"))?;
+        std::fs::write(&dest, bytes)
+            .map_err(|e| format!("extract terminus-walk: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -128,7 +133,9 @@ pub(super) fn find_local_walk_binary() -> Result<PathBuf, String> {
 }
 
 /// Upload `terminus-walk` once per remote (versioned path under remote tmp).
-pub(super) async fn ensure_remote_walk(conn: &SftpConnection) -> Result<(String, RemoteEnv), String> {
+pub(super) async fn ensure_remote_walk(
+    conn: &SftpConnection,
+) -> Result<(String, RemoteEnv), String> {
     let env = probe_remote_env(conn).await;
     if env.family != RemoteFamily::Unix {
         return Err("terminus-walk remote helper requires a Unix remote".into());

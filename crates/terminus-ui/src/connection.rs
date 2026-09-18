@@ -39,7 +39,9 @@ pub fn step_column_width(label_width: f32) -> f32 {
 /// Every column uses the **widest** label's hug width so node-to-node
 /// gaps stay equal; the dialog grows when that uniform track exceeds
 /// [`DIALOG_WIDTH`].
-pub fn track_layout_from_labels(label_widths: &[f32; STEP_COUNT]) -> (f32, [f32; STEP_COUNT]) {
+pub fn track_layout_from_labels(
+    label_widths: &[f32; STEP_COUNT],
+) -> (f32, [f32; STEP_COUNT]) {
     let col_w = label_widths
         .iter()
         .map(|&w| step_column_width(w))
@@ -502,7 +504,8 @@ mod tests {
                 pitch
             );
         }
-        let content = col_w * STEP_COUNT as f32 + STEP_COLUMN_GAP * (STEP_COUNT - 1) as f32;
+        let content =
+            col_w * STEP_COUNT as f32 + STEP_COLUMN_GAP * (STEP_COUNT - 1) as f32;
         assert!((dialog_w - (content + 2.0 * DIALOG_PAD).max(DIALOG_WIDTH)).abs() < 0.01);
         // Widest label still fits inside dialog pad when centred on its node.
         let label_left = cx[3] - widths[3] * 0.5;

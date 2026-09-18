@@ -54,7 +54,10 @@ pub fn strip_left(window_width_logical: f32) -> f32 {
 }
 
 #[inline]
-fn button_rect(window_width_logical: f32, control: WindowControl) -> (f32, f32, f32, f32) {
+fn button_rect(
+    window_width_logical: f32,
+    control: WindowControl,
+) -> (f32, f32, f32, f32) {
     let x = strip_left(window_width_logical) + control.index() as f32 * BUTTON_WIDTH;
     (x, 0.0, BUTTON_WIDTH, CONTEXT_BAR_HEIGHT)
 }

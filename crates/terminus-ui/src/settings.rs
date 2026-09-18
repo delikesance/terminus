@@ -33,8 +33,11 @@ pub const STATUS_ACTIONS_GAP: f32 = 10.0;
 /// Button row height inside the SqlSync footer block.
 pub const STATUS_ACTIONS_HEIGHT: f32 = 28.0;
 /// Footer block: status on its own line, then the action buttons.
-pub const STATUS_BLOCK_HEIGHT: f32 =
-    FIELD_CARD_PAD + STATUS_TEXT_HEIGHT + STATUS_ACTIONS_GAP + STATUS_ACTIONS_HEIGHT + FIELD_CARD_PAD;
+pub const STATUS_BLOCK_HEIGHT: f32 = FIELD_CARD_PAD
+    + STATUS_TEXT_HEIGHT
+    + STATUS_ACTIONS_GAP
+    + STATUS_ACTIONS_HEIGHT
+    + FIELD_CARD_PAD;
 /// Shared Unlock / Test Sync button width.
 pub const SYNC_ACTION_BTN_WIDTH: f32 = 110.0;
 pub const SYNC_ACTION_BTN_GAP: f32 = 8.0;
@@ -612,11 +615,7 @@ impl SettingsModal {
     }
 
     /// Inline generate form under the CTA (only while drafting).
-    pub fn key_draft_rect(
-        &self,
-        window_width: f32,
-        window_height: f32,
-    ) -> Option<Rect> {
+    pub fn key_draft_rect(&self, window_width: f32, window_height: f32) -> Option<Rect> {
         if !self.key_drafting {
             return None;
         }
@@ -724,12 +723,7 @@ impl SettingsModal {
         const W: f32 = 56.0;
         const H: f32 = 24.0;
         const PAD: f32 = 14.0;
-        Rect::new(
-            row.right() - PAD - W,
-            row.y + (row.height - H) * 0.5,
-            W,
-            H,
-        )
+        Rect::new(row.right() - PAD - W, row.y + (row.height - H) * 0.5, W, H)
     }
 
     /// Engine card (read-only display / dropdown trigger).
@@ -938,7 +932,8 @@ impl SettingsModal {
                     return SettingsHit::GenerateKey;
                 }
             }
-            if let Some(cancel) = self.key_draft_cancel_rect(window_width, window_height) {
+            if let Some(cancel) = self.key_draft_cancel_rect(window_width, window_height)
+            {
                 if cancel.contains(x, y) {
                     return SettingsHit::CancelKeyDraft;
                 }
@@ -992,7 +987,8 @@ impl SettingsModal {
             {
                 return SettingsHit::UnlockVault;
             }
-            if let Some(forget) = self.forget_passphrase_button_rect(window_width, window_height)
+            if let Some(forget) =
+                self.forget_passphrase_button_rect(window_width, window_height)
             {
                 if forget.contains(x, y) {
                     return SettingsHit::ForgetPassphrase;
@@ -1285,7 +1281,10 @@ mod tests {
     fn vault_feedback_lands_on_sql_sync_status_not_as_success_when_locked() {
         let mut s = SettingsModal::default();
         assert_eq!(s.sync_status, "Not configured");
-        s.apply_vault_feedback("Vault passphrase must be at least 8 characters".into(), false);
+        s.apply_vault_feedback(
+            "Vault passphrase must be at least 8 characters".into(),
+            false,
+        );
         assert_eq!(s.sync_status, "Not configured");
         assert_eq!(
             s.sync_error.as_deref(),

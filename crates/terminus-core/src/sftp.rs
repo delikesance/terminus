@@ -697,7 +697,9 @@ mod tests {
             .find("pub async fn remove_recursive")
             .expect("remove_recursive API must remain public");
         let impl_body = &src[impl_start..];
-        let impl_end = impl_body.find("\n    pub async fn mkdir").unwrap_or(impl_body.len());
+        let impl_end = impl_body
+            .find("\n    pub async fn mkdir")
+            .unwrap_or(impl_body.len());
         let body = &impl_body[..impl_end];
         assert!(
             !body.contains("not implemented yet"),

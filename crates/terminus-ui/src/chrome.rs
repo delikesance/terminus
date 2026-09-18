@@ -299,7 +299,11 @@ impl Chrome {
     }
 
     /// Open the host editor prefilled for an existing host.
-    pub fn open_edit_host(&mut self, values: crate::add_host::HostFormValues, host_id: String) {
+    pub fn open_edit_host(
+        &mut self,
+        values: crate::add_host::HostFormValues,
+        host_id: String,
+    ) {
         self.activity.selected = Section::Servers;
         self.activity.collapsed = false;
         self.panel_visible = true;
@@ -384,7 +388,10 @@ impl Chrome {
         sftp_open: bool,
     ) -> ChromeAction {
         // Modals / overlays own the pointer; don't open under them.
-        if self.settings.open || self.connection.is_some() || self.form.is_open() || self.snippet_form.is_open()
+        if self.settings.open
+            || self.connection.is_some()
+            || self.form.is_open()
+            || self.snippet_form.is_open()
             || self.vault_unlock.is_open()
         {
             self.close_context_menu();
@@ -565,12 +572,10 @@ impl Chrome {
                     self.settings.focus_key_pem();
                     ChromeAction::FocusKeyDraft
                 }
-                SettingsHit::GenerateKey => {
-                    match self.settings.take_key_draft_label() {
-                        Ok(_name) => ChromeAction::GenerateSshKey,
-                        Err(_) => ChromeAction::Consumed,
-                    }
-                }
+                SettingsHit::GenerateKey => match self.settings.take_key_draft_label() {
+                    Ok(_name) => ChromeAction::GenerateSshKey,
+                    Err(_) => ChromeAction::Consumed,
+                },
                 SettingsHit::CancelKeyDraft => {
                     self.settings.close_key_draft();
                     ChromeAction::Consumed
@@ -614,33 +619,32 @@ impl Chrome {
         }
 
         if self.snippet_form.is_open() {
-            let layout = crate::dialog_form::DialogFormLayout::compute(&self.snippet_form.inner, window_width, window_height);
+            let layout = crate::dialog_form::DialogFormLayout::compute(
+                &self.snippet_form.inner,
+                window_width,
+                window_height,
+            );
             let action = match layout.hit_test(x, y) {
-                Some(hit) => {
-                    match hit {
-                        crate::dialog_form::DynamicFormHit::Field(i) => {
-                            self.snippet_form.inner.focused_index = i;
-                            ChromeAction::Consumed
-                        }
-                        crate::dialog_form::DynamicFormHit::Save => {
-                            ChromeAction::SubmitAddSnippet(self.snippet_form.values())
-                        }
-                        crate::dialog_form::DynamicFormHit::Cancel | crate::dialog_form::DynamicFormHit::Background => {
-                            self.snippet_form.inner.closing = true;
-                            ChromeAction::Consumed
-                        }
+                Some(hit) => match hit {
+                    crate::dialog_form::DynamicFormHit::Field(i) => {
+                        self.snippet_form.inner.focused_index = i;
+                        ChromeAction::Consumed
                     }
-                }
+                    crate::dialog_form::DynamicFormHit::Save => {
+                        ChromeAction::SubmitAddSnippet(self.snippet_form.values())
+                    }
+                    crate::dialog_form::DynamicFormHit::Cancel
+                    | crate::dialog_form::DynamicFormHit::Background => {
+                        self.snippet_form.inner.closing = true;
+                        ChromeAction::Consumed
+                    }
+                },
                 None => ChromeAction::Ignored,
             };
             if action != ChromeAction::Ignored {
                 return action;
             }
         }
-
-
-
-
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
@@ -745,10 +749,12 @@ impl Chrome {
                     self.snippet_form.inner.closing = false;
                     ChromeAction::OpenAddSnippet
                 }
-                Some(SnippetHit::DeleteButton(index)) => match self.snippets.items.get(index) {
-                    Some(item) => ChromeAction::DeleteSnippet(item.id.clone()),
-                    None => ChromeAction::Consumed,
-                },
+                Some(SnippetHit::DeleteButton(index)) => {
+                    match self.snippets.items.get(index) {
+                        Some(item) => ChromeAction::DeleteSnippet(item.id.clone()),
+                        None => ChromeAction::Consumed,
+                    }
+                }
                 Some(SnippetHit::Background) => ChromeAction::Consumed,
                 None => ChromeAction::Ignored,
             };
@@ -899,9 +905,7 @@ impl Chrome {
 
     /// Route a mouse move; returns whether anything needs repainting.
     pub fn handle_hover(&mut self, window_height: f32, x: f32, y: f32) -> bool {
-        let window_width = {
-            self.last_window_width
-        };
+        let window_width = { self.last_window_width };
         if let Some(menu) = self.context_menu.as_mut() {
             return menu.hover_at(x, y);
         }
@@ -998,7 +1002,9 @@ impl Chrome {
         if let Some(menu) = self.context_menu.as_ref() {
             return match menu.hit_test(x, y) {
                 ContextMenuHit::Item(_) => ChromeCursor::Pointer,
-                ContextMenuHit::Consume | ContextMenuHit::Dismiss => ChromeCursor::Default,
+                ContextMenuHit::Consume | ContextMenuHit::Dismiss => {
+                    ChromeCursor::Default
+                }
             };
         }
         if self.vault_unlock.is_open() {
@@ -1023,16 +1029,20 @@ impl Chrome {
         }
 
         if self.snippet_form.is_open() {
-            let layout = crate::dialog_form::DialogFormLayout::compute(&self.snippet_form.inner, window_width, window_height);
+            let layout = crate::dialog_form::DialogFormLayout::compute(
+                &self.snippet_form.inner,
+                window_width,
+                window_height,
+            );
             return match layout.hit_test(x, y) {
                 Some(crate::dialog_form::DynamicFormHit::Field(_)) => ChromeCursor::Text,
-                Some(crate::dialog_form::DynamicFormHit::Save) | Some(crate::dialog_form::DynamicFormHit::Cancel) => ChromeCursor::Pointer,
+                Some(crate::dialog_form::DynamicFormHit::Save)
+                | Some(crate::dialog_form::DynamicFormHit::Cancel) => {
+                    ChromeCursor::Pointer
+                }
                 _ => ChromeCursor::Default,
             };
         }
-
-
-
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
@@ -1070,7 +1080,9 @@ impl Chrome {
         }
         if self.snippets_visible() {
             return match self.snippets.hit_test(origin_y, height, x, y) {
-                Some(SnippetHit::Item(_)) | Some(SnippetHit::AddButton) | Some(SnippetHit::DeleteButton(_)) => ChromeCursor::Pointer,
+                Some(SnippetHit::Item(_))
+                | Some(SnippetHit::AddButton)
+                | Some(SnippetHit::DeleteButton(_)) => ChromeCursor::Pointer,
                 Some(SnippetHit::Background) | None => ChromeCursor::Default,
             };
         }
@@ -1161,10 +1173,7 @@ impl Chrome {
             .host_drag
             .as_ref()
             .is_some_and(crate::sidebar::HostDrag::is_group);
-        let target = self
-            .panel
-            .drop_target_at(origin_y, height, x, y)
-            .or(cached);
+        let target = self.panel.drop_target_at(origin_y, height, x, y).or(cached);
         let Some(target) = target else {
             self.panel.host_drag = None;
             return ChromeAction::Consumed;
@@ -1182,10 +1191,12 @@ impl Chrome {
         pending: crate::sidebar::HostDropTarget,
     ) -> ChromeAction {
         match pending {
-            crate::sidebar::HostDropTarget::Group(group_id) => ChromeAction::SetHostGroup {
-                host_id,
-                group_id: Some(group_id),
-            },
+            crate::sidebar::HostDropTarget::Group(group_id) => {
+                ChromeAction::SetHostGroup {
+                    host_id,
+                    group_id: Some(group_id),
+                }
+            }
             crate::sidebar::HostDropTarget::Ungroup => {
                 if is_group {
                     ChromeAction::ReorderGroup {
@@ -1378,7 +1389,8 @@ mod tests {
     fn right_click_host_opens_delete_menu_and_selects() {
         let mut chrome = chrome_with_hosts(2);
         let row = chrome.panel.item_rect(0.0, 1);
-        let open = chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
+        let open =
+            chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
         assert_eq!(open, ChromeAction::Consumed);
         let menu = chrome.context_menu.as_ref().expect("menu open");
         let item = menu.item_rect(3).unwrap();
@@ -1729,19 +1741,13 @@ mod tests {
             },
             "id-0".into(),
         );
-        assert_eq!(
-            chrome.top_modal_paint(),
-            Some(ModalPaintLayer::HostEditor)
-        );
+        assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::HostEditor));
         chrome.open_vault_unlock(PendingVaultAction::SubmitHostForm);
         assert_eq!(
             chrome.modal_paint_stack(),
             vec![ModalPaintLayer::HostEditor, ModalPaintLayer::VaultUnlock]
         );
-        assert_eq!(
-            chrome.top_modal_paint(),
-            Some(ModalPaintLayer::VaultUnlock)
-        );
+        assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::VaultUnlock));
     }
 
     #[test]
