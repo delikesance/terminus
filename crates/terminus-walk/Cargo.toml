@@ -1,0 +1,13 @@
+[package]
+name = "terminus-walk"
+version = "0.1.0"
+edition = "2021"
+description = "Parallel directory metadata / hash helper (jwalk) for Terminus SFTP sync"
+
+[dependencies]
+jwalk = "0.8"
+rayon = "1.10"
+blake3 = "1.5"
+
+[dev-dependencies]
+tempfile = "3"

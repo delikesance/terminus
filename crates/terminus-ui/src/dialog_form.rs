@@ -65,9 +65,12 @@ impl DynamicFormState {
     pub fn set_error(&mut self, err: String) {
         self.error = Some(err);
     }
-    
+
     pub fn get_value(&self, key: &str) -> Option<&str> {
-        self.fields.iter().find(|f| f.key == key).map(|f| f.draft.value.as_str())
+        self.fields
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| f.draft.value.as_str())
     }
 
     pub fn cycle_focus(&mut self, reverse: bool) {
@@ -197,15 +200,15 @@ impl DialogFormLayout {
         let width = 460.0;
         let mut height = PAD + TITLE_HEIGHT;
         let n: f32 = form.fields.len() as f32;
-        
+
         if n > 0.0 {
             height += n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP;
         }
 
         let error_rect = if form.error.is_some() {
-            height += PAD; 
+            height += PAD;
             height += 24.0; // error text height space
-            Some(Rect::new(0.0,0.0,0.0,0.0)) // assigned later
+            Some(Rect::new(0.0, 0.0, 0.0, 0.0)) // assigned later
         } else {
             None
         };
@@ -217,7 +220,7 @@ impl DialogFormLayout {
         let dialog = Rect::new(x, y, width, height);
 
         let title = Rect::new(x + PAD, y + PAD, width - 2.0 * PAD, TITLE_HEIGHT);
-        
+
         let mut fields = Vec::with_capacity(form.fields.len());
         for i in 0..form.fields.len() {
             let ry = y + PAD + TITLE_HEIGHT + i as f32 * (FIELD_HEIGHT + FIELD_GAP);
@@ -232,7 +235,8 @@ impl DialogFormLayout {
 
         let mut final_error_rect = None;
         if form.error.is_some() {
-            final_error_rect = Some(Rect::new(x + PAD, bottom_y, width - 2.0 * PAD, 24.0));
+            final_error_rect =
+                Some(Rect::new(x + PAD, bottom_y, width - 2.0 * PAD, 24.0));
             bottom_y += 24.0 + PAD;
         }
 
@@ -241,11 +245,11 @@ impl DialogFormLayout {
         // Let's use 84.0 and 72.0
         let btn_w = 84.0;
         let cancel_w = 72.0;
-        
+
         // Right alignment
         let save_x = x + width - PAD - btn_w;
         let cancel_x = save_x - BUTTON_GAP - cancel_w;
-        
+
         let save_btn = Rect::new(save_x, bottom_y, btn_w, BUTTON_HEIGHT);
         let cancel_btn = Rect::new(cancel_x, bottom_y, cancel_w, BUTTON_HEIGHT);
 

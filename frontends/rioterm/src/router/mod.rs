@@ -233,8 +233,7 @@ impl Route<'_> {
             }
             if self.window.screen.chrome.panel.new_group_focused {
                 if crate::renderer::is_printable_text(text)
-                    && self.window.screen.chrome.panel.new_group_name.len()
-                        + text.len()
+                    && self.window.screen.chrome.panel.new_group_name.len() + text.len()
                         <= 32
                 {
                     self.window
@@ -305,17 +304,17 @@ impl Route<'_> {
             }
             Some(Modal::Settings) => {
                 let settings = &mut self.window.screen.chrome.settings;
-                    if settings.key_drafting {
-                        let trimmed = text.trim_start();
-                        if (text.contains("BEGIN") && text.contains("PRIVATE"))
-                            || trimmed.starts_with("b3BlbnNzaC1rZXk")
-                        {
-                            settings.focus_key_pem();
-                        }
-                        if settings.insert_key_draft_text(text) {
-                            self.request_overlay_redraw();
-                        }
-                    } else if settings.insert_sql_text(text) {
+                if settings.key_drafting {
+                    let trimmed = text.trim_start();
+                    if (text.contains("BEGIN") && text.contains("PRIVATE"))
+                        || trimmed.starts_with("b3BlbnNzaC1rZXk")
+                    {
+                        settings.focus_key_pem();
+                    }
+                    if settings.insert_key_draft_text(text) {
+                        self.request_overlay_redraw();
+                    }
+                } else if settings.insert_sql_text(text) {
                     self.request_overlay_redraw();
                 }
                 true
@@ -418,9 +417,7 @@ impl Route<'_> {
                             self.request_overlay_redraw();
                         }
                         Key::Named(NamedKey::Enter) => {
-                            self.window
-                                .screen
-                                .confirm_palette_selection(clipboard);
+                            self.window.screen.confirm_palette_selection(clipboard);
                             self.request_overlay_redraw();
                         }
                         Key::Named(NamedKey::Backspace) => {
@@ -511,7 +508,6 @@ impl Route<'_> {
             // The add-host editor is a modal text sink: it owns every
             // key while it is open, and Enter is a request to save
             // rather than a dismissal (only the store can accept a host).
-
             Modal::AddSnippet => {
                 if let Some(terminus_ui::add_snippet::FormOutcome::Submit) =
                     self.window.screen.chrome_snippet_key_input(key_event)
@@ -524,6 +520,26 @@ impl Route<'_> {
 
             Modal::HostEditor => {
                 use terminus_ui::add_host::FormOutcome;
+                if key_event.state == ElementState::Pressed {
+                    let mods = self.window.screen.modifiers.state();
+                    let select_mod = mods.control_key() || mods.super_key();
+                    if let Key::Character(ch) = &key_event.logical_key {
+                        if select_mod && ch.eq_ignore_ascii_case("v") {
+                            // Ctrl/Cmd+V — clipboard into the focused host field
+                            // (password, hostname, …). Strip controls so a
+                            // trailing newline from the clipboard does not
+                            // make AddHostForm::insert reject the whole paste.
+                            let content = clipboard
+                                .get(rio_backend::clipboard::ClipboardType::Clipboard);
+                            let cleaned: String =
+                                content.chars().filter(|c| !c.is_control()).collect();
+                            if self.window.screen.chrome_commit_text(&cleaned) {
+                                self.request_overlay_redraw();
+                            }
+                            return true;
+                        }
+                    }
+                }
                 if let Some(FormOutcome::Submit) =
                     self.window.screen.chrome_key_input(key_event)
                 {
@@ -546,7 +562,8 @@ impl Route<'_> {
                 use terminus_ui::{SettingsTab, SqlSyncFocus};
 
                 if key_event.state == ElementState::Pressed {
-                    let on_keys = self.window.screen.chrome.settings.tab == SettingsTab::Keys;
+                    let on_keys =
+                        self.window.screen.chrome.settings.tab == SettingsTab::Keys;
                     let drafting = self.window.screen.chrome.settings.key_drafting;
 
                     if on_keys && drafting {
@@ -560,12 +577,8 @@ impl Route<'_> {
                         } else {
                             TextMoveKind::Collapse
                         };
-                        let pem_focus = self
-                            .window
-                            .screen
-                            .chrome
-                            .settings
-                            .key_draft_pem_focused;
+                        let pem_focus =
+                            self.window.screen.chrome.settings.key_draft_pem_focused;
                         match &key_event.logical_key {
                             Key::Named(NamedKey::Escape) => {
                                 self.window.screen.chrome.settings.close_key_draft();
@@ -679,7 +692,11 @@ impl Route<'_> {
                                         && content.contains("PRIVATE"))
                                         || trimmed.starts_with("b3BlbnNzaC1rZXk")
                                     {
-                                        self.window.screen.chrome.settings.focus_key_pem();
+                                        self.window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .focus_key_pem();
                                     }
                                     let _ = self
                                         .window
@@ -715,7 +732,8 @@ impl Route<'_> {
                             return true;
                         }
                         Key::Named(NamedKey::Tab) => {
-                            let next = match self.window.screen.chrome.settings.sql_focus {
+                            let next = match self.window.screen.chrome.settings.sql_focus
+                            {
                                 SqlSyncFocus::None | SqlSyncFocus::Passphrase => {
                                     SqlSyncFocus::Uri
                                 }
@@ -782,7 +800,10 @@ impl Route<'_> {
             // Terminus overlays (TOFU host-key approval, vault unlock,
             // SFTP dual-pane): scaffolding placeholders — swallow input
             // until their handlers land (see milestone.md).
-            Modal::TofuHostKeyApproval | Modal::VaultUnlock | Modal::SftpPane | Modal::AddSnippet => true,
+            Modal::TofuHostKeyApproval
+            | Modal::VaultUnlock
+            | Modal::SftpPane
+            | Modal::AddSnippet => true,
         }
     }
 }

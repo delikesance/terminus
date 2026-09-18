@@ -19,21 +19,21 @@ pub mod activity_bar;
 pub mod add_host;
 pub mod add_snippet;
 pub mod anim;
-pub mod dialog_form;
 pub mod button;
 pub mod chrome;
 pub mod connection;
 pub mod context_menu;
+pub mod dialog_form;
 pub mod geom;
 pub mod icons;
 pub mod loading;
 pub mod os_icons;
 pub mod overlap;
 pub mod settings;
-pub mod text_field;
 pub mod sftp_pane;
 pub mod sidebar;
 pub mod snippets;
+pub mod text_field;
 pub mod theme;
 pub mod vault_unlock;
 
@@ -46,13 +46,13 @@ pub use add_host::{
 };
 pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
 pub use button::{centered_label_origin, dashed_cta_badge, ButtonKind, ButtonSpec};
-pub use chrome::{Chrome, ChromeAction, ChromeCursor};
+pub use chrome::{Chrome, ChromeAction, ChromeCursor, ModalPaintLayer};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
 };
 pub use context_menu::{
-    ContextAction, ContextItem, ContextMenu, ContextMenuHit, ITEM_HEIGHT as CONTEXT_ITEM_HEIGHT,
-    MENU_PAD_X, MENU_RADIUS,
+    ContextAction, ContextItem, ContextMenu, ContextMenuHit,
+    ITEM_HEIGHT as CONTEXT_ITEM_HEIGHT, MENU_PAD_X, MENU_RADIUS,
 };
 pub use geom::Rect;
 pub use icons::{Cmd, Icon, IconPlacement};
@@ -68,14 +68,15 @@ pub use settings::{
     SQL_ENGINES,
 };
 pub use sftp_pane::{
-    hit_is_clickable, hit_is_text, join_remote, parent_path, SftpBackend, SftpClickResult, SftpDrag,
-    SftpFocus, SftpHit, SftpNameEdit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow,
-    SftpSideState, BTN_GAP, BTN_SIZE, FOOTER_HEIGHT, HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT,
+    hit_is_clickable, hit_is_text, join_remote, parent_path, SftpBackend,
+    SftpClickResult, SftpConflictKind, SftpConflictPrompt, SftpDrag, SftpFocus, SftpHit,
+    SftpNameEdit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState,
+    BTN_GAP, BTN_SIZE, FOOTER_HEIGHT, HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT,
     SFTP_DRAG_THRESHOLD, TOOLBAR_HEIGHT,
 };
 pub use sidebar::{
-    Badge, HostDrag, HostDragKind, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit,
-    RenameDraft, RenameMoveKind, Row, HOST_DRAG_THRESHOLD,
+    Badge, HostDrag, HostDragKind, HostDragPhase, HostDropTarget, HostItem, HostPanel,
+    PanelHit, RenameDraft, RenameMoveKind, Row, HOST_DRAG_THRESHOLD,
 };
 pub use snippets::{SnippetHit, SnippetItem, SnippetsPanel};
 pub use text_field::{FieldPaint, TextDraft, TextMoveKind};

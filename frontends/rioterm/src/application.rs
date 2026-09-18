@@ -1236,15 +1236,13 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     {
                         use crate::renderer::island::CONTEXT_BAR_HEIGHT;
                         let scale = route.window.screen.sugarloaf.scale_factor();
-                        if route.window.screen.mouse.y <= (CONTEXT_BAR_HEIGHT * scale) as f64 {
+                        if route.window.screen.mouse.y
+                            <= (CONTEXT_BAR_HEIGHT * scale) as f64
+                        {
                             let start_drag = {
-                                let logical_w = route
-                                    .window
-                                    .screen
-                                    .sugarloaf
-                                    .window_size()
-                                    .width
-                                    / scale;
+                                let logical_w =
+                                    route.window.screen.sugarloaf.window_size().width
+                                        / scale;
                                 let x = route.window.screen.mouse.x as f32 / scale as f32;
                                 let y = route.window.screen.mouse.y as f32 / scale as f32;
                                 let on_action = crate::renderer::island::title_bar_hit(
@@ -1252,10 +1250,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 )
                                 .is_some();
                                 #[cfg(target_os = "windows")]
-                                let on_caption = crate::renderer::window_controls::hit_test(
-                                    logical_w, x, y,
-                                )
-                                .is_some();
+                                let on_caption =
+                                    crate::renderer::window_controls::hit_test(
+                                        logical_w, x, y,
+                                    )
+                                    .is_some();
                                 #[cfg(not(target_os = "windows"))]
                                 let on_caption = false;
                                 !on_action && !on_caption
@@ -1425,7 +1424,6 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let mx = route.window.screen.mouse.x as f32 / scale;
                                 let my = route.window.screen.mouse.y as f32 / scale;
                                 match route.window.screen.chrome_press(mx, my) {
-
                                     ChromeAction::OpenAddSnippet => {
                                         route.request_overlay_redraw();
                                         return;
@@ -1487,7 +1485,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             .trim()
                                             .to_string();
                                         if !name.is_empty() {
-                                            route.window.screen.host_store.create_group(&name);
+                                            route
+                                                .window
+                                                .screen
+                                                .host_store
+                                                .create_group(&name);
                                             route
                                                 .window
                                                 .screen
@@ -1507,13 +1509,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::ToggleGroup(id) => {
-                                        route.window.screen.chrome.toggle_group_collapsed(&id);
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .toggle_group_collapsed(&id);
                                         let _ = route.window.screen.pump_chrome();
                                         route.request_overlay_redraw();
                                         return;
                                     }
                                     ChromeAction::FocusSearch => {
-                                        route.window.screen.chrome.panel.filter_focused = true;
+                                        route.window.screen.chrome.panel.filter_focused =
+                                            true;
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1647,6 +1654,25 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::ForgetVaultPassphrase => {
+                                        crate::vault_remember::forget_passphrase();
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .set_passphrase_remembered(false);
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .vault_unlock
+                                            .set_remember(false);
+                                        route.window.screen.chrome.settings.sync_status =
+                                            "Saved passphrase forgotten".into();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::TestSync => {
                                         let uri = route
                                             .window
@@ -1683,7 +1709,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                                 .chrome
                                                 .settings
                                                 .key_draft_error = Some(
-                                                "Enter a label for the new SSH key".into(),
+                                                "Enter a label for the new SSH key"
+                                                    .into(),
                                             );
                                         } else {
                                             let pem = if pem.trim().is_empty() {
@@ -1701,7 +1728,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::DeleteSshKey(id) => {
-                                        route.window.screen.host_store.delete_ssh_key(&id);
+                                        route
+                                            .window
+                                            .screen
+                                            .host_store
+                                            .delete_ssh_key(&id);
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1733,19 +1764,23 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         } else {
                                             host.port.to_string()
                                         };
-                                        let values = terminus_ui::add_host::HostFormValues {
-                                            name: host.name,
-                                            hostname: host.hostname,
-                                            username: host.username,
-                                            port,
-                                            auth_method: if host.auth_method.is_empty() {
-                                                "key".into()
-                                            } else {
-                                                host.auth_method
-                                            },
-                                            identity_id: host.identity_id,
-                                            password: String::new(),
-                                        };
+                                        let values =
+                                            terminus_ui::add_host::HostFormValues {
+                                                name: host.name,
+                                                hostname: host.hostname,
+                                                username: host.username,
+                                                port,
+                                                auth_method: if host
+                                                    .auth_method
+                                                    .is_empty()
+                                                {
+                                                    "key".into()
+                                                } else {
+                                                    host.auth_method
+                                                },
+                                                identity_id: host.identity_id,
+                                                password: String::new(),
+                                            };
                                         route
                                             .window
                                             .screen
@@ -1768,7 +1803,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::OpenSftpOtherPane(id) => {
-                                        match route.window.screen.open_sftp_other_pane(&id)
+                                        match route
+                                            .window
+                                            .screen
+                                            .open_sftp_other_pane(&id)
                                         {
                                             Ok(()) => {
                                                 route.request_redraw();
@@ -1893,11 +1931,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::CommitRename {
-                                        id,
-                                        is_group,
-                                        name,
-                                    } => {
+                                    ChromeAction::CommitRename { id, is_group, name } => {
                                         if is_group {
                                             route
                                                 .window
@@ -1915,7 +1949,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::ContextCopy | ChromeAction::ContextPaste => {
+                                    ChromeAction::ContextCopy
+                                    | ChromeAction::ContextPaste => {
                                         // Terminal/field copy-paste menu items — wired later.
                                         route.request_overlay_redraw();
                                         return;
@@ -1994,11 +2029,16 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
 
                                 // SFTP file/folder context menu first when over the pane.
                                 if route.window.screen.sftp.is_some()
-                                    && route.window.screen.sftp_bounds().is_some_and(|b| {
-                                        b.contains(mx, my)
-                                    })
+                                    && route
+                                        .window
+                                        .screen
+                                        .sftp_bounds()
+                                        .is_some_and(|b| b.contains(mx, my))
                                 {
-                                    if route.window.screen.handle_sftp_context_press(mx, my)
+                                    if route
+                                        .window
+                                        .screen
+                                        .handle_sftp_context_press(mx, my)
                                     {
                                         route.request_overlay_redraw();
                                         return;
@@ -2006,7 +2046,6 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 }
 
                                 match route.window.screen.chrome_context_press(mx, my) {
-
                                     ChromeAction::OpenAddSnippet => {
                                         route.request_overlay_redraw();
                                         return;
@@ -2064,7 +2103,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 ClickState::DoubleClick | ClickState::TripleClick
                             );
                             if button == MouseButton::Left {
-                                match route.window.screen.handle_sftp_click(mx, my, double)
+                                match route
+                                    .window
+                                    .screen
+                                    .handle_sftp_click(mx, my, double)
                                 {
                                     terminus_ui::SftpClickResult::Close
                                     | terminus_ui::SftpClickResult::Handled => {
@@ -2074,12 +2116,16 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     terminus_ui::SftpClickResult::Miss => {}
                                 }
                             }
-                            if button == MouseButton::Left || button == MouseButton::Right {
+                            if button == MouseButton::Left || button == MouseButton::Right
+                            {
                                 // Still consume clicks over the SFTP leaf so they
                                 // don't reach the underlying PTY.
-                                if route.window.screen.sftp_bounds().is_some_and(|b| {
-                                    b.contains(mx, my)
-                                }) {
+                                if route
+                                    .window
+                                    .screen
+                                    .sftp_bounds()
+                                    .is_some_and(|b| b.contains(mx, my))
+                                {
                                     route.request_redraw();
                                     return;
                                 }
@@ -2167,7 +2213,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         }
 
                         // SFTP file drag-drop between panes.
-                        if button == MouseButton::Left && route.window.screen.sftp.is_some()
+                        if button == MouseButton::Left
+                            && route.window.screen.sftp.is_some()
                         {
                             let scale = route.window.screen.sugarloaf.scale_factor();
                             let mx = route.window.screen.mouse.x as f32 / scale;
@@ -2210,10 +2257,12 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     ) {
                                         Ok(()) => {
                                             route.window.screen.chrome.panel.error = None;
-                                            route.window.screen.chrome.panel.notice = None;
+                                            route.window.screen.chrome.panel.notice =
+                                                None;
                                         }
                                         Err(err) => {
-                                            route.window.screen.chrome.panel.error = Some(err);
+                                            route.window.screen.chrome.panel.error =
+                                                Some(err);
                                         }
                                     }
                                     route.request_overlay_redraw();
@@ -2475,8 +2524,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     {
                         chrome_dirty = true;
                     }
-                    let host_drag_active = route.window.screen.chrome.panel.host_drag.is_some()
-                        && route.window.screen.mouse.left_button_state == ElementState::Pressed;
+                    let host_drag_active =
+                        route.window.screen.chrome.panel.host_drag.is_some()
+                            && route.window.screen.mouse.left_button_state
+                                == ElementState::Pressed;
                     if host_drag_active {
                         chrome_dirty = route.window.screen.chrome_drag_move(lx, ly);
                     } else if route.window.screen.chrome_hover(lx, ly) {
@@ -3089,10 +3140,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     route.request_overlay_redraw();
                                 }
                                 terminus_ui::PendingVaultAction::AddHostSession(id) => {
-                                    match route.window.screen.add_host_session(
-                                        &id,
-                                        &mut self.router.clipboard,
-                                    ) {
+                                    match route
+                                        .window
+                                        .screen
+                                        .add_host_session(&id, &mut self.router.clipboard)
+                                    {
                                         Ok(()) => {
                                             route.window.screen.chrome.panel.error = None;
                                         }

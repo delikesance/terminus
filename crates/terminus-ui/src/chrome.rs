@@ -17,6 +17,21 @@ use crate::vault_unlock::{
     PendingVaultAction, VaultUnlockHit, VaultUnlockLayout, VaultUnlockPrompt,
 };
 
+/// Overlay dialog paint / input stacking (back → front).
+///
+/// Sugarloaf composites **one** overlay pass as all overlay quads, then all
+/// overlay text. Nested modals therefore cannot rely on paint call order
+/// alone: lower-modal glyphs would float above a higher modal's panel.
+/// Painters must emit glyphs only for [`Chrome::top_modal_paint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalPaintLayer {
+    Connection,
+    HostEditor,
+    AddSnippet,
+    Settings,
+    VaultUnlock,
+}
+
 /// Mouse cursor affordance for chrome hit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChromeCursor {
@@ -66,6 +81,8 @@ pub enum ChromeAction {
     SubmitVaultUnlock,
     /// Settings: unlock / create vault with the SQL Sync passphrase field.
     UnlockVault,
+    /// Settings: clear a remembered vault passphrase from the keyring.
+    ForgetVaultPassphrase,
     /// Settings: persist remote URI and run SyncEngine::sync_now.
     TestSync,
     /// Settings: generate a new Ed25519 managed SSH key.
@@ -240,6 +257,34 @@ impl Chrome {
         self.vault_unlock.is_open()
     }
 
+    /// Overlay dialogs from back to front. Sugarloaf flattens one overlay
+    /// layer as (all quads) → (all text), so only the **front** entry may
+    /// emit glyphs; lower entries paint shell/scrim quads only.
+    pub fn modal_paint_stack(&self) -> Vec<ModalPaintLayer> {
+        let mut stack = Vec::new();
+        if self.connection.is_some() {
+            stack.push(ModalPaintLayer::Connection);
+        }
+        if self.form.is_open() {
+            stack.push(ModalPaintLayer::HostEditor);
+        }
+        if self.snippet_form.is_open() {
+            stack.push(ModalPaintLayer::AddSnippet);
+        }
+        if self.settings.open {
+            stack.push(ModalPaintLayer::Settings);
+        }
+        if self.vault_unlock.is_open() {
+            stack.push(ModalPaintLayer::VaultUnlock);
+        }
+        stack
+    }
+
+    /// Front-most open overlay dialog, if any.
+    pub fn top_modal_paint(&self) -> Option<ModalPaintLayer> {
+        self.modal_paint_stack().last().copied()
+    }
+
     /// Ask for the vault passphrase, then retry `pending` after unlock.
     pub fn open_vault_unlock(&mut self, pending: PendingVaultAction) {
         self.vault_unlock.open(pending);
@@ -254,7 +299,11 @@ impl Chrome {
     }
 
     /// Open the host editor prefilled for an existing host.
-    pub fn open_edit_host(&mut self, values: crate::add_host::HostFormValues, host_id: String) {
+    pub fn open_edit_host(
+        &mut self,
+        values: crate::add_host::HostFormValues,
+        host_id: String,
+    ) {
         self.activity.selected = Section::Servers;
         self.activity.collapsed = false;
         self.panel_visible = true;
@@ -339,7 +388,10 @@ impl Chrome {
         sftp_open: bool,
     ) -> ChromeAction {
         // Modals / overlays own the pointer; don't open under them.
-        if self.settings.open || self.connection.is_some() || self.form.is_open() || self.snippet_form.is_open()
+        if self.settings.open
+            || self.connection.is_some()
+            || self.form.is_open()
+            || self.snippet_form.is_open()
             || self.vault_unlock.is_open()
         {
             self.close_context_menu();
@@ -500,6 +552,10 @@ impl Chrome {
                     self.settings.close_engine_menu();
                     ChromeAction::UnlockVault
                 }
+                SettingsHit::ForgetPassphrase => {
+                    self.settings.close_engine_menu();
+                    ChromeAction::ForgetVaultPassphrase
+                }
                 SettingsHit::TestSync => {
                     self.settings.close_engine_menu();
                     ChromeAction::TestSync
@@ -516,12 +572,10 @@ impl Chrome {
                     self.settings.focus_key_pem();
                     ChromeAction::FocusKeyDraft
                 }
-                SettingsHit::GenerateKey => {
-                    match self.settings.take_key_draft_label() {
-                        Ok(_name) => ChromeAction::GenerateSshKey,
-                        Err(_) => ChromeAction::Consumed,
-                    }
-                }
+                SettingsHit::GenerateKey => match self.settings.take_key_draft_label() {
+                    Ok(_name) => ChromeAction::GenerateSshKey,
+                    Err(_) => ChromeAction::Consumed,
+                },
                 SettingsHit::CancelKeyDraft => {
                     self.settings.close_key_draft();
                     ChromeAction::Consumed
@@ -565,33 +619,32 @@ impl Chrome {
         }
 
         if self.snippet_form.is_open() {
-            let layout = crate::dialog_form::DialogFormLayout::compute(&self.snippet_form.inner, window_width, window_height);
+            let layout = crate::dialog_form::DialogFormLayout::compute(
+                &self.snippet_form.inner,
+                window_width,
+                window_height,
+            );
             let action = match layout.hit_test(x, y) {
-                Some(hit) => {
-                    match hit {
-                        crate::dialog_form::DynamicFormHit::Field(i) => {
-                            self.snippet_form.inner.focused_index = i;
-                            ChromeAction::Consumed
-                        }
-                        crate::dialog_form::DynamicFormHit::Save => {
-                            ChromeAction::SubmitAddSnippet(self.snippet_form.values())
-                        }
-                        crate::dialog_form::DynamicFormHit::Cancel | crate::dialog_form::DynamicFormHit::Background => {
-                            self.snippet_form.inner.closing = true;
-                            ChromeAction::Consumed
-                        }
+                Some(hit) => match hit {
+                    crate::dialog_form::DynamicFormHit::Field(i) => {
+                        self.snippet_form.inner.focused_index = i;
+                        ChromeAction::Consumed
                     }
-                }
+                    crate::dialog_form::DynamicFormHit::Save => {
+                        ChromeAction::SubmitAddSnippet(self.snippet_form.values())
+                    }
+                    crate::dialog_form::DynamicFormHit::Cancel
+                    | crate::dialog_form::DynamicFormHit::Background => {
+                        self.snippet_form.inner.closing = true;
+                        ChromeAction::Consumed
+                    }
+                },
                 None => ChromeAction::Ignored,
             };
             if action != ChromeAction::Ignored {
                 return action;
             }
         }
-
-
-
-
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
@@ -696,10 +749,12 @@ impl Chrome {
                     self.snippet_form.inner.closing = false;
                     ChromeAction::OpenAddSnippet
                 }
-                Some(SnippetHit::DeleteButton(index)) => match self.snippets.items.get(index) {
-                    Some(item) => ChromeAction::DeleteSnippet(item.id.clone()),
-                    None => ChromeAction::Consumed,
-                },
+                Some(SnippetHit::DeleteButton(index)) => {
+                    match self.snippets.items.get(index) {
+                        Some(item) => ChromeAction::DeleteSnippet(item.id.clone()),
+                        None => ChromeAction::Consumed,
+                    }
+                }
                 Some(SnippetHit::Background) => ChromeAction::Consumed,
                 None => ChromeAction::Ignored,
             };
@@ -850,9 +905,7 @@ impl Chrome {
 
     /// Route a mouse move; returns whether anything needs repainting.
     pub fn handle_hover(&mut self, window_height: f32, x: f32, y: f32) -> bool {
-        let window_width = {
-            self.last_window_width
-        };
+        let window_width = { self.last_window_width };
         if let Some(menu) = self.context_menu.as_mut() {
             return menu.hover_at(x, y);
         }
@@ -949,7 +1002,9 @@ impl Chrome {
         if let Some(menu) = self.context_menu.as_ref() {
             return match menu.hit_test(x, y) {
                 ContextMenuHit::Item(_) => ChromeCursor::Pointer,
-                ContextMenuHit::Consume | ContextMenuHit::Dismiss => ChromeCursor::Default,
+                ContextMenuHit::Consume | ContextMenuHit::Dismiss => {
+                    ChromeCursor::Default
+                }
             };
         }
         if self.vault_unlock.is_open() {
@@ -974,16 +1029,20 @@ impl Chrome {
         }
 
         if self.snippet_form.is_open() {
-            let layout = crate::dialog_form::DialogFormLayout::compute(&self.snippet_form.inner, window_width, window_height);
+            let layout = crate::dialog_form::DialogFormLayout::compute(
+                &self.snippet_form.inner,
+                window_width,
+                window_height,
+            );
             return match layout.hit_test(x, y) {
                 Some(crate::dialog_form::DynamicFormHit::Field(_)) => ChromeCursor::Text,
-                Some(crate::dialog_form::DynamicFormHit::Save) | Some(crate::dialog_form::DynamicFormHit::Cancel) => ChromeCursor::Pointer,
+                Some(crate::dialog_form::DynamicFormHit::Save)
+                | Some(crate::dialog_form::DynamicFormHit::Cancel) => {
+                    ChromeCursor::Pointer
+                }
                 _ => ChromeCursor::Default,
             };
         }
-
-
-
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
@@ -1021,7 +1080,9 @@ impl Chrome {
         }
         if self.snippets_visible() {
             return match self.snippets.hit_test(origin_y, height, x, y) {
-                Some(SnippetHit::Item(_)) | Some(SnippetHit::AddButton) | Some(SnippetHit::DeleteButton(_)) => ChromeCursor::Pointer,
+                Some(SnippetHit::Item(_))
+                | Some(SnippetHit::AddButton)
+                | Some(SnippetHit::DeleteButton(_)) => ChromeCursor::Pointer,
                 Some(SnippetHit::Background) | None => ChromeCursor::Default,
             };
         }
@@ -1112,10 +1173,7 @@ impl Chrome {
             .host_drag
             .as_ref()
             .is_some_and(crate::sidebar::HostDrag::is_group);
-        let target = self
-            .panel
-            .drop_target_at(origin_y, height, x, y)
-            .or(cached);
+        let target = self.panel.drop_target_at(origin_y, height, x, y).or(cached);
         let Some(target) = target else {
             self.panel.host_drag = None;
             return ChromeAction::Consumed;
@@ -1133,10 +1191,12 @@ impl Chrome {
         pending: crate::sidebar::HostDropTarget,
     ) -> ChromeAction {
         match pending {
-            crate::sidebar::HostDropTarget::Group(group_id) => ChromeAction::SetHostGroup {
-                host_id,
-                group_id: Some(group_id),
-            },
+            crate::sidebar::HostDropTarget::Group(group_id) => {
+                ChromeAction::SetHostGroup {
+                    host_id,
+                    group_id: Some(group_id),
+                }
+            }
             crate::sidebar::HostDropTarget::Ungroup => {
                 if is_group {
                     ChromeAction::ReorderGroup {
@@ -1329,7 +1389,8 @@ mod tests {
     fn right_click_host_opens_delete_menu_and_selects() {
         let mut chrome = chrome_with_hosts(2);
         let row = chrome.panel.item_rect(0.0, 1);
-        let open = chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
+        let open =
+            chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
         assert_eq!(open, ChromeAction::Consumed);
         let menu = chrome.context_menu.as_ref().expect("menu open");
         let item = menu.item_rect(3).unwrap();
@@ -1663,5 +1724,41 @@ mod tests {
             chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
             ChromeAction::OpenHost(armed)
         );
+    }
+
+    #[test]
+    fn modal_paint_stack_puts_vault_above_host_editor() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.open_edit_host(
+            crate::add_host::HostFormValues {
+                name: "h".into(),
+                hostname: "1.2.3.4".into(),
+                username: "u".into(),
+                port: "22".into(),
+                auth_method: "password".into(),
+                password: String::new(),
+                identity_id: None,
+            },
+            "id-0".into(),
+        );
+        assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::HostEditor));
+        chrome.open_vault_unlock(PendingVaultAction::SubmitHostForm);
+        assert_eq!(
+            chrome.modal_paint_stack(),
+            vec![ModalPaintLayer::HostEditor, ModalPaintLayer::VaultUnlock]
+        );
+        assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::VaultUnlock));
+    }
+
+    #[test]
+    fn settings_sits_above_host_editor_in_paint_stack() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.open_add_host();
+        chrome.open_settings(SettingsTab::Keys);
+        assert_eq!(
+            chrome.modal_paint_stack(),
+            vec![ModalPaintLayer::HostEditor, ModalPaintLayer::Settings]
+        );
+        assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::Settings));
     }
 }
