@@ -1417,6 +1417,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e71406cd8807725f7ac2f999a4cdd32e98f829fdf65f528343cebf945e41df1e"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-epoch",
+ "crossbeam-queue",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3108,6 +3121,16 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jwalk"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2735847566356cd2179a2a38264839308f7079fa96e6bd5a42d740460e003c56"
+dependencies = [
+ "crossbeam",
+ "rayon",
 ]
 
 [[package]]
@@ -6735,6 +6758,7 @@ dependencies = [
 name = "terminus-bridge"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "corcovado",
  "rand 0.10.2",
  "russh",
@@ -6742,6 +6766,7 @@ dependencies = [
  "teletypewriter",
  "tempfile",
  "terminus-core",
+ "terminus-walk",
  "tokio",
  "tracing",
  "uuid",
@@ -6781,6 +6806,16 @@ version = "0.1.0"
 dependencies = [
  "terminus-bridge",
  "terminus-core",
+]
+
+[[package]]
+name = "terminus-walk"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "jwalk",
+ "rayon",
+ "tempfile",
 ]
 
 [[package]]

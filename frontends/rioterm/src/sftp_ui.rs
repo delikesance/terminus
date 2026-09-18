@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use terminus_bridge::{SftpCommand, SftpEvent, SftpListEntry, SftpSide, SftpWorker};
+use terminus_bridge::{
+    ConflictAction, ConflictKind, SftpCommand, SftpEvent, SftpListEntry, SftpSide, SftpWorker,
+};
 use terminus_core::auth_method::HostAuthMethod;
 use terminus_core::local_fs;
 use terminus_core::ssh::{
@@ -11,8 +13,9 @@ use terminus_core::ssh::{
     DEFAULT_KEEPALIVE_INTERVAL,
 };
 use terminus_ui::sftp_pane::{
-    join_remote, parent_path, SftpBackend, SftpClickResult, SftpDrag, SftpFocus, SftpHit,
-    SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState, SFTP_DRAG_THRESHOLD,
+    join_remote, parent_path, SftpBackend, SftpClickResult, SftpConflictKind, SftpDrag, SftpFocus,
+    SftpHit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState,
+    SFTP_DRAG_THRESHOLD,
 };
 
 use crate::hosts::HostRow;
@@ -185,10 +188,24 @@ impl ActiveSftp {
                 }
                 SftpEvent::Failed(msg) => {
                     self.state.loading = false;
+                    self.state.conflict = None;
                     self.state.error = Some(msg);
+                }
+                SftpEvent::Conflict {
+                    id,
+                    kind,
+                    relative_path,
+                    ..
+                } => {
+                    let kind = match kind {
+                        ConflictKind::File => SftpConflictKind::File,
+                        ConflictKind::Directory => SftpConflictKind::Directory,
+                    };
+                    self.state.begin_conflict(id, kind, relative_path);
                 }
                 SftpEvent::Closed => {
                     self.state.status = "Disconnected".into();
+                    self.state.conflict = None;
                 }
             }
         }
@@ -284,6 +301,20 @@ impl ActiveSftp {
                 self.state.cancel_name_edit();
             }
             SftpHit::NameField => {}
+            SftpHit::ConflictOverwrite => {
+                self.resolve_conflict(ConflictAction::Overwrite);
+            }
+            SftpHit::ConflictKeep => {
+                self.resolve_conflict(ConflictAction::Keep);
+            }
+            SftpHit::ConflictApplyAll => {
+                let _ = self.state.toggle_conflict_apply_all();
+            }
+            SftpHit::ConflictCancel => {
+                self.worker.send(SftpCommand::CancelTransfer);
+                self.state.clear_conflict();
+                self.state.status = "Transfer cancelled".into();
+            }
             SftpHit::Footer | SftpHit::Consume => {}
             SftpHit::Close | SftpHit::Miss => unreachable!("handled above"),
         }
@@ -406,7 +437,7 @@ impl ActiveSftp {
                 self.state.left.selected = Some(i);
                 let row = self.state.left.entries.get(i)?;
                 let transfer = Some(self.transfer_label(SftpFocus::Left));
-                let can_edit = !row.is_dir && !self.state.left.is_local();
+                let can_edit = !row.is_dir;
                 terminus_ui::ContextMenu::for_sftp_entry(
                     x,
                     y,
@@ -420,7 +451,7 @@ impl ActiveSftp {
                 self.state.right.selected = Some(i);
                 let row = self.state.right.entries.get(i)?;
                 let transfer = Some(self.transfer_label(SftpFocus::Right));
-                let can_edit = !row.is_dir && !self.state.right.is_local();
+                let can_edit = !row.is_dir;
                 terminus_ui::ContextMenu::for_sftp_entry(
                     x,
                     y,
@@ -453,6 +484,10 @@ impl ActiveSftp {
             | SftpHit::NameField
             | SftpHit::NameConfirm
             | SftpHit::NameCancel
+            | SftpHit::ConflictOverwrite
+            | SftpHit::ConflictKeep
+            | SftpHit::ConflictApplyAll
+            | SftpHit::ConflictCancel
             | SftpHit::Miss => None,
         }
     }
@@ -500,6 +535,10 @@ impl ActiveSftp {
             SftpKey::Enter => {
                 if self.state.name_edit.is_some() {
                     self.commit_name_edit();
+                    return true;
+                }
+                if self.state.conflict.is_some() {
+                    self.resolve_conflict(ConflictAction::Overwrite);
                     return true;
                 }
                 if let Some(row) = self.state.selected(self.state.focus).cloned() {
@@ -657,6 +696,10 @@ impl ActiveSftp {
     }
 
     fn transfer_row(&mut self, from: SftpFocus, row: &SftpRow) {
+        if self.state.conflict.is_some() {
+            self.state.error = Some("Finish the conflict prompt first".into());
+            return;
+        }
         let to = match from {
             SftpFocus::Left => SftpFocus::Right,
             SftpFocus::Right => SftpFocus::Left,
@@ -683,6 +726,21 @@ impl ActiveSftp {
         }
     }
 
+    fn resolve_conflict(&mut self, action: ConflictAction) {
+        let Some(prompt) = self.state.conflict.take() else {
+            return;
+        };
+        self.worker.send(SftpCommand::ResolveConflict {
+            id: prompt.id,
+            action,
+            apply_to_all: prompt.apply_to_all,
+        });
+        self.state.status = match action {
+            ConflictAction::Overwrite => "Replacing…".into(),
+            ConflictAction::Keep => "Keeping local…".into(),
+        };
+    }
+
     /// Transfer the focused selection to the other pane.
     pub fn transfer_selected(&mut self) {
         let focus = self.state.focus;
@@ -693,7 +751,8 @@ impl ActiveSftp {
         self.transfer_row(focus, &row);
     }
 
-    /// Download a remote file to OS temp, open with the default app, reupload on change.
+    /// Open the selected file in the OS default app.
+    /// Local: open in place. Remote: download to temp, open, reupload on change.
     pub fn edit_selected(&mut self) {
         let focus = self.state.focus;
         let Some(row) = self.state.selected(focus).cloned() else {
@@ -704,12 +763,13 @@ impl ActiveSftp {
             self.state.error = Some("Pick a file (folders can’t be edited yet)".into());
             return;
         }
+        self.state.error = None;
         if self.state.side(focus).is_local() {
-            self.state.error = Some("Edit is only available for remote files".into());
+            self.state.status = format!("Editing {}…", row.name);
+            open_path_with_default_app(Path::new(&row.path));
             return;
         }
         self.state.status = format!("Opening {}…", row.name);
-        self.state.error = None;
         self.worker.send(SftpCommand::EditRemote {
             side: side_from_focus(focus),
             remote_path: row.path.clone(),
@@ -1019,6 +1079,70 @@ mod tests {
         assert!(
             right.join("folder").join("a.txt").is_file(),
             "folder tree should land on the other pane"
+        );
+        s.close();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_file_context_menu_offers_edit() {
+        let root = scratch("local-edit-menu");
+        let left = root.join("L");
+        let right = root.join("R");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("notes.txt"), b"hi").unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let mut s = ActiveSftp::start_local_dual(left, right, None);
+        wait_ready(&mut s);
+        let file_idx = s
+            .state
+            .left
+            .entries
+            .iter()
+            .position(|e| e.name == "notes.txt" && !e.is_dir)
+            .expect("notes.txt listed");
+        let layout = SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
+        let menu = s
+            .context_menu_for_hit(&layout, SftpHit::LeftRow(file_idx), 40.0, 120.0)
+            .expect("menu for local file");
+        assert!(
+            menu.items
+                .iter()
+                .any(|i| matches!(i.action, terminus_ui::ContextAction::SftpEdit)),
+            "local file right-click should include Edit"
+        );
+        s.close();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn edit_selected_opens_local_file_without_remote_error() {
+        let root = scratch("local-edit-open");
+        let left = root.join("L");
+        let right = root.join("R");
+        std::fs::create_dir_all(&left).unwrap();
+        let file = left.join("notes.txt");
+        std::fs::write(&file, b"hi").unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        let mut s = ActiveSftp::start_local_dual(left, right, None);
+        wait_ready(&mut s);
+        s.state.focus = SftpFocus::Left;
+        s.state.left.selected = s
+            .state
+            .left
+            .entries
+            .iter()
+            .position(|e| e.name == "notes.txt");
+        s.edit_selected();
+        assert!(
+            s.state.error.is_none(),
+            "local edit must not require remote: {:?}",
+            s.state.error
+        );
+        assert!(
+            s.state.status.contains("Editing"),
+            "expected Editing status, got {}",
+            s.state.status
         );
         s.close();
         let _ = std::fs::remove_dir_all(root);

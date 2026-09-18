@@ -755,6 +755,34 @@ impl Screen<'_> {
             self.chrome.set_rows(rows);
         }
 
+        // Keep open-tab OS glyphs in sync after DetectOs / host reload.
+        if store_changed {
+            let host_os: Vec<(String, Option<String>)> = self
+                .host_store
+                .hosts()
+                .iter()
+                .map(|h| (h.id.clone(), h.os_id.clone()))
+                .collect();
+            let tab_count = self.context_manager.len();
+            for i in 0..tab_count {
+                let host_id = self
+                    .context_manager
+                    .contexts_mut()
+                    .get(i)
+                    .and_then(|g| g.current().host_id.clone());
+                let Some(hid) = host_id else {
+                    continue;
+                };
+                let Some((_, os)) = host_os.iter().find(|(id, _)| id == &hid) else {
+                    continue;
+                };
+                if self.context_manager.tab_os_id(i) != os.as_deref() {
+                    self.context_manager.set_tab_os_id(i, os.clone());
+                    rows_changed = true;
+                }
+            }
+        }
+
         let snips = self.host_store.snippet_items.clone();
         if snips != self.chrome.snippets.items {
             self.chrome.snippets.items = snips;
@@ -764,6 +792,16 @@ impl Screen<'_> {
 
 
         if !store_changed && !rows_changed {
+            // Still refresh the Forget button when Settings is open.
+            if self.chrome.settings.open {
+                let remembered = crate::vault_remember::has_remembered_passphrase();
+                if self.chrome.settings.passphrase_remembered != remembered {
+                    self.chrome
+                        .settings
+                        .set_passphrase_remembered(remembered);
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -848,6 +886,9 @@ impl Screen<'_> {
                 status_line: self.host_store.sync_status_line().to_string(),
                 is_error: self.host_store.sync_status_is_error(),
             });
+            self.chrome.settings.set_passphrase_remembered(
+                crate::vault_remember::has_remembered_passphrase(),
+            );
         }
         true
     }
@@ -1184,7 +1225,17 @@ impl Screen<'_> {
             Key::Named(NamedKey::ArrowDown) => FormInput::Next,
             Key::Named(NamedKey::Home) => FormInput::Home,
             Key::Named(NamedKey::End) => FormInput::End,
-            Key::Character(_) => FormInput::Text,
+            Key::Character(ch) => {
+                let select_mod = self.modifiers.state().control_key()
+                    || self.modifiers.state().super_key();
+                if select_mod {
+                    // Ctrl/Cmd chords (paste is handled by Modal::HostEditor).
+                    // Do not insert a literal "v" / "c" / "a".
+                    return Some(FormOutcome::Consumed);
+                }
+                let _ = ch;
+                FormInput::Text
+            }
             // Every other key is consumed and ignored: the editor is a
             // text sink, so nothing may reach the PTY behind it.
             _ => return Some(FormOutcome::Consumed),
@@ -2872,6 +2923,8 @@ impl Screen<'_> {
                     self.mark_dirty();
                 }
                 self.sync_sidebar_selection();
+                // Refresh OS/distro icon even when reusing an open session.
+                self.host_store.detect_os(id);
                 return Ok(());
             }
         }
@@ -2936,6 +2989,8 @@ impl Screen<'_> {
                 self.context_manager
                     .set_custom_title(tab_index, Some(label));
                 self.context_manager.set_tab_os_id(tab_index, os_id);
+                // Background: classify remote OS and update sidebar / tab glyphs.
+                self.host_store.detect_os(id);
                 Ok(())
             }
             Err(err) => {
@@ -3226,6 +3281,7 @@ impl Screen<'_> {
                 self.context_manager
                     .set_custom_title(tab_index, Some(label));
                 self.context_manager.set_tab_os_id(tab_index, os_id);
+                self.host_store.detect_os(id);
                 Ok(())
             }
             Err(err) => {

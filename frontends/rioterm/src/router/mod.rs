@@ -524,6 +524,27 @@ impl Route<'_> {
 
             Modal::HostEditor => {
                 use terminus_ui::add_host::FormOutcome;
+                if key_event.state == ElementState::Pressed {
+                    let mods = self.window.screen.modifiers.state();
+                    let select_mod = mods.control_key() || mods.super_key();
+                    if let Key::Character(ch) = &key_event.logical_key {
+                        if select_mod && ch.eq_ignore_ascii_case("v") {
+                            // Ctrl/Cmd+V — clipboard into the focused host field
+                            // (password, hostname, …). Strip controls so a
+                            // trailing newline from the clipboard does not
+                            // make AddHostForm::insert reject the whole paste.
+                            let content = clipboard.get(
+                                rio_backend::clipboard::ClipboardType::Clipboard,
+                            );
+                            let cleaned: String =
+                                content.chars().filter(|c| !c.is_control()).collect();
+                            if self.window.screen.chrome_commit_text(&cleaned) {
+                                self.request_overlay_redraw();
+                            }
+                            return true;
+                        }
+                    }
+                }
                 if let Some(FormOutcome::Submit) =
                     self.window.screen.chrome_key_input(key_event)
                 {

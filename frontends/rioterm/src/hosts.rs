@@ -652,6 +652,8 @@ enum Command {
         id: String,
         reply: Sender<Result<Option<(String, Option<String>)>, String>>,
     },
+    /// After SSH connect: probe remote OS and persist `os_id` for the sidebar icon.
+    DetectOs { id: String },
 }
 
 /// Answers coming back from the worker.
@@ -680,6 +682,11 @@ enum HostEvent {
     VaultStatus {
         unlocked: bool,
         message: Option<String>,
+    },
+    /// Remote OS classified after connect (sidebar / tab badge).
+    OsDetected {
+        id: String,
+        os_id: String,
     },
 }
 
@@ -1028,6 +1035,18 @@ impl HostRepository {
         }
     }
 
+    /// Background: SSH-exec OS probe and persist `os_id` for sidebar / tab icons.
+    ///
+    /// No-op for local / WSL row ids. Failures are silent (keep the generic SSH badge).
+    pub fn detect_os(&mut self, id: &str) {
+        if id == LOCAL_ID || id.starts_with(WSL_PREFIX) {
+            return;
+        }
+        self.send(Command::DetectOs {
+            id: id.to_string(),
+        });
+    }
+
     fn send(&mut self, command: Command) {
         if self.commands.send(command).is_ok() {
             self.in_flight += 1;
@@ -1102,6 +1121,12 @@ impl HostRepository {
                         self.vault_message = Some(msg);
                     }
                     changed = true;
+                }
+                Ok(HostEvent::OsDetected { id, os_id }) => {
+                    self.in_flight = self.in_flight.saturating_sub(1);
+                    if apply_os_detected(&mut self.hosts, &id, &os_id) {
+                        changed = true;
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -1522,6 +1547,27 @@ fn worker(
                 let result = resolve_host_identity(&runtime, &store, &id);
                 let _ = reply.send(result);
             }
+            Command::DetectOs { id } => {
+                match detect_and_store_os(&runtime, &store, vault.as_ref(), &id) {
+                    Ok(Some(os_id)) => {
+                        let _ = events.send(HostEvent::OsDetected { id, os_id });
+                    }
+                    Ok(None) => {
+                        // Unchanged or unknown — still clear in_flight.
+                        let _ = events.send(HostEvent::OsDetected {
+                            id: id.clone(),
+                            os_id: String::new(),
+                        });
+                    }
+                    Err(err) => {
+                        tracing::debug!(host = %id, error = %err, "remote OS detect skipped");
+                        let _ = events.send(HostEvent::OsDetected {
+                            id,
+                            os_id: String::new(),
+                        });
+                    }
+                }
+            }
         }
         wake();
     }
@@ -1609,6 +1655,12 @@ fn probe_and_persist(
     host.password = None;
     host.updated_at = Utc::now();
 
+    if let Ok(os_id) = runtime.block_on(terminus_core::detect_remote_os(&opts)) {
+        if os_id != terminus_core::UNKNOWN_OS {
+            host.os_id = Some(os_id);
+        }
+    }
+
     runtime
         .block_on(store.upsert_host(&host))
         .map_err(|e| format!("Could not save the host: {e}"))?;
@@ -1686,7 +1738,41 @@ fn probe_and_update(
     existing.updated_at = Utc::now();
 
     let label = existing.name.clone();
-    let host = existing.clone();
+    let mut host = existing.clone();
+
+    // Re-probe OS when credentials allow (best-effort; keep prior os_id on failure).
+    {
+        use terminus_core::{probe_options_from_host, HostAuthMethod as HAM};
+        let mut probe_host = host.clone();
+        if method == HAM::Password {
+            if !draft.password.is_empty() {
+                probe_host.password = Some(draft.password.clone());
+            } else if let Ok(Some(pw)) =
+                resolve_host_password(runtime, store, vault.as_ref(), id)
+            {
+                probe_host.password = Some(pw);
+            }
+        }
+        let identity = match method {
+            HAM::Key => {
+                if let Some(iid) = identity_id {
+                    runtime
+                        .block_on(store.get_identity(iid))
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let opts = probe_options_from_host(&probe_host, identity.as_ref());
+        if let Ok(os_id) = runtime.block_on(terminus_core::detect_remote_os(&opts)) {
+            if os_id != terminus_core::UNKNOWN_OS {
+                host.os_id = Some(os_id);
+            }
+        }
+    }
 
     runtime
         .block_on(store.upsert_host(&host))
@@ -1705,6 +1791,88 @@ fn probe_and_update(
     }
 
     Ok(label)
+}
+
+/// Connect via russh, classify remote OS, persist `os_id` when it changed.
+///
+/// Returns `Ok(Some(os_id))` when stored, `Ok(None)` when unknown/unchanged.
+fn detect_and_store_os(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: Option<&Arc<terminus_core::UnlockedVault>>,
+    id: &str,
+) -> Result<Option<String>, String> {
+    use terminus_core::{detect_remote_os, probe_options_from_host, HostAuthMethod, UNKNOWN_OS};
+
+    let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
+    let hosts = runtime
+        .block_on(store.list_hosts())
+        .map_err(|e| format!("Could not read hosts: {e}"))?;
+    let Some(host) = hosts.iter().find(|h| h.id == uuid).cloned() else {
+        return Err("Host not found".into());
+    };
+
+    let method = terminus_core::parse_host_auth_method(&host.auth_method)
+        .map(|ok| ok.method)
+        .unwrap_or(HostAuthMethod::Key);
+
+    let mut probe_host = host.clone();
+    if method == HostAuthMethod::Password {
+        let pw = resolve_host_password(runtime, store, vault, id)?;
+        probe_host.password = pw;
+    }
+
+    let identity = match method {
+        HostAuthMethod::Key => {
+            let Some(iid) = host.identity_id else {
+                return Err("No SSH key on host".into());
+            };
+            runtime
+                .block_on(store.get_identity(iid))
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "SSH key missing".to_string())
+                .map(Some)?
+        }
+        _ => None,
+    };
+
+    // AcceptAll: OS probe runs after the user already opened an SSH session;
+    // host-key UX is handled by the shell path / TOFU modal, not here.
+    let opts = probe_options_from_host(&probe_host, identity.as_ref());
+
+    let os_id = runtime
+        .block_on(detect_remote_os(&opts))
+        .map_err(|e| e.to_string())?;
+    if os_id == UNKNOWN_OS {
+        return Ok(None);
+    }
+    if host.os_id.as_deref() == Some(os_id.as_str()) {
+        return Ok(Some(os_id)); // still report so UI can refresh tabs
+    }
+
+    let mut updated = host;
+    updated.os_id = Some(os_id.clone());
+    updated.updated_at = Utc::now();
+    runtime
+        .block_on(store.upsert_host(&updated))
+        .map_err(|e| format!("Could not save os_id: {e}"))?;
+    Ok(Some(os_id))
+}
+
+/// Apply a non-empty detected `os_id` onto the in-memory host list.
+///
+/// Returns `true` when a row was updated (caller should repaint).
+fn apply_os_detected(hosts: &mut [HostRow], id: &str, os_id: &str) -> bool {
+    if os_id.is_empty() {
+        return false;
+    }
+    if let Some(host) = hosts.iter_mut().find(|h| h.id == id) {
+        if host.os_id.as_deref() != Some(os_id) {
+            host.os_id = Some(os_id.to_string());
+            return true;
+        }
+    }
+    false
 }
 
 fn resolve_host_password(
@@ -2274,6 +2442,40 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn apply_os_detected_updates_host_row() {
+        let mut hosts = vec![HostRow {
+            id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            name: "box".into(),
+            hostname: "box.example".into(),
+            port: 22,
+            username: "u".into(),
+            auth_method: "key".into(),
+            identity_id: None,
+            group_id: None,
+            sort_order: 0,
+            os_id: None,
+            updated_at: Utc::now(),
+        }];
+        assert!(apply_os_detected(
+            &mut hosts,
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "nixos"
+        ));
+        assert_eq!(hosts[0].os_id.as_deref(), Some("nixos"));
+        assert!(!apply_os_detected(
+            &mut hosts,
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "nixos"
+        ));
+        assert!(!apply_os_detected(&mut hosts, "missing", "ubuntu"));
+        assert!(!apply_os_detected(
+            &mut hosts,
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ""
+        ));
     }
 
     #[test]
