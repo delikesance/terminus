@@ -451,12 +451,8 @@ pub mod test {
             Margin::default(),
         );
 
-        let context = create_mock_context(
-            VoidListener {},
-            WindowId::from(0),
-            0,
-            context_dimension,
-        );
+        let context =
+            create_mock_context(VoidListener {}, WindowId::from(0), 0, context_dimension);
 
         // Windows default template: TITLE empty, PROGRAM unavailable on
         // non-unix / empty on mock — must not leave the mustache markup.

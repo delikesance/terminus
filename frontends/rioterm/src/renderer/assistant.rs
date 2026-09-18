@@ -57,12 +57,7 @@ const TEXT_COLOR: [f32; 4] = [
     0xf9 as f32 / 255.0,
     1.0,
 ];
-const LINK_COLOR: [f32; 4] = [
-    0x0a as f32 / 255.0,
-    0x84 as f32 / 255.0,
-    1.0,
-    1.0,
-];
+const LINK_COLOR: [f32; 4] = [0x0a as f32 / 255.0, 0x84 as f32 / 255.0, 1.0, 1.0];
 const BUTTON_TEXT_COLOR: [f32; 4] = [
     0x94 as f32 / 255.0,
     0xa3 as f32 / 255.0,

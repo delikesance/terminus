@@ -237,8 +237,9 @@ impl Store {
                 .unwrap_or(false)
         });
         if !has {
-            let alter =
-                format!("ALTER TABLE {table} ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+            let alter = format!(
+                "ALTER TABLE {table} ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+            );
             sqlx::query(&alter)
                 .execute(pool)
                 .await
@@ -483,7 +484,10 @@ impl Store {
         let groups = self.list_groups().await?;
 
         let mut root: Vec<RootEntry> = Vec::new();
-        for h in hosts.iter().filter(|h| h.group_id.is_none() && h.deleted_at.is_none()) {
+        for h in hosts
+            .iter()
+            .filter(|h| h.group_id.is_none() && h.deleted_at.is_none())
+        {
             if moving_is_group || h.id != moving_id {
                 root.push(RootEntry::Host(h.clone()));
             }
@@ -913,7 +917,8 @@ impl Store {
             id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
             kind: r.get("kind"),
             owner_kind: r.get("owner_kind"),
-            owner_id: Uuid::parse_str(&r.get::<String, _>("owner_id")).unwrap_or_default(),
+            owner_id: Uuid::parse_str(&r.get::<String, _>("owner_id"))
+                .unwrap_or_default(),
             envelope: r.get("envelope"),
             key_id: r.get("key_id"),
             created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at"))
@@ -950,15 +955,20 @@ impl Store {
                 id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap_or_default(),
                 kind: r.get("kind"),
                 owner_kind: r.get("owner_kind"),
-                owner_id: Uuid::parse_str(&r.get::<String, _>("owner_id")).unwrap_or_default(),
+                owner_id: Uuid::parse_str(&r.get::<String, _>("owner_id"))
+                    .unwrap_or_default(),
                 envelope: r.get("envelope"),
                 key_id: r.get("key_id"),
-                created_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("created_at"))
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                updated_at: DateTime::parse_from_rfc3339(&r.get::<String, _>("updated_at"))
-                    .map(|d| d.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
+                created_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("created_at"),
+                )
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+                updated_at: DateTime::parse_from_rfc3339(
+                    &r.get::<String, _>("updated_at"),
+                )
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
                 deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
                     DateTime::parse_from_rfc3339(&s)
                         .ok()

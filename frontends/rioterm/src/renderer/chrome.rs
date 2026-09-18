@@ -22,7 +22,9 @@ use terminus_ui::activity_bar;
 use terminus_ui::add_host::{auth_method_label, Field};
 use terminus_ui::chrome::Chrome;
 use terminus_ui::connection::{NodeVisual, STEP_COUNT};
-use terminus_ui::context_menu::{ContextMenu, ITEM_HEIGHT as CTX_ITEM_HEIGHT, MENU_PAD_X, MENU_RADIUS};
+use terminus_ui::context_menu::{
+    ContextMenu, ITEM_HEIGHT as CTX_ITEM_HEIGHT, MENU_PAD_X, MENU_RADIUS,
+};
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Cmd, Icon, IconPlacement, LUCIDE_STROKE};
 use terminus_ui::loading::{breath_ring, orbit_dots, shimmer_bar};
@@ -292,7 +294,9 @@ fn render_rail(
             activity_bar::RailAction::CloudSync if chrome.activity.cloud_sync_active => {
                 theme.success
             }
-            activity_bar::RailAction::Settings if chrome.settings_is_open() => theme.accent,
+            activity_bar::RailAction::Settings if chrome.settings_is_open() => {
+                theme.accent
+            }
             _ => as_f32(theme.text_muted),
         };
         draw_icon(
@@ -422,14 +426,7 @@ fn render_panel(
         .notice_rect(origin_y, height)
         .map(|n| !text_blocked_by(label_cover.as_ref(), &n))
         .unwrap_or(true);
-    render_notice(
-        sugarloaf,
-        chrome,
-        theme,
-        origin_y,
-        height,
-        notice_labels,
-    );
+    render_notice(sugarloaf, chrome, theme, origin_y, height, notice_labels);
 }
 
 fn render_notice(
@@ -447,8 +444,18 @@ fn render_notice(
     if is_error {
         // Soft red wash composited over the panel — same recipe as Settings,
         // but opaque so scrolled host rows cannot bleed through the footer.
-        let wash = [0xf8 as f32 / 255.0, 0x71 as f32 / 255.0, 0x71 as f32 / 255.0, 0.18];
-        let ring = [0xf8 as f32 / 255.0, 0x71 as f32 / 255.0, 0x71 as f32 / 255.0, 0.55];
+        let wash = [
+            0xf8 as f32 / 255.0,
+            0x71 as f32 / 255.0,
+            0x71 as f32 / 255.0,
+            0.18,
+        ];
+        let ring = [
+            0xf8 as f32 / 255.0,
+            0x71 as f32 / 255.0,
+            0x71 as f32 / 255.0,
+            0.55,
+        ];
         paint_surface(
             sugarloaf,
             &rect,
@@ -494,7 +501,8 @@ fn render_notice(
         vec![elide(sugarloaf, message, max_w, &text_opts)]
     };
     let line_gap = 4.0;
-    let block_h = lines.len() as f32 * HINT_SIZE + (lines.len().saturating_sub(1) as f32) * line_gap;
+    let block_h = lines.len() as f32 * HINT_SIZE
+        + (lines.len().saturating_sub(1) as f32) * line_gap;
     let mut y = rect.y + ((rect.height - block_h) * 0.5).max(pad * 0.5);
     for line in lines {
         draw_text(sugarloaf, rect.x + pad, y, &line, HINT_SIZE, color, false);
@@ -1076,12 +1084,7 @@ fn render_settings_modal(
     let side_h = dialog.height - 66.0 - 48.0;
     paint_flat(
         sugarloaf,
-        &Rect::new(
-            side_x,
-            side_y,
-            terminus_ui::settings::SIDEBAR_WIDTH,
-            side_h,
-        ),
+        &Rect::new(side_x, side_y, terminus_ui::settings::SIDEBAR_WIDTH, side_h),
         theme.dialog_header,
         DEPTH_DIALOG + 0.02,
         ORDER_DIALOG,
@@ -1091,9 +1094,7 @@ fn render_settings_modal(
         terminus_ui::SettingsTab::Keys,
         terminus_ui::SettingsTab::SqlSync,
     ] {
-        let rect = chrome
-            .settings
-            .tab_rect(window_width, window_height, tab);
+        let rect = chrome.settings.tab_rect(window_width, window_height, tab);
         let selected = chrome.settings.tab == tab;
         if selected {
             paint_surface(
@@ -1154,7 +1155,7 @@ fn render_settings_modal(
         ORDER_DIALOG,
     );
     match chrome.settings.tab {
-            terminus_ui::SettingsTab::Keys => {
+        terminus_ui::SettingsTab::Keys => {
             draw_text(
                 sugarloaf,
                 content_x,
@@ -1193,9 +1194,8 @@ fn render_settings_modal(
                 ORDER_DIALOG,
             );
 
-            if let Some(draft) = chrome
-                .settings
-                .key_draft_rect(window_width, window_height)
+            if let Some(draft) =
+                chrome.settings.key_draft_rect(window_width, window_height)
             {
                 paint_surface(
                     sugarloaf,
@@ -1315,11 +1315,8 @@ fn render_settings_modal(
                     .settings
                     .key_draft_error_banner_rect(window_width, window_height)
                 {
-                    let err_text = chrome
-                        .settings
-                        .key_draft_error
-                        .as_deref()
-                        .unwrap_or("");
+                    let err_text =
+                        chrome.settings.key_draft_error.as_deref().unwrap_or("");
                     let wash = [
                         0xf8 as f32 / 255.0,
                         0x71 as f32 / 255.0,
@@ -1361,9 +1358,10 @@ fn render_settings_modal(
             }
 
             for (index, key) in chrome.settings.keys.iter().enumerate() {
-                let row = chrome
-                    .settings
-                    .key_row_rect(window_width, window_height, index);
+                let row =
+                    chrome
+                        .settings
+                        .key_row_rect(window_width, window_height, index);
                 paint_surface(
                     sugarloaf,
                     &row,
@@ -1382,9 +1380,10 @@ fn render_settings_modal(
                     device_scale,
                 );
                 let text_x = row.x + 40.0;
-                let del = chrome
-                    .settings
-                    .key_delete_rect(window_width, window_height, index);
+                let del =
+                    chrome
+                        .settings
+                        .key_delete_rect(window_width, window_height, index);
                 draw_text(
                     sugarloaf,
                     text_x,
@@ -1414,8 +1413,7 @@ fn render_settings_modal(
                 // opacity-0 group-hover:opacity-100). Turns red when the
                 // pointer is on the control itself.
                 if chrome.settings.key_row_hover == Some(index) {
-                    let del_color = if chrome.settings.key_delete_hover == Some(index)
-                    {
+                    let del_color = if chrome.settings.key_delete_hover == Some(index) {
                         theme.danger
                     } else {
                         theme.text_muted
@@ -1432,7 +1430,7 @@ fn render_settings_modal(
                 }
             }
         }
-            terminus_ui::SettingsTab::SqlSync => {
+        terminus_ui::SettingsTab::SqlSync => {
             draw_text(
                 sugarloaf,
                 content_x,
@@ -1474,9 +1472,13 @@ fn render_settings_modal(
                 false,
             );
 
-            let engine_card = chrome.settings.engine_card_rect(window_width, window_height);
+            let engine_card = chrome
+                .settings
+                .engine_card_rect(window_width, window_height);
             let uri_card = chrome.settings.uri_card_rect(window_width, window_height);
-            let pass_card = chrome.settings.passphrase_card_rect(window_width, window_height);
+            let pass_card = chrome
+                .settings
+                .passphrase_card_rect(window_width, window_height);
             let status_row = chrome.settings.status_row_rect(window_width, window_height);
 
             // Engine selector card
@@ -1491,8 +1493,7 @@ fn render_settings_modal(
                 terminus_ui::settings::FIELD_EYE_SLOT,
                 true,
             );
-            let engine_input =
-                terminus_ui::settings::field_input_in_card(engine_card);
+            let engine_input = terminus_ui::settings::field_input_in_card(engine_card);
             draw_text(
                 sugarloaf,
                 engine_input.right() - 18.0,
@@ -1587,7 +1588,11 @@ fn render_settings_modal(
             // Status on its own line (full block width); Unlock / Test Sync sit
             // on the row below so long sync messages are not cropped.
             let status_label = if chrome.settings.vault_unlocked
-                && !chrome.settings.sync_status.to_ascii_lowercase().contains("vault")
+                && !chrome
+                    .settings
+                    .sync_status
+                    .to_ascii_lowercase()
+                    .contains("vault")
             {
                 format!("Vault unlocked · {}", chrome.settings.sync_status)
             } else {
@@ -1656,11 +1661,7 @@ fn render_settings_modal(
                 .settings
                 .error_banner_rect(window_width, window_height)
             {
-                let err_text = chrome
-                    .settings
-                    .sync_error
-                    .as_deref()
-                    .unwrap_or("");
+                let err_text = chrome.settings.sync_error.as_deref().unwrap_or("");
                 // Soft red wash — low alpha so the dialog chrome still reads.
                 let wash = [
                     0xf8 as f32 / 255.0,
@@ -1719,9 +1720,11 @@ fn render_settings_modal(
                     false,
                 );
                 for i in 0..terminus_ui::SQL_ENGINES.len() {
-                    let opt = chrome
-                        .settings
-                        .engine_option_rect(window_width, window_height, i);
+                    let opt = chrome.settings.engine_option_rect(
+                        window_width,
+                        window_height,
+                        i,
+                    );
                     let selected = chrome.settings.sql_engine == i;
                     let hovered = chrome.settings.engine_menu_hover == Some(i);
                     if selected || hovered {
@@ -1879,7 +1882,11 @@ fn render_host_rows(
         // selection marker, no icon.
         if let Some(label) = row_kind.label() {
             let label_bottom = row.y + sidebar::SECTION_HEIGHT;
-            if labels && bottom - top >= 10.0 && bottom >= row.y + 8.0 && top <= label_bottom {
+            if labels
+                && bottom - top >= 10.0
+                && bottom >= row.y + 8.0
+                && top <= label_bottom
+            {
                 draw_text(
                     sugarloaf,
                     row.x,
@@ -1916,7 +1923,9 @@ fn render_host_rows(
 
             // Real containing box: one tray around header + nested hosts.
             if let Some(tray) = chrome.panel.group_tray_rect(origin_y, index) {
-                if let Some((tray_top, tray_bottom)) = tray.clip_rows(body.y, body.bottom()) {
+                if let Some((tray_top, tray_bottom)) =
+                    tray.clip_rows(body.y, body.bottom())
+                {
                     if tray_bottom - tray_top >= 4.0 {
                         let group_id = match row_kind {
                             sidebar::Row::Group { id, .. } => Some(id.as_str()),
@@ -2020,12 +2029,10 @@ fn render_host_rows(
                     device_scale,
                 );
                 let text_x = badge_x + sidebar::HOST_BADGE_TILE + sidebar::ICON_GAP;
-                let renaming = chrome.panel.is_renaming(
-                    match row_kind {
-                        sidebar::Row::Group { id, .. } => id.as_str(),
-                        _ => "",
-                    },
-                );
+                let renaming = chrome.panel.is_renaming(match row_kind {
+                    sidebar::Row::Group { id, .. } => id.as_str(),
+                    _ => "",
+                });
                 if renaming {
                     if let Some(draft) = chrome.panel.rename.as_ref() {
                         paint_rename_text(sugarloaf, draft, text_x, card.y + 12.0, theme);
@@ -2111,11 +2118,7 @@ fn render_host_rows(
                 } else {
                     as_f32(theme.text_muted)
                 };
-                let text_color = if active {
-                    theme.text
-                } else {
-                    theme.text_muted
-                };
+                let text_color = if active { theme.text } else { theme.text_muted };
                 let content_x = leaf.x + sidebar::SESSION_CONTENT_PAD;
                 draw_icon(
                     sugarloaf,
@@ -2138,7 +2141,8 @@ fn render_host_rows(
                     active,
                 );
                 if session.closable && hovered {
-                    if let Some(close) = chrome.panel.session_close_rect(origin_y, index) {
+                    if let Some(close) = chrome.panel.session_close_rect(origin_y, index)
+                    {
                         draw_icon(
                             sugarloaf,
                             Icon::X,
@@ -2166,9 +2170,11 @@ fn render_host_rows(
         let hovered = chrome.panel.hover == Some(index);
         let card = chrome.panel.card_rect(origin_y, index);
         let nested = host.nested;
-        let dragging_source = chrome.panel.host_drag.as_ref().is_some_and(|d| {
-            d.started() && d.host_id == host.id
-        });
+        let dragging_source = chrome
+            .panel
+            .host_drag
+            .as_ref()
+            .is_some_and(|d| d.started() && d.host_id == host.id);
 
         // Inside a folder tray: no second floating card — hover/selection wash only.
         // Root hosts keep the floating surface.
@@ -2479,12 +2485,7 @@ fn paint_host_drag_insertion_bar(
         false,
     );
     // Soft glow wash under the bar for readability on dark cards.
-    let wash = Rect::new(
-        bar.x,
-        bar.y - 3.0,
-        bar.width,
-        bar.height + 6.0,
-    );
+    let wash = Rect::new(bar.x, bar.y - 3.0, bar.width, bar.height + 6.0);
     paint_surface(
         sugarloaf,
         &wash,
@@ -3079,11 +3080,7 @@ pub(crate) fn paint_line(
 }
 
 /// Apple HIG title-bar strip + bottom hairline (island / context bar).
-pub(crate) fn paint_title_strip(
-    sugarloaf: &mut Sugarloaf,
-    logical_w: f32,
-    height: f32,
-) {
+pub(crate) fn paint_title_strip(sugarloaf: &mut Sugarloaf, logical_w: f32, height: f32) {
     let strip = [
         0x11 as f32 / 255.0,
         0x11 as f32 / 255.0,
@@ -3153,16 +3150,7 @@ fn paint_dashed_cta(
     depth: f32,
     order: u8,
 ) {
-    paint_surface(
-        sugarloaf,
-        cta,
-        bg,
-        None,
-        radius,
-        depth,
-        order,
-        false,
-    );
+    paint_surface(sugarloaf, cta, bg, None, radius, depth, order, false);
     draw_dashed_rounded_rect(
         sugarloaf,
         cta.x,
@@ -3174,7 +3162,8 @@ fn paint_dashed_cta(
         depth + 0.01,
         order,
     );
-    let badge = terminus_ui::dashed_cta_badge(*cta, sidebar::BADGE_TILE, sidebar::CARD_PAD);
+    let badge =
+        terminus_ui::dashed_cta_badge(*cta, sidebar::BADGE_TILE, sidebar::CARD_PAD);
     paint_bordered_badge(
         sugarloaf,
         &badge,
@@ -3718,11 +3707,7 @@ fn render_add_host(
                     sugarloaf,
                     input.right() - 18.0,
                     text_y,
-                    if form.auth_menu_open() {
-                        "▴"
-                    } else {
-                        "▾"
-                    },
+                    if form.auth_menu_open() { "▴" } else { "▾" },
                     INPUT_SIZE,
                     theme.text_muted,
                     false,
@@ -3944,11 +3929,7 @@ fn render_add_host(
         auth_menu.is_some_and(|m| terminus_ui::rects_overlap(m, btn))
             || identity_menu.is_some_and(|m| terminus_ui::rects_overlap(m, btn))
     };
-    let cancel_label = if menu_covers(cancel) {
-        ""
-    } else {
-        "Cancel"
-    };
+    let cancel_label = if menu_covers(cancel) { "" } else { "Cancel" };
     let connect_label = if menu_covers(connect) {
         ""
     } else if form.is_editing() {
@@ -4385,7 +4366,6 @@ fn render_context_menu(
 ) {
     let rect = menu.rect();
 
-
     // Quad shell still helps under terminal cells; the late UI-text pass
     // is what actually covers host labels/icons.
     paint_surface(
@@ -4409,26 +4389,24 @@ fn render_context_menu(
     let bg_id = ctx_menu_mask_id(CTX_MENU_BG_KIND, content_w, content_h);
     let border_id = ctx_menu_mask_id(CTX_MENU_BORDER_KIND, content_w, content_h);
 
-
     let bg = color_from_f32(theme.button_bg);
     let border = color_from_f32(theme.panel_border);
     let radius_px = MENU_RADIUS * scale;
 
-    sugarloaf.text_mut().draw_mask_late(
-        rect.x,
-        rect.y,
-        bg_id,
-        side,
-        bg,
-        move |size| rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, false),
-    );
+    sugarloaf
+        .text_mut()
+        .draw_mask_late(rect.x, rect.y, bg_id, side, bg, move |size| {
+            rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, false)
+        });
     sugarloaf.text_mut().draw_mask_late(
         rect.x,
         rect.y,
         border_id,
         side,
         border,
-        move |size| rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, true),
+        move |size| {
+            rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, true)
+        },
     );
 
     for (i, item) in menu.items.iter().enumerate() {
@@ -4438,12 +4416,7 @@ fn render_context_menu(
         let hovered = menu.hover == Some(i);
         if hovered {
             let fill = if item.danger {
-                [
-                    theme.danger[0],
-                    theme.danger[1],
-                    theme.danger[2],
-                    48,
-                ]
+                [theme.danger[0], theme.danger[1], theme.danger[2], 48]
             } else {
                 color_from_f32(theme.item_hover)
             };
@@ -4531,11 +4504,7 @@ fn rasterize_rounded_rect_mask(
             None,
         );
     }
-    let bytes: Vec<u8> = pixmap
-        .pixels()
-        .iter()
-        .map(|p| p.alpha())
-        .collect();
+    let bytes: Vec<u8> = pixmap.pixels().iter().map(|p| p.alpha()).collect();
     rio_backend::sugarloaf::text::CoverageMask::new(size, bytes)
 }
 
@@ -5149,7 +5118,12 @@ fn draw_orbit_indicator(
 }
 
 fn with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    [color[0], color[1], color[2], (color[3] * alpha).clamp(0.0, 1.0)]
+    [
+        color[0],
+        color[1],
+        color[2],
+        (color[3] * alpha).clamp(0.0, 1.0),
+    ]
 }
 
 /// Composite `fg` (possibly translucent) over opaque `bg` → opaque result.
@@ -5326,7 +5300,6 @@ mod tests {
     }
 }
 
-
 fn render_add_snippet(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
@@ -5386,8 +5359,18 @@ fn render_add_snippet(
         let input_top = 18.0;
         let input_height = 32.0;
 
-        let caption = Rect::new(field_frame.x + 2.0, field_frame.y, field_frame.width - 4.0, input_top);
-        let input = Rect::new(field_frame.x, field_frame.y + input_top, field_frame.width, input_height);
+        let caption = Rect::new(
+            field_frame.x + 2.0,
+            field_frame.y,
+            field_frame.width - 4.0,
+            input_top,
+        );
+        let input = Rect::new(
+            field_frame.x,
+            field_frame.y + input_top,
+            field_frame.width,
+            input_height,
+        );
 
         let shell = Rect::new(
             input.x - BORDER_WIDTH,
@@ -5429,12 +5412,10 @@ fn render_add_snippet(
         if focused {
             if let Some((start, end)) = draft.selection_range() {
                 let before: String = shown.chars().take(start).collect();
-                let selected: String = shown.chars().skip(start).take(end - start).collect();
+                let selected: String =
+                    shown.chars().skip(start).take(end - start).collect();
                 let bx = sugarloaf.text_mut().measure(&before, &text_opts);
-                let sw = sugarloaf
-                    .text_mut()
-                    .measure(&selected, &text_opts)
-                    .max(2.0);
+                let sw = sugarloaf.text_mut().measure(&selected, &text_opts).max(2.0);
                 paint_flat(
                     sugarloaf,
                     &Rect::new(text_x + bx, input.y + 6.0, sw, input.height - 12.0),
@@ -5463,7 +5444,7 @@ fn render_add_snippet(
             );
         }
     }
-    
+
     if let Some(err_box) = layout.error_line {
         draw_text(
             sugarloaf,

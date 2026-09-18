@@ -57,12 +57,7 @@ const BG_COLOR: [f32; 4] = [
     0x13 as f32 / 255.0,
     1.0,
 ];
-const SELECTED_BG_COLOR: [f32; 4] = [
-    0x0a as f32 / 255.0,
-    0x84 as f32 / 255.0,
-    1.0,
-    0.15,
-];
+const SELECTED_BG_COLOR: [f32; 4] = [0x0a as f32 / 255.0, 0x84 as f32 / 255.0, 1.0, 0.15];
 const TEXT_COLOR: [f32; 4] = [
     0xf1 as f32 / 255.0,
     0xf5 as f32 / 255.0,
@@ -1350,9 +1345,13 @@ mod tests {
         palette.set_query("prod".to_string());
         let mixed = palette.filtered_rows();
         assert!(
-            mixed
-                .iter()
-                .any(|(_, r)| matches!(r, PaletteRow::Host { title: "Production", .. })),
+            mixed.iter().any(|(_, r)| matches!(
+                r,
+                PaletteRow::Host {
+                    title: "Production",
+                    ..
+                }
+            )),
             "expected Production host in mixed results: {:?}",
             mixed.iter().map(|(_, r)| r.title()).collect::<Vec<_>>()
         );
@@ -1453,9 +1452,6 @@ mod tests {
             matches!(row.action(), Some(PaletteAction::OpenSftp))
                 || row.title().to_lowercase().contains("sftp")
         });
-        assert!(
-            found,
-            "SFTP: Palette >sftp — not implemented yet"
-        );
+        assert!(found, "SFTP: Palette >sftp — not implemented yet");
     }
 }

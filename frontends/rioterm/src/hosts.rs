@@ -192,7 +192,11 @@ fn session_status(id: &str, open_host_ids: &[String]) -> HostStatus {
     }
 }
 
-fn wsl_host_status(id: &str, open_host_ids: &[String], running: Option<bool>) -> HostStatus {
+fn wsl_host_status(
+    id: &str,
+    open_host_ids: &[String],
+    running: Option<bool>,
+) -> HostStatus {
     if open_host_ids.iter().any(|open| open == id) {
         return HostStatus::Active;
     }
@@ -398,7 +402,6 @@ pub fn sidebar_rows(
         }
     }
 
-
     rows
 }
 
@@ -511,9 +514,8 @@ impl HostDraft {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
                 if id.is_none() {
-                    return Err(
-                        "Select a saved SSH key (Settings → Managed SSH Keys)".to_string(),
-                    );
+                    return Err("Select a saved SSH key (Settings → Managed SSH Keys)"
+                        .to_string());
                 }
                 id
             }
@@ -597,7 +599,10 @@ enum Command {
     /// Probe SSH, then persist (+ seal password) on success.
     ProbeAndCreate(HostDraft),
     /// Probe SSH, then update an existing host.
-    ProbeAndUpdate { id: String, draft: HostDraft },
+    ProbeAndUpdate {
+        id: String,
+        draft: HostDraft,
+    },
     CreateGroup(String),
     /// Move a stored host into a group (`Some`) or out to the root list (`None`).
     SetHostGroup {
@@ -629,15 +634,27 @@ enum Command {
         pem: Option<String>,
     },
     /// Soft-delete a managed SSH key.
-    DeleteSshKey { id: String },
+    DeleteSshKey {
+        id: String,
+    },
     /// Soft-delete a stored SSH host.
-    DeleteHost { id: String },
+    DeleteHost {
+        id: String,
+    },
     /// Soft-delete a host group (hosts inside become ungrouped).
-    DeleteGroup { id: String },
+    DeleteGroup {
+        id: String,
+    },
     /// Rename a stored SSH host.
-    RenameHost { id: String, name: String },
+    RenameHost {
+        id: String,
+        name: String,
+    },
     /// Rename a host group.
-    RenameGroup { id: String, name: String },
+    RenameGroup {
+        id: String,
+        name: String,
+    },
     /// Persist remote URI and run SyncEngine::sync_now.
     TestSync {
         uri: String,
@@ -653,7 +670,9 @@ enum Command {
         reply: Sender<Result<Option<(String, Option<String>)>, String>>,
     },
     /// After SSH connect: probe remote OS and persist `os_id` for the sidebar icon.
-    DetectOs { id: String },
+    DetectOs {
+        id: String,
+    },
 }
 
 /// Answers coming back from the worker.
@@ -774,11 +793,10 @@ impl HostRepository {
         self.vault_unlocked
     }
 
-
     pub fn create_snippet(&mut self, snippet: terminus_ui::snippets::SnippetItem) {
         let _ = self.commands.send(Command::CreateSnippet(snippet));
     }
-    
+
     pub fn delete_snippet(&mut self, id: String) {
         let _ = self.commands.send(Command::DeleteSnippet(id));
     }
@@ -848,7 +866,11 @@ impl HostRepository {
 
     /// Persist a new empty group.
     pub fn create_group(&mut self, name: &str) {
-        if self.commands.send(Command::CreateGroup(name.to_string())).is_err() {
+        if self
+            .commands
+            .send(Command::CreateGroup(name.to_string()))
+            .is_err()
+        {
             self.error = Some("Host store is unavailable".to_string());
         }
     }
@@ -953,23 +975,17 @@ impl HostRepository {
 
     /// Soft-delete a managed SSH key by id.
     pub fn delete_ssh_key(&mut self, id: &str) {
-        self.send(Command::DeleteSshKey {
-            id: id.to_string(),
-        });
+        self.send(Command::DeleteSshKey { id: id.to_string() });
     }
 
     /// Soft-delete a stored SSH host by id.
     pub fn delete_host(&mut self, id: &str) {
-        self.send(Command::DeleteHost {
-            id: id.to_string(),
-        });
+        self.send(Command::DeleteHost { id: id.to_string() });
     }
 
     /// Soft-delete a host group by id.
     pub fn delete_group(&mut self, id: &str) {
-        self.send(Command::DeleteGroup {
-            id: id.to_string(),
-        });
+        self.send(Command::DeleteGroup { id: id.to_string() });
     }
 
     /// Rename a stored SSH host.
@@ -1017,7 +1033,11 @@ impl HostRepository {
     }
 
     /// Probe SSH, then update an existing host.
-    pub fn probe_and_update(&mut self, id: &str, draft: &HostDraft) -> Result<(), String> {
+    pub fn probe_and_update(
+        &mut self,
+        id: &str,
+        draft: &HostDraft,
+    ) -> Result<(), String> {
         let mut draft = draft.clone();
         draft.id = Some(id.to_string());
         match draft.normalize() {
@@ -1042,9 +1062,7 @@ impl HostRepository {
         if id == LOCAL_ID || id.starts_with(WSL_PREFIX) {
             return;
         }
-        self.send(Command::DetectOs {
-            id: id.to_string(),
-        });
+        self.send(Command::DetectOs { id: id.to_string() });
     }
 
     fn send(&mut self, command: Command) {
@@ -1200,7 +1218,8 @@ fn worker(
     {
         if terminus_core::parse_vault_header(&raw).is_ok() {
             // Remembered passphrase → unlock without prompting.
-            if let Some(passphrase) = crate::vault_remember::load_remembered_passphrase() {
+            if let Some(passphrase) = crate::vault_remember::load_remembered_passphrase()
+            {
                 match unlock_or_create_vault(&runtime, &store, &passphrase) {
                     Ok(unlocked) => {
                         let shared = Arc::new(unlocked);
@@ -1283,7 +1302,8 @@ fn worker(
             Command::ProbeAndUpdate { id, draft } => {
                 match probe_and_update(&runtime, &store, &mut vault, &id, draft) {
                     Ok(label) => {
-                        let _ = events.send(HostEvent::Stored(format!("Updated {label}")));
+                        let _ =
+                            events.send(HostEvent::Stored(format!("Updated {label}")));
                         let _ = events.send(list(&runtime, &store));
                         let _ = events.send(list_groups(&runtime, &store));
                     }
@@ -1321,7 +1341,8 @@ fn worker(
                 let r = runtime.block_on(async {
                     if let Ok(id_uuid) = uuid::Uuid::parse_str(&id_str) {
                         let mut all = store.list_snippets().await.unwrap_or_default();
-                        if let Some(mut snip) = all.into_iter().find(|s| s.id == id_uuid) {
+                        if let Some(mut snip) = all.into_iter().find(|s| s.id == id_uuid)
+                        {
                             snip.deleted_at = Some(chrono::Utc::now());
                             return store.upsert_snippet(&snip).await;
                         }
@@ -1428,85 +1449,74 @@ fn worker(
             Command::UnlockVault {
                 passphrase,
                 remember,
-            } => {
-                match unlock_or_create_vault(&runtime, &store, &passphrase) {
-                    Ok(unlocked) => {
-                        let shared = Arc::new(unlocked);
-                        runtime.block_on(sync_engine.attach_vault(Arc::clone(&shared)));
-                        vault = Some(shared);
-                        if remember {
-                            if let Err(err) = crate::vault_remember::remember_passphrase(&passphrase)
-                            {
-                                tracing::warn!("vault remember failed: {err}");
-                            }
-                        } else {
-                            crate::vault_remember::forget_passphrase();
+            } => match unlock_or_create_vault(&runtime, &store, &passphrase) {
+                Ok(unlocked) => {
+                    let shared = Arc::new(unlocked);
+                    runtime.block_on(sync_engine.attach_vault(Arc::clone(&shared)));
+                    vault = Some(shared);
+                    if remember {
+                        if let Err(err) =
+                            crate::vault_remember::remember_passphrase(&passphrase)
+                        {
+                            tracing::warn!("vault remember failed: {err}");
                         }
-                        let _ = events.send(HostEvent::VaultStatus {
-                            unlocked: true,
-                            message: Some("Vault unlocked".into()),
-                        });
-                        let _ = events.send(sync_status_event(
-                            &runtime,
-                            &sync_engine,
-                            true,
-                        ));
+                    } else {
+                        crate::vault_remember::forget_passphrase();
                     }
-                    Err(message) => {
-                        let _ = events.send(HostEvent::VaultStatus {
-                            unlocked: false,
-                            message: Some(message),
-                        });
-                    }
+                    let _ = events.send(HostEvent::VaultStatus {
+                        unlocked: true,
+                        message: Some("Vault unlocked".into()),
+                    });
+                    let _ = events.send(sync_status_event(&runtime, &sync_engine, true));
                 }
-            }
+                Err(message) => {
+                    let _ = events.send(HostEvent::VaultStatus {
+                        unlocked: false,
+                        message: Some(message),
+                    });
+                }
+            },
             Command::CreateSshKey { name, pem } => {
                 match create_ssh_key(&runtime, &store, &name, pem.as_deref()) {
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(label));
                         let _ = events.send(list_identities(&runtime, &store));
-                let _ = events.send(list_snippets(&runtime, &store));
+                        let _ = events.send(list_snippets(&runtime, &store));
                     }
                     Err(err) => {
                         let _ = events.send(HostEvent::Failed(err));
                     }
                 }
             }
-            Command::DeleteSshKey { id } => {
-                match delete_ssh_key(&runtime, &store, &id) {
-                    Ok(label) => {
-                        let _ = events.send(HostEvent::Stored(label));
-                        let _ = events.send(list_identities(&runtime, &store));
-                let _ = events.send(list_snippets(&runtime, &store));
-                    }
-                    Err(err) => {
-                        let _ = events.send(HostEvent::Failed(err));
-                    }
+            Command::DeleteSshKey { id } => match delete_ssh_key(&runtime, &store, &id) {
+                Ok(label) => {
+                    let _ = events.send(HostEvent::Stored(label));
+                    let _ = events.send(list_identities(&runtime, &store));
+                    let _ = events.send(list_snippets(&runtime, &store));
                 }
-            }
-            Command::DeleteHost { id } => {
-                match delete_host(&runtime, &store, &id) {
-                    Ok(label) => {
-                        let _ = events.send(HostEvent::Stored(label));
-                        let _ = events.send(list(&runtime, &store));
-                    }
-                    Err(err) => {
-                        let _ = events.send(HostEvent::Failed(err));
-                    }
+                Err(err) => {
+                    let _ = events.send(HostEvent::Failed(err));
                 }
-            }
-            Command::DeleteGroup { id } => {
-                match delete_group(&runtime, &store, &id) {
-                    Ok(label) => {
-                        let _ = events.send(HostEvent::Stored(label));
-                        let _ = events.send(list(&runtime, &store));
-                        let _ = events.send(list_groups(&runtime, &store));
-                    }
-                    Err(err) => {
-                        let _ = events.send(HostEvent::Failed(err));
-                    }
+            },
+            Command::DeleteHost { id } => match delete_host(&runtime, &store, &id) {
+                Ok(label) => {
+                    let _ = events.send(HostEvent::Stored(label));
+                    let _ = events.send(list(&runtime, &store));
                 }
-            }
+                Err(err) => {
+                    let _ = events.send(HostEvent::Failed(err));
+                }
+            },
+            Command::DeleteGroup { id } => match delete_group(&runtime, &store, &id) {
+                Ok(label) => {
+                    let _ = events.send(HostEvent::Stored(label));
+                    let _ = events.send(list(&runtime, &store));
+                    let _ = events.send(list_groups(&runtime, &store));
+                }
+                Err(err) => {
+                    let _ = events.send(HostEvent::Failed(err));
+                }
+            },
             Command::RenameHost { id, name } => {
                 match rename_host(&runtime, &store, &id, &name) {
                     Ok(label) => {
@@ -1587,13 +1597,13 @@ fn unlock_or_create_vault(
     if let Some(raw) = existing {
         let header = terminus_core::parse_vault_header(&raw)
             .map_err(|e| format!("Corrupt vault header: {e}"))?;
-        terminus_core::UnlockedVault::unlock(passphrase, &header).map_err(|_| {
-            "vault unlock failed".to_string()
-        })
+        terminus_core::UnlockedVault::unlock(passphrase, &header)
+            .map_err(|_| "vault unlock failed".to_string())
     } else {
         let (header, vault) =
             terminus_core::create_with_key(passphrase).map_err(|e| e.to_string())?;
-        let json = terminus_core::encode_vault_header(&header).map_err(|e| e.to_string())?;
+        let json =
+            terminus_core::encode_vault_header(&header).map_err(|e| e.to_string())?;
         runtime
             .block_on(store.set_setting(terminus_core::VAULT_HEADER_SETTING, &json))
             .map_err(|e| e.to_string())?;
@@ -1721,7 +1731,8 @@ fn probe_and_update(
         }
     }
 
-    if method == HostAuthMethod::Password && !draft.password.is_empty() && vault.is_none() {
+    if method == HostAuthMethod::Password && !draft.password.is_empty() && vault.is_none()
+    {
         return Err(
             "Unlock the vault before saving a password (Settings → Remote SQL Sync passphrase)"
                 .into(),
@@ -1756,10 +1767,7 @@ fn probe_and_update(
         let identity = match method {
             HAM::Key => {
                 if let Some(iid) = identity_id {
-                    runtime
-                        .block_on(store.get_identity(iid))
-                        .ok()
-                        .flatten()
+                    runtime.block_on(store.get_identity(iid)).ok().flatten()
                 } else {
                     None
                 }
@@ -1777,7 +1785,6 @@ fn probe_and_update(
     runtime
         .block_on(store.upsert_host(&host))
         .map_err(|e| format!("Could not save the host: {e}"))?;
-
 
     if method == HostAuthMethod::Password && !draft.password.is_empty() {
         let unlocked = vault
@@ -1802,7 +1809,9 @@ fn detect_and_store_os(
     vault: Option<&Arc<terminus_core::UnlockedVault>>,
     id: &str,
 ) -> Result<Option<String>, String> {
-    use terminus_core::{detect_remote_os, probe_options_from_host, HostAuthMethod, UNKNOWN_OS};
+    use terminus_core::{
+        detect_remote_os, probe_options_from_host, HostAuthMethod, UNKNOWN_OS,
+    };
 
     let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
     let hosts = runtime
@@ -1881,7 +1890,9 @@ fn resolve_host_password(
     vault: Option<&Arc<terminus_core::UnlockedVault>>,
     id: &str,
 ) -> Result<Option<String>, String> {
-    use terminus_core::{open_host_password, CREDENTIAL_KIND_HOST_PASSWORD, OWNER_KIND_HOST};
+    use terminus_core::{
+        open_host_password, CREDENTIAL_KIND_HOST_PASSWORD, OWNER_KIND_HOST,
+    };
 
     let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
     let hosts = runtime
@@ -1910,7 +1921,8 @@ fn resolve_host_password(
 
     let Some(unlocked) = vault else {
         return Err(
-            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)".into(),
+            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)"
+                .into(),
         );
     };
 
@@ -1955,7 +1967,6 @@ fn resolve_host_identity(
         return Err("Selected SSH key has no private key material".into());
     };
 
-
     Ok(Some((pem, passphrase)))
 }
 
@@ -1975,7 +1986,8 @@ fn sync_status_event(
         let connected = configured
             && matches!(
                 status,
-                terminus_core::sync::SyncStatus::Idle | terminus_core::sync::SyncStatus::Syncing
+                terminus_core::sync::SyncStatus::Idle
+                    | terminus_core::sync::SyncStatus::Syncing
             );
 
         let (status_line, is_error) = if let Some(err) = last_error {
@@ -2097,7 +2109,8 @@ async fn run_test_sync(
     let connected = engine.is_configured().await
         && matches!(
             engine.status().await,
-            terminus_core::sync::SyncStatus::Idle | terminus_core::sync::SyncStatus::Syncing
+            terminus_core::sync::SyncStatus::Idle
+                | terminus_core::sync::SyncStatus::Syncing
         );
 
     HostEvent::SyncStatus {
@@ -2149,9 +2162,8 @@ fn create_ssh_key(
     pem: Option<&str>,
 ) -> Result<String, String> {
     let identity = match pem.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(pem) => {
-            terminus_core::import_openssh_identity(name, pem, None).map_err(|e| e.to_string())?
-        }
+        Some(pem) => terminus_core::import_openssh_identity(name, pem, None)
+            .map_err(|e| e.to_string())?,
         None => {
             terminus_core::generate_ed25519_identity(name).map_err(|e| e.to_string())?
         }
@@ -2571,9 +2583,9 @@ mod tests {
                 &[],
                 &[],
             )[1]
-                .host()
-                .unwrap()
-                .endpoint,
+            .host()
+            .unwrap()
+            .endpoint,
             "nixos@NixOS · WSL"
         );
 
@@ -2592,9 +2604,9 @@ mod tests {
                 &[],
                 &[],
             )[1]
-                .host()
-                .unwrap()
-                .endpoint,
+            .host()
+            .unwrap()
+            .endpoint,
             "nixos@box · WSL · Ubuntu-24.04"
         );
     }
@@ -2615,9 +2627,9 @@ mod tests {
                 &[],
                 &[],
             )[1]
-                .host()
-                .unwrap()
-                .endpoint,
+            .host()
+            .unwrap()
+            .endpoint,
             "deploy@web-01 · Ubuntu"
         );
     }
@@ -2761,7 +2773,9 @@ mod tests {
         let session_titles: Vec<_> = rows
             .iter()
             .filter_map(|r| match r {
-                Row::Session(s) => Some((s.host_id.as_str(), s.tab_index, s.title.as_str())),
+                Row::Session(s) => {
+                    Some((s.host_id.as_str(), s.tab_index, s.title.as_str()))
+                }
                 _ => None,
             })
             .collect();
@@ -3006,9 +3020,11 @@ mod tests {
         // Persist: reopen and see the URI restored.
         drop(repo);
         let mut reopened = HostRepository::spawn(dir.clone(), None);
-        assert!(drain_until(&mut reopened, Duration::from_secs(10), |repo| {
-            !repo.loading() && repo.sync_uri() == uri
-        }));
+        assert!(drain_until(
+            &mut reopened,
+            Duration::from_secs(10),
+            |repo| { !repo.loading() && repo.sync_uri() == uri }
+        ));
         assert!(reopened.sync_connected());
 
         drop(reopened);
@@ -3076,16 +3092,12 @@ mod tests {
         assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
             repo.vault_unlocked()
         }));
-        assert_eq!(
-            repo.take_vault_message().as_deref(),
-            Some("Vault unlocked")
-        );
+        assert_eq!(repo.take_vault_message().as_deref(), Some("Vault unlocked"));
 
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-
 
 fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
     let mut mapped = Vec::new();

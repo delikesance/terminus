@@ -183,7 +183,11 @@ impl ConflictPolicy {
         }
     }
 
-    pub fn resolve(&mut self, action: ConflictAction, apply_to_all: bool) -> ConflictAction {
+    pub fn resolve(
+        &mut self,
+        action: ConflictAction,
+        apply_to_all: bool,
+    ) -> ConflictAction {
         if let Some(auto) = self.apply {
             return auto;
         }
@@ -229,7 +233,11 @@ impl FileNode {
     }
 
     /// Metadata file node with mtime for quick-mode equality.
-    pub fn file_meta_mtime(name: impl Into<String>, size: u64, mtime_ns: Option<i128>) -> Self {
+    pub fn file_meta_mtime(
+        name: impl Into<String>,
+        size: u64,
+        mtime_ns: Option<i128>,
+    ) -> Self {
         Self {
             name: name.into(),
             is_dir: false,
@@ -252,10 +260,7 @@ impl FileNode {
     }
 
     fn child_map(&self) -> BTreeMap<&str, &FileNode> {
-        self.children
-            .iter()
-            .map(|c| (c.name.as_str(), c))
-            .collect()
+        self.children.iter().map(|c| (c.name.as_str(), c)).collect()
     }
 
     fn child_map_mut(&mut self) -> BTreeMap<String, usize> {
@@ -269,21 +274,11 @@ impl FileNode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffAction {
-    Skip {
-        relative: String,
-    },
-    DownloadFile {
-        relative: String,
-    },
-    ZipSubtree {
-        relative: String,
-    },
-    AskFile {
-        relative: String,
-    },
-    AskDir {
-        relative: String,
-    },
+    Skip { relative: String },
+    DownloadFile { relative: String },
+    ZipSubtree { relative: String },
+    AskFile { relative: String },
+    AskDir { relative: String },
 }
 
 /// Relative paths of file pairs that need a content check (same size, mtime
@@ -372,7 +367,12 @@ fn join_rel(prefix: &str, name: &str) -> String {
     }
 }
 
-fn plan_dir(prefix: &str, remote: &FileNode, local: &FileNode, out: &mut Vec<DiffAction>) {
+fn plan_dir(
+    prefix: &str,
+    remote: &FileNode,
+    local: &FileNode,
+    out: &mut Vec<DiffAction>,
+) {
     let local_map = local.child_map();
     for child in &remote.children {
         let rel = join_rel(prefix, &child.name);
@@ -487,7 +487,10 @@ mod tests {
             total_bytes: 40,
         }));
         assert!(decoded.matches_remote_meta(&"B".repeat(64)));
-        assert!(FolderSyncCache::decode("v1 2 40 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n").is_none());
+        assert!(FolderSyncCache::decode(
+            "v1 2 40 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        )
+        .is_none());
     }
 
     #[test]
@@ -605,10 +608,7 @@ mod tests {
         let pairs = equal_size_pairs(&remote, &local);
         assert_eq!(
             pairs,
-            vec![
-                "same_size.txt".to_string(),
-                "sub/nested.txt".to_string()
-            ]
+            vec!["same_size.txt".to_string(), "sub/nested.txt".to_string()]
         );
     }
 
@@ -669,7 +669,10 @@ mod tests {
     fn plan_new_subdir_zips() {
         let remote = FileNode::dir(
             "proj",
-            vec![FileNode::dir("fresh", vec![FileNode::file_meta("a.txt", 1)])],
+            vec![FileNode::dir(
+                "fresh",
+                vec![FileNode::file_meta("a.txt", 1)],
+            )],
         );
         let local = FileNode::dir("proj", vec![]);
         let plan = plan_differential(&remote, &local);

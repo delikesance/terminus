@@ -12,7 +12,8 @@ use std::time::Duration;
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{
-    Data, File as SftpFile, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
+    Data, File as SftpFile, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode,
+    Version,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -62,7 +63,9 @@ pub fn try_spawn() -> Result<MockSftpServer, String> {
                 .build()
                 .expect("mock sftp runtime");
             rt.block_on(async move {
-                if let Err(err) = run_server(root_for_server, shutdown_flag, port_tx).await {
+                if let Err(err) =
+                    run_server(root_for_server, shutdown_flag, port_tx).await
+                {
                     eprintln!("mock sftp server stopped: {err}");
                 }
             });
@@ -113,7 +116,8 @@ async fn run_server(
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
-        let accept = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
+        let accept =
+            tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
         match accept {
             Ok(Ok((stream, addr))) => {
                 let config = Arc::clone(&config);
@@ -219,11 +223,10 @@ impl russh::server::Handler for MockHandler {
         let cmd = String::from_utf8_lossy(data).into_owned();
         let _ = session.channel_success(channel);
         let root = Arc::clone(&self.root);
-        let (code, stdout, stderr) = tokio::task::spawn_blocking(move || {
-            mock_run_exec(&root, &cmd)
-        })
-        .await
-        .unwrap_or_else(|e| (255, Vec::new(), format!("join: {e}").into_bytes()));
+        let (code, stdout, stderr) =
+            tokio::task::spawn_blocking(move || mock_run_exec(&root, &cmd))
+                .await
+                .unwrap_or_else(|e| (255, Vec::new(), format!("join: {e}").into_bytes()));
 
         if !stdout.is_empty() {
             let _ = session.data(channel, stdout);
@@ -422,7 +425,12 @@ fn mock_zip_dir(src: &Path, root_name: &str, zip_path: &Path) -> Result<(), Stri
         .compression_method(zip::CompressionMethod::Deflated);
     zip.add_directory(format!("{root_name}/"), opts)
         .map_err(|e| e.to_string())?;
-    fn add(zip: &mut zip::ZipWriter<File>, dir: &Path, prefix: &str, opts: zip::write::SimpleFileOptions) -> Result<(), String> {
+    fn add(
+        zip: &mut zip::ZipWriter<File>,
+        dir: &Path,
+        prefix: &str,
+        opts: zip::write::SimpleFileOptions,
+    ) -> Result<(), String> {
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name();
@@ -533,10 +541,7 @@ fn map_mock_path(root: &Path, remote: &str) -> PathBuf {
 fn remap_abs_paths(root: &Path, script: &str) -> String {
     // Best-effort: prefix bare absolute paths after spaces/quotes with root.
     // Archive scripts should use the structured meta path above instead.
-    script.replace(
-        " cd /",
-        &format!(" cd {}/", root.display()),
-    )
+    script.replace(" cd /", &format!(" cd {}/", root.display()))
 }
 
 fn shell_quote(s: &str) -> String {
@@ -826,7 +831,11 @@ impl russh_sftp::server::Handler for FsSftp {
         Ok(Self::ok(id))
     }
 
-    async fn stat(&mut self, id: u32, path: String) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+    async fn stat(
+        &mut self,
+        id: u32,
+        path: String,
+    ) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
         let mapped = self.map_path(&path)?;
         let meta = fs::metadata(&mapped).map_err(|_| StatusCode::NoSuchFile)?;
         Ok(russh_sftp::protocol::Attrs {

@@ -22,7 +22,9 @@ fn fallback_path() -> PathBuf {
 
 /// Store the vault passphrase for automatic unlock on later launches.
 pub fn remember_passphrase(passphrase: &str) -> Result<(), String> {
-    if let Err(err) = entry().and_then(|e| e.set_password(passphrase).map_err(|e| e.to_string())) {
+    if let Err(err) =
+        entry().and_then(|e| e.set_password(passphrase).map_err(|e| e.to_string()))
+    {
         tracing::warn!("keyring remember failed ({err}); using local fallback");
         write_fallback(passphrase)?;
     }

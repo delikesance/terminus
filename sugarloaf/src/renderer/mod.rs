@@ -1898,7 +1898,12 @@ impl Renderer {
     }
 
     #[inline]
-    pub fn overlay_polygon(&mut self, points: &[(f32, f32)], depth: f32, color: [f32; 4]) {
+    pub fn overlay_polygon(
+        &mut self,
+        points: &[(f32, f32)],
+        depth: f32,
+        color: [f32; 4],
+    ) {
         self.comp
             .overlay_batches
             .add_antialiased_polygon(points, depth, color);
@@ -2028,11 +2033,7 @@ impl Renderer {
 
     #[inline]
     #[cfg(feature = "wgpu")]
-    pub fn render(
-        &mut self,
-        ctx: &mut WgpuContext,
-        rpass: &mut wgpu::RenderPass<'_>,
-    ) {
+    pub fn render(&mut self, ctx: &mut WgpuContext, rpass: &mut wgpu::RenderPass<'_>) {
         // Destructure to get independent borrows of different fields
         let Self {
             brush_type,
@@ -2380,8 +2381,7 @@ impl Renderer {
                     );
                 }
             }
-            let byte_offset =
-                (inst_base * mem::size_of::<batch::QuadInstance>()) as u64;
+            let byte_offset = (inst_base * mem::size_of::<batch::QuadInstance>()) as u64;
             ctx.queue.write_buffer(
                 &brush.instance_buffer,
                 byte_offset,
@@ -2458,10 +2458,8 @@ impl Renderer {
                     let byte_offset = ((inst_base + *offset as usize)
                         * mem::size_of::<batch::QuadInstance>())
                         as u64;
-                    rpass.set_vertex_buffer(
-                        0,
-                        brush.instance_buffer.slice(byte_offset..),
-                    );
+                    rpass
+                        .set_vertex_buffer(0, brush.instance_buffer.slice(byte_offset..));
                     rpass.draw(0..4, 0..*count);
                 }
                 batch::DrawCmd::Vertices { offset, count, .. } => {
