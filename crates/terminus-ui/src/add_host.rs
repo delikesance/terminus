@@ -310,12 +310,7 @@ impl AddHostForm {
     /// Prefill the form for editing an existing host. Password stays empty
     /// (leave blank to keep the stored credential).
     pub fn open_edit(&mut self, values: HostFormValues, host_id: String) {
-        self.values = [
-            values.name,
-            values.hostname,
-            values.username,
-            values.port,
-        ];
+        self.values = [values.name, values.hostname, values.username, values.port];
         self.carets = [
             self.values[0].chars().count(),
             self.values[1].chars().count(),
@@ -330,9 +325,9 @@ impl AddHostForm {
         self.password.clear();
         self.password_caret = 0;
         self.password_visible = false;
-        self.identity_id = values.identity_id.or_else(|| {
-            self.identities.first().map(|(id, _)| id.clone())
-        });
+        self.identity_id = values
+            .identity_id
+            .or_else(|| self.identities.first().map(|(id, _)| id.clone()));
         let still_valid = self
             .identity_id
             .as_ref()
@@ -1590,5 +1585,30 @@ mod tests {
         assert_eq!(form.focused_field(), Field::Hostname);
         form.focus_field(Field::AuthMethod);
         assert_eq!(form.focused_field(), Field::AuthMethod);
+    }
+
+    #[test]
+    fn password_field_accepts_pasted_secret() {
+        let mut form = open_form();
+        form.cycle_auth_method(1); // password
+        form.focus_field(Field::Password);
+        assert!(form.shows_password());
+        // Clipboard paste must strip controls before insert; raw control
+        // characters are rejected so a trailing newline does not wipe the paste.
+        assert!(!form.insert("secret\n"));
+        assert!(form.insert("s3cret-from-clipboard"));
+        assert_eq!(form.password(), "s3cret-from-clipboard");
+    }
+
+    #[test]
+    fn sanitize_clipboard_for_host_fields_strips_controls() {
+        let raw = "p@ss\r\nw0rd\u{7f}";
+        let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+        assert_eq!(cleaned, "p@ssw0rd");
+        let mut form = open_form();
+        form.cycle_auth_method(1);
+        form.focus_field(Field::Password);
+        assert!(form.insert(&cleaned));
+        assert_eq!(form.password(), "p@ssw0rd");
     }
 }

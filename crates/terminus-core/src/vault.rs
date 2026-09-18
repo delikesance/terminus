@@ -228,11 +228,13 @@ pub fn open_host_password(
 
 /// Persist / load the vault header JSON via settings.
 pub fn parse_vault_header(raw: &str) -> Result<VaultHeader> {
-    serde_json::from_str(raw).map_err(|e| Error::VaultError(format!("bad vault header: {e}")))
+    serde_json::from_str(raw)
+        .map_err(|e| Error::VaultError(format!("bad vault header: {e}")))
 }
 
 pub fn encode_vault_header(header: &VaultHeader) -> Result<String> {
-    serde_json::to_string(header).map_err(|e| Error::VaultError(format!("encode vault header: {e}")))
+    serde_json::to_string(header)
+        .map_err(|e| Error::VaultError(format!("encode vault header: {e}")))
 }
 
 /// Creates a new vault for `passphrase`, returning the header to persist and
@@ -264,10 +266,7 @@ mod tests {
         let host_id = uuid::Uuid::new_v4();
         let secret = "s3cret-password!!";
         let cred = seal_host_password(&vault, host_id, secret).unwrap();
-        assert!(
-            !cred.envelope.contains(secret),
-            "envelope leaked plaintext"
-        );
+        assert!(!cred.envelope.contains(secret), "envelope leaked plaintext");
         assert_eq!(open_host_password(&vault, host_id, &cred).unwrap(), secret);
     }
 

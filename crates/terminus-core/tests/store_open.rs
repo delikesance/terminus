@@ -193,12 +193,10 @@ async fn open_adds_updated_at_to_two_column_settings() {
         .connect_with(options)
         .await
         .expect("open raw");
-    sqlx::query(
-        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    )
-    .execute(&pool)
-    .await
-    .expect("two-col schema");
+    sqlx::query("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .expect("two-col schema");
     drop(pool);
 
     let store = Store::open(dir.clone()).await.expect("open");

@@ -146,7 +146,9 @@ impl ContextMenu {
             "Rename",
             ContextAction::RenameHost(id.clone()),
         ));
-        items.push(ContextItem::new("Delete host", ContextAction::DeleteHost(id)).danger());
+        items.push(
+            ContextItem::new("Delete host", ContextAction::DeleteHost(id)).danger(),
+        );
         Self::open(x, y, items)
     }
 
@@ -165,7 +167,7 @@ impl ContextMenu {
     /// SFTP row context for a file or directory.
     ///
     /// `transfer_label` is typically "Upload", "Download", or "Copy to other pane".
-    /// `can_edit` enables remote-file "Edit" (temp download + default app + reupload).
+    /// `can_edit` enables "Edit" for files (local: open in place; remote: temp + reupload).
     pub fn for_sftp_entry(
         x: f32,
         y: f32,
@@ -372,26 +374,35 @@ mod tests {
     #[test]
     fn host_menu_includes_open_sftp_other_pane() {
         let menu = ContextMenu::for_host_with_sftp(10.0, 10.0, "h1", true).unwrap();
-        assert!(menu.items.iter().any(|i| {
-            matches!(i.action, ContextAction::OpenSftpOtherPane(_))
-        }));
-        assert!(menu.items.iter().any(|i| {
-            matches!(i.action, ContextAction::OpenSftp(_))
-        }));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| { matches!(i.action, ContextAction::OpenSftpOtherPane(_)) }));
+        assert!(menu
+            .items
+            .iter()
+            .any(|i| { matches!(i.action, ContextAction::OpenSftp(_)) }));
     }
 
     #[test]
     fn sftp_dir_menu_offers_open() {
-        let menu = ContextMenu::for_sftp_entry(10.0, 10.0, true, Some("Download"), true).unwrap();
+        let menu = ContextMenu::for_sftp_entry(10.0, 10.0, true, Some("Download"), true)
+            .unwrap();
         assert_eq!(menu.take_action(0), Some(ContextAction::SftpOpen));
     }
 
     #[test]
-    fn sftp_remote_file_menu_offers_edit() {
-        let menu = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true).unwrap();
-        assert_eq!(menu.take_action(0), Some(ContextAction::SftpEdit));
-        assert_eq!(menu.take_action(1), Some(ContextAction::SftpTransfer));
-        let local = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), false).unwrap();
-        assert_ne!(local.take_action(0), Some(ContextAction::SftpEdit));
+    fn sftp_file_menu_offers_edit_when_allowed() {
+        let remote =
+            ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true)
+                .unwrap();
+        assert_eq!(remote.take_action(0), Some(ContextAction::SftpEdit));
+        assert_eq!(remote.take_action(1), Some(ContextAction::SftpTransfer));
+        let local =
+            ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), true).unwrap();
+        assert_eq!(local.take_action(0), Some(ContextAction::SftpEdit));
+        let dirs = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), false)
+            .unwrap();
+        assert_ne!(dirs.take_action(0), Some(ContextAction::SftpEdit));
     }
 }

@@ -59,7 +59,11 @@ impl AddSnippetForm {
         SnippetFormValues {
             name: self.inner.get_value("name").unwrap_or("").to_string(),
             command: self.inner.get_value("command").unwrap_or("").to_string(),
-            description: self.inner.get_value("description").unwrap_or("").to_string(),
+            description: self
+                .inner
+                .get_value("description")
+                .unwrap_or("")
+                .to_string(),
         }
     }
 
