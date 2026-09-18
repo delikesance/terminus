@@ -1,0 +1,12 @@
+---
+description: Red-green TDD — failing tests before implementation
+alwaysApply: true
+---
+
+# Red → green
+
+1. **Red:** Add or extend tests that express the desired behavior. Run them; they must fail for the right reason.
+2. **Green:** Implement the minimum code to make those tests pass.
+3. **Refactor:** Clean up only while tests stay green.
+
+Skip TDD only for pure docs/chore with no behavior change, or when the user explicitly waives it.
