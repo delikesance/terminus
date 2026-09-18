@@ -24,6 +24,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Fat LTO + codegen-units=1 + debug=full (Cargo.toml [profile.release])
+  # routinely spends 45–90+ min stuck after "Compiling rio-grid" on GHA
+  # runners. Thin LTO matches the MSYS2 smoke overrides and keeps CI
+  # releasable without an hour-long LLVM link.
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "8"
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
 
 jobs:
   windows:
