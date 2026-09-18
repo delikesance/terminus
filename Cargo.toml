@@ -19,6 +19,7 @@ members = [
     "crates/terminus-core",
     "crates/terminus-bridge",
     "crates/terminus-ui",
+    "crates/terminus-walk",
 ]
 resolver = "2"
 

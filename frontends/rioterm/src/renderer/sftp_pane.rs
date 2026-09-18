@@ -79,9 +79,130 @@ pub fn paint(
         footer_color,
     );
 
+    if let Some(prompt) = state.conflict.as_ref() {
+        paint_conflict(sugarloaf, state, &layout, theme, prompt);
+    }
+
     if let Some(drag) = state.drag.as_ref() {
         paint_drag_ghost(sugarloaf, theme, drag.pointer_x, drag.pointer_y, &drag.name);
     }
+}
+
+fn paint_conflict(
+    sugarloaf: &mut Sugarloaf,
+    state: &SftpPaneState,
+    layout: &SftpPaneLayout,
+    theme: &ChromeTheme,
+    prompt: &terminus_ui::SftpConflictPrompt,
+) {
+    // Dim scrim over the pane.
+    paint_flat(
+        sugarloaf,
+        &layout.bounds,
+        [0.0, 0.0, 0.0, 0.45],
+        DEPTH - 0.01,
+        ORDER,
+    );
+    let card = layout.conflict_card();
+    paint_flat(sugarloaf, &card, theme.panel_bg, DEPTH - 0.02, ORDER);
+    paint_flat(
+        sugarloaf,
+        &Rect::new(card.x, card.y, card.width, 1.0),
+        theme.panel_border,
+        DEPTH - 0.02,
+        ORDER,
+    );
+
+    draw_text(
+        sugarloaf,
+        card.x + 16.0,
+        card.y + 16.0,
+        prompt.title(),
+        14.0,
+        theme.text,
+    );
+    draw_text(
+        sugarloaf,
+        card.x + 16.0,
+        card.y + 40.0,
+        &prompt.message(),
+        12.0,
+        theme.text_muted,
+    );
+
+    let apply = layout.conflict_apply_all();
+    let apply_hover = matches!(state.hover, Some(SftpHit::ConflictApplyAll));
+    let check = if prompt.apply_to_all { "[x]" } else { "[ ]" };
+    let apply_label = format!("{check} Apply to all");
+    let apply_bg = if apply_hover {
+        theme.item_hover
+    } else {
+        theme.panel_bg
+    };
+    paint_flat(sugarloaf, &apply, apply_bg, DEPTH - 0.02, ORDER);
+    draw_text(
+        sugarloaf,
+        apply.x + 4.0,
+        apply.y + 4.0,
+        &apply_label,
+        12.0,
+        theme.text,
+    );
+
+    paint_text_btn(
+        sugarloaf,
+        theme,
+        &layout.conflict_overwrite(),
+        "Replace",
+        matches!(state.hover, Some(SftpHit::ConflictOverwrite)),
+        true,
+    );
+    paint_text_btn(
+        sugarloaf,
+        theme,
+        &layout.conflict_keep(),
+        "Keep",
+        matches!(state.hover, Some(SftpHit::ConflictKeep)),
+        false,
+    );
+    paint_text_btn(
+        sugarloaf,
+        theme,
+        &layout.conflict_cancel(),
+        "Cancel",
+        matches!(state.hover, Some(SftpHit::ConflictCancel)),
+        false,
+    );
+}
+
+fn paint_text_btn(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    rect: &Rect,
+    label: &str,
+    hovered: bool,
+    primary: bool,
+) {
+    let bg = if hovered {
+        if primary {
+            theme.accent_soft
+        } else {
+            theme.item_hover
+        }
+    } else if primary {
+        theme.accent_soft
+    } else {
+        theme.field_bg
+    };
+    paint_flat(sugarloaf, rect, bg, DEPTH - 0.02, ORDER);
+    draw_text(
+        sugarloaf,
+        rect.x + 12.0,
+        rect.y + 6.0,
+        label,
+        12.0,
+        theme.text,
+    );
 }
 
 fn paint_drag_ghost(

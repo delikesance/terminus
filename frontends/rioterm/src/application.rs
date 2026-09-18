@@ -1647,6 +1647,30 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::ForgetVaultPassphrase => {
+                                        crate::vault_remember::forget_passphrase();
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .set_passphrase_remembered(false);
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .vault_unlock
+                                            .set_remember(false);
+                                        route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .sync_status =
+                                            "Saved passphrase forgotten".into();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::TestSync => {
                                         let uri = route
                                             .window

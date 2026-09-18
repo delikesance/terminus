@@ -38,6 +38,8 @@ pub const STATUS_BLOCK_HEIGHT: f32 =
 /// Shared Unlock / Test Sync button width.
 pub const SYNC_ACTION_BTN_WIDTH: f32 = 110.0;
 pub const SYNC_ACTION_BTN_GAP: f32 = 8.0;
+/// "Forget saved passphrase" when a remembered vault secret exists.
+pub const FORGET_PASSPHRASE_BTN_WIDTH: f32 = 168.0;
 /// Dashed "New SSH Key" CTA height on the Keys tab.
 pub const KEY_CTA_HEIGHT: f32 = 56.0;
 pub const KEY_CTA_GAP: f32 = 12.0;
@@ -118,6 +120,8 @@ pub struct SettingsModal {
     /// Soft error banner message; `None` hides the banner.
     pub sync_error: Option<String>,
     pub vault_unlocked: bool,
+    /// True when a passphrase is stored in the OS keyring / local fallback.
+    pub passphrase_remembered: bool,
     pub sql_focus: SqlSyncFocus,
     /// Inline "New SSH Key" draft form is open.
     pub key_drafting: bool,
@@ -153,6 +157,7 @@ impl Default for SettingsModal {
             sync_status: "Not configured".into(),
             sync_error: None,
             vault_unlocked: false,
+            passphrase_remembered: false,
             sql_focus: SqlSyncFocus::None,
             key_drafting: false,
             key_label: TextDraft::default(),
@@ -190,6 +195,8 @@ pub enum SettingsHit {
     TogglePassphrase,
     /// Unlock / create the Argon2 vault with the passphrase field.
     UnlockVault,
+    /// Clear a previously remembered vault passphrase from the keyring.
+    ForgetPassphrase,
     /// Persist URI and run SyncEngine::sync_now.
     TestSync,
     Done,
@@ -224,6 +231,11 @@ impl SettingsModal {
                 self.sync_status = snap.status_line;
             }
         }
+    }
+
+    /// Reflect whether a passphrase is currently remembered ("Forget" button).
+    pub fn set_passphrase_remembered(&mut self, remembered: bool) {
+        self.passphrase_remembered = remembered;
     }
 
     /// Vault unlock/create feedback: errors go to the banner only.
@@ -866,6 +878,27 @@ impl SettingsModal {
         )
     }
 
+    /// Left-side action to clear a remembered vault passphrase.
+    ///
+    /// `None` when nothing is stored — the control is not painted or hit-tested.
+    pub fn forget_passphrase_button_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        if !self.passphrase_remembered {
+            return None;
+        }
+        let block = self.status_row_rect(window_width, window_height);
+        let y = block.y + FIELD_CARD_PAD + STATUS_TEXT_HEIGHT + STATUS_ACTIONS_GAP;
+        Some(Rect::new(
+            block.x + FIELD_CARD_PAD,
+            y,
+            FORGET_PASSPHRASE_BTN_WIDTH,
+            STATUS_ACTIONS_HEIGHT,
+        ))
+    }
+
     pub fn hit_test(
         &self,
         window_width: f32,
@@ -959,6 +992,12 @@ impl SettingsModal {
             {
                 return SettingsHit::UnlockVault;
             }
+            if let Some(forget) = self.forget_passphrase_button_rect(window_width, window_height)
+            {
+                if forget.contains(x, y) {
+                    return SettingsHit::ForgetPassphrase;
+                }
+            }
             if self
                 .passphrase_toggle_rect(window_width, window_height)
                 .contains(x, y)
@@ -1025,6 +1064,7 @@ impl SettingsModal {
             | SettingsHit::SelectEngine(_)
             | SettingsHit::TogglePassphrase
             | SettingsHit::UnlockVault
+            | SettingsHit::ForgetPassphrase
             | SettingsHit::TestSync => ChromeCursor::Pointer,
         }
     }
@@ -1184,6 +1224,15 @@ mod tests {
             s.hit_test(w, h, eye.x + 2.0, eye.y + 2.0),
             SettingsHit::TogglePassphrase
         );
+        assert!(s.forget_passphrase_button_rect(w, h).is_none());
+        s.set_passphrase_remembered(true);
+        let forget = s.forget_passphrase_button_rect(w, h).expect("forget btn");
+        assert_eq!(
+            s.hit_test(w, h, forget.x + 2.0, forget.y + 2.0),
+            SettingsHit::ForgetPassphrase
+        );
+        // Must not overlap Unlock / Test Sync.
+        assert!(forget.right() <= unlock.x);
         let engine = s.engine_card_rect(w, h);
         assert_eq!(
             s.hit_test(w, h, engine.x + 2.0, engine.y + 2.0),

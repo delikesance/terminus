@@ -94,33 +94,17 @@ pub fn render(
     connecting_phase: Option<f32>,
 ) {
     if chrome.activity.collapsed {
-        // The rail is collapsed, so nothing reserves space and nothing
-        // is painted — but the editor is a dialog, not part of the
-        // panel, and must still show if it is open.
-        if chrome.add_host_is_open() {
-            sugarloaf.begin_overlay();
-            render_add_host(
-                sugarloaf,
-                chrome,
-                theme,
-                window_width,
-                window_height,
-                device_scale,
-            );
-            sugarloaf.end_overlay();
-        }
-        if chrome.vault_unlock_is_open() {
-            sugarloaf.begin_overlay();
-            render_vault_unlock(
-                sugarloaf,
-                chrome,
-                theme,
-                window_width,
-                window_height,
-                device_scale,
-            );
-            sugarloaf.end_overlay();
-        }
+        // Rail collapsed: still paint overlay dialogs (they are not part of
+        // the panel). Same stacked overlay rules as the expanded path.
+        paint_modal_stack(
+            sugarloaf,
+            chrome,
+            theme,
+            window_width,
+            window_height,
+            device_scale,
+            connecting_phase,
+        );
         return;
     }
 
@@ -146,67 +130,15 @@ pub fn render(
         );
     }
 
-    // Overlay dialogs: underlay (SFTP, sidebar, …) still paints fully;
-    // sugarloaf composites these after all normal UI text.
-    if chrome.connection.is_some() {
-        sugarloaf.begin_overlay();
-        render_connection_modal(
-            sugarloaf,
-            chrome,
-            theme,
-            window_width,
-            window_height,
-            device_scale,
-            connecting_phase.unwrap_or(0.0),
-        );
-        sugarloaf.end_overlay();
-    }
-
-    if chrome.add_host_is_open() {
-        sugarloaf.begin_overlay();
-        render_add_host(
-            sugarloaf,
-            chrome,
-            theme,
-            window_width,
-            window_height,
-            device_scale,
-        );
-        sugarloaf.end_overlay();
-    }
-
-    
-    if chrome.snippet_form.is_open() {
-        sugarloaf.begin_overlay();
-        render_add_snippet(
-            sugarloaf,
-            chrome,
-            theme,
-            window_width,
-            window_height,
-            device_scale,
-        );
-        sugarloaf.end_overlay();
-    }
-
-    if chrome.settings_is_open() {
-        sugarloaf.begin_overlay();
-        render_settings_modal(sugarloaf, chrome, theme, window_width, window_height, device_scale);
-        sugarloaf.end_overlay();
-    }
-
-    if chrome.vault_unlock_is_open() {
-        sugarloaf.begin_overlay();
-        render_vault_unlock(
-            sugarloaf,
-            chrome,
-            theme,
-            window_width,
-            window_height,
-            device_scale,
-        );
-        sugarloaf.end_overlay();
-    }
+    paint_modal_stack(
+        sugarloaf,
+        chrome,
+        theme,
+        window_width,
+        window_height,
+        device_scale,
+        connecting_phase,
+    );
 
     if let Some(menu) = chrome.context_menu.as_ref() {
         render_context_menu(sugarloaf, menu, theme, device_scale);
@@ -215,6 +147,90 @@ pub fn render(
     // Insertion bar while dragging, then ghost at max z-order.
     paint_host_drag_insertion_bar(sugarloaf, chrome, theme);
     paint_host_drag_ghost(sugarloaf, chrome, theme, device_scale);
+}
+
+/// Single Sugarloaf overlay pass for every open dialog, back → front.
+///
+/// Only the front-most layer emits text/icons. Lower layers paint scrim +
+/// panel shells so a translucent top scrim still dimly shows the form
+/// underneath — without lower-modal glyphs floating above it.
+fn paint_modal_stack(
+    sugarloaf: &mut Sugarloaf,
+    chrome: &Chrome,
+    theme: &ChromeTheme,
+    window_width: f32,
+    window_height: f32,
+    device_scale: f32,
+    connecting_phase: Option<f32>,
+) {
+    let stack = chrome.modal_paint_stack();
+    if stack.is_empty() {
+        return;
+    }
+    let top = stack.last().copied();
+    sugarloaf.begin_overlay();
+    for layer in stack {
+        let paint_glyphs = top == Some(layer);
+        match layer {
+            terminus_ui::ModalPaintLayer::Connection => {
+                render_connection_modal(
+                    sugarloaf,
+                    chrome,
+                    theme,
+                    window_width,
+                    window_height,
+                    device_scale,
+                    connecting_phase.unwrap_or(0.0),
+                    paint_glyphs,
+                );
+            }
+            terminus_ui::ModalPaintLayer::HostEditor => {
+                render_add_host(
+                    sugarloaf,
+                    chrome,
+                    theme,
+                    window_width,
+                    window_height,
+                    device_scale,
+                    paint_glyphs,
+                );
+            }
+            terminus_ui::ModalPaintLayer::AddSnippet => {
+                render_add_snippet(
+                    sugarloaf,
+                    chrome,
+                    theme,
+                    window_width,
+                    window_height,
+                    device_scale,
+                    paint_glyphs,
+                );
+            }
+            terminus_ui::ModalPaintLayer::Settings => {
+                render_settings_modal(
+                    sugarloaf,
+                    chrome,
+                    theme,
+                    window_width,
+                    window_height,
+                    device_scale,
+                    paint_glyphs,
+                );
+            }
+            terminus_ui::ModalPaintLayer::VaultUnlock => {
+                render_vault_unlock(
+                    sugarloaf,
+                    chrome,
+                    theme,
+                    window_width,
+                    window_height,
+                    device_scale,
+                    paint_glyphs,
+                );
+            }
+        }
+    }
+    sugarloaf.end_overlay();
 }
 
 fn render_rail(
@@ -937,6 +953,7 @@ fn render_settings_modal(
     window_width: f32,
     window_height: f32,
     device_scale: f32,
+    paint_glyphs: bool,
 ) {
     let dialog = chrome.settings.dialog_rect(window_width, window_height);
     paint_dialog_shell(
@@ -952,6 +969,9 @@ fn render_settings_modal(
         ORDER_DIALOG,
         None,
     );
+    if !paint_glyphs {
+        return;
+    }
 
     // Header band
     let header = Rect::new(
@@ -1617,6 +1637,20 @@ fn render_settings_modal(
                 DEPTH_DIALOG + 0.04,
                 ORDER_DIALOG,
             );
+            if let Some(forget) = chrome
+                .settings
+                .forget_passphrase_button_rect(window_width, window_height)
+            {
+                paint_chrome_button(
+                    sugarloaf,
+                    theme,
+                    terminus_ui::ButtonSpec::secondary(forget),
+                    "Forget passphrase",
+                    ROW_SUB_SIZE,
+                    DEPTH_DIALOG + 0.04,
+                    ORDER_DIALOG,
+                );
+            }
 
             if let Some(banner) = chrome
                 .settings
@@ -3557,6 +3591,7 @@ fn render_add_host(
     window_width: f32,
     window_height: f32,
     device_scale: f32,
+    paint_glyphs: bool,
 ) {
     let form = &chrome.form;
     let layout = chrome.dialog_layout(window_width, window_height);
@@ -3576,6 +3611,32 @@ fn render_add_host(
         ORDER_DIALOG,
         None,
     );
+    if !paint_glyphs {
+        // Field shells only — keeps a dim silhouette under a higher modal.
+        let input_radius = terminus_ui::add_host::INPUT_RADIUS;
+        for field in form.visible_fields() {
+            let Some(input) = layout.input_rect(form, field) else {
+                continue;
+            };
+            let shell = Rect::new(
+                input.x - BORDER_WIDTH,
+                input.y - BORDER_WIDTH,
+                input.width + 2.0 * BORDER_WIDTH,
+                input.height + 2.0 * BORDER_WIDTH,
+            );
+            paint_surface(
+                sugarloaf,
+                &shell,
+                theme.button_bg,
+                Some(theme.field_border),
+                input_radius,
+                DEPTH_DIALOG_BG + 0.015,
+                ORDER_DIALOG,
+                false,
+            );
+        }
+        return;
+    }
 
     let title = layout.title_rect();
     let title_text = if form.is_editing() {
@@ -4061,6 +4122,7 @@ fn render_vault_unlock(
     window_width: f32,
     window_height: f32,
     device_scale: f32,
+    paint_glyphs: bool,
 ) {
     let prompt = &chrome.vault_unlock;
     let layout = terminus_ui::VaultUnlockLayout::centered(window_width, window_height);
@@ -4080,6 +4142,9 @@ fn render_vault_unlock(
         ORDER_DIALOG,
         None,
     );
+    if !paint_glyphs {
+        return;
+    }
 
     let title = layout.title_rect();
     draw_text(
@@ -4751,6 +4816,7 @@ fn render_connection_modal(
     window_height: f32,
     device_scale: f32,
     phase: f32,
+    paint_glyphs: bool,
 ) {
     let Some(conn) = chrome.connection.as_ref() else {
         return;
@@ -4759,13 +4825,15 @@ fn render_connection_modal(
     // Measure step labels first so the dialog / columns hug real glyph
     // advances (no text clamp — width grows with content + padding).
     let mut label_widths = [0.0f32; STEP_COUNT];
-    for i in 0..STEP_COUNT {
-        let label = conn.step_label(i);
-        label_widths[i] = sugarloaf
-            .text_mut()
-            .measure(label, &opts(10.0, theme.text, false));
+    if paint_glyphs {
+        for i in 0..STEP_COUNT {
+            let label = conn.step_label(i);
+            label_widths[i] = sugarloaf
+                .text_mut()
+                .measure(label, &opts(10.0, theme.text, false));
+        }
+        conn.set_label_widths(label_widths);
     }
-    conn.set_label_widths(label_widths);
 
     let dialog = conn.dialog_rect(window_width, window_height);
     // Outer radius 13 → fill at 12 via paint_surface's inset shrink.
@@ -4782,6 +4850,9 @@ fn render_connection_modal(
         ORDER_DIALOG,
         Some((0.55, 0.70)),
     );
+    if !paint_glyphs {
+        return;
+    }
 
     // Header: host badge + title + endpoint + Show logs.
     let header_icon = conn.header_icon_rect(dialog);
@@ -5263,6 +5334,7 @@ fn render_add_snippet(
     window_width: f32,
     window_height: f32,
     device_scale: f32,
+    paint_glyphs: bool,
 ) {
     let form = &chrome.snippet_form.inner;
     paint_scrim(
@@ -5293,6 +5365,9 @@ fn render_add_snippet(
         ORDER_DIALOG,
         None,
     );
+    if !paint_glyphs {
+        return;
+    }
 
     draw_text(
         sugarloaf,
