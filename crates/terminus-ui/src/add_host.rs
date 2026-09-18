@@ -1591,4 +1591,29 @@ mod tests {
         form.focus_field(Field::AuthMethod);
         assert_eq!(form.focused_field(), Field::AuthMethod);
     }
+
+    #[test]
+    fn password_field_accepts_pasted_secret() {
+        let mut form = open_form();
+        form.cycle_auth_method(1); // password
+        form.focus_field(Field::Password);
+        assert!(form.shows_password());
+        // Clipboard paste must strip controls before insert; raw control
+        // characters are rejected so a trailing newline does not wipe the paste.
+        assert!(!form.insert("secret\n"));
+        assert!(form.insert("s3cret-from-clipboard"));
+        assert_eq!(form.password(), "s3cret-from-clipboard");
+    }
+
+    #[test]
+    fn sanitize_clipboard_for_host_fields_strips_controls() {
+        let raw = "p@ss\r\nw0rd\u{7f}";
+        let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+        assert_eq!(cleaned, "p@ssw0rd");
+        let mut form = open_form();
+        form.cycle_auth_method(1);
+        form.focus_field(Field::Password);
+        assert!(form.insert(&cleaned));
+        assert_eq!(form.password(), "p@ssw0rd");
+    }
 }

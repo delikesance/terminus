@@ -46,7 +46,7 @@ pub use add_host::{
 };
 pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
 pub use button::{centered_label_origin, dashed_cta_badge, ButtonKind, ButtonSpec};
-pub use chrome::{Chrome, ChromeAction, ChromeCursor};
+pub use chrome::{Chrome, ChromeAction, ChromeCursor, ModalPaintLayer};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
 };
@@ -69,9 +69,9 @@ pub use settings::{
 };
 pub use sftp_pane::{
     hit_is_clickable, hit_is_text, join_remote, parent_path, SftpBackend, SftpClickResult, SftpDrag,
-    SftpFocus, SftpHit, SftpNameEdit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow,
-    SftpSideState, BTN_GAP, BTN_SIZE, FOOTER_HEIGHT, HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT,
-    SFTP_DRAG_THRESHOLD, TOOLBAR_HEIGHT,
+    SftpConflictKind, SftpConflictPrompt, SftpFocus, SftpHit, SftpNameEdit, SftpNameKind,
+    SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState, BTN_GAP, BTN_SIZE, FOOTER_HEIGHT,
+    HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT, SFTP_DRAG_THRESHOLD, TOOLBAR_HEIGHT,
 };
 pub use sidebar::{
     Badge, HostDrag, HostDragKind, HostDragPhase, HostDropTarget, HostItem, HostPanel, PanelHit,

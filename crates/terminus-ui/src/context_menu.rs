@@ -165,7 +165,7 @@ impl ContextMenu {
     /// SFTP row context for a file or directory.
     ///
     /// `transfer_label` is typically "Upload", "Download", or "Copy to other pane".
-    /// `can_edit` enables remote-file "Edit" (temp download + default app + reupload).
+    /// `can_edit` enables "Edit" for files (local: open in place; remote: temp + reupload).
     pub fn for_sftp_entry(
         x: f32,
         y: f32,
@@ -387,11 +387,13 @@ mod tests {
     }
 
     #[test]
-    fn sftp_remote_file_menu_offers_edit() {
-        let menu = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true).unwrap();
-        assert_eq!(menu.take_action(0), Some(ContextAction::SftpEdit));
-        assert_eq!(menu.take_action(1), Some(ContextAction::SftpTransfer));
-        let local = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), false).unwrap();
-        assert_ne!(local.take_action(0), Some(ContextAction::SftpEdit));
+    fn sftp_file_menu_offers_edit_when_allowed() {
+        let remote = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true).unwrap();
+        assert_eq!(remote.take_action(0), Some(ContextAction::SftpEdit));
+        assert_eq!(remote.take_action(1), Some(ContextAction::SftpTransfer));
+        let local = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), true).unwrap();
+        assert_eq!(local.take_action(0), Some(ContextAction::SftpEdit));
+        let dirs = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), false).unwrap();
+        assert_ne!(dirs.take_action(0), Some(ContextAction::SftpEdit));
     }
 }

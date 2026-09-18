@@ -17,6 +17,21 @@ use crate::vault_unlock::{
     PendingVaultAction, VaultUnlockHit, VaultUnlockLayout, VaultUnlockPrompt,
 };
 
+/// Overlay dialog paint / input stacking (back → front).
+///
+/// Sugarloaf composites **one** overlay pass as all overlay quads, then all
+/// overlay text. Nested modals therefore cannot rely on paint call order
+/// alone: lower-modal glyphs would float above a higher modal's panel.
+/// Painters must emit glyphs only for [`Chrome::top_modal_paint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalPaintLayer {
+    Connection,
+    HostEditor,
+    AddSnippet,
+    Settings,
+    VaultUnlock,
+}
+
 /// Mouse cursor affordance for chrome hit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChromeCursor {
@@ -66,6 +81,8 @@ pub enum ChromeAction {
     SubmitVaultUnlock,
     /// Settings: unlock / create vault with the SQL Sync passphrase field.
     UnlockVault,
+    /// Settings: clear a remembered vault passphrase from the keyring.
+    ForgetVaultPassphrase,
     /// Settings: persist remote URI and run SyncEngine::sync_now.
     TestSync,
     /// Settings: generate a new Ed25519 managed SSH key.
@@ -238,6 +255,34 @@ impl Chrome {
 
     pub fn vault_unlock_is_open(&self) -> bool {
         self.vault_unlock.is_open()
+    }
+
+    /// Overlay dialogs from back to front. Sugarloaf flattens one overlay
+    /// layer as (all quads) → (all text), so only the **front** entry may
+    /// emit glyphs; lower entries paint shell/scrim quads only.
+    pub fn modal_paint_stack(&self) -> Vec<ModalPaintLayer> {
+        let mut stack = Vec::new();
+        if self.connection.is_some() {
+            stack.push(ModalPaintLayer::Connection);
+        }
+        if self.form.is_open() {
+            stack.push(ModalPaintLayer::HostEditor);
+        }
+        if self.snippet_form.is_open() {
+            stack.push(ModalPaintLayer::AddSnippet);
+        }
+        if self.settings.open {
+            stack.push(ModalPaintLayer::Settings);
+        }
+        if self.vault_unlock.is_open() {
+            stack.push(ModalPaintLayer::VaultUnlock);
+        }
+        stack
+    }
+
+    /// Front-most open overlay dialog, if any.
+    pub fn top_modal_paint(&self) -> Option<ModalPaintLayer> {
+        self.modal_paint_stack().last().copied()
     }
 
     /// Ask for the vault passphrase, then retry `pending` after unlock.
@@ -499,6 +544,10 @@ impl Chrome {
                 SettingsHit::UnlockVault => {
                     self.settings.close_engine_menu();
                     ChromeAction::UnlockVault
+                }
+                SettingsHit::ForgetPassphrase => {
+                    self.settings.close_engine_menu();
+                    ChromeAction::ForgetVaultPassphrase
                 }
                 SettingsHit::TestSync => {
                     self.settings.close_engine_menu();
@@ -1663,5 +1712,47 @@ mod tests {
             chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
             ChromeAction::OpenHost(armed)
         );
+    }
+
+    #[test]
+    fn modal_paint_stack_puts_vault_above_host_editor() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.open_edit_host(
+            crate::add_host::HostFormValues {
+                name: "h".into(),
+                hostname: "1.2.3.4".into(),
+                username: "u".into(),
+                port: "22".into(),
+                auth_method: "password".into(),
+                password: String::new(),
+                identity_id: None,
+            },
+            "id-0".into(),
+        );
+        assert_eq!(
+            chrome.top_modal_paint(),
+            Some(ModalPaintLayer::HostEditor)
+        );
+        chrome.open_vault_unlock(PendingVaultAction::SubmitHostForm);
+        assert_eq!(
+            chrome.modal_paint_stack(),
+            vec![ModalPaintLayer::HostEditor, ModalPaintLayer::VaultUnlock]
+        );
+        assert_eq!(
+            chrome.top_modal_paint(),
+            Some(ModalPaintLayer::VaultUnlock)
+        );
+    }
+
+    #[test]
+    fn settings_sits_above_host_editor_in_paint_stack() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.open_add_host();
+        chrome.open_settings(SettingsTab::Keys);
+        assert_eq!(
+            chrome.modal_paint_stack(),
+            vec![ModalPaintLayer::HostEditor, ModalPaintLayer::Settings]
+        );
+        assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::Settings));
     }
 }

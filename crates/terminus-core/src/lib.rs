@@ -27,11 +27,12 @@ pub use managed_key::{
 pub use models::*;
 pub use session::{OutputSink, SessionManager, SessionSpec};
 pub use ssh::{
-    connect_sftp, connect_sftp_for_host, default_known_hosts_path, fingerprint_of,
+    connect_sftp, connect_sftp_for_host, default_known_hosts_path, detect_remote_os, fingerprint_of,
     probe_options_from_host, probe_ssh_auth, HostKeyOutcome, HostKeyPolicy, KnownHosts,
     ProbeError, SftpConnection, SshAuth, SshConnectOptions, SshEvent, SshPty, SshSession,
     CHUNK_SIZE, DEFAULT_CONNECT_TIMEOUT, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_TERM,
 };
+pub use os_detect::{parse_os_id, parse_remote_os_probe, UNKNOWN_OS, REMOTE_OS_PROBE_SCRIPT};
 pub use store::Store;
 pub use sync::SyncEngine;
 pub use vault::{

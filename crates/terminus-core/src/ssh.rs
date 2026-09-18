@@ -772,6 +772,15 @@ pub async fn connect_sftp_for_host(opts: &SshConnectOptions) -> Result<SftpConne
     connect_sftp(opts).await
 }
 
+/// Connect (SFTP session), run [`crate::os_detect::REMOTE_OS_PROBE_SCRIPT`], return canonical os_id.
+pub async fn detect_remote_os(opts: &SshConnectOptions) -> Result<String> {
+    use crate::os_detect::{parse_remote_os_probe, REMOTE_OS_PROBE_SCRIPT};
+
+    let conn = connect_sftp(opts).await?;
+    let (_code, stdout, _stderr) = conn.exec(REMOTE_OS_PROBE_SCRIPT).await?;
+    Ok(parse_remote_os_probe(&String::from_utf8_lossy(&stdout)))
+}
+
 impl SshSession {
     /// Connects to `opts.hostname:opts.port`, verifies the host key and
     /// authenticates. The channel is left open but no PTY is requested yet —

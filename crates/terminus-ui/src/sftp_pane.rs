@@ -136,6 +136,38 @@ pub struct SftpNameEdit {
     pub from_path: Option<String>,
 }
 
+/// File vs directory conflict during a differential folder transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SftpConflictKind {
+    File,
+    Directory,
+}
+
+/// Modal prompt: replace or keep an existing destination path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SftpConflictPrompt {
+    pub id: u64,
+    pub kind: SftpConflictKind,
+    pub relative_path: String,
+    pub apply_to_all: bool,
+}
+
+impl SftpConflictPrompt {
+    pub fn title(&self) -> &'static str {
+        match self.kind {
+            SftpConflictKind::File => "File already exists",
+            SftpConflictKind::Directory => "Folder already exists",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        format!(
+            "“{}” differs from the remote copy. Replace the local version?",
+            self.relative_path
+        )
+    }
+}
+
 impl SftpNameEdit {
     pub fn field_label(&self) -> &'static str {
         match self.kind {
@@ -181,6 +213,11 @@ pub enum SftpHit {
     NameField,
     NameConfirm,
     NameCancel,
+    /// Differential transfer conflict prompt.
+    ConflictOverwrite,
+    ConflictKeep,
+    ConflictApplyAll,
+    ConflictCancel,
     Footer,
     /// Inside the pane chrome but not on a control.
     Consume,
@@ -221,6 +258,8 @@ pub struct SftpPaneState {
     pub hover: Option<SftpHit>,
     /// Inline mkdir / rename editor.
     pub name_edit: Option<SftpNameEdit>,
+    /// Differential transfer conflict waiting on the user.
+    pub conflict: Option<SftpConflictPrompt>,
     /// Active drag ghost (file being dragged between panes).
     pub drag: Option<SftpDrag>,
 }
@@ -236,6 +275,7 @@ impl Default for SftpPaneState {
             loading: true,
             hover: None,
             name_edit: None,
+            conflict: None,
             drag: None,
         }
     }
@@ -269,6 +309,7 @@ impl SftpPaneState {
             loading: false,
             hover: None,
             name_edit: None,
+            conflict: None,
             drag: None,
         }
     }
@@ -379,6 +420,34 @@ impl SftpPaneState {
     pub fn cancel_name_edit(&mut self) {
         self.name_edit = None;
         self.status = "Ready".into();
+    }
+
+    pub fn begin_conflict(
+        &mut self,
+        id: u64,
+        kind: SftpConflictKind,
+        relative_path: impl Into<String>,
+    ) {
+        self.conflict = Some(SftpConflictPrompt {
+            id,
+            kind,
+            relative_path: relative_path.into(),
+            apply_to_all: false,
+        });
+        self.status = "Resolve the conflict to continue…".into();
+        self.error = None;
+    }
+
+    pub fn clear_conflict(&mut self) {
+        self.conflict = None;
+    }
+
+    pub fn toggle_conflict_apply_all(&mut self) -> bool {
+        let Some(c) = self.conflict.as_mut() else {
+            return false;
+        };
+        c.apply_to_all = !c.apply_to_all;
+        true
     }
 }
 
@@ -526,6 +595,26 @@ impl SftpPaneLayout {
         if !self.bounds.contains(x, y) {
             return SftpHit::Miss;
         }
+        if state.conflict.is_some() {
+            let card = self.conflict_card();
+            if self.conflict_overwrite().contains(x, y) {
+                return SftpHit::ConflictOverwrite;
+            }
+            if self.conflict_keep().contains(x, y) {
+                return SftpHit::ConflictKeep;
+            }
+            if self.conflict_apply_all().contains(x, y) {
+                return SftpHit::ConflictApplyAll;
+            }
+            if self.conflict_cancel().contains(x, y) {
+                return SftpHit::ConflictCancel;
+            }
+            if card.contains(x, y) {
+                return SftpHit::Consume;
+            }
+            // Scrim: swallow clicks outside the card while a conflict is open.
+            return SftpHit::Consume;
+        }
         if state.name_edit.is_some() {
             if self.name_confirm.contains(x, y) {
                 return SftpHit::NameConfirm;
@@ -581,6 +670,38 @@ impl SftpPaneLayout {
             return SftpHit::Consume;
         }
         SftpHit::Consume
+    }
+
+    /// Centered conflict dialog card.
+    pub fn conflict_card(&self) -> Rect {
+        const W: f32 = 420.0;
+        const H: f32 = 160.0;
+        Rect::new(
+            self.bounds.x + (self.bounds.width - W).max(0.0) * 0.5,
+            self.bounds.y + (self.bounds.height - H).max(0.0) * 0.5,
+            W.min(self.bounds.width),
+            H.min(self.bounds.height),
+        )
+    }
+
+    pub fn conflict_overwrite(&self) -> Rect {
+        let card = self.conflict_card();
+        Rect::new(card.x + 16.0, card.bottom() - 44.0, 100.0, 28.0)
+    }
+
+    pub fn conflict_keep(&self) -> Rect {
+        let o = self.conflict_overwrite();
+        Rect::new(o.right() + 8.0, o.y, 100.0, 28.0)
+    }
+
+    pub fn conflict_apply_all(&self) -> Rect {
+        let card = self.conflict_card();
+        Rect::new(card.x + 16.0, card.bottom() - 78.0, 180.0, 22.0)
+    }
+
+    pub fn conflict_cancel(&self) -> Rect {
+        let card = self.conflict_card();
+        Rect::new(card.right() - 16.0 - 80.0, card.bottom() - 44.0, 80.0, 28.0)
     }
 
     /// Which list (if any) contains `(x, y)` — used for drag-drop targets.
@@ -801,6 +922,30 @@ mod tests {
             SftpHit::LeftParent
         );
         assert_eq!(layout.hit_test(&state, -10.0, -10.0), SftpHit::Miss);
+    }
+
+    #[test]
+    fn conflict_prompt_hits_replace_keep_and_apply_all() {
+        let mut state = sample_state();
+        state.begin_conflict(7, SftpConflictKind::File, "readme.txt");
+        let layout = SftpPaneLayout::from_bounds(Rect::new(0.0, 0.0, 640.0, 400.0));
+        let ow = layout.conflict_overwrite();
+        let keep = layout.conflict_keep();
+        let apply = layout.conflict_apply_all();
+        assert_eq!(
+            layout.hit_test(&state, ow.x + 4.0, ow.y + 4.0),
+            SftpHit::ConflictOverwrite
+        );
+        assert_eq!(
+            layout.hit_test(&state, keep.x + 4.0, keep.y + 4.0),
+            SftpHit::ConflictKeep
+        );
+        assert_eq!(
+            layout.hit_test(&state, apply.x + 4.0, apply.y + 4.0),
+            SftpHit::ConflictApplyAll
+        );
+        assert!(state.toggle_conflict_apply_all());
+        assert!(state.conflict.as_ref().unwrap().apply_to_all);
     }
 
     #[test]
