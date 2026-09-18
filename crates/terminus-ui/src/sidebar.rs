@@ -745,9 +745,12 @@ impl HostPanel {
         } else {
             NOTICE_HEIGHT
         };
+        // Never climb into the sticky header when the panel is shorter than
+        // header + notice (tiny windows / tests).
+        let y = (origin_y + height - NOTICE_MARGIN - banner_h).max(self.content_top(origin_y));
         Some(Rect::new(
             ORIGIN_X + NOTICE_MARGIN,
-            origin_y + height - NOTICE_MARGIN - banner_h,
+            y,
             WIDTH - 2.0 * NOTICE_MARGIN,
             banner_h,
         ))
@@ -757,14 +760,14 @@ impl HostPanel {
     /// notice/error card (or the bottom of the panel when none is showing).
     pub fn body_rect(&self, origin_y: f32, height: f32) -> Rect {
         let top = self.content_top(origin_y);
-        let bottom = (origin_y + height - FOOTER_HEIGHT - self.notice_reserve()).max(top);
+        let bottom = self.footer_rect(origin_y, height).y.max(top);
         Rect::new(ORIGIN_X, top, WIDTH, bottom - top)
     }
 
     pub fn footer_rect(&self, origin_y: f32, height: f32) -> Rect {
         let reserve = FOOTER_HEIGHT + self.notice_reserve();
-        let top = (origin_y + height - reserve).max(origin_y);
-        Rect::new(ORIGIN_X, top, WIDTH, origin_y + height - top)
+        let top = (origin_y + height - reserve).max(self.content_top(origin_y));
+        Rect::new(ORIGIN_X, top, WIDTH, (origin_y + height - top).max(0.0))
     }
 
     /// Dashed New Host CTA at the top of the scrollable content.
