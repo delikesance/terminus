@@ -90,6 +90,7 @@ jobs:
           cc:p
           pkgconf:p
           cmake:p
+          nasm:p
           freetype:p
           python:p
           fontconfig:p
