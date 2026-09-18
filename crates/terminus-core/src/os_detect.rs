@@ -85,7 +85,7 @@ pub fn detect_from_uname(uname_output: &str) -> String {
     }
 
     // Kernel names first: they are unambiguous.
-    if lower.contains("darwin") || lower.contains("mac os") {
+    if lower.contains("darwin") || lower.contains("macos") || lower.contains("mac os") {
         return "macos".to_string();
     }
     if lower.contains("freebsd") {
@@ -400,6 +400,8 @@ PRETTY_NAME="Alpine Linux v3.20"
 
         // Nothing usable -> uname fallback.
         assert_eq!(parse_os_id("", "Darwin MacBook-Pro 23.5.0 arm64"), "macos");
+        // `std::env::consts::OS` on Apple hosts is the token "macos", not "darwin".
+        assert_eq!(parse_os_id("", "macos"), "macos");
         assert_eq!(
             parse_os_id("", "Linux 5.15.153.1-microsoft-standard-WSL2"),
             "wsl"
