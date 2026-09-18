@@ -777,7 +777,27 @@ pub fn crumb_segments_for_cwd(cwd: &str, is_local: bool) -> Vec<(String, String)
     if is_local {
         #[cfg(windows)]
         {
-            // Keep drive letter as first segment when present.
+            // Tests and WSL-style paths keep POSIX `/…` cwds; only use
+            // `std::path` for drive-letter Windows paths (e.g. `C:\Users`).
+            let looks_posix =
+                cwd.starts_with('/') || (!cwd.contains('\\') && !cwd.contains(':'));
+            if looks_posix {
+                if cwd == "/" {
+                    return vec![("/".into(), "/".into())];
+                }
+                out.push(("/".into(), "/".into()));
+                let mut acc = String::new();
+                for part in cwd
+                    .trim_start_matches('/')
+                    .split('/')
+                    .filter(|p| !p.is_empty())
+                {
+                    acc.push('/');
+                    acc.push_str(part);
+                    out.push((part.to_string(), acc.clone()));
+                }
+                return out;
+            }
             let path = std::path::Path::new(cwd);
             let mut acc = std::path::PathBuf::new();
             for (i, comp) in path.components().enumerate() {
