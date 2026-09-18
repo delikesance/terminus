@@ -1429,11 +1429,9 @@ impl Text {
         all.extend_from_slice(&self.instances);
         all.extend_from_slice(&self.late_instances);
         all.extend_from_slice(&self.overlay_instances);
-        state.queue.write_buffer(
-            &state.instance_buffer,
-            0,
-            bytemuck_instances(&all),
-        );
+        state
+            .queue
+            .write_buffer(&state.instance_buffer, 0, bytemuck_instances(&all));
 
         render_pass.set_pipeline(&state.pipeline);
         render_pass.set_bind_group(0, &state.uniform_bind_group, &[]);
@@ -1468,7 +1466,8 @@ impl Text {
             );
             if overlay > state.instance_capacity {
                 let new_cap = overlay.next_power_of_two().max(256);
-                state.instance_buffer = alloc_instance_buffer_wgpu(&state.device, new_cap);
+                state.instance_buffer =
+                    alloc_instance_buffer_wgpu(&state.device, new_cap);
                 state.instance_capacity = new_cap;
             }
             state.queue.write_buffer(

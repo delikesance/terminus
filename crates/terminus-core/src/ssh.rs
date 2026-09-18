@@ -526,7 +526,8 @@ impl ProbeError {
                 "Authentication failed (wrong password, username, or key)".into()
             }
             Self::NoKey => {
-                "No SSH private key selected. Save a key in Settings, then try again.".into()
+                "No SSH private key selected. Save a key in Settings, then try again."
+                    .into()
             }
             Self::GssapiNoTicket => Error::GssapiNoTicket.to_string(),
             Self::GssapiUnsupported => Error::GssapiUnsupported.to_string(),
@@ -543,7 +544,9 @@ impl ProbeError {
             Error::IoError(msg) => Self::Unreachable(msg),
             Error::SshError(msg) => classify_ssh_message(&msg),
             Error::Message(msg) => classify_ssh_message(&msg),
-            Error::IdentityKeyInvalid { reason } => Self::Other(format!("invalid SSH key: {reason}")),
+            Error::IdentityKeyInvalid { reason } => {
+                Self::Other(format!("invalid SSH key: {reason}"))
+            }
             other => Self::Other(other.to_string()),
         }
     }
@@ -579,7 +582,10 @@ fn classify_ssh_message(msg: &str) -> ProbeError {
 }
 
 /// Build connect options for an add-host probe (accept any host key).
-pub fn probe_options_from_host(host: &Host, identity: Option<&Identity>) -> SshConnectOptions {
+pub fn probe_options_from_host(
+    host: &Host,
+    identity: Option<&Identity>,
+) -> SshConnectOptions {
     let method = crate::auth_method::parse_host_auth_method(&host.auth_method)
         .map(|ok| ok.method)
         .unwrap_or(HostAuthMethod::Password);
@@ -615,7 +621,9 @@ pub fn probe_options_from_host(host: &Host, identity: Option<&Identity>) -> SshC
 }
 
 /// TCP + auth only — no PTY. Used by add-host Connect before save.
-pub async fn probe_ssh_auth(opts: &SshConnectOptions) -> std::result::Result<(), ProbeError> {
+pub async fn probe_ssh_auth(
+    opts: &SshConnectOptions,
+) -> std::result::Result<(), ProbeError> {
     match SshSession::connect(opts).await {
         Ok(mut session) => {
             let _ = session.disconnect().await;
@@ -758,10 +766,7 @@ pub async fn connect_sftp(opts: &SshConnectOptions) -> Result<SftpConnection> {
         user = %opts.auth.username,
         "SFTP session established"
     );
-    Ok(SftpConnection {
-        handle,
-        session,
-    })
+    Ok(SftpConnection { handle, session })
 }
 
 /// Same as [`connect_sftp`], named for the host-sidebar / dual-pane entry path.
@@ -770,6 +775,15 @@ pub async fn connect_sftp(opts: &SshConnectOptions) -> Result<SftpConnection> {
 /// variant) after resolving password / identity from the store.
 pub async fn connect_sftp_for_host(opts: &SshConnectOptions) -> Result<SftpConnection> {
     connect_sftp(opts).await
+}
+
+/// Connect (SFTP session), run [`crate::os_detect::REMOTE_OS_PROBE_SCRIPT`], return canonical os_id.
+pub async fn detect_remote_os(opts: &SshConnectOptions) -> Result<String> {
+    use crate::os_detect::{parse_remote_os_probe, REMOTE_OS_PROBE_SCRIPT};
+
+    let conn = connect_sftp(opts).await?;
+    let (_code, stdout, _stderr) = conn.exec(REMOTE_OS_PROBE_SCRIPT).await?;
+    Ok(parse_remote_os_probe(&String::from_utf8_lossy(&stdout)))
 }
 
 impl SshSession {
@@ -984,17 +998,20 @@ async fn authenticate(
     }
 }
 
-async fn authenticate_key(handle: &mut Handle<ClientHandler>, auth: &SshAuth) -> Result<()> {
+async fn authenticate_key(
+    handle: &mut Handle<ClientHandler>,
+    auth: &SshAuth,
+) -> Result<()> {
     let key = if let Some(pem) = auth.identity_pem.as_deref() {
-        russh::keys::decode_secret_key(pem, auth.identity_passphrase.as_deref()).map_err(|e| {
-            Error::IdentityKeyInvalid {
+        russh::keys::decode_secret_key(pem, auth.identity_passphrase.as_deref()).map_err(
+            |e| Error::IdentityKeyInvalid {
                 reason: e.to_string(),
-            }
-        })?
+            },
+        )?
     } else if let Some(path) = &auth.identity_path {
-        russh::keys::load_secret_key(path, auth.identity_passphrase.as_deref()).map_err(|e| {
-            Error::SshError(format!("cannot load key {}: {e}", path.display()))
-        })?
+        russh::keys::load_secret_key(path, auth.identity_passphrase.as_deref()).map_err(
+            |e| Error::SshError(format!("cannot load key {}: {e}", path.display())),
+        )?
     } else {
         return Err(Error::SshError(
             "no SSH private key found (save a key in Settings, then try again)".into(),
@@ -1023,7 +1040,10 @@ async fn authenticate_key(handle: &mut Handle<ClientHandler>, auth: &SshAuth) ->
     )))
 }
 
-async fn authenticate_password(handle: &mut Handle<ClientHandler>, auth: &SshAuth) -> Result<()> {
+async fn authenticate_password(
+    handle: &mut Handle<ClientHandler>,
+    auth: &SshAuth,
+) -> Result<()> {
     let Some(password) = auth.password.as_ref() else {
         return Err(Error::SshError(format!(
             "authentication refused for user {}",

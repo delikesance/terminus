@@ -170,7 +170,6 @@ fn ssh_shell(
 
     args.push(destination);
 
-
     Ok((
         Shell {
             program: Some("ssh".to_string()),
@@ -201,7 +200,8 @@ fn write_ssh_identity_file(pem: &str) -> Result<std::path::PathBuf, String> {
     use std::io::Write;
 
     let dir = std::env::temp_dir().join("terminus-ssh-identity");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create identity dir: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create identity dir: {e}"))?;
 
     let id = uuid::Uuid::new_v4();
     let path = dir.join(format!("{id}.pem"));
@@ -229,11 +229,14 @@ fn write_ssh_identity_file(pem: &str) -> Result<std::path::PathBuf, String> {
 }
 
 /// Write a one-shot askpass helper + secret file under the temp directory.
-fn write_ssh_askpass(password: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+fn write_ssh_askpass(
+    password: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     use std::io::Write;
 
     let dir = std::env::temp_dir().join("terminus-ssh-askpass");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create askpass dir: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create askpass dir: {e}"))?;
 
     let id = uuid::Uuid::new_v4();
     let secret_file = dir.join(format!("{id}.secret"));
@@ -725,11 +728,7 @@ impl Screen<'_> {
                     .context_manager
                     .custom_title(i)
                     .map(str::to_string)
-                    .or_else(|| {
-                        self.context_manager
-                            .title(i)
-                            .map(|t| t.content.clone())
-                    })
+                    .or_else(|| self.context_manager.title(i).map(|t| t.content.clone()))
                     .unwrap_or_else(|| format!("Session {}", i + 1));
                 let closable = !self.context_manager.is_pinned(i);
                 hosts::OpenSession {
@@ -755,6 +754,34 @@ impl Screen<'_> {
             self.chrome.set_rows(rows);
         }
 
+        // Keep open-tab OS glyphs in sync after DetectOs / host reload.
+        if store_changed {
+            let host_os: Vec<(String, Option<String>)> = self
+                .host_store
+                .hosts()
+                .iter()
+                .map(|h| (h.id.clone(), h.os_id.clone()))
+                .collect();
+            let tab_count = self.context_manager.len();
+            for i in 0..tab_count {
+                let host_id = self
+                    .context_manager
+                    .contexts_mut()
+                    .get(i)
+                    .and_then(|g| g.current().host_id.clone());
+                let Some(hid) = host_id else {
+                    continue;
+                };
+                let Some((_, os)) = host_os.iter().find(|(id, _)| id == &hid) else {
+                    continue;
+                };
+                if self.context_manager.tab_os_id(i) != os.as_deref() {
+                    self.context_manager.set_tab_os_id(i, os.clone());
+                    rows_changed = true;
+                }
+            }
+        }
+
         let snips = self.host_store.snippet_items.clone();
         if snips != self.chrome.snippets.items {
             self.chrome.snippets.items = snips;
@@ -762,8 +789,15 @@ impl Screen<'_> {
             rows_changed = true;
         }
 
-
         if !store_changed && !rows_changed {
+            // Still refresh the Forget button when Settings is open.
+            if self.chrome.settings.open {
+                let remembered = crate::vault_remember::has_remembered_passphrase();
+                if self.chrome.settings.passphrase_remembered != remembered {
+                    self.chrome.settings.set_passphrase_remembered(remembered);
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -775,20 +809,19 @@ impl Screen<'_> {
                 .host_store
                 .identities()
                 .iter()
-                .map(|(id, name, fingerprint, created)| terminus_ui::settings::SshKeyItem {
-                    id: id.clone(),
-                    name: name.clone(),
-                    fingerprint: fingerprint.clone(),
-                    created: created.clone(),
+                .map(|(id, name, fingerprint, created)| {
+                    terminus_ui::settings::SshKeyItem {
+                        id: id.clone(),
+                        name: name.clone(),
+                        fingerprint: fingerprint.clone(),
+                        created: created.clone(),
+                    }
                 })
                 .collect();
             self.chrome.settings.set_keys(key_items.clone());
-            self.chrome.form.set_identities(
-                key_items
-                    .into_iter()
-                    .map(|k| (k.id, k.name))
-                    .collect(),
-            );
+            self.chrome
+                .form
+                .set_identities(key_items.into_iter().map(|k| (k.id, k.name)).collect());
 
             if let Some(notice) = self.host_store.take_notice() {
                 if notice.starts_with("SSH key") {
@@ -820,7 +853,9 @@ impl Screen<'_> {
                     if message.contains("Unlock the vault")
                         && !self.chrome.vault_unlock_is_open()
                     {
-                        self.open_vault_unlock_for(terminus_ui::PendingVaultAction::SubmitHostForm);
+                        self.open_vault_unlock_for(
+                            terminus_ui::PendingVaultAction::SubmitHostForm,
+                        );
                     } else {
                         self.chrome.form.set_error(message);
                     }
@@ -841,13 +876,18 @@ impl Screen<'_> {
                     }
                 }
             }
-            self.chrome.settings.apply_sync_status(terminus_ui::SyncUiStatus {
-                uri: self.host_store.sync_uri().to_string(),
-                connected: self.host_store.sync_connected(),
-                vault_unlocked: self.host_store.vault_unlocked(),
-                status_line: self.host_store.sync_status_line().to_string(),
-                is_error: self.host_store.sync_status_is_error(),
-            });
+            self.chrome
+                .settings
+                .apply_sync_status(terminus_ui::SyncUiStatus {
+                    uri: self.host_store.sync_uri().to_string(),
+                    connected: self.host_store.sync_connected(),
+                    vault_unlocked: self.host_store.vault_unlocked(),
+                    status_line: self.host_store.sync_status_line().to_string(),
+                    is_error: self.host_store.sync_status_is_error(),
+                });
+            self.chrome.settings.set_passphrase_remembered(
+                crate::vault_remember::has_remembered_passphrase(),
+            );
         }
         true
     }
@@ -927,7 +967,11 @@ impl Screen<'_> {
     }
 
     /// Finish a host press/drag on left-button release.
-    pub fn chrome_release(&mut self, x: f32, y: f32) -> terminus_ui::chrome::ChromeAction {
+    pub fn chrome_release(
+        &mut self,
+        x: f32,
+        y: f32,
+    ) -> terminus_ui::chrome::ChromeAction {
         let (_, height) = self.chrome_viewport();
         self.chrome.handle_release(height, x, y)
     }
@@ -1184,7 +1228,17 @@ impl Screen<'_> {
             Key::Named(NamedKey::ArrowDown) => FormInput::Next,
             Key::Named(NamedKey::Home) => FormInput::Home,
             Key::Named(NamedKey::End) => FormInput::End,
-            Key::Character(_) => FormInput::Text,
+            Key::Character(ch) => {
+                let select_mod = self.modifiers.state().control_key()
+                    || self.modifiers.state().super_key();
+                if select_mod {
+                    // Ctrl/Cmd chords (paste is handled by Modal::HostEditor).
+                    // Do not insert a literal "v" / "c" / "a".
+                    return Some(FormOutcome::Consumed);
+                }
+                let _ = ch;
+                FormInput::Text
+            }
             // Every other key is consumed and ignored: the editor is a
             // text sink, so nothing may reach the PTY behind it.
             _ => return Some(FormOutcome::Consumed),
@@ -1291,14 +1345,13 @@ impl Screen<'_> {
 
     pub fn submit_snippet_form(&mut self) {
         let values = self.chrome.snippet_form.values();
-        self.host_store.create_snippet(
-            terminus_ui::snippets::SnippetItem {
+        self.host_store
+            .create_snippet(terminus_ui::snippets::SnippetItem {
                 id: "".to_string(), // new UUID generated in host thread
                 name: values.name,
                 cmd: values.command,
                 desc: values.description,
-            }
-        );
+            });
         self.chrome.snippet_form.inner.closing = true;
     }
 
@@ -1825,7 +1878,11 @@ impl Screen<'_> {
             use rio_window::keyboard::NamedKey;
 
             // Inline name editor captures typing first.
-            if self.sftp.as_ref().is_some_and(|s| s.state.name_edit.is_some()) {
+            if self
+                .sftp
+                .as_ref()
+                .is_some_and(|s| s.state.name_edit.is_some())
+            {
                 match key.logical_key.as_ref() {
                     WKey::Named(NamedKey::Escape) => {
                         if let Some(s) = self.sftp.as_mut() {
@@ -2631,7 +2688,8 @@ impl Screen<'_> {
                         let new_index = self.context_manager.current_index();
                         self.switch_visible_context(old_index, new_index);
                         let layout = self.island_tab_layout(self.context_manager.len());
-                        let tab_width = layout.width_at(old_index).max(layout.width_at(new_index));
+                        let tab_width =
+                            layout.width_at(old_index).max(layout.width_at(new_index));
                         if let Some(ref mut island) = self.renderer.island {
                             island.remap_tab_swap(old_index, new_index, tab_width);
                         }
@@ -2645,7 +2703,8 @@ impl Screen<'_> {
                         let new_index = self.context_manager.current_index();
                         self.switch_visible_context(old_index, new_index);
                         let layout = self.island_tab_layout(self.context_manager.len());
-                        let tab_width = layout.width_at(old_index).max(layout.width_at(new_index));
+                        let tab_width =
+                            layout.width_at(old_index).max(layout.width_at(new_index));
                         if let Some(ref mut island) = self.renderer.island {
                             island.remap_tab_swap(old_index, new_index, tab_width);
                         }
@@ -2872,6 +2931,8 @@ impl Screen<'_> {
                     self.mark_dirty();
                 }
                 self.sync_sidebar_selection();
+                // Refresh OS/distro icon even when reusing an open session.
+                self.host_store.detect_os(id);
                 return Ok(());
             }
         }
@@ -2896,9 +2957,9 @@ impl Screen<'_> {
         let (shell, env) = match self.shell_for_row(id) {
             Ok(launch) => launch,
             Err(err) if err.contains("Unlock the vault") => {
-                self.open_vault_unlock_for(
-                    terminus_ui::PendingVaultAction::OpenHost(id.to_string()),
-                );
+                self.open_vault_unlock_for(terminus_ui::PendingVaultAction::OpenHost(
+                    id.to_string(),
+                ));
                 return Ok(());
             }
             Err(err) => return Err(err),
@@ -2936,6 +2997,8 @@ impl Screen<'_> {
                 self.context_manager
                     .set_custom_title(tab_index, Some(label));
                 self.context_manager.set_tab_os_id(tab_index, os_id);
+                // Background: classify remote OS and update sidebar / tab glyphs.
+                self.host_store.detect_os(id);
                 Ok(())
             }
             Err(err) => {
@@ -2978,7 +3041,11 @@ impl Screen<'_> {
                 "WSL".to_string(),
                 terminus_ui::ConnectKind::Wsl,
             ),
-            None => (id.to_string(), format!("SSH {id}"), terminus_ui::ConnectKind::Ssh),
+            None => (
+                id.to_string(),
+                format!("SSH {id}"),
+                terminus_ui::ConnectKind::Ssh,
+            ),
         };
 
         self.chrome.connection = Some(match kind {
@@ -3226,6 +3293,7 @@ impl Screen<'_> {
                 self.context_manager
                     .set_custom_title(tab_index, Some(label));
                 self.context_manager.set_tab_os_id(tab_index, os_id);
+                self.host_store.detect_os(id);
                 Ok(())
             }
             Err(err) => {
@@ -3309,7 +3377,8 @@ impl Screen<'_> {
                 } else {
                     None
                 };
-                let identity = if host.auth_method == "password" || host.auth_method == "gssapi"
+                let identity = if host.auth_method == "password"
+                    || host.auth_method == "gssapi"
                 {
                     None
                 } else {
@@ -3327,9 +3396,7 @@ impl Screen<'_> {
                     host,
                     password.as_deref(),
                     identity.as_ref().map(|(pem, _)| pem.as_str()),
-                    identity
-                        .as_ref()
-                        .and_then(|(_, pass)| pass.as_deref()),
+                    identity.as_ref().and_then(|(_, pass)| pass.as_deref()),
                 )?;
                 Ok((Some(shell), env))
             }
@@ -4246,7 +4313,8 @@ impl Screen<'_> {
     pub fn chrome_cursor_at(&self, x: f32, y: f32) -> Option<CursorIcon> {
         let (width, height) = self.chrome_viewport();
         let over_modal = self.chrome_overlay_dialog_open();
-        let over_rail = !self.chrome.activity.collapsed && x < self.chrome.reserved_width();
+        let over_rail =
+            !self.chrome.activity.collapsed && x < self.chrome.reserved_width();
         if !over_modal && !over_rail {
             return None;
         }
@@ -4459,7 +4527,9 @@ impl Screen<'_> {
     }
 
     /// Snapshot stored SSH hosts for the command palette.
-    pub fn palette_host_items(&self) -> Vec<crate::renderer::command_palette::HostPaletteItem> {
+    pub fn palette_host_items(
+        &self,
+    ) -> Vec<crate::renderer::command_palette::HostPaletteItem> {
         self.host_store
             .hosts()
             .iter()
@@ -4857,7 +4927,9 @@ impl Screen<'_> {
             let y_unscaled = mouse_y as f32 / scale_factor;
             let hover = if self.renderer.navigation.is_enabled() && in_band {
                 let logical_w = self.sugarloaf.window_size().width / scale_factor;
-                crate::renderer::window_controls::hit_test(logical_w, x_unscaled, y_unscaled)
+                crate::renderer::window_controls::hit_test(
+                    logical_w, x_unscaled, y_unscaled,
+                )
             } else {
                 None
             };
@@ -4980,8 +5052,7 @@ impl Screen<'_> {
                         }
                         island::TitleBarAction::Search => {
                             self.chrome.panel.filter_focused = true;
-                            self.chrome.activity.selected =
-                                terminus_ui::Section::Servers;
+                            self.chrome.activity.selected = terminus_ui::Section::Servers;
                             self.chrome.activity.collapsed = false;
                             self.chrome.panel_visible = true;
                         }
@@ -5015,9 +5086,9 @@ impl Screen<'_> {
                 if is_right_click {
                     #[cfg(target_os = "windows")]
                     {
-                        window.show_window_menu(
-                            rio_window::dpi::PhysicalPosition::new(mouse_x, mouse_y),
-                        );
+                        window.show_window_menu(rio_window::dpi::PhysicalPosition::new(
+                            mouse_x, mouse_y,
+                        ));
                     }
                 } else {
                     self.on_chrome_press(window, chrome_press);
@@ -5048,9 +5119,9 @@ impl Screen<'_> {
             if is_right_click {
                 #[cfg(target_os = "windows")]
                 {
-                    window.show_window_menu(
-                        rio_window::dpi::PhysicalPosition::new(mouse_x, mouse_y),
-                    );
+                    window.show_window_menu(rio_window::dpi::PhysicalPosition::new(
+                        mouse_x, mouse_y,
+                    ));
                 }
             } else {
                 self.on_chrome_press(window, chrome_press);
@@ -5980,8 +6051,7 @@ impl Screen<'_> {
         let connecting_phase = self.connecting_phase();
 
         let sftp_paint = self.sftp.as_ref().and_then(|session| {
-            self.sftp_bounds()
-                .map(|bounds| (&session.state, bounds))
+            self.sftp_bounds().map(|bounds| (&session.state, bounds))
         });
 
         let (window_update, any_panel_dirty) = self.renderer.run(
@@ -7294,7 +7364,10 @@ mod tests {
             .any(|a| a == "PreferredAuthentications=gssapi-with-mic"));
         assert!(shell.args.iter().any(|a| a == "PubkeyAuthentication=no"));
         assert!(!shell.args.windows(2).any(|w| w[0] == "-i"));
-        assert_eq!(shell.args.last().map(String::as_str), Some("alice@box.example"));
+        assert_eq!(
+            shell.args.last().map(String::as_str),
+            Some("alice@box.example")
+        );
         assert!(env.is_none());
     }
 
@@ -7319,8 +7392,12 @@ mod tests {
     #[test]
     fn password_ssh_shell_disables_pubkey() {
         let host = host_row("password");
-        let (shell, env) = ssh_shell(&host, Some("secret"), None, None).expect("password shell");
-        assert!(shell.args.iter().any(|a| a == "PreferredAuthentications=password"));
+        let (shell, env) =
+            ssh_shell(&host, Some("secret"), None, None).expect("password shell");
+        assert!(shell
+            .args
+            .iter()
+            .any(|a| a == "PreferredAuthentications=password"));
         assert!(shell.args.iter().any(|a| a == "PubkeyAuthentication=no"));
         assert!(!shell.args.windows(2).any(|w| w[0] == "-i"));
         let env = env.expect("askpass env");

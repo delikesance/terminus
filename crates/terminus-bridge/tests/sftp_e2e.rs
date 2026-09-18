@@ -63,10 +63,7 @@ fn e2e_mkdir_rename_delete_transfer_close() {
         listed.iter().any(|e| e.name == "renamed.txt"),
         "transfer should land on right pane"
     );
-    assert_eq!(
-        std::fs::read(right.join("renamed.txt")).unwrap(),
-        b"hi"
-    );
+    assert_eq!(std::fs::read(right.join("renamed.txt")).unwrap(), b"hi");
 
     driver.remove_local(SftpSide::Left, left.join("renamed.txt"), false);
     let listed = wait_listed(&driver.worker, SftpSide::Left);
@@ -173,10 +170,7 @@ fn e2e_empty_menu_actions_via_mkdir_refresh() {
 #[test]
 fn e2e_rejects_dotdot() {
     let err = terminus_core::sftp::normalize_remote_path("/../etc/passwd");
-    assert!(
-        err.is_err(),
-        "SFTP path sandbox must reject .. segments"
-    );
+    assert!(err.is_err(), "SFTP path sandbox must reject .. segments");
 }
 
 #[test]
@@ -226,7 +220,10 @@ fn e2e_transfer_folder() {
         right.join("tree").join("a.txt").is_file(),
         "TransferFolder should copy nested files"
     );
-    assert_eq!(std::fs::read(right.join("tree").join("a.txt")).unwrap(), b"a");
+    assert_eq!(
+        std::fs::read(right.join("tree").join("a.txt")).unwrap(),
+        b"a"
+    );
     driver.close();
     wait_closed(&driver.worker);
     let _ = std::fs::remove_dir_all(root);
@@ -424,7 +421,12 @@ fn e2e_open_remote_lists_root() {
         opts,
     });
     let ready = wait_event(&worker, |e| matches!(e, SftpEvent::Ready { .. }));
-    assert!(matches!(ready, SftpEvent::Ready { side: SftpSide::Right }));
+    assert!(matches!(
+        ready,
+        SftpEvent::Ready {
+            side: SftpSide::Right
+        }
+    ));
     worker.send(SftpCommand::ListRemote {
         side: SftpSide::Right,
         path: "/".into(),
@@ -461,14 +463,24 @@ fn e2e_host_host_two_remotes() {
         opts: opts(),
     });
     let _ = wait_event(&worker, |e| {
-        matches!(e, SftpEvent::Ready { side: SftpSide::Left })
+        matches!(
+            e,
+            SftpEvent::Ready {
+                side: SftpSide::Left
+            }
+        )
     });
     worker.send(SftpCommand::Connect {
         side: SftpSide::Right,
         opts: opts(),
     });
     let _ = wait_event(&worker, |e| {
-        matches!(e, SftpEvent::Ready { side: SftpSide::Right })
+        matches!(
+            e,
+            SftpEvent::Ready {
+                side: SftpSide::Right
+            }
+        )
     });
     worker.send(SftpCommand::ListRemote {
         side: SftpSide::Left,
@@ -493,7 +505,11 @@ fn e2e_transfer_folder_host_to_host() {
     std::fs::create_dir_all(server.root.join("src").join("nested")).unwrap();
     // Larger than a tiny buffer to exercise chunked copy.
     let payload = vec![b'x'; 300_000];
-    std::fs::write(server.root.join("src").join("nested").join("big.bin"), &payload).unwrap();
+    std::fs::write(
+        server.root.join("src").join("nested").join("big.bin"),
+        &payload,
+    )
+    .unwrap();
     std::fs::write(server.root.join("src").join("a.txt"), b"alpha").unwrap();
 
     let before_zips: Vec<_> = std::fs::read_dir(std::env::temp_dir())
@@ -527,14 +543,24 @@ fn e2e_transfer_folder_host_to_host() {
         opts: opts(),
     });
     let _ = wait_event(&worker, |e| {
-        matches!(e, SftpEvent::Ready { side: SftpSide::Left })
+        matches!(
+            e,
+            SftpEvent::Ready {
+                side: SftpSide::Left
+            }
+        )
     });
     worker.send(SftpCommand::Connect {
         side: SftpSide::Right,
         opts: opts(),
     });
     let _ = wait_event(&worker, |e| {
-        matches!(e, SftpEvent::Ready { side: SftpSide::Right })
+        matches!(
+            e,
+            SftpEvent::Ready {
+                side: SftpSide::Right
+            }
+        )
     });
 
     worker.send(SftpCommand::TransferFolder {
@@ -558,7 +584,8 @@ fn e2e_transfer_folder_host_to_host() {
         if small.is_file()
             && big.is_file()
             && std::fs::read(&small).ok().as_deref() == Some(b"alpha".as_slice())
-            && std::fs::metadata(&big).map(|m| m.len()).unwrap_or(0) == payload.len() as u64
+            && std::fs::metadata(&big).map(|m| m.len()).unwrap_or(0)
+                == payload.len() as u64
         {
             ok = true;
             break;
@@ -566,11 +593,7 @@ fn e2e_transfer_folder_host_to_host() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    assert!(
-        failed.is_none(),
-        "Host|Host transfer failed: {:?}",
-        failed
-    );
+    assert!(failed.is_none(), "Host|Host transfer failed: {:?}", failed);
     assert!(ok, "Host|Host relay did not finish copying src → dst");
 
     assert_eq!(

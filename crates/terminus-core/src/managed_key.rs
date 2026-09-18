@@ -20,11 +20,12 @@ pub fn generate_ed25519_identity(name: impl Into<String>) -> Result<Identity> {
         });
     }
 
-    let key = PrivateKey::random(&mut rand_keygen::rng(), Algorithm::Ed25519).map_err(|e| {
-        Error::IdentityKeyInvalid {
-            reason: format!("generate ed25519: {e}"),
-        }
-    })?;
+    let key =
+        PrivateKey::random(&mut rand_keygen::rng(), Algorithm::Ed25519).map_err(|e| {
+            Error::IdentityKeyInvalid {
+                reason: format!("generate ed25519: {e}"),
+            }
+        })?;
 
     identity_from_private_key(name, &key, None)
 }
@@ -57,11 +58,12 @@ pub fn import_openssh_identity(
     // Prefer the PEM the user provided so passphrase-encrypted material stays
     // encrypted at rest when they supplied a passphrase.
     let now = Utc::now();
-    let public_key = key.public_key().to_openssh().map_err(|e| {
-        Error::IdentityKeyInvalid {
-            reason: format!("encode public key: {e}"),
-        }
-    })?;
+    let public_key =
+        key.public_key()
+            .to_openssh()
+            .map_err(|e| Error::IdentityKeyInvalid {
+                reason: format!("encode public key: {e}"),
+            })?;
     let _ = fingerprint_of(key.public_key());
 
     Ok(Identity {
@@ -139,7 +141,10 @@ fn rewrap_single_line_pem(s: &str) -> Option<String> {
         return None;
     }
     let header = s[b..header_end].trim();
-    let body: String = s[header_end..e].chars().filter(|c| !c.is_whitespace()).collect();
+    let body: String = s[header_end..e]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     let footer = s[e..].trim();
     let mut out = String::new();
     out.push_str(header);
@@ -164,11 +169,12 @@ fn identity_from_private_key(
             reason: format!("encode private key: {e}"),
         })?
         .to_string();
-    let public_key = key.public_key().to_openssh().map_err(|e| {
-        Error::IdentityKeyInvalid {
-            reason: format!("encode public key: {e}"),
-        }
-    })?;
+    let public_key =
+        key.public_key()
+            .to_openssh()
+            .map_err(|e| Error::IdentityKeyInvalid {
+                reason: format!("encode public key: {e}"),
+            })?;
     let now = Utc::now();
     Ok(Identity {
         id: Uuid::new_v4(),

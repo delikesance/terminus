@@ -85,7 +85,7 @@ pub fn detect_from_uname(uname_output: &str) -> String {
     }
 
     // Kernel names first: they are unambiguous.
-    if lower.contains("darwin") || lower.contains("mac os") {
+    if lower.contains("darwin") || lower.contains("macos") || lower.contains("mac os") {
         return "macos".to_string();
     }
     if lower.contains("freebsd") {
@@ -283,6 +283,50 @@ fn normalize_id(raw: &str) -> String {
     out
 }
 
+/// Shell snippet run on a remote after SSH connect to classify the OS icon.
+///
+/// Markers let [`parse_remote_os_probe`] split release file vs `uname` even when
+/// either side is empty or prints errors on stderr (discarded by callers).
+pub const REMOTE_OS_PROBE_SCRIPT: &str = concat!(
+    "printf '%s\\n' '---OSRELEASE---'\n",
+    "cat /etc/os-release 2>/dev/null || cat /usr/lib/os-release 2>/dev/null || true\n",
+    "printf '%s\\n' '---UNAME---'\n",
+    "uname -a 2>/dev/null || true\n",
+);
+
+/// Parse stdout from [`REMOTE_OS_PROBE_SCRIPT`] into a canonical `os_id`.
+pub fn parse_remote_os_probe(stdout: &str) -> String {
+    let mut release = String::new();
+    let mut uname = String::new();
+    let mut section = None::<&str>;
+    for line in stdout.lines() {
+        match line.trim_end() {
+            "---OSRELEASE---" => {
+                section = Some("release");
+                continue;
+            }
+            "---UNAME---" => {
+                section = Some("uname");
+                continue;
+            }
+            _ => {}
+        }
+        match section {
+            Some("release") => {
+                release.push_str(line);
+                release.push('\n');
+            }
+            Some("uname") => {
+                if uname.is_empty() {
+                    uname.push_str(line.trim());
+                }
+            }
+            None | Some(_) => {}
+        }
+    }
+    parse_os_id(&release, &uname)
+}
+
 /// Detects the OS of the *local* machine (the one running terminus).
 ///
 /// Reads `/etc/os-release` (Linux) and falls back to [`std::env::consts::OS`]
@@ -356,6 +400,8 @@ PRETTY_NAME="Alpine Linux v3.20"
 
         // Nothing usable -> uname fallback.
         assert_eq!(parse_os_id("", "Darwin MacBook-Pro 23.5.0 arm64"), "macos");
+        // `std::env::consts::OS` on Apple hosts is the token "macos", not "darwin".
+        assert_eq!(parse_os_id("", "macos"), "macos");
         assert_eq!(
             parse_os_id("", "Linux 5.15.153.1-microsoft-standard-WSL2"),
             "wsl"
@@ -432,6 +478,24 @@ PRETTY_NAME="Alpine Linux v3.20"
         assert_eq!(canonical_os_id(""), UNKNOWN_OS);
         assert_eq!(canonical_os_id("   "), UNKNOWN_OS);
         assert_eq!(parse_os_id("ID=some-custom-distro\n", ""), UNKNOWN_OS);
+    }
+
+    #[test]
+    fn parse_remote_os_probe_reads_markers() {
+        let stdout = concat!(
+            "---OSRELEASE---\n",
+            "ID=nixos\n",
+            "ID_LIKE=\"\"\n",
+            "---UNAME---\n",
+            "Linux nixos 6.12.0 x86_64\n",
+        );
+        assert_eq!(parse_remote_os_probe(stdout), "nixos");
+
+        let uname_only = "---OSRELEASE---\n---UNAME---\nDarwin MacBook.local 23.5.0\n";
+        assert_eq!(parse_remote_os_probe(uname_only), "macos");
+
+        let empty = "---OSRELEASE---\n---UNAME---\n";
+        assert_eq!(parse_remote_os_probe(empty), UNKNOWN_OS);
     }
 
     #[tokio::test]

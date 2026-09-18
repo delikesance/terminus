@@ -270,15 +270,71 @@ impl SftpSession {
     }
 
     /// Reads a whole remote file into memory.
+    ///
+    /// Always awaits an explicit handle close. Relying on [`Drop`] alone uses
+    /// `close_nowait`, which races under rapid sequential opens and trips the
+    /// server's SFTP handle limit (`Limit exceeded: handle limit reached`).
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
+        use tokio::io::AsyncReadExt;
+
         let resolved = self.resolve(path)?;
-        self.op("read", self.inner.read(resolved)).await
+        let mut file = self.op("open", self.inner.open(resolved)).await?;
+        let mut buffer = Vec::new();
+        match timeout(self.timeout, file.read_to_end(&mut buffer)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                return Err(Error::SshError(format!("sftp read: {err}")));
+            }
+            Err(_) => {
+                return Err(Error::TimeoutError(format!(
+                    "sftp read timed out after {:?}",
+                    self.timeout
+                )));
+            }
+        }
+        match timeout(self.timeout, file.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(Error::SshError(format!("sftp close: {err}")));
+            }
+            Err(_) => {
+                return Err(Error::TimeoutError(format!(
+                    "sftp close timed out after {:?}",
+                    self.timeout
+                )));
+            }
+        }
+        Ok(buffer)
     }
 
     /// Writes (creating or truncating) a remote file.
+    ///
+    /// Awaits an explicit handle close (same rationale as [`Self::read`]).
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
         let resolved = self.resolve(path)?;
-        self.op("write", self.inner.write(resolved, data)).await
+        let mut file = self.op("create", self.inner.create(resolved)).await?;
+        match timeout(self.timeout, file.write_all(data)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(Error::SshError(format!("sftp write: {err}")));
+            }
+            Err(_) => {
+                return Err(Error::TimeoutError(format!(
+                    "sftp write timed out after {:?}",
+                    self.timeout
+                )));
+            }
+        }
+        match timeout(self.timeout, file.close()).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(Error::SshError(format!("sftp close: {err}"))),
+            Err(_) => Err(Error::TimeoutError(format!(
+                "sftp close timed out after {:?}",
+                self.timeout
+            ))),
+        }
     }
 
     /// Opens `path` for streaming reads (`AsyncRead`).
@@ -344,6 +400,18 @@ impl SftpSession {
             }
             total = total.saturating_add(n as u64);
             on_progress(total);
+        }
+        match timeout(self.timeout, reader.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(Error::SshError(format!("sftp copy read-close: {err}")));
+            }
+            Err(_) => {
+                return Err(Error::TimeoutError(format!(
+                    "sftp copy read-close timed out after {:?}",
+                    self.timeout
+                )));
+            }
         }
         match timeout(dest.timeout, writer.shutdown()).await {
             Ok(Ok(())) => {}
@@ -629,7 +697,9 @@ mod tests {
             .find("pub async fn remove_recursive")
             .expect("remove_recursive API must remain public");
         let impl_body = &src[impl_start..];
-        let impl_end = impl_body.find("\n    pub async fn mkdir").unwrap_or(impl_body.len());
+        let impl_end = impl_body
+            .find("\n    pub async fn mkdir")
+            .unwrap_or(impl_body.len());
         let body = &impl_body[..impl_end];
         assert!(
             !body.contains("not implemented yet"),
