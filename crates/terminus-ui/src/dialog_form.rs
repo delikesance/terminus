@@ -40,7 +40,8 @@ impl DynamicFormState {
             fields: Vec::new(),
             focused_index: 0,
             error: None,
-            closing: false,
+            // Closed until the caller clears this (e.g. Add snippet CTA).
+            closing: true,
             save_label: save_label.into(),
             btn_hover: None,
         }
