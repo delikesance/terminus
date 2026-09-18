@@ -1756,8 +1756,7 @@ pub mod test {
 
         cm.contexts[0].pinned = true;
         cm.contexts[0].custom_title = Some("This computer".to_string());
-        cm.contexts[0].current_mut().host_id =
-            Some(crate::hosts::LOCAL_ID.to_string());
+        cm.contexts[0].current_mut().host_id = Some(crate::hosts::LOCAL_ID.to_string());
         cm.contexts[0].current_mut().pinned = true;
 
         assert_eq!(cm.find_home_tab(), Some(0));

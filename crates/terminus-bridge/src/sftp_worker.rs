@@ -21,7 +21,8 @@ use terminus_core::ssh::{connect_sftp_for_host, SftpConnection, SshConnectOption
 use tracing::{debug, warn};
 
 use crate::folder_diff::{
-    plan_differential, ConflictAction, ConflictPolicy, DiffAction, FileNode, FOLDER_SYNC_CACHE_NAME,
+    plan_differential, ConflictAction, ConflictPolicy, DiffAction, FileNode,
+    FOLDER_SYNC_CACHE_NAME,
 };
 
 pub use crate::folder_diff::ConflictAction as SftpConflictAction;
@@ -579,16 +580,8 @@ async fn handle_command(
             name,
         } => {
             match transfer(
-                left_conn,
-                right_conn,
-                from_side,
-                &from_path,
-                to_side,
-                &to_cwd,
-                &name,
-                events,
-                wake,
-                conflicts,
+                left_conn, right_conn, from_side, &from_path, to_side, &to_cwd, &name,
+                events, wake, conflicts,
             )
             .await
             {
@@ -596,10 +589,12 @@ async fn handle_command(
                     let to_remote = side_is_remote(left_conn, right_conn, to_side);
                     if to_remote {
                         if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
-                            emit_listed_remote(events, wake, to_side, conn, &to_cwd).await;
+                            emit_listed_remote(events, wake, to_side, conn, &to_cwd)
+                                .await;
                         }
                     } else {
-                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd)).await;
+                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd))
+                            .await;
                     }
                 }
                 Err(err) => emit(events, wake, SftpEvent::Failed(err)),
@@ -637,16 +632,8 @@ async fn handle_command(
             name,
         } => {
             match transfer_folder(
-                left_conn,
-                right_conn,
-                from_side,
-                &from_path,
-                to_side,
-                &to_cwd,
-                &name,
-                events,
-                wake,
-                conflicts,
+                left_conn, right_conn, from_side, &from_path, to_side, &to_cwd, &name,
+                events, wake, conflicts,
             )
             .await
             {
@@ -654,10 +641,12 @@ async fn handle_command(
                     let to_remote = side_is_remote(left_conn, right_conn, to_side);
                     if to_remote {
                         if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
-                            emit_listed_remote(events, wake, to_side, conn, &to_cwd).await;
+                            emit_listed_remote(events, wake, to_side, conn, &to_cwd)
+                                .await;
                         }
                     } else {
-                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd)).await;
+                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd))
+                            .await;
                     }
                 }
                 Err(err) => emit(events, wake, SftpEvent::Failed(err)),
@@ -744,7 +733,8 @@ async fn start_edit_remote(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&local_path, std::fs::Permissions::from_mode(0o600));
+        let _ =
+            std::fs::set_permissions(&local_path, std::fs::Permissions::from_mode(0o600));
     }
 
     let meta = std::fs::metadata(&local_path).map_err(|e| e.to_string())?;
@@ -873,13 +863,24 @@ async fn transfer(
 
     if is_directory(left, right, from_side, from_path, from_remote).await? {
         return Box::pin(transfer_folder(
-            left, right, from_side, from_path, to_side, to_cwd, name, events, wake, conflicts,
+            left, right, from_side, from_path, to_side, to_cwd, name, events, wake,
+            conflicts,
         ))
         .await;
     }
 
     transfer_file(
-        left, right, from_side, from_path, to_side, to_cwd, name, from_remote, to_remote, events, wake,
+        left,
+        right,
+        from_side,
+        from_path,
+        to_side,
+        to_cwd,
+        name,
+        from_remote,
+        to_remote,
+        events,
+        wake,
     )
     .await
 }
@@ -904,8 +905,8 @@ async fn transfer_file(
     match (from_remote, to_remote) {
         // Local → Remote: upload
         (false, true) => {
-            let conn = conn_ref(left, right, to_side)
-                .ok_or_else(|| not_connected(to_side))?;
+            let conn =
+                conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
             transfer_upload(conn, &from_path_local, &to_path_remote, events, wake).await
         }
         // Remote → Local: download
@@ -918,8 +919,8 @@ async fn transfer_file(
         (true, true) => {
             let from_conn = conn_ref(left, right, from_side)
                 .ok_or_else(|| not_connected(from_side))?;
-            let to_conn = conn_ref(left, right, to_side)
-                .ok_or_else(|| not_connected(to_side))?;
+            let to_conn =
+                conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
             emit(
                 events,
                 wake,
@@ -1062,7 +1063,9 @@ fn choose_upload_archive_kind(
 /// Human-readable destination write failure (permission vs other).
 fn format_dest_write_error(path: &str, err: &str) -> String {
     let lower = err.to_lowercase();
-    if lower.contains("permission") || lower.contains("denied") || lower.contains("permission_denied")
+    if lower.contains("permission")
+        || lower.contains("denied")
+        || lower.contains("permission_denied")
     {
         format!(
             "Permission denied writing to {path}. You may need elevated rights (e.g. root/sudo) on the remote host."
@@ -1073,7 +1076,10 @@ fn format_dest_write_error(path: &str, err: &str) -> String {
 }
 
 /// Verify the remote cwd is writable before packing a large archive.
-async fn ensure_remote_cwd_writable(conn: &SftpConnection, to_cwd: &str) -> Result<(), String> {
+async fn ensure_remote_cwd_writable(
+    conn: &SftpConnection,
+    to_cwd: &str,
+) -> Result<(), String> {
     let probe = join_remote(
         to_cwd,
         &format!(".terminus-write-probe-{}", std::process::id()),
@@ -1223,7 +1229,9 @@ async fn probe_remote_env(conn: &SftpConnection) -> RemoteEnv {
 }
 
 /// Pick native tar/zip/PowerShell; error if the remote has none.
-async fn acquire_pack_session(conn: &SftpConnection) -> Result<RemotePackSession, String> {
+async fn acquire_pack_session(
+    conn: &SftpConnection,
+) -> Result<RemotePackSession, String> {
     let env = probe_remote_env(conn).await;
 
     if env.tools.tar {
@@ -1371,7 +1379,11 @@ fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-fn archive_extract_script(dest: &str, archive: &str, session: &RemotePackSession) -> String {
+fn archive_extract_script(
+    dest: &str,
+    archive: &str,
+    session: &RemotePackSession,
+) -> String {
     match session.engine {
         PackEngine::NativeTar => format!(
             concat!(
@@ -1466,7 +1478,8 @@ async fn try_remote_pack_to_local(
 ) -> Result<ArchiveKind, String> {
     let session = acquire_pack_session(conn).await?;
     let local = staging_with_ext(staging, session.kind);
-    let remote = remote_create_archive(conn, from_path, name, &session, events, wake).await?;
+    let remote =
+        remote_create_archive(conn, from_path, name, &session, events, wake).await?;
     let download = transfer_download(conn, &remote, &local, events, wake).await;
     let _ = conn.remove(&remote).await;
     download?;
@@ -1553,7 +1566,8 @@ async fn transfer_folder(
     if from_remote && !to_remote {
         let dest = PathBuf::from(to_cwd).join(name);
         if dest.is_dir() {
-            let conn = conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
+            let conn = conn_ref(left, right, from_side)
+                .ok_or_else(|| not_connected(from_side))?;
             return transfer_folder_differential_to_local(
                 conn, from_path, &dest, name, events, wake, conflicts,
             )
@@ -1562,8 +1576,10 @@ async fn transfer_folder(
     }
 
     if from_remote && to_remote {
-        let from_conn = conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
-        let to_conn = conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
+        let from_conn =
+            conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
+        let to_conn =
+            conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
         let dest = join_remote(to_cwd, name);
         if to_conn.exists(&dest).await.unwrap_or(false) {
             return transfer_folder_differential_remote_to_remote(
@@ -1581,7 +1597,8 @@ async fn transfer_folder(
     // Local → remote: check write access first so Permission Denied is not
     // masked by a later "no unzip" failure (e.g. uploading into /etc/nixos).
     if !from_remote && to_remote {
-        let conn = conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
+        let conn =
+            conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
         ensure_remote_cwd_writable(conn, to_cwd).await?;
     }
 
@@ -1603,12 +1620,15 @@ async fn transfer_folder(
     );
 
     let (archive_path, kind) = if from_remote {
-        let conn = conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
+        let conn =
+            conn_ref(left, right, from_side).ok_or_else(|| not_connected(from_side))?;
         let kind =
-            try_remote_pack_to_local(conn, from_path, name, &staging, events, wake).await?;
+            try_remote_pack_to_local(conn, from_path, name, &staging, events, wake)
+                .await?;
         (staging_with_ext(&staging, kind), kind)
     } else if to_remote {
-        let conn = conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
+        let conn =
+            conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
         let env = probe_remote_env(conn).await;
         let kind = choose_upload_archive_kind(&env.tools, env.family)?;
         let archive_path = staging_with_ext(&staging, kind);
@@ -1648,7 +1668,8 @@ async fn transfer_folder(
     );
 
     let unpack = if to_remote {
-        let conn = conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
+        let conn =
+            conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
         emit(
             events,
             wake,
@@ -1658,7 +1679,8 @@ async fn transfer_folder(
                 total: zip_len,
             },
         );
-        remote_extract_uploaded(conn, &archive_path, to_cwd, name, kind, events, wake).await
+        remote_extract_uploaded(conn, &archive_path, to_cwd, name, kind, events, wake)
+            .await
     } else {
         emit(
             events,
@@ -2001,9 +2023,7 @@ async fn transfer_upload(
             total,
         },
     );
-    conn.write(remote, &data)
-        .await
-        .map_err(|e| e.to_string())?;
+    conn.write(remote, &data).await.map_err(|e| e.to_string())?;
     emit(
         events,
         wake,
@@ -2163,7 +2183,8 @@ async fn zip_remote_subtree_to_local(
         uuid::Uuid::new_v4()
     ));
     let kind =
-        try_remote_pack_to_local(conn, remote_dir, folder_name, &staging, events, wake).await?;
+        try_remote_pack_to_local(conn, remote_dir, folder_name, &staging, events, wake)
+            .await?;
     let archive = staging_with_ext(&staging, kind);
     let extract = {
         let archive = archive.clone();
@@ -2227,7 +2248,11 @@ fn insert_file_node_mtime(
             node.children.push(file);
             return;
         }
-        if let Some(idx) = node.children.iter().position(|c| c.is_dir && c.name == *part) {
+        if let Some(idx) = node
+            .children
+            .iter()
+            .position(|c| c.is_dir && c.name == *part)
+        {
             node = &mut node.children[idx];
         } else {
             node.children.push(FileNode::dir(*part, Vec::new()));
@@ -2340,15 +2365,8 @@ async fn transfer_folder_differential_to_local(
         },
     );
 
-    let plan = plan_via_exec_manifest(
-        conn,
-        remote_root,
-        local_root,
-        name,
-        events,
-        wake,
-    )
-    .await?;
+    let plan =
+        plan_via_exec_manifest(conn, remote_root, local_root, name, events, wake).await?;
 
     let mut policy = ConflictPolicy::default();
     let mut next_id: u64 = 1;
@@ -2399,7 +2417,12 @@ async fn transfer_folder_differential_to_local(
                         .map_err(|e| e.to_string())?;
                 }
                 zip_remote_subtree_to_local(
-                    conn, &remote, folder_name, &extract_cwd, events, wake,
+                    conn,
+                    &remote,
+                    folder_name,
+                    &extract_cwd,
+                    events,
+                    wake,
                 )
                 .await?;
             }
@@ -2444,7 +2467,8 @@ async fn transfer_folder_differential_to_local(
                 .await?;
                 if decision == ConflictAction::Overwrite {
                     let folder_name = relative.rsplit('/').next().unwrap_or(&relative);
-                    let extract_cwd = if let Some(parent) = Path::new(&relative).parent() {
+                    let extract_cwd = if let Some(parent) = Path::new(&relative).parent()
+                    {
                         if parent.as_os_str().is_empty() {
                             local_root.to_path_buf()
                         } else {
@@ -2462,7 +2486,12 @@ async fn transfer_folder_differential_to_local(
                         .await
                         .map_err(|e| e.to_string())?;
                     zip_remote_subtree_to_local(
-                        conn, &remote, folder_name, &extract_cwd, events, wake,
+                        conn,
+                        &remote,
+                        folder_name,
+                        &extract_cwd,
+                        events,
+                        wake,
                     )
                     .await?;
                 }
@@ -2563,7 +2592,13 @@ async fn transfer_folder_differential_remote_to_remote(
                     &suspects,
                     &env_from.tmp
                 ),
-                walk_remote::remote_walk_hash(to, &walk_to, &dest_root, &suspects, &env_to.tmp),
+                walk_remote::remote_walk_hash(
+                    to,
+                    &walk_to,
+                    &dest_root,
+                    &suspects,
+                    &env_to.tmp
+                ),
             );
             digests_from = hf?;
             digests_to = ht?;
@@ -2638,12 +2673,26 @@ async fn transfer_folder_differential_remote_to_remote(
                 }
                 // Pack from source, upload+extract into dest_parent.
                 let staging = staging_dir.join(format!("z-{}", uuid::Uuid::new_v4()));
-                let kind =
-                    try_remote_pack_to_local(from, &remote, folder_name, &staging, events, wake)
-                        .await?;
+                let kind = try_remote_pack_to_local(
+                    from,
+                    &remote,
+                    folder_name,
+                    &staging,
+                    events,
+                    wake,
+                )
+                .await?;
                 let archive = staging_with_ext(&staging, kind);
-                remote_extract_uploaded(to, &archive, &dest_parent, folder_name, kind, events, wake)
-                    .await?;
+                remote_extract_uploaded(
+                    to,
+                    &archive,
+                    &dest_parent,
+                    folder_name,
+                    kind,
+                    events,
+                    wake,
+                )
+                .await?;
                 let _ = tokio::fs::remove_file(&archive).await;
             }
             DiffAction::AskFile { relative } => {
@@ -2685,7 +2734,8 @@ async fn transfer_folder_differential_remote_to_remote(
                 .await?;
                 if decision == ConflictAction::Overwrite {
                     let folder_name = relative.rsplit('/').next().unwrap_or(&relative);
-                    let dest_parent = if let Some((parent, _)) = relative.rsplit_once('/') {
+                    let dest_parent = if let Some((parent, _)) = relative.rsplit_once('/')
+                    {
                         join_rel_remote(&dest_root, parent)
                     } else {
                         dest_root.clone()
@@ -2702,7 +2752,12 @@ async fn transfer_folder_differential_remote_to_remote(
                     }
                     let staging = staging_dir.join(format!("z-{}", uuid::Uuid::new_v4()));
                     let kind = try_remote_pack_to_local(
-                        from, &remote, folder_name, &staging, events, wake,
+                        from,
+                        &remote,
+                        folder_name,
+                        &staging,
+                        events,
+                        wake,
                     )
                     .await?;
                     let archive = staging_with_ext(&staging, kind);
@@ -2743,10 +2798,8 @@ mod tests {
     #[test]
     fn local_list_command_routes_without_remote() {
         let worker = SftpWorker::spawn(None);
-        let dir = std::env::temp_dir().join(format!(
-            "terminus-sftp-worker-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("terminus-sftp-worker-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"hi").unwrap();
@@ -2791,7 +2844,10 @@ mod tests {
 
     #[test]
     fn join_remote_appends_name() {
-        assert_eq!(join_remote("/home/alice", "file.txt"), "/home/alice/file.txt");
+        assert_eq!(
+            join_remote("/home/alice", "file.txt"),
+            "/home/alice/file.txt"
+        );
         assert_eq!(join_remote("/", "file.txt"), "/file.txt");
         assert_eq!(join_remote("/home/", "file.txt"), "/home/file.txt");
     }
@@ -2848,10 +2904,7 @@ mod tests {
 
     #[test]
     fn format_dest_write_error_surfaces_permission() {
-        let msg = format_dest_write_error(
-            "/etc/nixos",
-            "sftp write: Permission denied",
-        );
+        let msg = format_dest_write_error("/etc/nixos", "sftp write: Permission denied");
         assert!(msg.contains("Permission denied writing to /etc/nixos"));
         assert!(msg.contains("elevated rights"));
         let other = format_dest_write_error("/tmp", "disk full");
@@ -2866,7 +2919,10 @@ mod tests {
             remote_parent_base("/home/alice/proj"),
             ("/home/alice".into(), "proj".into())
         );
-        assert_eq!(remote_parent_base("relative"), (".".into(), "relative".into()));
+        assert_eq!(
+            remote_parent_base("relative"),
+            (".".into(), "relative".into())
+        );
     }
 
     #[test]
@@ -2885,19 +2941,15 @@ mod tests {
             .join("terminus-sftp-edit")
             .join("00000000-0000-0000-0000-000000000001");
         let local = dir.join(name);
-        assert!(local
-            .to_string_lossy()
-            .contains("terminus-sftp-edit"));
+        assert!(local.to_string_lossy().contains("terminus-sftp-edit"));
         assert_eq!(local.file_name().unwrap(), name);
     }
 
     #[test]
     fn transfer_folder_command_exists() {
         let worker = SftpWorker::spawn(None);
-        let dir = std::env::temp_dir().join(format!(
-            "terminus-sftp-xfer-folder-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("terminus-sftp-xfer-folder-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let left = dir.join("L");
         let right = dir.join("R");
@@ -2954,10 +3006,8 @@ mod tests {
     #[test]
     fn transfer_queue_events_desired() {
         let worker = SftpWorker::spawn(None);
-        let dir = std::env::temp_dir().join(format!(
-            "terminus-sftp-queue-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("terminus-sftp-queue-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let left = dir.join("L");
         let right = dir.join("R");
@@ -2995,10 +3045,8 @@ mod tests {
     #[test]
     fn remove_local_file() {
         let worker = SftpWorker::spawn(None);
-        let dir = std::env::temp_dir().join(format!(
-            "terminus-sftp-rm-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("terminus-sftp-rm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("x.txt");
@@ -3030,10 +3078,8 @@ mod tests {
     #[test]
     fn transfer_local_to_local() {
         let worker = SftpWorker::spawn(None);
-        let root = std::env::temp_dir().join(format!(
-            "terminus-sftp-xfer-ll-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir()
+            .join(format!("terminus-sftp-xfer-ll-{}", std::process::id()));
         let left = root.join("L");
         let right = root.join("R");
         let _ = std::fs::remove_dir_all(&root);

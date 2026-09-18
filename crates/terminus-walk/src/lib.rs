@@ -94,7 +94,10 @@ pub fn hash_paths(root: &Path, rels: &[String]) -> Result<DigestMap, String> {
     let results: Result<Vec<_>, String> = rels
         .par_iter()
         .map(|rel| {
-            if rel.starts_with('/') || rel.contains('\0') || rel.split('/').any(|p| p == "..") {
+            if rel.starts_with('/')
+                || rel.contains('\0')
+                || rel.split('/').any(|p| p == "..")
+            {
                 return Err(format!("unsafe path: {rel}"));
             }
             let path = join_rel(&root, rel);
@@ -136,7 +139,8 @@ pub fn parse_meta(text: &str) -> Result<MetaMap, String> {
             continue;
         }
         let mut parts = line.splitn(3, '\t');
-        let (Some(sz), Some(mt), Some(rel)) = (parts.next(), parts.next(), parts.next()) else {
+        let (Some(sz), Some(mt), Some(rel)) = (parts.next(), parts.next(), parts.next())
+        else {
             continue;
         };
         if rel.is_empty() {
@@ -223,9 +227,13 @@ where
             Ok(())
         }
         Some("hash") => {
-            let root = args.get(2).ok_or("usage: terminus-walk hash <root> [rels... | --list file]")?;
+            let root = args
+                .get(2)
+                .ok_or("usage: terminus-walk hash <root> [rels... | --list file]")?;
             let rels: Vec<String> = if args.get(3).map(String::as_str) == Some("--list") {
-                let list_path = args.get(4).ok_or("usage: terminus-walk hash <root> --list <file>")?;
+                let list_path = args
+                    .get(4)
+                    .ok_or("usage: terminus-walk hash <root> --list <file>")?;
                 let buf = std::fs::read(list_path).map_err(|e| e.to_string())?;
                 buf.split(|&b| b == 0 || b == b'\n')
                     .filter(|s| !s.is_empty())
@@ -248,7 +256,8 @@ where
             Ok(())
         }
         _ => Err(
-            "usage: terminus-walk (--version | meta <root> | hash <root> [rels...])".into(),
+            "usage: terminus-walk (--version | meta <root> | hash <root> [rels...])"
+                .into(),
         ),
     }
 }

@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::models::Host;
-use russh::client::{Handler, Handle};
+use russh::client::{Handle, Handler};
 
 /// Kerberos V5 mechanism OID (RFC 1964) in DER.
 pub const KRB5_MECH_OID_DER: &[u8] = &[
@@ -158,8 +158,8 @@ mod unix {
             selected_mechanism: Option<Vec<u8>>,
             input_token: Option<Vec<u8>>,
             mic_data: Vec<u8>,
-        ) -> impl std::future::Future<Output = std::result::Result<GssapiStep, Self::Error>> + Send
-        {
+        ) -> impl std::future::Future<Output = std::result::Result<GssapiStep, Self::Error>>
+               + Send {
             let result = self.step_inner(selected_mechanism, input_token, &mic_data);
             async move { result }
         }

@@ -6,7 +6,8 @@
 
 use crate::geom::Rect;
 use crate::settings::{
-    field_input_in_card, FIELD_CARD_HEIGHT, FIELD_CARD_PAD, FIELD_EYE_ICON, FIELD_EYE_SLOT,
+    field_input_in_card, FIELD_CARD_HEIGHT, FIELD_CARD_PAD, FIELD_EYE_ICON,
+    FIELD_EYE_SLOT,
 };
 
 pub const WIDTH: f32 = 400.0;

@@ -127,7 +127,10 @@ impl SnippetsPanel {
             _ => None,
         };
 
-        if next_hover == self.hover && next_add == self.add_hover && next_del == self.delete_hover {
+        if next_hover == self.hover
+            && next_add == self.add_hover
+            && next_del == self.delete_hover
+        {
             return false;
         }
         self.hover = next_hover;

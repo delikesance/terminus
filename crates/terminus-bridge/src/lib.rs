@@ -22,9 +22,9 @@ pub mod terminus_bridge_impl;
 // pub use modal_event_handlers::{
 //     HostKeyRequest, ModalDecision, ModalRequest, VaultUnlockRequest,
 // };
+pub use folder_diff::ConflictAction;
 pub use sftp_worker::{
     ConflictKind, SftpCommand, SftpEvent, SftpListEntry, SftpSide, SftpWorker,
 };
-pub use folder_diff::ConflictAction;
 pub use ssh_transport::{Command, SshPump, SshTransport, TransportState};
 // pub use terminus_bridge_impl::{SessionHandle, TerminusBridge, TerminusCoreService};

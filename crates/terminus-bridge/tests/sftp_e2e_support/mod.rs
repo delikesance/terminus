@@ -72,9 +72,7 @@ pub fn wait_listed(worker: &SftpWorker, side: SftpSide) -> Vec<SftpListEntry> {
     for _ in 0..100 {
         for event in worker.drain() {
             if let SftpEvent::Listed {
-                side: s,
-                entries,
-                ..
+                side: s, entries, ..
             } = event
             {
                 if s == side {
