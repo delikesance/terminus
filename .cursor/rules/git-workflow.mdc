@@ -1,0 +1,20 @@
+---
+description: Always develop on development; merge to main only via reviewed MR
+alwaysApply: true
+---
+
+# Git branch workflow
+
+- Default working branch is `development`. Create/checkout it from `main` if missing.
+- Do **not** commit feature work directly on `main`.
+- Do **not** recreate long-lived feature branches like `feat/rio-integration` for day-to-day work; use short-lived topic branches off `development` only when needed, then merge back to `development`.
+- Before opening a merge request into `main`, review `git diff main...development` (full commit range and intent).
+- Open an MR/PR (`development` → `main`). Merge **only** if the review passes (correctness, tests, no drive-by scope, secrets safe). If review fails, leave the MR open and fix on `development`.
+- Prefer GitLab merge requests when `origin` is GitLab; use GitHub PRs when working against `github`.
+---
+
+# Test-driven implementation
+
+- For new behavior: write failing tests first, run them, then implement until they pass.
+- Do not ship implementation without the tests that define the contract.
+- Prefer unit tests next to the code under test (`terminus-ui`, etc.) before wiring painters/frontends.

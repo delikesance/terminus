@@ -1,5 +1,27 @@
 # Terminus & Sugarloaf Architecture Documentation
 
+## Agent workflow (mandatory)
+
+### Branches
+- **Work on `development`**, never commit day-to-day work straight to `main`.
+- If `development` is missing, recreate it from up-to-date `main` and push it.
+- Short-lived topic branches are optional; land them back on `development` first.
+- Do not revive long-lived integration branches (`feat/rio-integration`, etc.) as the default line of work.
+
+### Promote `development` → `main`
+1. Review the full delta: `git diff main...development` and the commit list since divergence.
+2. Open a merge request / pull request: `development` into `main`.
+3. Merge **only** when that review passes (behavior correct, tests cover the change, scope focused, no secrets).
+4. If the review fails, leave `main` untouched and fix on `development`.
+
+### Test-driven development
+1. Write **failing** tests that specify the intended behavior.
+2. Run them and confirm they fail for the expected reason.
+3. Implement code until the tests pass; keep the change set minimal.
+4. Refactor only while tests remain green.
+
+Pure documentation or chore with no behavior change may skip TDD; everything else follows red → green.
+
 ## Overview
 This document describes the two primary systems of the Terminus project:
 1. **Sugarloaf**: The high-performance, multi-backend rendering engine serving both the terminal grid and the UI chrome.
