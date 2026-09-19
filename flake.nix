@@ -103,6 +103,7 @@
             ++ windowsPackages
             ++ [
               pkgs.gh
+              pkgs.nfpm
               pkgs.p7zip
               pkgs.gnutar
               pkgs.gzip

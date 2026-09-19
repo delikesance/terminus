@@ -3,7 +3,7 @@
 # Terminus release build & publish (Linux x86_64 + Windows x86_64).
 #
 # Intended to run inside `nix develop .#release` (which provides cargo,
-# cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, 7z and tar).
+# cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, nfpm and tar).
 # The convenient entry point is the flake app:
 #
 #   nix run .#release                 # build Linux + Windows and publish
@@ -88,6 +88,7 @@ if [[ "$WINDOWS_ONLY" == "0" ]]; then
         exit 1
     fi
 
+    # Portable tarball (Arch, NixOS, and other distros without a native package).
     STAGE="$(mktemp -d)"
     mkdir -p "$STAGE/rio"
     cp "$BIN" "$STAGE/rio/rio"
@@ -96,10 +97,20 @@ if [[ "$WINDOWS_ONLY" == "0" ]]; then
     cp misc/rio.terminfo "$STAGE/rio/" 2>/dev/null || true
     tar -czf "$DIST_DIR/rio-linux-x86_64.tar.gz" -C "$STAGE" rio
     rm -rf "$STAGE"
-
-    cp "$BIN" "$DIST_DIR/rio-linux-x86_64"
-    chmod +x "$DIST_DIR/rio-linux-x86_64"
     UPLOAD+=("$DIST_DIR/rio-linux-x86_64.tar.gz")
+
+    # Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm) packages via nfpm.
+    if command -v nfpm >/dev/null 2>&1; then
+        echo "Packaging .deb and .rpm with nfpm..."
+        VERSION="$VERSION" nfpm package -p deb -f misc/nfpm-rioterm.yaml -t "$DIST_DIR"
+        VERSION="$VERSION" nfpm package -p rpm -f misc/nfpm-rioterm.yaml -t "$DIST_DIR"
+        for f in "$DIST_DIR"/rioterm_*.deb "$DIST_DIR"/rioterm-*.rpm; do
+            [[ -f "$f" ]] && UPLOAD+=("$f")
+        done
+    else
+        echo "release.sh: nfpm not found; skipping .deb/.rpm packaging" >&2
+    fi
+
     echo "Linux artifacts written."
 fi
 
@@ -115,10 +126,8 @@ if [[ "$LINUX_ONLY" == "0" ]]; then
         exit 1
     fi
     cp "$WIN_BIN" "$DIST_DIR/rio.exe"
-
-    (cd "$DIST_DIR" && rm -f rio-windows-x86_64.zip && 7z a -tzip rio-windows-x86_64.zip rio.exe >/dev/null)
-    UPLOAD+=("$DIST_DIR/rio-windows-x86_64.zip")
-    echo "Windows artifacts written."
+    UPLOAD+=("$DIST_DIR/rio.exe")
+    echo "Windows artifact written."
 fi
 
 echo "=== Checksums ==="

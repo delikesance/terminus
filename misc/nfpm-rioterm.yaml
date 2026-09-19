@@ -1,26 +1,17 @@
-# nfpm config for rioterm RPM (Fedora/RHEL-compatible).
-# VERSION is injected by the Release workflow (tag or CI build number).
+# nfpm config for the Terminus (rioterm) desktop packages.
+# VERSION is injected from the environment by scripts/release.sh.
 name: rioterm
 arch: amd64
 platform: linux
 version: ${VERSION}
-section: admin
+section: utils
 priority: optional
-maintainer: Raphael Amorim <rapha850@gmail.com>
+maintainer: delikesance <95828763+delikesance@users.noreply.github.com>
 description: |
   A hardware-accelerated GPU terminal emulator powered by WebGPU.
-vendor: Rio
-homepage: https://rioterm.com
+vendor: Terminus
+homepage: https://github.com/delikesance/terminus
 license: MIT
-depends:
-  - glibc
-  - libstdc++
-  - fontconfig
-  - libX11
-  - libXcursor
-  - libXi
-  - libXrandr
-  - krb5-libs
 contents:
   - src: ./target/release/rio
     dst: /usr/bin/rio
@@ -34,6 +25,40 @@ contents:
     dst: /usr/share/doc/rioterm/LICENSE
   - src: ./README.md
     dst: /usr/share/doc/rioterm/README.md
+overrides:
+  deb:
+    depends:
+      - libc6
+      - libgcc-s1
+      - libstdc++6
+      - libfontconfig1
+      - libgl1
+      - libxkbcommon0
+      - libvulkan1
+      - libkrb5-3
+      - libx11-6
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+      - libxcb1
+      - libwayland-client0
+      - libwayland-cursor0
+  rpm:
+    depends:
+      - glibc
+      - libgcc
+      - libstdc++
+      - fontconfig
+      - libglvnd-glx
+      - libxkbcommon
+      - vulkan-loader
+      - krb5-libs
+      - libX11
+      - libXcursor
+      - libXi
+      - libXrandr
+      - libxcb
+      - wayland-libs
 rpm:
   group: Applications/System
   compression: xz
