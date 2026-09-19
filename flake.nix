@@ -83,6 +83,40 @@
             mkdir -p "$XWIN_CACHE_DIR"
           '';
         };
+
+        releaseApp = pkgs.writeShellApplication {
+          name = "terminus-release";
+          runtimeInputs = [
+            self'.formatter
+            windowsToolchain
+            pkgs.cargo-xwin
+            pkgs.clang
+            pkgs.llvmPackages.clang-unwrapped
+            pkgs.llvmPackages.bintools
+            pkgs.llvmPackages.lld
+            pkgs.llvmPackages.llvm
+            pkgs.llvmPackages.libclang
+            pkgs.nasm
+            pkgs.cmake
+            pkgs.pkg-config
+            pkgs.shaderc
+            pkgs.p7zip
+            pkgs.gnutar
+            pkgs.gzip
+            pkgs.gh
+            pkgs.coreutils
+            pkgs.git
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.fontconfig
+            pkgs.krb5
+          ];
+          text = ''
+            export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+            export LD_LIBRARY_PATH="${lib.makeLibraryPath (self'.packages.rio.runtimeDependencies ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.krb5.lib])}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export TERMINUS_RELEASE_SHELL=1
+            exec bash ./scripts/release.sh "$@"
+          '';
+        };
       in {
         formatter = pkgs.alejandra;
         _module.args.pkgs = import inputs.nixpkgs {
@@ -105,6 +139,11 @@
           toolchains;
         # Different devshells for different rust versions, plus a Windows
         # cross shell used by `scripts/dev-win.sh` (`nix develop .#windows`).
+        
+        apps.release = {
+          type = "app";
+          program = "${releaseApp}/bin/terminus-release";
+        };
         devShells =
           (lib.mapAttrs (_: v: mkDevShell v) toolchains)
           // {windows = windowsDevShell;};
