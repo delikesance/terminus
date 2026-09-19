@@ -44,7 +44,7 @@ metainfo="misc/com.rioterm.Rio.metainfo.xml"
 if grep -q "release version=\"$version\"" "$metainfo"; then
     echo "metainfo already has $version, leaving it as is"
 else
-    NEW="$version" TODAY="$(date +%Y-%m-%d)" perl -pi -e 'print qq(    <release version="$ENV{NEW}" date="$ENV{TODAY}">\n      <url type="details">https://github.com/raphamorim/rio/releases/tag/v$ENV{NEW}</url>\n    </release>\n) if $. == $insert_line; $insert_line = $. + 1 if /^  <releases>$/' "$metainfo"
+    NEW="$version" TODAY="$(date +%Y-%m-%d)" perl -pi -e 'print qq(    <release version="$ENV{NEW}" date="$ENV{TODAY}">\n      <url type="details">https://github.com/delikesance/terminus/releases/tag/v$ENV{NEW}</url>\n    </release>\n) if $. == $insert_line; $insert_line = $. + 1 if /^  <releases>$/' "$metainfo"
     grep -q "release version=\"$version\"" "$metainfo" || {
         echo "error: failed to insert the metainfo release entry" >&2
         exit 1

@@ -51,7 +51,7 @@ Sugarloaf draws are driven by primitive structs rather than a hierarchical objec
 
 To draw a rectangle:
 ```rust
-sugarloaf.rect(Some(rect.x), rect.y, rect.width, rect.height, rect.color, depth, order);
+sugarloaf.rect(None, rect.x, rect.y, rect.width, rect.height, rect.color, depth, order);
 ```
 
 ## 2. Terminus UI Component System
@@ -75,12 +75,12 @@ pub(crate) fn paint_flat(
     order: u8,
 ) {
     // Bridges the UI Math object directly into the Sugarloaf primitive rendering
-    sugarloaf.rect(None, rect.x, rect.y, rect.width, rect.height, color);
+    sugarloaf.rect(None, rect.x, rect.y, rect.width, rect.height, color, depth, order);
 }
 ```
 
 ### 2.3 Vector Icons and SVG Assets
-Icons are defined as raw SVG paths in `crates/terminus-ui/src/icons.rs`. Instead of using quad strings to emulate strokes, they are rasterized into coverage masks using `tiny-skia` (handled inside `sugarloaf/src/renderer/image_cache/colr_raster.rs`) and cached into the Sugarloaf glyph atlas. This handles correct antialiasing at the pixel level.
+Icons are defined as raw SVG paths in `crates/terminus-ui/src/icons.rs`. Instead of using quad strings to emulate strokes, they are rasterized into coverage masks using `tiny-skia` (handled inside `frontends/rioterm/src/renderer/chrome.rs` `rasterize_icon`) and cached into the Sugarloaf glyph atlas. This handles correct antialiasing at the pixel level.
 
 ## References
 

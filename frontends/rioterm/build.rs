@@ -50,6 +50,10 @@ fn load_app_icon() {
     println!("cargo:rerun-if-changed={}", icon_path.display());
     let mut res = winres::WindowsResource::new();
     res.set_icon(icon_path.to_str().expect("manifest dir must be utf-8"));
+        res.set("FileDescription", "Terminus");
+    res.set("ProductName", "Terminus");
+    res.set("OriginalFilename", "terminus.exe");
+    res.set("InternalName", "terminus");
     res.compile()
         .expect("failed to compile the windows icon resource");
 }

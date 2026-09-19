@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Terminus" Language="1033" Version="${VERSION}" Manufacturer="Terminus" UpgradeCode="87c21c74-dbd5-4584-89d5-46d9cd0c40a8">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <Media Id="1" Cabinet="terminus.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="APPLICATIONFOLDER" Name="Terminus">
+          <Component Id="MainExecutable" Guid="*">
+            <File Id="TerminusExe" Source="${EXEPATH}" KeyPath="yes" />
+            <Environment Id="PathEnv" Value="[APPLICATIONFOLDER]" Name="PATH" Permanent="no" Part="last" Action="set" System="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Terminus">
+          <Component Id="ApplicationShortcut" Guid="aa36e61a-23cd-4383-b744-2f78e912f0dc">
+            <Shortcut Id="ApplicationStartMenuShortcut" Name="Terminus" Description="A modern hardware-accelerated GPU terminal emulator" Target="[APPLICATIONFOLDER]terminus.exe" WorkingDirectory="APPLICATIONFOLDER" />
+            <RemoveFolder Id="CleanUpShortCut" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\\Terminus" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainFeature" Title="Terminus" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="ApplicationShortcut" />
+    </Feature>
+  </Product>
+</Wix>

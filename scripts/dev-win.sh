@@ -8,7 +8,7 @@
 #   scripts/dev-win.sh              watch, build, deploy, ensure watcher
 #   scripts/dev-win.sh --once       build and deploy once
 #   scripts/dev-win.sh --no-run     watch and build, do not start/signal watcher
-#   scripts/dev-win.sh -- --flag    pass arguments through to rio-dev.exe
+#   scripts/dev-win.sh -- --flag    pass arguments through to terminus-dev.exe
 #
 # Why a separate script: the Windows target needs cargo-xwin + clang-cl + the
 # MSVC SDK. The cycle is slower than the Linux loop — use `scripts/dev.sh` for
@@ -47,9 +47,9 @@ ARTIFACT="$ROOT/target/$TARGET/debug/rio.exe"
 # wgpu is forced on for Windows via target-specific deps; keep an override hook.
 FEATURES="${TERMINUS_DEV_WIN_FEATURES:-}"
 DEPLOY_DIR="${TERMINUS_DEV_WIN_DEPLOY_DIR:-}"
-DEPLOY_NAME="rio-dev.exe"
+DEPLOY_NAME="terminus-dev.exe"
 WATCHER_SCRIPT="$ROOT/scripts/win-reload.ps1"
-LOG_LEVEL="${RIO_LOG_LEVEL:-info}"
+LOG_LEVEL="${TERMINUS_LOG_LEVEL:-info}"
 POLL_INTERVAL="${TERMINUS_DEV_POLL:-0.5}"
 DEBOUNCE="${TERMINUS_DEV_DEBOUNCE:-0.4}"
 WATCHER_ALIVE_MAX_AGE="${TERMINUS_DEV_WIN_WATCHER_MAX_AGE:-5}"
@@ -66,7 +66,7 @@ Options:
   --once              build and deploy once, do not watch
   --no-run            watch and build, do not bootstrap the Windows watcher
   --features <list>   extra cargo features
-  --log-level <level> RIO_LOG_LEVEL for the app (default: info)
+  --log-level <level> TERMINUS_LOG_LEVEL for the app (default: info)
   -- <args...>        everything after -- is passed to the app (via watcher env is N/A;
                       args are written to app-args.txt for the watcher to pick up)
   -h, --help          this text
@@ -74,7 +74,7 @@ Options:
 Environment:
   TERMINUS_DEV_WIN_FEATURES      same as --features
   TERMINUS_DEV_WIN_DEPLOY_DIR    NTFS deploy directory (default: %LOCALAPPDATA%\terminus-dev)
-  RIO_LOG_LEVEL                  same as --log-level
+  TERMINUS_LOG_LEVEL                  same as --log-level
   TERMINUS_DEV_POLL              seconds between source polls (default 0.5)
   TERMINUS_DEV_DEBOUNCE          seconds to wait for saves to settle (default 0.4)
   TERMINUS_DEV_NO_NIX=1          do not re-exec inside nix develop .#windows
@@ -155,7 +155,7 @@ win_path() {
     fi
 }
 
-# UNC path into this distro for RIO_CONFIG_HOME (live edit from WSL).
+# UNC path into this distro for TERMINUS_CONFIG_HOME (live edit from WSL).
 config_home_win() {
     local distro="${WSL_DISTRO_NAME:-}"
     if [[ -z "$distro" && -r /etc/wsl.conf ]]; then
@@ -254,7 +254,7 @@ EOF
 
 print_watcher_fallback() {
     printf '\033[33m  WSL interop unavailable — do this once on Windows:\033[0m\n'
-    printf '    1. Close any running rio-dev.exe\n'
+    printf '    1. Close any running terminus-dev.exe\n'
     printf '    2. Double-click: %s\\start-watcher.cmd\n' "$DEPLOY_DIR_WIN"
     printf '       (or paste in PowerShell:)\n'
     print_watcher_cmd | sed 's/^/         /'
@@ -347,9 +347,9 @@ deploy() {
             touch "$RELOAD_STAMP"
             printf '\033[33m[%s] wrote %s but could not replace %s (still running?)\033[0m\n' \
                 "$(date +%H:%M:%S)" "$DEPLOY_NEW" "$DEPLOY_NAME"
-            printf '  close rio-dev.exe on Windows, then either:\n'
+            printf '  close terminus-dev.exe on Windows, then either:\n'
             printf '    - double-click %s\\start-watcher.cmd\n' "$DEPLOY_DIR_WIN"
-            printf '    - or copy rio-dev.exe.new → rio-dev.exe and relaunch\n'
+            printf '    - or copy terminus-dev.exe.new → terminus-dev.exe and relaunch\n'
         fi
     fi
 }
