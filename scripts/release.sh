@@ -20,7 +20,7 @@ cd "$ROOT"
 # release never lands on the upstream fork by accident.
 REPO="${GH_REPO:-}"
 if [[ -z "$REPO" ]]; then
-    REPO="$(git remote get-url github 2>/dev/null | sed -E 's#^[^:]*[:/]?([^/:]+/[^/:]+)(\.git)?$#\1#')"
+    REPO="$(git remote get-url github 2>/dev/null | sed -E -e 's#\.git$##' -e 's#^[^:]+[:/]([^/]+/[^/]+)$#\1#')"
 fi
 [[ -z "$REPO" ]] && REPO="delikesance/terminus"
 GITHUB_REMOTE_URL="${GITHUB_REMOTE_URL:-$(git remote get-url github 2>/dev/null || git remote get-url origin 2>/dev/null)}"
