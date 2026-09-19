@@ -183,18 +183,25 @@ impl VaultUnlockPrompt {
                 text: "Enter passphrase…".into(),
                 placeholder: true,
                 show_caret: true,
+                caret_prefix: String::new(),
+                selection: None,
             }
         } else if self.visible {
             FieldPaint {
                 text: self.passphrase.clone(),
                 placeholder: false,
                 show_caret: true,
+                caret_prefix: self.passphrase.clone(),
+                selection: None,
             }
         } else {
+            let masked = "•".repeat(self.passphrase.chars().count());
             FieldPaint {
-                text: "•".repeat(self.passphrase.chars().count()),
+                text: masked.clone(),
                 placeholder: false,
                 show_caret: true,
+                caret_prefix: masked,
+                selection: None,
             }
         }
     }
