@@ -82,7 +82,7 @@ if [[ "$WINDOWS_ONLY" == "0" ]]; then
     echo "=== Linux x86_64: cargo build --release -p rioterm --features wgpu ==="
     cargo build --release -p rioterm --features wgpu
 
-    BIN="$(find target/release -maxdepth 1 -type f -name rio -executable | head -1)"
+    BIN="$(find target/release -maxdepth 1 -type f -name terminus -executable | head -1)"
     if [[ -z "$BIN" ]]; then
         echo "release.sh: rio binary not found in target/release" >&2
         exit 1
@@ -90,21 +90,21 @@ if [[ "$WINDOWS_ONLY" == "0" ]]; then
 
     # Portable tarball (Arch, NixOS, and other distros without a native package).
     STAGE="$(mktemp -d)"
-    mkdir -p "$STAGE/rio"
-    cp "$BIN" "$STAGE/rio/rio"
-    cp misc/rio.desktop "$STAGE/rio/" 2>/dev/null || true
-    cp misc/logo.svg "$STAGE/rio/" 2>/dev/null || true
-    cp misc/rio.terminfo "$STAGE/rio/" 2>/dev/null || true
-    tar -czf "$DIST_DIR/rio-linux-x86_64.tar.gz" -C "$STAGE" rio
+    mkdir -p "$STAGE/terminus"
+    cp "$BIN" "$STAGE/terminus/terminus"
+    cp misc/terminus.desktop "$STAGE/terminus/" 2>/dev/null || true
+    cp misc/logo.svg "$STAGE/terminus/" 2>/dev/null || true
+    cp misc/rio.terminfo "$STAGE/terminus/" 2>/dev/null || true
+    tar -czf "$DIST_DIR/terminus-linux-x86_64.tar.gz" -C "$STAGE" terminus
     rm -rf "$STAGE"
-    UPLOAD+=("$DIST_DIR/rio-linux-x86_64.tar.gz")
+    UPLOAD+=("$DIST_DIR/terminus-linux-x86_64.tar.gz")
 
     # Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm) packages via nfpm.
     if command -v nfpm >/dev/null 2>&1; then
         echo "Packaging .deb and .rpm with nfpm..."
-        VERSION="$VERSION" nfpm package -p deb -f misc/nfpm-rioterm.yaml -t "$DIST_DIR"
-        VERSION="$VERSION" nfpm package -p rpm -f misc/nfpm-rioterm.yaml -t "$DIST_DIR"
-        for f in "$DIST_DIR"/rioterm_*.deb "$DIST_DIR"/rioterm-*.rpm; do
+        VERSION="$VERSION" nfpm package -p deb -f misc/nfpm-terminus.yaml -t "$DIST_DIR"
+        VERSION="$VERSION" nfpm package -p rpm -f misc/nfpm-terminus.yaml -t "$DIST_DIR"
+        for f in "$DIST_DIR"/terminus_*.deb "$DIST_DIR"/terminus-*.rpm; do
             [[ -f "$f" ]] && UPLOAD+=("$f")
         done
     else
@@ -120,13 +120,13 @@ if [[ "$LINUX_ONLY" == "0" ]]; then
     mkdir -p "$XWIN_CACHE_DIR"
     cargo xwin build --release -p rioterm --target x86_64-pc-windows-msvc --features wgpu
 
-    WIN_BIN="$(find target/x86_64-pc-windows-msvc/release -maxdepth 1 -type f -name rio.exe | head -1)"
+    WIN_BIN="$(find target/x86_64-pc-windows-msvc/release -maxdepth 1 -type f -name terminus.exe | head -1)"
     if [[ -z "$WIN_BIN" ]]; then
-        echo "release.sh: rio.exe not found in target/x86_64-pc-windows-msvc/release" >&2
+        echo "release.sh: terminus.exe not found in target/x86_64-pc-windows-msvc/release" >&2
         exit 1
     fi
-    cp "$WIN_BIN" "$DIST_DIR/rio.exe"
-    UPLOAD+=("$DIST_DIR/rio.exe")
+    cp "$WIN_BIN" "$DIST_DIR/terminus.exe"
+    UPLOAD+=("$DIST_DIR/terminus.exe")
     echo "Windows artifact written."
 fi
 

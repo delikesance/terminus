@@ -58,7 +58,7 @@
 in
   rustPlatform.buildRustPackage {
     inherit (cargoToml.workspace.package) version;
-    name = "rio";
+    name = "terminus";
     src = toSource {
       root = ./.;
       fileset = unions ([
@@ -94,7 +94,7 @@ in
 
     postInstall =
       ''
-        install -D -m 644 misc/rio.desktop -t \
+        install -D -m 644 misc/terminus.desktop -t \
                           $out/share/applications
         install -D -m 644 misc/logo.svg \
                           $out/share/icons/hicolor/scalable/apps/rio.svg
@@ -122,6 +122,6 @@ in
       license = lib.licenses.mit;
       platforms = lib.platforms.unix;
       changelog = "https://github.com/raphamorim/rio/blob/master/CHANGELOG.md";
-      mainProgram = "rio";
+      mainProgram = "terminus";
     };
   }
