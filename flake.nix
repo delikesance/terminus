@@ -1,9 +1,6 @@
 {
-  description = "Rio | A hardware-accelerated GPU terminal emulator";
+  description = "Terminus | A hardware-accelerated GPU terminal emulator";
 
-  # Binary cache populated by CI on every merge to main; nix offers to
-  # enable it on first use so `nix run github:raphamorim/rio` becomes a
-  # download instead of a build.
   nixConfig = {
     extra-substituters = ["https://rioterm.cachix.org"];
     extra-trusted-public-keys = ["rioterm.cachix.org-1:cs/H9Jf0ZpHyR4WgjoNJZVBpkVi69Y4JASUK5ReEQPE="];
@@ -61,22 +58,23 @@
           components = rustToolchainToml.toolchain.components or [];
           targets = ["x86_64-pc-windows-msvc"];
         };
+        windowsPackages = [
+          self'.formatter
+          windowsToolchain
+          pkgs.cargo-xwin
+          pkgs.clang
+          pkgs.llvmPackages.clang-unwrapped
+          pkgs.llvmPackages.bintools
+          pkgs.llvmPackages.lld
+          pkgs.llvmPackages.llvm
+          pkgs.llvmPackages.libclang
+          pkgs.nasm
+          pkgs.cmake
+          pkgs.pkg-config
+          pkgs.shaderc
+        ];
         windowsDevShell = pkgs.mkShell {
-          packages = [
-            self'.formatter
-            windowsToolchain
-            pkgs.cargo-xwin
-            pkgs.clang
-            pkgs.llvmPackages.clang-unwrapped
-            pkgs.llvmPackages.bintools
-            pkgs.llvmPackages.lld
-            pkgs.llvmPackages.llvm
-            pkgs.llvmPackages.libclang
-            pkgs.nasm
-            pkgs.cmake
-            pkgs.pkg-config
-            pkgs.shaderc
-          ];
+          packages = windowsPackages;
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           shellHook = ''
             export XWIN_CACHE_DIR="''${XWIN_CACHE_DIR:-$PWD/.dev/xwin-cache}"
@@ -84,37 +82,41 @@
           '';
         };
 
-        releaseApp = pkgs.writeShellApplication {
-          name = "terminus-release";
-          runtimeInputs = [
-            self'.formatter
-            windowsToolchain
-            pkgs.cargo-xwin
-            pkgs.clang
-            pkgs.llvmPackages.clang-unwrapped
-            pkgs.llvmPackages.bintools
-            pkgs.llvmPackages.lld
-            pkgs.llvmPackages.llvm
-            pkgs.llvmPackages.libclang
-            pkgs.nasm
-            pkgs.cmake
-            pkgs.pkg-config
-            pkgs.shaderc
-            pkgs.p7zip
-            pkgs.gnutar
-            pkgs.gzip
-            pkgs.gh
-            pkgs.coreutils
-            pkgs.git
-          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-            pkgs.fontconfig
-            pkgs.krb5
-          ];
-          text = ''
-            export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
-            export LD_LIBRARY_PATH="${lib.makeLibraryPath (self'.packages.rio.runtimeDependencies ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.krb5.lib])}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            export TERMINUS_RELEASE_SHELL=1
-            exec bash ./scripts/release.sh "$@"
+        # Linux system deps needed by `cargo build` (bindgen/clang, shaderc,
+        # fontconfig/krb5/X11/Wayland .pc files). The rust toolchains that
+        # the `rio` Nix package embeds are filtered out: `windowsToolchain`
+        # below is the only toolchain here and carries both the linux-gnu
+        # host std and the windows-msvc target std.
+        linuxBuildDeps =
+          (lib.filter (p:
+            !(lib.hasInfix "rust-minimal" (p.name or ""))
+            && !(lib.hasInfix "auditable-rust-minimal" (p.name or "")))
+            self'.packages.rio.nativeBuildInputs)
+          ++ self'.packages.rio.buildInputs;
+
+        # Release shell: Linux system deps + the Windows cross toolchain
+        # + publishing tools. One shell builds both targets.
+        releaseShell = pkgs.mkShell {
+          packages =
+            linuxBuildDeps
+            ++ [pkgs.krb5 pkgs.pkg-config]
+            ++ windowsPackages
+            ++ [
+              pkgs.gh
+              pkgs.p7zip
+              pkgs.gnutar
+              pkgs.gzip
+              pkgs.git
+              pkgs.coreutils
+            ];
+          LD_LIBRARY_PATH = lib.makeLibraryPath (
+            self'.packages.rio.runtimeDependencies
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.krb5.lib]
+          );
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          shellHook = ''
+            export XWIN_CACHE_DIR="''${XWIN_CACHE_DIR:-$PWD/.dev/xwin-cache}"
+            mkdir -p "$XWIN_CACHE_DIR"
           '';
         };
       in {
@@ -139,14 +141,27 @@
           toolchains;
         # Different devshells for different rust versions, plus a Windows
         # cross shell used by `scripts/dev-win.sh` (`nix develop .#windows`).
-        
-        apps.release = {
-          type = "app";
-          program = "${releaseApp}/bin/terminus-release";
-        };
         devShells =
           (lib.mapAttrs (_: v: mkDevShell v) toolchains)
-          // {windows = windowsDevShell;};
+          // {
+            windows = windowsDevShell;
+            release = releaseShell;
+          };
+
+        # Single-command release: builds Linux + Windows, then publishes
+        # the artifacts as a GitHub release via `gh`.
+        apps.release = {
+          type = "app";
+          program = toString (pkgs.writeShellScript "terminus-release" ''
+            set -euo pipefail
+            root="$(pwd)"
+            if [[ ! -f "$root/flake.nix" || ! -f "$root/scripts/release.sh" ]]; then
+              echo "terminus-release: run from the repository root (where flake.nix lives)" >&2
+              exit 1
+            fi
+            exec nix develop "$root#release" --command bash "$root/scripts/release.sh" "$@"
+          '');
+        };
       };
     };
 }
