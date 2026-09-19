@@ -725,6 +725,20 @@ impl Route<'_> {
                         return true;
                     }
 
+                    // SqlSync text fields share the inline key-draft
+                    // editing model: the caret moves with the arrows, Shift
+                    // extends the selection, and Ctrl/Cmd chords are
+                    // commands instead of literal characters.
+                    use terminus_ui::TextMoveKind;
+                    let mods = self.window.screen.modifiers.state();
+                    let shift = mods.shift_key();
+                    let word = mods.control_key() || mods.alt_key();
+                    let select_mod = mods.control_key() || mods.super_key();
+                    let move_kind = if shift {
+                        TextMoveKind::Extend
+                    } else {
+                        TextMoveKind::Collapse
+                    };
                     match &key_event.logical_key {
                         Key::Named(NamedKey::Escape) => {
                             self.window.screen.chrome.settings.close();
@@ -750,7 +764,50 @@ impl Route<'_> {
                             }
                         }
                         Key::Named(NamedKey::Backspace) => {
-                            let _ = self.window.screen.chrome.settings.sql_backspace();
+                            if let Some(draft) =
+                                self.window.screen.chrome.settings.sql_draft_active()
+                            {
+                                draft.backspace(word);
+                            }
+                        }
+                        Key::Named(NamedKey::Delete) => {
+                            if let Some(draft) =
+                                self.window.screen.chrome.settings.sql_draft_active()
+                            {
+                                draft.delete_forward(word);
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            if let Some(draft) =
+                                self.window.screen.chrome.settings.sql_draft_active()
+                            {
+                                draft.move_left(move_kind, word);
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            if let Some(draft) =
+                                self.window.screen.chrome.settings.sql_draft_active()
+                            {
+                                draft.move_right(move_kind, word);
+                            }
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            if let Some(draft) =
+                                self.window.screen.chrome.settings.sql_draft_active()
+                            {
+                                draft.move_home(move_kind);
+                            }
+                        }
+                        Key::Named(NamedKey::End) => {
+                            if let Some(draft) =
+                                self.window.screen.chrome.settings.sql_draft_active()
+                            {
+                                draft.move_end(move_kind);
+                            }
+                        }
+                        Key::Named(NamedKey::Space) => {
+                            let _ =
+                                self.window.screen.chrome.settings.insert_sql_text(" ");
                         }
                         Key::Named(NamedKey::Enter) => {
                             match self.window.screen.chrome.settings.sql_focus {
@@ -761,6 +818,7 @@ impl Route<'_> {
                                         .chrome
                                         .settings
                                         .sql_passphrase
+                                        .value
                                         .clone();
                                     self.window
                                         .screen
@@ -774,20 +832,45 @@ impl Route<'_> {
                                         .chrome
                                         .settings
                                         .sql_uri
+                                        .value
                                         .clone();
                                     self.window.screen.host_store.test_sync(&uri);
                                 }
                             }
                         }
                         Key::Character(ch) => {
-                            let text = key_event.text.as_deref().unwrap_or(ch.as_str());
-                            if crate::renderer::is_printable_text(text) {
+                            if select_mod && ch.eq_ignore_ascii_case("a") {
+                                if let Some(draft) =
+                                    self.window.screen.chrome.settings.sql_draft_active()
+                                {
+                                    draft.select_all();
+                                }
+                            } else if select_mod && ch.eq_ignore_ascii_case("v") {
+                                // Ctrl/Cmd+V pastes at the caret. Control
+                                // characters (the clipboard trailing
+                                // newline) are stripped before insertion.
+                                let content = clipboard.get(
+                                    rio_backend::clipboard::ClipboardType::Clipboard,
+                                );
+                                let cleaned: String =
+                                    content.chars().filter(|c| !c.is_control()).collect();
                                 let _ = self
                                     .window
                                     .screen
                                     .chrome
                                     .settings
-                                    .insert_sql_text(text);
+                                    .insert_sql_text(&cleaned);
+                            } else if !select_mod {
+                                let text =
+                                    key_event.text.as_deref().unwrap_or(ch.as_str());
+                                if crate::renderer::is_printable_text(text) {
+                                    let _ = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .insert_sql_text(text);
+                                }
                             }
                         }
                         _ => {}
