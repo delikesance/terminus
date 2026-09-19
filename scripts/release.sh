@@ -16,6 +16,14 @@ SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SO
 ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 cd "$ROOT"
 
+# Target repository for `gh`. Defaults to the `github` git remote so the
+# release never lands on the upstream fork by accident.
+REPO="${GH_REPO:-}"
+if [[ -z "$REPO" ]]; then
+    REPO="$(git remote get-url github 2>/dev/null | sed -E 's#^[^:]*[:/]?([^/:]+/[^/:]+)(\.git)?$#\1#')"
+fi
+[[ -z "$REPO" ]] && REPO="delikesance/terminus"
+
 VERSION="$(grep -m 1 '^version = ' Cargo.toml | awk -F '"' '{print $2}')"
 TAG="v${VERSION}"
 TITLE="Terminus ${TAG}"
@@ -122,19 +130,29 @@ if [[ "$BUILD_ONLY" == "1" ]]; then
     exit 0
 fi
 
-echo "=== GitHub release: $TAG ==="
+echo "=== GitHub release: $TAG (repo $REPO) ==="
 if ! command -v gh >/dev/null 2>&1; then
     echo "release.sh: 'gh' is required to publish (gh not found in PATH)" >&2
     exit 1
 fi
 
-gh_flags=()
+# A release must be able to create its own tag. If the tag already exists
+# the release is ambiguous (it may point at an older commit), so fail with
+# a clear instruction instead of guessing.
+if git tag -l "$TAG" >/dev/null; then
+    echo "release.sh: tag $TAG already exists locally." >&2
+    echo "  Bump the version first: misc/prepare-release.sh <next-version>" >&2
+    echo "  then commit/tag, or pass --tag with an unused tag." >&2
+    exit 1
+fi
+
+gh_flags=(--repo "$REPO")
 [[ "$DRAFT" == "1" ]] && gh_flags+=(--draft)
 [[ "$PRERELEASE" == "1" ]] && gh_flags+=(--prerelease)
 
-if gh release view "$TAG" >/dev/null 2>&1; then
+if gh release view "$TAG" "${gh_flags[@]}" >/dev/null 2>&1; then
     echo "Release $TAG exists; uploading assets (clobber)."
-    gh release upload "$TAG" "${UPLOAD[@]}" --clobber
+    gh release upload "$TAG" "${UPLOAD[@]}" "${gh_flags[@]}" --clobber
 else
     echo "Creating release $TAG."
     if [[ -n "$NOTES" ]]; then
@@ -144,4 +162,4 @@ else
     fi
 fi
 
-echo "Done. Release: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/tag/$TAG"
+echo "Done. Release: https://github.com/$REPO/releases/tag/$TAG"
