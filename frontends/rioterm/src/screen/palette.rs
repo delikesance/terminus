@@ -8,6 +8,9 @@ use crate::renderer::island;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
 use rio_backend::crosswords::pos::Direction;
 
+#[cfg(windows)]
+use crate::screen::hint_actions::shell_execute_open;
+
 impl Screen<'_> {
     // return true if the click was handled by the island
     #[inline]
