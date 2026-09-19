@@ -1249,6 +1249,8 @@ fn render_settings_modal(
                             text: "••••••••  OpenSSH private key ready".into(),
                             placeholder: false,
                             show_caret: false,
+                            caret_prefix: String::new(),
+                            selection: None,
                         }
                     } else {
                         terminus_ui::FieldPaint::from_draft(
@@ -1526,8 +1528,25 @@ fn render_settings_modal(
                 0.0,
                 uri_paint_text,
             );
-            if uri_paint_text && uri_paint.show_caret {
-                paint_settings_caret(sugarloaf, theme, uri_card, &uri_paint.text, 0.0);
+            if uri_paint_text {
+                paint_field_selection(
+                    sugarloaf,
+                    theme,
+                    uri_card,
+                    &uri_paint,
+                    0.0,
+                    DEPTH_DIALOG + 0.045,
+                    ORDER_DIALOG,
+                );
+                if uri_paint.show_caret {
+                    paint_field_caret_prefix(
+                        sugarloaf,
+                        theme,
+                        uri_card,
+                        &uri_paint.caret_prefix,
+                        0.0,
+                    );
+                }
             }
 
             // Passphrase field
@@ -1543,12 +1562,21 @@ fn render_settings_modal(
                 terminus_ui::settings::FIELD_EYE_SLOT,
                 true,
             );
+            paint_field_selection(
+                sugarloaf,
+                theme,
+                pass_card,
+                &pass_paint,
+                terminus_ui::settings::FIELD_EYE_SLOT,
+                DEPTH_DIALOG + 0.045,
+                ORDER_DIALOG,
+            );
             if pass_paint.show_caret {
-                paint_settings_caret(
+                paint_field_caret_prefix(
                     sugarloaf,
                     theme,
                     pass_card,
-                    &pass_paint.text,
+                    &pass_paint.caret_prefix,
                     terminus_ui::settings::FIELD_EYE_SLOT,
                 );
             }
@@ -2942,6 +2970,56 @@ pub(crate) fn paint_field_card_at(
     }
 }
 
+/// Accent wash behind the selected span of a field card. Text and
+/// selection come from the shared field paint model, so a masked field
+/// highlights the same character positions it displays.
+pub(crate) fn paint_field_selection(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    card: Rect,
+    paint: &terminus_ui::FieldPaint,
+    trailing_slot: f32,
+    depth: f32,
+    order: u8,
+) {
+    let Some((start, end)) = paint.selection else {
+        return;
+    };
+    if end <= start || paint.placeholder {
+        return;
+    }
+    let input = terminus_ui::settings::field_input_in_card(card);
+    let text_x = input.x + terminus_ui::settings::FIELD_TEXT_INSET;
+    let text_budget = (input.width
+        - terminus_ui::settings::FIELD_TEXT_INSET
+        - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
+    .max(0.0);
+    if text_budget <= 0.0 {
+        return;
+    }
+    let text_opts = opts(ROW_SUB_SIZE, theme.text, false);
+    let before: String = paint.text.chars().take(start).collect();
+    let through: String = paint.text.chars().take(end).collect();
+    let before_shown = elide(sugarloaf, &before, text_budget, &text_opts);
+    let through_shown = elide(sugarloaf, &through, text_budget, &text_opts);
+    let start_x = sugarloaf.text_mut().measure(&before_shown, &text_opts);
+    let end_x = sugarloaf.text_mut().measure(&through_shown, &text_opts);
+    let x = (text_x + start_x).min(text_x + text_budget);
+    let right = (text_x + end_x).min(text_x + text_budget);
+    paint_flat(
+        sugarloaf,
+        &Rect::new(
+            x,
+            input.y + 6.0,
+            (right - x).max(CARET_WIDTH),
+            (input.height - 12.0).max(1.0),
+        ),
+        with_alpha(theme.accent, 0.35),
+        depth,
+        order,
+    );
+}
+
 /// Caret inside a field card, positioned after `prefix` (not always end-of-value).
 pub(crate) fn paint_field_caret_prefix(
     sugarloaf: &mut Sugarloaf,
@@ -4168,16 +4246,11 @@ fn render_vault_unlock(
         true,
     );
     if paint.show_caret {
-        let caret_prefix = if paint.placeholder {
-            ""
-        } else {
-            paint.text.as_str()
-        };
-        paint_settings_caret(
+        paint_field_caret_prefix(
             sugarloaf,
             theme,
             card,
-            caret_prefix,
+            &paint.caret_prefix,
             terminus_ui::settings::FIELD_EYE_SLOT,
         );
     }
@@ -4346,16 +4419,6 @@ fn paint_settings_field_card(
         trailing_slot,
         paint_text,
     );
-}
-
-fn paint_settings_caret(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    card: Rect,
-    value: &str,
-    trailing_slot: f32,
-) {
-    paint_field_caret_prefix(sugarloaf, theme, card, value, trailing_slot);
 }
 
 fn render_context_menu(
