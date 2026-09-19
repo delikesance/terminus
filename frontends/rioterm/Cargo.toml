@@ -13,7 +13,7 @@ documentation.workspace = true
 readme.workspace = true
 
 [[bin]]
-name = "rio"
+name = "terminus"
 path = "src/main.rs"
 
 [dependencies]

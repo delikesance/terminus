@@ -992,7 +992,7 @@ impl Router<'_> {
             event_proxy,
             &new_config,
             &self.font_library,
-            "Rio Settings",
+            "Terminus Settings",
             None,
             None,
             None,

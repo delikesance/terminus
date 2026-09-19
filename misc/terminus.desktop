@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+TryExec=terminus
+Exec=terminus
+Icon=terminus
+Terminal=false
+Categories=System;TerminalEmulator;
+
+Name=Terminus
+GenericName=Terminal
+Comment=A modern hardware-accelerated GPU terminal emulator
+StartupWMClass=Terminus
+Actions=New;
+
+[Desktop Action New]
+Name=New Terminal
+Exec=terminus

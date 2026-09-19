@@ -30,9 +30,9 @@ edition = "2021"
 license = "MIT"
 keywords = ["graphics", "terminal", "application"]
 rust-version = "1.96.1"
-repository = "https://github.com/raphamorim/rio"
-homepage = "https://rioterm.com"
-documentation = "https://github.com/raphamorim/rio#readme"
+repository = "https://github.com/delikesance/terminus"
+homepage = "https://github.com/delikesance/terminus"
+documentation = "https://github.com/delikesance/terminus#readme"
 readme = "README.md"
 
 [workspace.dependencies]

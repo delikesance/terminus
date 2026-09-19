@@ -1,6 +1,6 @@
-# nfpm config for the Terminus (rioterm) desktop packages.
+# nfpm config for Terminus desktop packages.
 # VERSION is injected from the environment by scripts/release.sh.
-name: rioterm
+name: terminus
 arch: amd64
 platform: linux
 version: ${VERSION}
@@ -8,23 +8,23 @@ section: utils
 priority: optional
 maintainer: delikesance <95828763+delikesance@users.noreply.github.com>
 description: |
-  A hardware-accelerated GPU terminal emulator powered by WebGPU.
+  A modern hardware-accelerated GPU terminal emulator.
 vendor: Terminus
 homepage: https://github.com/delikesance/terminus
 license: MIT
 contents:
-  - src: ./target/release/rio
-    dst: /usr/bin/rio
+  - src: ./target/release/terminus
+    dst: /usr/bin/terminus
     file_info:
       mode: 0755
-  - src: ./misc/rio.desktop
-    dst: /usr/share/applications/rio.desktop
+  - src: ./misc/terminus.desktop
+    dst: /usr/share/applications/terminus.desktop
   - src: ./misc/logo.svg
-    dst: /usr/share/icons/hicolor/scalable/apps/rio.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/terminus.svg
   - src: ./LICENSE
-    dst: /usr/share/doc/rioterm/LICENSE
+    dst: /usr/share/doc/terminus/LICENSE
   - src: ./README.md
-    dst: /usr/share/doc/rioterm/README.md
+    dst: /usr/share/doc/terminus/README.md
 overrides:
   deb:
     depends:
