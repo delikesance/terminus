@@ -35,7 +35,7 @@ so the mouse and the painter can never disagree.
 | layout + state + hit-testing | `crates/terminus-ui/src/` | where every chrome box is, what it means, what a click at (x, y) hits |
 | painting | `frontends/rioterm/src/renderer/chrome.rs` | turns those boxes into sugarloaf primitives |
 | host storage | `frontends/rioterm/src/hosts.rs` | SQLite behind a worker thread, so the UI thread never awaits |
-| wiring | `frontends/rioterm/src/screen/mod.rs`, `application.rs`, `router/mod.rs` | input routing, and reserving the chrome's strip in the grid margin |
+| wiring | `frontends/rioterm/src/screen/` modules, `application.rs`, `router/mod.rs` | input routing, and reserving the chrome's strip in the grid margin |
 
 Rules that hold this together:
 
@@ -65,7 +65,7 @@ Interactive host tabs and SFTP intentionally use **different** stacks today
 
 | Path | Implementation | Entry |
 | --- | --- | --- |
-| Shell tab | Local PTY + system `ssh` | `frontends/rioterm/src/screen/mod.rs` → `ssh_shell` / `open_host_session` |
+| Shell tab | Local PTY + system `ssh` | `frontends/rioterm/src/screen/shell.rs` → `ssh_shell` / `sessions.rs` → `open_host_session` |
 | SFTP pane | russh + worker | `terminus-bridge::sftp_worker` ← `sftp_ui.rs` |
 | Future unified shell | `SshTransport` (`EventedPty`) | Ready in bridge, **not wired** — debt **1.4-debt** |
 

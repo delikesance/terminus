@@ -359,13 +359,7 @@ fn char_byte(value: &str, chars: usize) -> usize {
 }
 
 fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric()
-        || c == '_'
-        || c == '-'
-        || c == '.'
-        || c == '+'
-        || c == '/'
-        || c == '='
+    c.is_alphanumeric() || c == '_'
 }
 
 fn word_boundary_left(value: &str, caret: usize) -> usize {
