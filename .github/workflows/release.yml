@@ -24,12 +24,14 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Fat LTO + codegen-units=1 + debug=full (Cargo.toml [profile.release])
-  # routinely spends 45–90+ min stuck after "Compiling rio-grid" on GHA
-  # runners. Thin LTO matches the MSYS2 smoke overrides and keeps CI
-  # releasable without an hour-long LLVM link.
-  CARGO_PROFILE_RELEASE_LTO: thin
-  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "8"
+  # Evidence from run 35406660171: even with thin LTO, all three cargo
+  # jobs printed "Compiling rio-grid" then produced no further output for
+  # ~80 minutes until the 90m timeout (Windows 23:54→01:11, same pattern
+  # on macOS/Linux). That silence is the final rioterm link, not rio-grid
+  # itself. Disable LTO for GHA artifacts; keep fat LTO in Cargo.toml for
+  # local/shipped builds that can afford it.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
   CARGO_PROFILE_RELEASE_DEBUG: "0"
 
 jobs:
@@ -46,7 +48,13 @@ jobs:
           cache-targets: true
           cache-all-crates: true
       - name: Build
-        run: cargo build --release -p rioterm --features wgpu
+        shell: bash
+        run: |
+          set -eux
+          date -u '+build start %Y-%m-%dT%H:%M:%SZ'
+          cargo build --release -p rioterm --features wgpu
+          date -u '+build done  %Y-%m-%dT%H:%M:%SZ'
+          ls -lh target/release/rio.exe
       - name: Package
         shell: bash
         run: |
@@ -75,9 +83,15 @@ jobs:
           cache-targets: true
           cache-all-crates: true
       - name: Build
-        run: cargo build --release -p rioterm --features wgpu
+        shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -eux
+          date -u '+build start %Y-%m-%dT%H:%M:%SZ'
+          cargo build --release -p rioterm --features wgpu
+          date -u '+build done  %Y-%m-%dT%H:%M:%SZ'
+          ls -lh target/release/rio
       - name: Package
         run: |
           mkdir -p dist
@@ -114,9 +128,12 @@ jobs:
         # Single x11+wgpu RPM for speed (wayland variant can be added later).
         env:
           LIBGSSAPI_IMPL: mit
-        run: >
-          cargo build --release -p rioterm
-          --no-default-features --features x11,wgpu
+        run: |
+          set -eux
+          date -u '+build start %Y-%m-%dT%H:%M:%SZ'
+          cargo build --release -p rioterm --no-default-features --features x11,wgpu
+          date -u '+build done  %Y-%m-%dT%H:%M:%SZ'
+          ls -lh target/release/rio
       - name: Install nfpm
         env:
           NFPM_VERSION: "2.41.2"
