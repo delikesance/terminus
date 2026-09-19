@@ -23,6 +23,7 @@ if [[ -z "$REPO" ]]; then
     REPO="$(git remote get-url github 2>/dev/null | sed -E 's#^[^:]*[:/]?([^/:]+/[^/:]+)(\.git)?$#\1#')"
 fi
 [[ -z "$REPO" ]] && REPO="delikesance/terminus"
+GITHUB_REMOTE_URL="${GITHUB_REMOTE_URL:-$(git remote get-url github 2>/dev/null || git remote get-url origin 2>/dev/null)}"
 
 VERSION="$(grep -m 1 '^version = ' Cargo.toml | awk -F '"' '{print $2}')"
 TAG="v${VERSION}"
@@ -136,16 +137,6 @@ if ! command -v gh >/dev/null 2>&1; then
     exit 1
 fi
 
-# A release must be able to create its own tag. If the tag already exists
-# the release is ambiguous (it may point at an older commit), so fail with
-# a clear instruction instead of guessing.
-if git tag -l "$TAG" >/dev/null; then
-    echo "release.sh: tag $TAG already exists locally." >&2
-    echo "  Bump the version first: misc/prepare-release.sh <next-version>" >&2
-    echo "  then commit/tag, or pass --tag with an unused tag." >&2
-    exit 1
-fi
-
 gh_flags=(--repo "$REPO")
 [[ "$DRAFT" == "1" ]] && gh_flags+=(--draft)
 [[ "$PRERELEASE" == "1" ]] && gh_flags+=(--prerelease)
@@ -154,6 +145,19 @@ if gh release view "$TAG" "${gh_flags[@]}" >/dev/null 2>&1; then
     echo "Release $TAG exists; uploading assets (clobber)."
     gh release upload "$TAG" "${UPLOAD[@]}" "${gh_flags[@]}" --clobber
 else
+    # `gh release create` cannot reuse an unpushed local tag, so push the
+    # tag first when it exists (the prepare-release.sh ceremony tags before
+    # releasing). When there is no tag yet, let gh create it at HEAD.
+    if git tag -l "$TAG" >/dev/null; then
+        echo "Pushing tag $TAG to $REPO..."
+        git push "${GITHUB_REMOTE_URL}" "$TAG" || {
+            echo "release.sh: failed to push tag $TAG" >&2
+            exit 1
+        }
+    else
+        gh_flags+=(--target "$(git rev-parse HEAD)")
+    fi
+
     echo "Creating release $TAG."
     if [[ -n "$NOTES" ]]; then
         gh release create "$TAG" "${UPLOAD[@]}" --title "$TITLE" --notes "$NOTES" "${gh_flags[@]}"
