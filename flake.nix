@@ -104,6 +104,8 @@
             ++ [
               pkgs.gh
               pkgs.nfpm
+              pkgs.nsis
+              pkgs.msitools
               pkgs.p7zip
               pkgs.gnutar
               pkgs.gzip

@@ -120,14 +120,33 @@ if [[ "$LINUX_ONLY" == "0" ]]; then
     mkdir -p "$XWIN_CACHE_DIR"
     cargo xwin build --release -p rioterm --target x86_64-pc-windows-msvc --features wgpu
 
-    WIN_BIN="$(find target/x86_64-pc-windows-msvc/release -maxdepth 1 -type f -name terminus.exe | head -1)"
+    WIN_BIN="$(find "$ROOT/target/x86_64-pc-windows-msvc/release" -maxdepth 1 -type f -name terminus.exe | head -1)"
     if [[ -z "$WIN_BIN" ]]; then
         echo "release.sh: terminus.exe not found in target/x86_64-pc-windows-msvc/release" >&2
         exit 1
     fi
-    cp "$WIN_BIN" "$DIST_DIR/terminus.exe"
-    UPLOAD+=("$DIST_DIR/terminus.exe")
-    echo "Windows artifact written."
+    # Build Windows NSIS Setup Wizard (.exe)
+    if command -v makensis >/dev/null 2>&1; then
+        echo "Building Windows installer (terminus-setup-x86_64.exe) with NSIS..."
+        makensis             -DVERSION="$VERSION"             -DSRCDIR="$ROOT"             -DEXEPATH="$WIN_BIN"             -DOUTFILE="$DIST_DIR/terminus-setup-x86_64.exe"             "$ROOT/misc/windows/installer.nsi"
+        UPLOAD+=("$DIST_DIR/terminus-setup-x86_64.exe")
+    else
+        echo "release.sh: makensis not found; skipping NSIS installer" >&2
+    fi
+
+    # Build Windows MSI Package (.msi)
+    if command -v wixl >/dev/null 2>&1; then
+        echo "Building Windows MSI package (terminus-x86_64.msi) with wixl..."
+        TMP_WXS="$(mktemp --suffix=.wxs)"
+        sed -e "s#\${VERSION}#$VERSION#g" -e "s#\${EXEPATH}#$WIN_BIN#g" "$ROOT/misc/windows/terminus.wxs" > "$TMP_WXS"
+        wixl -a x64 "$TMP_WXS" -o "$DIST_DIR/terminus-x86_64.msi"
+        rm -f "$TMP_WXS"
+        UPLOAD+=("$DIST_DIR/terminus-x86_64.msi")
+    else
+        echo "release.sh: wixl not found; skipping MSI package" >&2
+    fi
+
+    echo "Windows installer artifacts written."
 fi
 
 echo "=== Checksums ==="
