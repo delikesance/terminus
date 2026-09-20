@@ -15,27 +15,27 @@
   libGL,
   vulkan-loader,
   libxkbcommon,
-  withX11 ? !stdenv.isDarwin,
+  withX11 ? !stdenv.hostPlatform.isDarwin,
   libX11,
   libXcursor,
   libXi,
   libXrandr,
   libxcb,
-  withWayland ? !stdenv.isDarwin,
+  withWayland ? !stdenv.hostPlatform.isDarwin,
   wayland,
+  withWgpu ? !stdenv.hostPlatform.isDarwin,
   shaderc,
   krb5,
   ...
 }: let
   readTOML = f: builtins.fromTOML (builtins.readFile f);
   cargoToml = readTOML ./Cargo.toml;
-  rioToml = readTOML ./frontends/rioterm/Cargo.toml;
   rustPlatform = makeRustPlatform {
     cargo = rust-toolchain;
     rustc = rust-toolchain;
   };
   rlinkLibs =
-    lib.optionals stdenv.isLinux [
+    lib.optionals stdenv.hostPlatform.isLinux [
       (lib.getLib gcc-unwrapped)
       fontconfig
       libGL
@@ -58,7 +58,7 @@
 in
   rustPlatform.buildRustPackage {
     inherit (cargoToml.workspace.package) version;
-    name = "terminus";
+    pname = "terminus";
     src = toSource {
       root = ./.;
       fileset = unions ([
@@ -72,7 +72,12 @@ in
 
     cargoBuildFlags = "-p rioterm";
 
-    buildInputs = rlinkLibs ++ (lib.optionals stdenv.isDarwin [darwin.libutil]);
+    # Match scripts/release.sh: fat LTO from Cargo.toml makes sandboxed
+    # links take an hour-plus on modest machines.
+    CARGO_PROFILE_RELEASE_LTO = "false";
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16";
+
+    buildInputs = rlinkLibs ++ (lib.optionals stdenv.hostPlatform.isDarwin [darwin.libutil]);
     runtimeDependencies = rlinkLibs;
 
     nativeBuildInputs =
@@ -81,7 +86,7 @@ in
         ncurses
         shaderc
       ]
-      ++ lib.optionals stdenv.isLinux [
+      ++ lib.optionals stdenv.hostPlatform.isLinux [
         cmake
         pkg-config
         autoPatchelfHook
@@ -92,36 +97,41 @@ in
       "terminfo"
     ];
 
-    postInstall =
-      ''
-        install -D -m 644 misc/terminus.desktop -t \
-                          $out/share/applications
-        install -D -m 644 misc/logo.svg \
-                          $out/share/icons/hicolor/scalable/apps/rio.svg
+    postInstall = ''
+      install -D -m 644 misc/terminus.desktop -t \
+                        $out/share/applications
+      install -D -m 644 misc/logo.svg \
+                        $out/share/icons/hicolor/scalable/apps/terminus.svg
 
-        # Install terminfo files
-        install -dm 755 "$terminfo/share/terminfo/r/"
-        tic -xe xterm-rio,rio,rio-direct -o "$terminfo/share/terminfo" misc/rio.terminfo
-        mkdir -p $out/nix-support
-        echo "$terminfo" >> $out/nix-support/propagated-user-env-packages
-      ''
-      + lib.optionalString stdenv.hostPlatform.isDarwin ''
-        mkdir $out/Applications/
-        mv misc/osx/Rio.app/ $out/Applications/
-        mkdir $out/Applications/Rio.app/Contents/MacOS/
-        ln -s $out/bin/rio $out/Applications/Rio.app/Contents/MacOS/
-      '';
+      # Install terminfo files (Rio-compatible names)
+      install -dm 755 "$terminfo/share/terminfo/r/"
+      tic -xe xterm-rio,rio,rio-direct -o "$terminfo/share/terminfo" misc/rio.terminfo
+      mkdir -p $out/nix-support
+      echo "$terminfo" >> $out/nix-support/propagated-user-env-packages
+    '';
 
     buildNoDefaultFeatures = true;
-    buildFeatures = (lib.optionals withX11 ["x11"]) ++ (lib.optionals withWayland ["wayland"]);
+    buildFeatures =
+      (lib.optionals withX11 ["x11"])
+      ++ (lib.optionals withWayland ["wayland"])
+      ++ (lib.optionals withWgpu ["wgpu"]);
+
     checkType = "debug";
+    # Fail to run in the Nix sandbox (same skips as nixpkgs rio).
+    checkFlags = [
+      "--skip=sys::unix::eventedfd::EventedFd"
+    ];
+
     meta = {
-      description = rioToml.package.description;
-      longDescription = rioToml.package.extended-description;
+      description = "Hardware-accelerated GPU terminal emulator";
+      longDescription = ''
+        Terminus is a hardware-accelerated GPU terminal emulator based on Rio,
+        with additional UI chrome and host-management features.
+      '';
       homepage = cargoToml.workspace.package.homepage;
       license = lib.licenses.mit;
       platforms = lib.platforms.unix;
-      changelog = "https://github.com/raphamorim/rio/blob/master/CHANGELOG.md";
+      changelog = "${cargoToml.workspace.package.repository}/blob/main/CHANGELOG.md";
       mainProgram = "terminus";
     };
   }

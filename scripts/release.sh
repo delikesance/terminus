@@ -3,13 +3,14 @@
 # Terminus release build & publish (Linux x86_64 + Windows x86_64).
 #
 # Intended to run inside `nix develop .#release` (which provides cargo,
-# cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, nfpm and tar).
+# cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, nfpm, nix and tar).
 # The convenient entry point is the flake app:
 #
 #   nix run .#release                 # build Linux + Windows and publish
 #   nix run .#release -- --build-only # build only, do not publish
 #   nix run .#release -- --tag v1.2.3 # publish under an explicit tag
-
+#
+# Linux artifacts include terminus.nix (NixOS binary package expression).
 set -euo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -95,9 +96,29 @@ if [[ "$WINDOWS_ONLY" == "0" ]]; then
     cp misc/terminus.desktop "$STAGE/terminus/" 2>/dev/null || true
     cp misc/logo.svg "$STAGE/terminus/" 2>/dev/null || true
     cp misc/rio.terminfo "$STAGE/terminus/" 2>/dev/null || true
-    tar -czf "$DIST_DIR/terminus-linux-x86_64.tar.gz" -C "$STAGE" terminus
+    TARBALL="$DIST_DIR/terminus-linux-x86_64.tar.gz"
+    tar -czf "$TARBALL" -C "$STAGE" terminus
     rm -rf "$STAGE"
-    UPLOAD+=("$DIST_DIR/terminus-linux-x86_64.tar.gz")
+    UPLOAD+=("$TARBALL")
+
+    # NixOS binary package expression (fetchurl + autoPatchelf).
+    # Users: pkgs.callPackage ./terminus.nix { }
+    if [[ -f "$ROOT/misc/nix/terminus-bin.nix.in" ]]; then
+        echo "Generating dist/terminus.nix for NixOS users..."
+        if ! command -v nix >/dev/null 2>&1; then
+            echo "release.sh: 'nix' is required to hash the tarball for terminus.nix" >&2
+            exit 1
+        fi
+        TARBALL_HASH="$(nix hash file --type sha256 --sri "$TARBALL")"
+        sed \
+            -e "s|@VERSION@|${VERSION}|g" \
+            -e "s|@TARBALL_HASH@|${TARBALL_HASH}|g" \
+            "$ROOT/misc/nix/terminus-bin.nix.in" \
+            > "$DIST_DIR/terminus.nix"
+        UPLOAD+=("$DIST_DIR/terminus.nix")
+    else
+        echo "release.sh: misc/nix/terminus-bin.nix.in missing; skipping terminus.nix" >&2
+    fi
 
     # Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm) packages via nfpm.
     if command -v nfpm >/dev/null 2>&1; then
@@ -139,9 +160,21 @@ if [[ "$LINUX_ONLY" == "0" ]]; then
         echo "Building Windows MSI package (terminus-x86_64.msi) with wixl..."
         TMP_WXS="$(mktemp --suffix=.wxs)"
         sed -e "s#\${VERSION}#$VERSION#g" -e "s#\${EXEPATH}#$WIN_BIN#g" "$ROOT/misc/windows/terminus.wxs" > "$TMP_WXS"
-        wixl -a x64 "$TMP_WXS" -o "$DIST_DIR/terminus-x86_64.msi"
+        OUT_MSI="$DIST_DIR/terminus-x86_64.msi"
+        wixl -a x64 "$TMP_WXS" -o "$OUT_MSI"
+
+        # NOTE: wixl/msitools may leave the MSI string-table codepage as 0,
+        # which Windows Installer rejects with “Impossible d'ouvrir ce package...”.
+        # Patch it via _ForceCodepage=1252 using msibuild.
+        if command -v msibuild >/dev/null 2>&1; then
+            TMP_IDT="$(mktemp --suffix=.idt)"
+            printf "\r\n\r\n1252\t_ForceCodepage\r\n" > "$TMP_IDT"
+            msibuild "$OUT_MSI" -i "$TMP_IDT" >/dev/null 2>&1 || true
+            rm -f "$TMP_IDT"
+        fi
+
         rm -f "$TMP_WXS"
-        UPLOAD+=("$DIST_DIR/terminus-x86_64.msi")
+        UPLOAD+=("$OUT_MSI")
     else
         echo "release.sh: wixl not found; skipping MSI package" >&2
     fi

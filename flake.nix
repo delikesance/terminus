@@ -1,11 +1,6 @@
 {
   description = "Terminus | A hardware-accelerated GPU terminal emulator";
 
-  nixConfig = {
-    extra-substituters = ["https://rioterm.cachix.org"];
-    extra-trusted-public-keys = ["rioterm.cachix.org-1:cs/H9Jf0ZpHyR4WgjoNJZVBpkVi69Y4JASUK5ReEQPE="];
-  };
-
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
@@ -22,7 +17,6 @@
 
       perSystem = {
         self',
-        inputs',
         pkgs,
         system,
         lib,
@@ -31,10 +25,10 @@
         # Defines a devshell using the `rust-toolchain`, allowing for
         # different versions of rust to be used.
         mkDevShell = rust-toolchain: let
-          runtimeDeps = self'.packages.rio.runtimeDependencies;
+          runtimeDeps = self'.packages.terminus.runtimeDependencies;
           tools =
-            self'.packages.rio.nativeBuildInputs
-            ++ self'.packages.rio.buildInputs
+            self'.packages.terminus.nativeBuildInputs
+            ++ self'.packages.terminus.buildInputs
             ++ [rust-toolchain]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.krb5 pkgs.pkg-config];
         in
@@ -46,8 +40,8 @@
           msrv = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           stable = pkgs.rust-bin.stable.latest.minimal;
           nightly = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.minimal);
-          rio = msrv;
-          default = rio;
+          terminus = msrv;
+          default = terminus;
         };
         # Cross-compile to Windows from WSL. Keep this out of the default
         # shell so Linux `nix develop` / CI do not fetch rust-std-msvc.
@@ -84,15 +78,15 @@
 
         # Linux system deps needed by `cargo build` (bindgen/clang, shaderc,
         # fontconfig/krb5/X11/Wayland .pc files). The rust toolchains that
-        # the `rio` Nix package embeds are filtered out: `windowsToolchain`
+        # the `terminus` Nix package embeds are filtered out: `windowsToolchain`
         # below is the only toolchain here and carries both the linux-gnu
         # host std and the windows-msvc target std.
         linuxBuildDeps =
           (lib.filter (p:
             !(lib.hasInfix "rust-minimal" (p.name or ""))
             && !(lib.hasInfix "auditable-rust-minimal" (p.name or "")))
-            self'.packages.rio.nativeBuildInputs)
-          ++ self'.packages.rio.buildInputs;
+          self'.packages.terminus.nativeBuildInputs)
+          ++ self'.packages.terminus.buildInputs;
 
         # Release shell: Linux system deps + the Windows cross toolchain
         # + publishing tools. One shell builds both targets.
@@ -111,9 +105,10 @@
               pkgs.gzip
               pkgs.git
               pkgs.coreutils
+              pkgs.nix
             ];
           LD_LIBRARY_PATH = lib.makeLibraryPath (
-            self'.packages.rio.runtimeDependencies
+            self'.packages.terminus.runtimeDependencies
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.krb5.lib]
           );
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
@@ -129,16 +124,15 @@
           overlays = [(import inputs.rust-overlay)];
         };
 
-        # Create overlay to override `rio` with this flake's default
-        overlayAttrs = {inherit (self'.packages) rio;};
+        overlayAttrs = {inherit (self'.packages) terminus;};
         packages =
           lib.mapAttrs' (
             k: v: {
               name =
-                if builtins.elem k ["rio" "default"]
+                if builtins.elem k ["terminus" "default"]
                 then k
-                else "rio-${k}";
-              value = pkgs.callPackage ./pkgRio.nix {rust-toolchain = v;};
+                else "terminus-${k}";
+              value = pkgs.callPackage ./package.nix {rust-toolchain = v;};
             }
           )
           toolchains;
@@ -151,19 +145,25 @@
             release = releaseShell;
           };
 
-        # Single-command release: builds Linux + Windows, then publishes
-        # the artifacts as a GitHub release via `gh`.
-        apps.release = {
-          type = "app";
-          program = toString (pkgs.writeShellScript "terminus-release" ''
-            set -euo pipefail
-            root="$(pwd)"
-            if [[ ! -f "$root/flake.nix" || ! -f "$root/scripts/release.sh" ]]; then
-              echo "terminus-release: run from the repository root (where flake.nix lives)" >&2
-              exit 1
-            fi
-            exec nix develop "$root#release" --command bash "$root/scripts/release.sh" "$@"
-          '');
+        apps = {
+          default = {
+            type = "app";
+            program = lib.getExe self'.packages.terminus;
+          };
+          # Single-command release: builds Linux + Windows, then publishes
+          # the artifacts as a GitHub release via `gh`.
+          release = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "terminus-release" ''
+              set -euo pipefail
+              root="$(pwd)"
+              if [[ ! -f "$root/flake.nix" || ! -f "$root/scripts/release.sh" ]]; then
+                echo "terminus-release: run from the repository root (where flake.nix lives)" >&2
+                exit 1
+              fi
+              exec nix develop "$root#release" --command bash "$root/scripts/release.sh" "$@"
+            '');
+          };
         };
       };
     };
