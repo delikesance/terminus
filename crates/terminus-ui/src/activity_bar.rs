@@ -63,6 +63,13 @@ impl Section {
         }
     }
 
+    pub const fn label(self) -> &'static str {
+        match self {
+            Section::Servers => "Servers & Hosts",
+            Section::Snippets => "Snippets",
+        }
+    }
+
     pub const fn index(self) -> usize {
         match self {
             Section::Servers => 0,
@@ -79,6 +86,13 @@ impl RailAction {
         }
     }
 
+    pub const fn label(self) -> &'static str {
+        match self {
+            RailAction::CloudSync => "Cloud Sync",
+            RailAction::Settings => "Settings",
+        }
+    }
+
     pub const fn index(self) -> usize {
         match self {
             RailAction::CloudSync => 0,
@@ -92,8 +106,10 @@ impl RailAction {
 pub struct ActivityBarState {
     pub selected: Section,
     pub collapsed: bool,
-    /// Cloud sync is active (emerald tint on the cloud icon).
+    /// Cloud sync is connected (emerald tint on the cloud icon).
     pub cloud_sync_active: bool,
+    /// Icon under the pointer: its name shows beside the rail.
+    pub hover: Option<RailHit>,
 }
 
 impl Default for ActivityBarState {
@@ -101,7 +117,8 @@ impl Default for ActivityBarState {
         Self {
             selected: Section::Servers,
             collapsed: false,
-            cloud_sync_active: true,
+            cloud_sync_active: false,
+            hover: None,
         }
     }
 }
@@ -176,6 +193,35 @@ pub fn marker_rect(origin_y: f32, index: usize) -> Rect {
     // Kept for API compatibility; Apple HIG uses a filled pill instead.
     let item = item_rect(origin_y, index);
     Rect::new(item.x, item.y, 0.0, item.height)
+}
+
+/// Horizontal gap between the rail and a hover label.
+pub const TOOLTIP_GAP: f32 = 6.0;
+/// Hover label height.
+pub const TOOLTIP_HEIGHT: f32 = 26.0;
+/// Approximate advance of one label character (monospace chrome text).
+pub const TOOLTIP_CHAR_WIDTH: f32 = 7.0;
+/// Inner horizontal padding of a hover label.
+pub const TOOLTIP_PAD_X: f32 = 10.0;
+
+/// Box of a rail target, whichever kind it is.
+pub fn hit_rect(origin_y: f32, height: f32, hit: RailHit) -> Rect {
+    match hit {
+        RailHit::Section(section) => section_rect(origin_y, section),
+        RailHit::Action(action) => action_rect(origin_y, height, action),
+    }
+}
+
+/// Hover label box beside `hit`, vertically centred on its icon.
+pub fn tooltip_rect(origin_y: f32, height: f32, hit: RailHit, label: &str) -> Rect {
+    let item = hit_rect(origin_y, height, hit);
+    let width = label.chars().count() as f32 * TOOLTIP_CHAR_WIDTH + 2.0 * TOOLTIP_PAD_X;
+    Rect::new(
+        WIDTH + TOOLTIP_GAP,
+        item.y + (item.height - TOOLTIP_HEIGHT) / 2.0,
+        width,
+        TOOLTIP_HEIGHT,
+    )
 }
 
 /// Which rail target is under `(x, y)`.
