@@ -702,6 +702,8 @@ enum HostEvent {
     /// Vault unlock/create result for the Settings passphrase field.
     VaultStatus {
         unlocked: bool,
+        /// A vault header exists (unlock), or not yet (the prompt creates one).
+        configured: bool,
         message: Option<String>,
     },
     /// Remote OS classified after connect (sidebar / tab badge).
@@ -728,6 +730,7 @@ pub struct HostRepository {
     error: Option<String>,
     /// Last vault unlock status message (Settings).
     vault_message: Option<String>,
+    vault_configured: bool,
     vault_unlocked: bool,
     /// Last known sync URI from the store.
     sync_uri: String,
@@ -766,6 +769,7 @@ impl HostRepository {
             notice: None,
             error: None,
             vault_message: None,
+            vault_configured: false,
             vault_unlocked: false,
             sync_uri: String::new(),
             sync_connected: false,
@@ -789,6 +793,11 @@ impl HostRepository {
 
     pub fn identities(&self) -> &[(String, String, String, String)] {
         &self.identities
+    }
+
+    /// Whether a vault exists yet (else unlocking creates it).
+    pub fn vault_configured(&self) -> bool {
+        self.vault_configured
     }
 
     pub fn vault_unlocked(&self) -> bool {
@@ -1141,9 +1150,14 @@ impl HostRepository {
                     self.snippet_items = snippets;
                 }
                 Ok(HostEvent::SnippetsLoaded(_)) => {}
-                Ok(HostEvent::VaultStatus { unlocked, message }) => {
+                Ok(HostEvent::VaultStatus {
+                    unlocked,
+                    configured,
+                    message,
+                }) => {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.vault_unlocked = unlocked;
+                    self.vault_configured = configured;
                     if let Some(msg) = message {
                         // Surface vault unlock/create results on the SqlSync
                         // status row (not the host-list notice band).
@@ -1241,6 +1255,7 @@ fn worker(
                         vault = Some(shared);
                         let _ = events.send(HostEvent::VaultStatus {
                             unlocked: true,
+                            configured: true,
                             message: None,
                         });
                     }
@@ -1248,6 +1263,7 @@ fn worker(
                         crate::vault_remember::forget_passphrase();
                         let _ = events.send(HostEvent::VaultStatus {
                             unlocked: false,
+                            configured: true,
                             message: None,
                         });
                     }
@@ -1255,10 +1271,18 @@ fn worker(
             } else {
                 let _ = events.send(HostEvent::VaultStatus {
                     unlocked: false,
+                    configured: true,
                     message: None,
                 });
             }
         }
+    } else {
+        // No vault yet: the first prompt creates one (asks twice).
+        let _ = events.send(HostEvent::VaultStatus {
+            unlocked: false,
+            configured: false,
+            message: None,
+        });
     }
 
     runtime.block_on(sync_engine.attach_local(store.pool().clone()));
@@ -1510,13 +1534,20 @@ fn worker(
                     }
                     let _ = events.send(HostEvent::VaultStatus {
                         unlocked: true,
+                        configured: true,
                         message: Some("Vault unlocked".into()),
                     });
                     let _ = events.send(sync_status_event(&runtime, &sync_engine, true));
                 }
                 Err(message) => {
+                    let configured = runtime
+                        .block_on(store.get_setting(terminus_core::VAULT_HEADER_SETTING))
+                        .ok()
+                        .flatten()
+                        .is_some();
                     let _ = events.send(HostEvent::VaultStatus {
                         unlocked: false,
+                        configured,
                         message: Some(message),
                     });
                 }

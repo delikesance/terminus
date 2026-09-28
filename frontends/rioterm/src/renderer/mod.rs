@@ -152,6 +152,22 @@ fn draw_hint_tooltip(
     );
 }
 
+/// Title-bar text: `● <host> · <session>`. Stored hosts are keyed by an
+/// opaque UUID, so they show their endpoint label, never the id.
+fn context_bar_label(
+    host_id: Option<&str>,
+    host_label: Option<&str>,
+    session: &str,
+) -> String {
+    let host = match (host_id, host_label) {
+        (None, _) => crate::hosts::LOCAL_ID,
+        (Some(id), _) if id == crate::hosts::LOCAL_ID => crate::hosts::LOCAL_ID,
+        (Some(_), Some(label)) if !label.is_empty() => label,
+        (Some(_), _) => "remote",
+    };
+    format!("● {host} · {session}")
+}
+
 /// Thin top band: host · session title (no horizontal tab pills).
 fn render_context_bar<T: rio_backend::event::EventListener + Clone + Send + 'static>(
     sugarloaf: &mut Sugarloaf,
@@ -168,17 +184,17 @@ fn render_context_bar<T: rio_backend::event::EventListener + Clone + Send + 'sta
     crate::renderer::chrome::paint_title_strip(sugarloaf, logical_w, CONTEXT_BAR_HEIGHT);
 
     let idx = context_manager.current_index();
-    let host = context_manager
-        .current()
-        .host_id
-        .as_deref()
-        .unwrap_or(crate::hosts::LOCAL_ID);
+    let current = context_manager.current();
     let session = context_manager
         .custom_title(idx)
         .map(str::to_string)
         .or_else(|| context_manager.title(idx).map(|t| t.content.clone()))
         .unwrap_or_else(|| "Terminal".to_string());
-    let label = format!("● {host} · {session}");
+    let label = context_bar_label(
+        current.host_id.as_deref(),
+        current.host_label.as_deref(),
+        &session,
+    );
     let opts = DrawOpts {
         font_size: 12.0,
         color: [0xed, 0xed, 0xed, 0xff],
@@ -1583,6 +1599,25 @@ mod grid_cell_bg_tests {
         assert_eq!(
             rio_grid::cell_bg(Square::from_char('x'), style, &renderer, &colors),
             [0, 0, 0, 0]
+        );
+    }
+}
+
+#[cfg(test)]
+mod context_bar_tests {
+    use super::context_bar_label;
+
+    #[test]
+    fn title_bar_never_shows_a_host_uuid() {
+        let id = "a2d52fbe-3280-4175-8fd7-089a10088574";
+        assert_eq!(
+            context_bar_label(Some(id), Some("tuser@127.0.0.1:2222"), "local-pw"),
+            "● tuser@127.0.0.1:2222 · local-pw"
+        );
+        assert!(!context_bar_label(Some(id), None, "x").contains(id));
+        assert_eq!(
+            context_bar_label(None, None, "This computer"),
+            format!("● {} · This computer", crate::hosts::LOCAL_ID)
         );
     }
 }

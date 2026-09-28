@@ -957,6 +957,7 @@ impl Screen<'_> {
                     }
                 }
             }
+            self.chrome.vault_configured = self.host_store.vault_configured();
             self.chrome
                 .settings
                 .apply_sync_status(terminus_ui::SyncUiStatus {
@@ -1461,6 +1462,7 @@ impl Screen<'_> {
             Key::Named(NamedKey::Enter) => FormInput::Enter,
             Key::Named(NamedKey::Escape) => FormInput::Escape,
             Key::Named(NamedKey::Backspace) => FormInput::Backspace,
+            Key::Named(NamedKey::Tab) => FormInput::Next,
             _ => {
                 let text = key_event.text.as_deref().unwrap_or("");
                 if text.is_empty() {
@@ -1488,13 +1490,15 @@ impl Screen<'_> {
 
     /// Submit the vault unlock passphrase from the prompt.
     pub fn submit_vault_unlock(&mut self) {
-        let passphrase = self.chrome.vault_unlock.passphrase().to_string();
-        if passphrase.trim().is_empty() {
-            self.chrome
-                .vault_unlock
-                .set_error("Enter your vault passphrase");
-            return;
-        }
+        // Creating a vault asks twice: a typo would otherwise lock every
+        // secret saved afterwards behind a passphrase nobody knows.
+        let passphrase = match self.chrome.vault_unlock.validate() {
+            Ok(passphrase) => passphrase,
+            Err(message) => {
+                self.chrome.vault_unlock.set_error(message);
+                return;
+            }
+        };
         self.chrome.vault_unlock.set_unlocking();
         self.host_store
             .unlock_vault_remember(&passphrase, self.chrome.vault_unlock.remember());
@@ -1504,6 +1508,17 @@ impl Screen<'_> {
     ///
     /// The store is the only validator, so a rejection comes back as the
     /// dialog's error line and the form stays open with its text.
+    /// Settings → Unlock Vault: unlock with the Settings passphrase field, or,
+    /// with no vault yet, open the create prompt (passphrase asked twice).
+    pub fn settings_unlock_vault(&mut self) {
+        if !self.host_store.vault_configured() {
+            self.open_vault_unlock_for(terminus_ui::PendingVaultAction::CreateVault);
+            return;
+        }
+        let passphrase = self.chrome.settings.sql_passphrase.clone();
+        self.host_store.unlock_vault(&passphrase);
+    }
+
     /// Send the Settings "New SSH Key" draft to the worker (generate or import).
     pub fn submit_key_draft(&mut self) {
         let settings = &mut self.chrome.settings;
@@ -3079,17 +3094,21 @@ impl Screen<'_> {
         match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
-                let os_id = self
+                let row = self
                     .chrome
                     .panel
                     .rows
                     .iter()
                     .filter_map(terminus_ui::sidebar::Row::host)
-                    .find(|item| item.id == id)
-                    .and_then(|item| item.os_id.clone());
+                    .find(|item| item.id == id);
+                let os_id = row.and_then(|item| item.os_id.clone());
+                let endpoint = row
+                    .map(|item| item.endpoint.clone())
+                    .filter(|e| !e.is_empty());
                 self.context_manager
                     .set_custom_title(tab_index, Some(label));
                 self.context_manager.set_tab_os_id(tab_index, os_id);
+                self.context_manager.set_tab_host_label(tab_index, endpoint);
                 // Background: classify remote OS and update sidebar / tab glyphs.
                 self.host_store.detect_os(id);
                 Ok(())
@@ -3375,17 +3394,21 @@ impl Screen<'_> {
         match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
-                let os_id = self
+                let row = self
                     .chrome
                     .panel
                     .rows
                     .iter()
                     .filter_map(terminus_ui::sidebar::Row::host)
-                    .find(|item| item.id == id)
-                    .and_then(|item| item.os_id.clone());
+                    .find(|item| item.id == id);
+                let os_id = row.and_then(|item| item.os_id.clone());
+                let endpoint = row
+                    .map(|item| item.endpoint.clone())
+                    .filter(|e| !e.is_empty());
                 self.context_manager
                     .set_custom_title(tab_index, Some(label));
                 self.context_manager.set_tab_os_id(tab_index, os_id);
+                self.context_manager.set_tab_host_label(tab_index, endpoint);
                 self.host_store.detect_os(id);
                 Ok(())
             }
@@ -3756,6 +3779,23 @@ impl Screen<'_> {
         } else {
             self.close_tab(clipboard);
         }
+    }
+
+    /// Delete a stored host and close the tabs opened from it: they would
+    /// otherwise live on with no sidebar row to reach them by.
+    pub fn delete_host_closing_sessions(&mut self, id: &str, clipboard: &mut Clipboard) {
+        for index in (0..self.context_manager.len()).rev() {
+            let from_host = self
+                .context_manager
+                .contexts_mut()
+                .get(index)
+                .and_then(|grid| grid.current().host_id.clone())
+                .is_some_and(|host| host == id);
+            if from_host {
+                self.close_tab_at(index, clipboard);
+            }
+        }
+        self.host_store.delete_host(id);
     }
 
     pub fn close_tab(&mut self, clipboard: &mut Clipboard) {
@@ -4666,8 +4706,14 @@ impl Screen<'_> {
         use crate::renderer::command_palette::PaletteAction;
 
         if let Some(host_id) = self.renderer.command_palette.get_selected_host_id() {
+            use crate::renderer::command_palette::HostPick;
+            let pick = self.renderer.command_palette.host_pick();
             self.renderer.command_palette.set_enabled(false);
-            if let Err(err) = self.open_host_session(&host_id, clipboard) {
+            let opened = match pick {
+                HostPick::Session => self.open_host_session(&host_id, clipboard),
+                HostPick::Sftp => self.open_sftp_pane(&host_id),
+            };
+            if let Err(err) = opened {
                 self.chrome.panel.error = Some(err);
             }
             return;
@@ -4687,6 +4733,14 @@ impl Screen<'_> {
             Some(PaletteAction::ListHosts) => {
                 let hosts = self.palette_host_items();
                 self.renderer.command_palette.enter_hosts_mode(hosts);
+            }
+            // More than one host: let the user pick which one to browse.
+            Some(PaletteAction::OpenSftp) if self.palette_host_items().len() > 1 => {
+                use crate::renderer::command_palette::HostPick;
+                let hosts = self.palette_host_items();
+                self.renderer
+                    .command_palette
+                    .enter_hosts_mode_for(hosts, HostPick::Sftp);
             }
             Some(action) => {
                 self.renderer.command_palette.set_enabled(false);

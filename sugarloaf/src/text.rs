@@ -1549,14 +1549,42 @@ impl Text {
             std::ptr::write(dst, uniforms);
         }
 
+        // Size the slot buffer for early + late + overlay up front: the
+        // three lists share it at disjoint offsets, and growing it later in
+        // the frame would free a buffer that recorded draws still read.
+        let total = self.instances.len()
+            + self.late_instances.len()
+            + self.overlay_instances.len();
+        Self::ensure_vulkan_instance_capacity(state, slot, total);
+
         // Two passes so late overlays cannot be reordered under early
-        // glyphs by (atlas, page) bucketing.
+        // glyphs by (atlas, page) bucketing. Each list lands after the
+        // previous one: the GPU runs these draws after recording ends, so
+        // uploading both at offset 0 made the early draws read late glyphs.
         let early = std::mem::take(&mut self.instances);
         let late = std::mem::take(&mut self.late_instances);
-        Self::render_vulkan_list(state, cmd, slot, &early);
-        Self::render_vulkan_list(state, cmd, slot, &late);
+        Self::render_vulkan_list(state, cmd, slot, &early, 0);
+        Self::render_vulkan_list(state, cmd, slot, &late, early.len());
         self.instances = early;
         self.late_instances = late;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ensure_vulkan_instance_capacity(
+        state: &mut TextVulkanState,
+        slot: usize,
+        count: usize,
+    ) {
+        if count > state.instance_capacity[slot] {
+            let new_cap = count.next_power_of_two().max(256);
+            state.instance_buffers[slot] =
+                Some(crate::context::vulkan::allocate_host_visible_buffer_raw(
+                    &state.shared,
+                    (new_cap * std::mem::size_of::<TextInstance>()) as u64,
+                    ash::vk::BufferUsageFlags::VERTEX_BUFFER,
+                ));
+            state.instance_capacity[slot] = new_cap;
+        }
     }
 
     /// Draw overlay UI text after overlay quads. Uses a separate list
@@ -1584,8 +1612,16 @@ impl Text {
             std::ptr::write(dst, uniforms);
         }
 
+        // Overlay glyphs go after this frame's early + late lists (already
+        // sized for by `render_vulkan`); an overlay-only frame starts at 0.
+        let base = self.instances.len() + self.late_instances.len();
+        Self::ensure_vulkan_instance_capacity(
+            state,
+            slot,
+            base + self.overlay_instances.len(),
+        );
         let overlay = std::mem::take(&mut self.overlay_instances);
-        Self::render_vulkan_list(state, cmd, slot, &overlay);
+        Self::render_vulkan_list(state, cmd, slot, &overlay, base);
         self.overlay_instances = overlay;
     }
 
@@ -1595,6 +1631,7 @@ impl Text {
         cmd: ash::vk::CommandBuffer,
         slot: usize,
         instances: &[TextInstance],
+        base: usize,
     ) {
         if instances.is_empty() {
             return;
@@ -1623,24 +1660,20 @@ impl Text {
             buckets.push(((kind, page), start, count));
         }
 
-        // Grow per-slot instance buffer if needed.
+        // The caller sized the slot buffer for every list of this frame;
+        // write this list at its own `base` so earlier draws keep their data.
         let instance_count = bucketed.len();
-        let needed_bytes = instance_count * std::mem::size_of::<TextInstance>();
-        if instance_count > state.instance_capacity[slot] {
-            let new_cap = instance_count.next_power_of_two().max(256);
-            state.instance_buffers[slot] =
-                Some(crate::context::vulkan::allocate_host_visible_buffer_raw(
-                    &state.shared,
-                    (new_cap * std::mem::size_of::<TextInstance>()) as u64,
-                    ash::vk::BufferUsageFlags::VERTEX_BUFFER,
-                ));
-            state.instance_capacity[slot] = new_cap;
+        debug_assert!(base + instance_count <= state.instance_capacity[slot]);
+        if base + instance_count > state.instance_capacity[slot] {
+            return;
         }
+        let needed_bytes = instance_count * std::mem::size_of::<TextInstance>();
+        let byte_offset = base * std::mem::size_of::<TextInstance>();
         let instance_buf = state.instance_buffers[slot].as_ref().unwrap();
         unsafe {
             std::ptr::copy_nonoverlapping(
                 bucketed.as_ptr() as *const u8,
-                instance_buf.as_mut_ptr(),
+                instance_buf.as_mut_ptr().add(byte_offset),
                 needed_bytes,
             );
         }
@@ -1687,7 +1720,7 @@ impl Text {
                     0,
                     &is_color.to_ne_bytes(),
                 );
-                state.shared.cmd_draw(cmd, 4, count, 0, start);
+                state.shared.cmd_draw(cmd, 4, count, 0, base as u32 + start);
             }
         }
     }
