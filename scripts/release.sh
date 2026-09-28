@@ -98,6 +98,9 @@ export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNIT
 export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
 
 DIST_DIR="$ROOT/dist"
+# Start empty: files left by an earlier build (another version's .deb/.rpm)
+# would otherwise be picked up by the globs below and published again.
+rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 UPLOAD=()
 
