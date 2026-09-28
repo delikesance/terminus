@@ -495,11 +495,12 @@ fn render_notice(
     let pad = 12.0;
     let max_w = (rect.width - 2.0 * pad).max(0.0);
     let text_opts = opts(HINT_SIZE, color, false);
-    let lines = if is_error {
-        wrap_lines(sugarloaf, message, max_w, &text_opts, 2)
+    let max_lines = if is_error {
+        2
     } else {
-        vec![elide(sugarloaf, message, max_w, &text_opts)]
+        chrome.panel.notice_lines()
     };
+    let lines = wrap_lines(sugarloaf, message, max_w, &text_opts, max_lines);
     let line_gap = 4.0;
     let block_h = lines.len() as f32 * HINT_SIZE
         + (lines.len().saturating_sub(1) as f32) * line_gap;
@@ -1249,6 +1250,8 @@ fn render_settings_modal(
                             text: "••••••••  OpenSSH private key ready".into(),
                             placeholder: false,
                             show_caret: false,
+                            caret_prefix: String::new(),
+                            selection: None,
                         }
                     } else {
                         terminus_ui::FieldPaint::from_draft(
@@ -1274,6 +1277,57 @@ fn render_settings_modal(
                             theme,
                             pem_card,
                             &chrome.settings.key_pem.prefix_display(),
+                            0.0,
+                        );
+                    }
+                }
+                if let Some(pass_card) = chrome
+                    .settings
+                    .key_draft_passphrase_rect(window_width, window_height)
+                {
+                    let focused = chrome.settings.key_draft_passphrase_focused;
+                    let value = &chrome.settings.key_passphrase.value;
+                    let paint = if value.is_empty() {
+                        terminus_ui::FieldPaint::from_draft(
+                            &chrome.settings.key_passphrase,
+                            "Key passphrase (only for an encrypted key)",
+                            focused,
+                        )
+                    } else {
+                        let masked = "•".repeat(value.chars().count());
+                        terminus_ui::FieldPaint {
+                            caret_prefix: masked.clone(),
+                            text: masked,
+                            placeholder: false,
+                            show_caret: focused,
+                            selection: None,
+                        }
+                    };
+                    paint_settings_field_card(
+                        sugarloaf,
+                        theme,
+                        pass_card,
+                        "Passphrase",
+                        &paint.text,
+                        focused,
+                        paint.placeholder,
+                        0.0,
+                        true,
+                    );
+                    if paint.show_caret {
+                        let masked_prefix = "•".repeat(
+                            chrome
+                                .settings
+                                .key_passphrase
+                                .prefix_display()
+                                .chars()
+                                .count(),
+                        );
+                        paint_field_caret_prefix(
+                            sugarloaf,
+                            theme,
+                            pass_card,
+                            &masked_prefix,
                             0.0,
                         );
                     }
@@ -1526,8 +1580,25 @@ fn render_settings_modal(
                 0.0,
                 uri_paint_text,
             );
-            if uri_paint_text && uri_paint.show_caret {
-                paint_settings_caret(sugarloaf, theme, uri_card, &uri_paint.text, 0.0);
+            if uri_paint_text {
+                paint_field_selection(
+                    sugarloaf,
+                    theme,
+                    uri_card,
+                    &uri_paint,
+                    0.0,
+                    DEPTH_DIALOG + 0.045,
+                    ORDER_DIALOG,
+                );
+                if uri_paint.show_caret {
+                    paint_field_caret_prefix(
+                        sugarloaf,
+                        theme,
+                        uri_card,
+                        &uri_paint.caret_prefix,
+                        0.0,
+                    );
+                }
             }
 
             // Passphrase field
@@ -1543,12 +1614,21 @@ fn render_settings_modal(
                 terminus_ui::settings::FIELD_EYE_SLOT,
                 true,
             );
+            paint_field_selection(
+                sugarloaf,
+                theme,
+                pass_card,
+                &pass_paint,
+                terminus_ui::settings::FIELD_EYE_SLOT,
+                DEPTH_DIALOG + 0.045,
+                ORDER_DIALOG,
+            );
             if pass_paint.show_caret {
-                paint_settings_caret(
+                paint_field_caret_prefix(
                     sugarloaf,
                     theme,
                     pass_card,
-                    &pass_paint.text,
+                    &pass_paint.caret_prefix,
                     terminus_ui::settings::FIELD_EYE_SLOT,
                 );
             }
@@ -2942,6 +3022,56 @@ pub(crate) fn paint_field_card_at(
     }
 }
 
+/// Accent wash behind the selected span of a field card. Text and
+/// selection come from the shared field paint model, so a masked field
+/// highlights the same character positions it displays.
+pub(crate) fn paint_field_selection(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    card: Rect,
+    paint: &terminus_ui::FieldPaint,
+    trailing_slot: f32,
+    depth: f32,
+    order: u8,
+) {
+    let Some((start, end)) = paint.selection else {
+        return;
+    };
+    if end <= start || paint.placeholder {
+        return;
+    }
+    let input = terminus_ui::settings::field_input_in_card(card);
+    let text_x = input.x + terminus_ui::settings::FIELD_TEXT_INSET;
+    let text_budget = (input.width
+        - terminus_ui::settings::FIELD_TEXT_INSET
+        - trailing_slot.max(terminus_ui::settings::FIELD_TEXT_INSET))
+    .max(0.0);
+    if text_budget <= 0.0 {
+        return;
+    }
+    let text_opts = opts(ROW_SUB_SIZE, theme.text, false);
+    let before: String = paint.text.chars().take(start).collect();
+    let through: String = paint.text.chars().take(end).collect();
+    let before_shown = elide(sugarloaf, &before, text_budget, &text_opts);
+    let through_shown = elide(sugarloaf, &through, text_budget, &text_opts);
+    let start_x = sugarloaf.text_mut().measure(&before_shown, &text_opts);
+    let end_x = sugarloaf.text_mut().measure(&through_shown, &text_opts);
+    let x = (text_x + start_x).min(text_x + text_budget);
+    let right = (text_x + end_x).min(text_x + text_budget);
+    paint_flat(
+        sugarloaf,
+        &Rect::new(
+            x,
+            input.y + 6.0,
+            (right - x).max(CARET_WIDTH),
+            (input.height - 12.0).max(1.0),
+        ),
+        with_alpha(theme.accent, 0.35),
+        depth,
+        order,
+    );
+}
+
 /// Caret inside a field card, positioned after `prefix` (not always end-of-value).
 pub(crate) fn paint_field_caret_prefix(
     sugarloaf: &mut Sugarloaf,
@@ -3893,21 +4023,31 @@ fn render_add_host(
     );
 
     if let Some(error) = form.error() {
-        let text = elide(
+        // Two wrapped lines beside the buttons: a one-line elide hid the
+        // part of the message that says what went wrong.
+        let lines = wrap_lines(
             sugarloaf,
             error,
             hint.width - 180.0,
             &opts(HINT_SIZE, theme.danger, false),
+            2,
         );
-        draw_text(
-            sugarloaf,
-            hint.x,
-            hint.y + 12.0,
-            &text,
-            HINT_SIZE,
-            theme.danger,
-            false,
-        );
+        let top = if lines.len() > 1 {
+            hint.y + 4.0
+        } else {
+            hint.y + 12.0
+        };
+        for (i, line) in lines.iter().enumerate() {
+            draw_text(
+                sugarloaf,
+                hint.x,
+                top + i as f32 * (HINT_SIZE + 3.0),
+                line,
+                HINT_SIZE,
+                theme.danger,
+                false,
+            );
+        }
     }
 
     // Cancel + Connect footer — shared ButtonSpec paint path.
@@ -4106,7 +4246,8 @@ fn render_vault_unlock(
     paint_glyphs: bool,
 ) {
     let prompt = &chrome.vault_unlock;
-    let layout = terminus_ui::VaultUnlockLayout::centered(window_width, window_height);
+    let layout =
+        terminus_ui::VaultUnlockLayout::for_prompt(window_width, window_height, prompt);
     let dialog = layout.rect();
     let radius = terminus_ui::vault_unlock::RADIUS;
 
@@ -4132,26 +4273,37 @@ fn render_vault_unlock(
         sugarloaf,
         title.x,
         title.y + 4.0,
-        "Unlock Vault",
+        prompt.title(),
         DIALOG_TITLE_SIZE,
         theme.text,
         true,
     );
 
+    // Wrapped to the dialog width (two lines at most) so it never runs
+    // past the dialog edge.
     let subtitle = layout.subtitle_rect();
-    let subtitle_text = prompt
-        .pending()
-        .map(terminus_ui::PendingVaultAction::subtitle)
-        .unwrap_or("Enter your vault passphrase.");
-    draw_text(
+    let subtitle_opts = DrawOpts {
+        font_size: HINT_SIZE,
+        ..DrawOpts::default()
+    };
+    let lines = wrap_lines(
         sugarloaf,
-        subtitle.x,
-        subtitle.y + 4.0,
-        subtitle_text,
-        HINT_SIZE,
-        theme.text_muted,
-        false,
+        &prompt.subtitle(),
+        subtitle.width,
+        &subtitle_opts,
+        2,
     );
+    for (i, line) in lines.iter().enumerate() {
+        draw_text(
+            sugarloaf,
+            subtitle.x,
+            subtitle.y + 2.0 + i as f32 * (HINT_SIZE + 4.0),
+            line,
+            HINT_SIZE,
+            theme.text_muted,
+            false,
+        );
+    }
 
     // Same field card + caret path as Settings → Encryption Passphrase.
     let card = layout.passphrase_card_rect();
@@ -4162,22 +4314,40 @@ fn render_vault_unlock(
         card,
         "Encryption Passphrase",
         &paint.text,
-        true,
+        !prompt.confirm_focused(),
         paint.placeholder,
         terminus_ui::settings::FIELD_EYE_SLOT,
         true,
     );
+    if let Some(confirm_card) = layout.confirm_card_rect() {
+        let confirm = prompt.confirm_field_paint();
+        paint_settings_field_card(
+            sugarloaf,
+            theme,
+            confirm_card,
+            "Confirm Passphrase",
+            &confirm.text,
+            prompt.confirm_focused(),
+            confirm.placeholder,
+            0.0,
+            true,
+        );
+        if confirm.show_caret {
+            paint_field_caret_prefix(
+                sugarloaf,
+                theme,
+                confirm_card,
+                &confirm.caret_prefix,
+                0.0,
+            );
+        }
+    }
     if paint.show_caret {
-        let caret_prefix = if paint.placeholder {
-            ""
-        } else {
-            paint.text.as_str()
-        };
-        paint_settings_caret(
+        paint_field_caret_prefix(
             sugarloaf,
             theme,
             card,
-            caret_prefix,
+            &paint.caret_prefix,
             terminus_ui::settings::FIELD_EYE_SLOT,
         );
     }
@@ -4218,7 +4388,11 @@ fn render_vault_unlock(
             sugarloaf,
             hint.x,
             hint.y + 2.0,
-            "Unlocking…",
+            if prompt.creating() {
+                "Creating…"
+            } else {
+                "Unlocking…"
+            },
             HINT_SIZE,
             theme.text_muted,
             false,
@@ -4281,7 +4455,7 @@ fn render_vault_unlock(
         sugarloaf,
         theme,
         terminus_ui::ButtonSpec::primary(unlock).with_radius(input_radius),
-        "Unlock",
+        prompt.action_label(),
         HINT_SIZE,
         DEPTH_DIALOG_BG + 0.025,
         ORDER_DIALOG,
@@ -4346,16 +4520,6 @@ fn paint_settings_field_card(
         trailing_slot,
         paint_text,
     );
-}
-
-fn paint_settings_caret(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    card: Rect,
-    value: &str,
-    trailing_slot: f32,
-) {
-    paint_field_caret_prefix(sugarloaf, theme, card, value, trailing_slot);
 }
 
 fn render_context_menu(
@@ -5183,7 +5347,7 @@ fn elide(
 
 /// Word-wrap `text` into at most `max_lines` lines that fit `max_width`.
 /// The final line is elided when the message still overflows.
-fn wrap_lines(
+pub(crate) fn wrap_lines(
     sugarloaf: &mut Sugarloaf,
     text: &str,
     max_width: f32,

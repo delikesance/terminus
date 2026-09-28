@@ -22,6 +22,10 @@ pub const CANCEL_WIDTH: f32 = 72.0;
 pub const BUTTON_GAP: f32 = 8.0;
 pub const RADIUS: f32 = 16.0;
 pub const INPUT_RADIUS: f32 = 12.0;
+/// Extra height for the confirm card when creating a vault.
+pub const CONFIRM_EXTRA: f32 = FIELD_CARD_HEIGHT + 12.0;
+/// Vault passphrases shorter than this are refused (matches the worker).
+pub const MIN_PASSPHRASE_CHARS: usize = 8;
 
 /// Why the prompt was opened — drives the subtitle and the retry after unlock.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,17 +33,30 @@ pub enum PendingVaultAction {
     OpenHost(String),
     AddHostSession(String),
     SubmitHostForm,
+    /// Retry saving the Settings "New SSH Key" draft (keys are sealed).
+    SaveSshKey,
+    /// Settings → Unlock Vault with no vault yet: just create it.
+    CreateVault,
+    /// Retry opening SFTP for a host (`other_pane`: the left side).
+    OpenSftp {
+        host_id: String,
+        other_pane: bool,
+    },
 }
 
 impl PendingVaultAction {
     pub fn subtitle(&self) -> &'static str {
         match self {
-            Self::OpenHost(_) | Self::AddHostSession(_) => {
+            Self::OpenHost(_) | Self::AddHostSession(_) | Self::OpenSftp { .. } => {
                 "Enter your vault passphrase to use the saved SSH password."
             }
             Self::SubmitHostForm => {
                 "Enter your vault passphrase to encrypt and save the password."
             }
+            Self::SaveSshKey => {
+                "Enter your vault passphrase to encrypt and save the key."
+            }
+            Self::CreateVault => "Choose a passphrase for the new vault.",
         }
     }
 }
@@ -47,6 +64,8 @@ impl PendingVaultAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultUnlockHit {
     Field,
+    /// Confirm-passphrase field (vault creation only).
+    ConfirmField,
     ToggleVisible,
     ToggleRemember,
     Unlock,
@@ -64,11 +83,18 @@ pub struct VaultUnlockPrompt {
     error: Option<String>,
     pending: Option<PendingVaultAction>,
     unlocking: bool,
+    /// No vault exists yet: this prompt creates one (asks twice).
+    creating: bool,
+    confirm: String,
+    confirm_focused: bool,
 }
 
 impl Default for VaultUnlockPrompt {
     fn default() -> Self {
         Self {
+            creating: false,
+            confirm: String::new(),
+            confirm_focused: false,
             open: false,
             passphrase: String::new(),
             visible: false,
@@ -87,6 +113,9 @@ impl VaultUnlockPrompt {
 
     pub fn open(&mut self, pending: PendingVaultAction) {
         self.open = true;
+        self.creating = false;
+        self.confirm.clear();
+        self.confirm_focused = false;
         self.passphrase.clear();
         self.visible = false;
         self.error = None;
@@ -96,6 +125,8 @@ impl VaultUnlockPrompt {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.confirm.clear();
+        self.confirm_focused = false;
         self.passphrase.clear();
         self.visible = false;
         self.error = None;
@@ -160,13 +191,128 @@ impl VaultUnlockPrompt {
         if text.is_empty() {
             return;
         }
-        self.passphrase.push_str(text);
+        if self.confirm_focused {
+            self.confirm.push_str(text);
+        } else {
+            self.passphrase.push_str(text);
+        }
         self.error = None;
     }
 
     pub fn backspace(&mut self) {
-        self.passphrase.pop();
+        if self.confirm_focused {
+            self.confirm.pop();
+        } else {
+            self.passphrase.pop();
+        }
         self.error = None;
+    }
+
+    /// Whether this prompt creates a new vault (no vault header yet).
+    pub fn creating(&self) -> bool {
+        self.creating
+    }
+
+    pub fn set_creating(&mut self, creating: bool) {
+        self.creating = creating;
+        if !creating {
+            self.confirm.clear();
+            self.confirm_focused = false;
+        }
+    }
+
+    pub fn title(&self) -> &'static str {
+        if self.creating {
+            "Create Vault"
+        } else {
+            "Unlock Vault"
+        }
+    }
+
+    pub fn action_label(&self) -> &'static str {
+        if self.creating {
+            "Create"
+        } else {
+            "Unlock"
+        }
+    }
+
+    /// Subtitle: why the vault is needed, plus a warning when creating.
+    pub fn subtitle(&self) -> String {
+        let why = self
+            .pending
+            .as_ref()
+            .map(PendingVaultAction::subtitle)
+            .unwrap_or("Enter your vault passphrase.");
+        if self.creating {
+            "Choose a passphrase for the new vault. It encrypts saved passwords and keys and cannot be recovered.".to_string()
+        } else {
+            why.to_string()
+        }
+    }
+
+    pub fn confirm_focused(&self) -> bool {
+        self.confirm_focused
+    }
+
+    pub fn focus_confirm(&mut self) {
+        if self.creating {
+            self.confirm_focused = true;
+        }
+    }
+
+    pub fn focus_passphrase(&mut self) {
+        self.confirm_focused = false;
+    }
+
+    /// Tab: move between the passphrase and confirm fields.
+    pub fn toggle_field(&mut self) {
+        if self.creating {
+            self.confirm_focused = !self.confirm_focused;
+        }
+    }
+
+    /// The passphrase to submit, or the message to show instead.
+    pub fn validate(&self) -> Result<String, String> {
+        if self.passphrase.trim().is_empty() {
+            return Err("Enter your vault passphrase".into());
+        }
+        if self.creating {
+            if self.passphrase.trim().chars().count() < MIN_PASSPHRASE_CHARS {
+                return Err(format!("Use at least {MIN_PASSPHRASE_CHARS} characters"));
+            }
+            if self.confirm != self.passphrase {
+                return Err("Passphrases do not match".into());
+            }
+        }
+        Ok(self.passphrase.clone())
+    }
+
+    /// Paint model for the confirm field.
+    pub fn confirm_field_paint(&self) -> crate::text_field::FieldPaint {
+        use crate::text_field::FieldPaint;
+        if self.confirm.is_empty() {
+            FieldPaint {
+                text: "Repeat passphrase…".into(),
+                placeholder: true,
+                show_caret: self.confirm_focused,
+                caret_prefix: String::new(),
+                selection: None,
+            }
+        } else {
+            let text = if self.visible {
+                self.confirm.clone()
+            } else {
+                "•".repeat(self.confirm.chars().count())
+            };
+            FieldPaint {
+                caret_prefix: text.clone(),
+                text,
+                placeholder: false,
+                show_caret: self.confirm_focused,
+                selection: None,
+            }
+        }
     }
 
     /// Display string for the shared Settings field painter (masking included).
@@ -178,23 +324,31 @@ impl VaultUnlockPrompt {
     /// Shared [`FieldPaint`] model (same path as Settings / SFTP fields).
     pub fn field_paint(&self) -> crate::text_field::FieldPaint {
         use crate::text_field::FieldPaint;
+        let caret = !self.confirm_focused;
         if self.passphrase.is_empty() {
             FieldPaint {
                 text: "Enter passphrase…".into(),
                 placeholder: true,
-                show_caret: true,
+                show_caret: caret,
+                caret_prefix: String::new(),
+                selection: None,
             }
         } else if self.visible {
             FieldPaint {
                 text: self.passphrase.clone(),
                 placeholder: false,
-                show_caret: true,
+                show_caret: caret,
+                caret_prefix: self.passphrase.clone(),
+                selection: None,
             }
         } else {
+            let masked = "•".repeat(self.passphrase.chars().count());
             FieldPaint {
-                text: "•".repeat(self.passphrase.chars().count()),
+                text: masked.clone(),
                 placeholder: false,
-                show_caret: true,
+                show_caret: caret,
+                caret_prefix: masked,
+                selection: None,
             }
         }
     }
@@ -208,18 +362,51 @@ impl VaultUnlockPrompt {
 pub struct VaultUnlockLayout {
     pub x: f32,
     pub y: f32,
+    /// Create mode: a confirm card below the passphrase card.
+    pub creating: bool,
 }
 
 impl VaultUnlockLayout {
     pub fn centered(window_width: f32, window_height: f32) -> Self {
+        Self::for_creating(window_width, window_height, false)
+    }
+
+    /// Layout matching `prompt` (create mode adds the confirm card).
+    pub fn for_prompt(
+        window_width: f32,
+        window_height: f32,
+        prompt: &VaultUnlockPrompt,
+    ) -> Self {
+        Self::for_creating(window_width, window_height, prompt.creating())
+    }
+
+    pub fn for_creating(window_width: f32, window_height: f32, creating: bool) -> Self {
+        let height = Self::height_for(creating);
         Self {
             x: ((window_width - WIDTH) * 0.5).max(8.0),
-            y: ((window_height - HEIGHT) * 0.5).max(8.0),
+            y: ((window_height - height) * 0.5).max(8.0),
+            creating,
+        }
+    }
+
+    fn height_for(creating: bool) -> f32 {
+        if creating {
+            HEIGHT + CONFIRM_EXTRA
+        } else {
+            HEIGHT
         }
     }
 
     pub fn rect(&self) -> Rect {
-        Rect::new(self.x, self.y, WIDTH, HEIGHT)
+        Rect::new(self.x, self.y, WIDTH, Self::height_for(self.creating))
+    }
+
+    /// Confirm-passphrase card (create mode only).
+    pub fn confirm_card_rect(&self) -> Option<Rect> {
+        self.creating.then(|| {
+            let pass = self.passphrase_card_rect();
+            Rect::new(pass.x, pass.bottom() + 12.0, pass.width, FIELD_CARD_HEIGHT)
+        })
     }
 
     pub fn title_rect(&self) -> Rect {
@@ -275,9 +462,12 @@ impl VaultUnlockLayout {
 
     /// Full hit row for the "Remember on this device" checkbox.
     pub fn remember_row_rect(&self) -> Rect {
+        let above = self
+            .confirm_card_rect()
+            .unwrap_or_else(|| self.passphrase_card_rect());
         Rect::new(
             self.x + PAD,
-            self.passphrase_card_rect().bottom() + 12.0,
+            above.bottom() + 12.0,
             WIDTH - 2.0 * PAD,
             CHECK_ROW_HEIGHT,
         )
@@ -339,6 +529,9 @@ impl VaultUnlockLayout {
         if self.eye_rect().contains(x, y) {
             return VaultUnlockHit::ToggleVisible;
         }
+        if self.confirm_card_rect().is_some_and(|r| r.contains(x, y)) {
+            return VaultUnlockHit::ConfirmField;
+        }
         if self.text_rect().contains(x, y)
             || self.input_rect().contains(x, y)
             || self.passphrase_card_rect().contains(x, y)
@@ -389,5 +582,45 @@ mod tests {
         assert_eq!(pending, Some(PendingVaultAction::OpenHost("h1".into())));
         assert!(!prompt.is_open());
         assert!(prompt.remember());
+    }
+
+    #[test]
+    fn first_use_creates_the_vault_with_a_confirmed_passphrase() {
+        let mut prompt = VaultUnlockPrompt::default();
+        prompt.open(PendingVaultAction::SubmitHostForm);
+        prompt.set_creating(true);
+        assert_eq!(prompt.title(), "Create Vault");
+        assert_eq!(prompt.action_label(), "Create");
+        prompt.insert("correct horse");
+        prompt.focus_confirm();
+        prompt.insert("correct hose");
+        assert_eq!(prompt.validate().unwrap_err(), "Passphrases do not match");
+        prompt.backspace();
+        prompt.backspace();
+        prompt.insert("rse");
+        assert_eq!(prompt.validate().unwrap(), "correct horse");
+
+        // Unlocking an existing vault needs no confirmation.
+        let mut unlock = VaultUnlockPrompt::default();
+        unlock.open(PendingVaultAction::SubmitHostForm);
+        assert_eq!(unlock.title(), "Unlock Vault");
+        unlock.insert("anything");
+        assert_eq!(unlock.validate().unwrap(), "anything");
+    }
+
+    #[test]
+    fn create_layout_has_a_confirm_field_that_hits() {
+        let layout = VaultUnlockLayout::for_creating(1200.0, 800.0, true);
+        let confirm = layout.confirm_card_rect().expect("confirm card");
+        assert!(confirm.y >= layout.passphrase_card_rect().bottom());
+        assert!(layout.remember_row_rect().y >= confirm.bottom());
+        assert!(layout.unlock_button_rect().y >= layout.hint_rect().bottom());
+        assert_eq!(
+            layout.hit_test(confirm.x + 4.0, confirm.y + 30.0),
+            VaultUnlockHit::ConfirmField
+        );
+        assert!(VaultUnlockLayout::centered(1200.0, 800.0)
+            .confirm_card_rect()
+            .is_none());
     }
 }

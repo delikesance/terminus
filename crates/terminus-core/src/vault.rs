@@ -143,6 +143,9 @@ impl UnlockedVault {
             .decode(&envelope.ciphertext)
             .map_err(|e| Error::VaultError(format!("bad ciphertext: {e}")))?;
 
+        if nonce_bytes.len() != NONCE_LEN {
+            return Err(Error::VaultDecryptFailed);
+        }
         let nonce = XNonce::from_slice(&nonce_bytes);
         let cipher = XChaCha20Poly1305::new(self.dek[..].into());
         cipher
@@ -167,20 +170,17 @@ pub const CREDENTIAL_KIND_HOST_PASSWORD: &str = "host_password";
 pub const OWNER_KIND_HOST: &str = "host";
 
 /// Deterministic credential id for `(owner, kind)`.
+///
+/// UUIDv5 over the triple: the id is persisted and synced between devices, so
+/// it must not depend on `DefaultHasher`, whose algorithm is unspecified and
+/// may change between Rust releases.
 pub fn credential_id(owner_kind: &str, owner_id: &uuid::Uuid, kind: &str) -> uuid::Uuid {
-    // Stable UUIDv5-ish from namespaced bytes without pulling uuid v5 feature quirks:
-    // hash the triple and take the first 16 bytes as a UUID.
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    owner_kind.hash(&mut hasher);
-    owner_id.hash(&mut hasher);
-    kind.hash(&mut hasher);
-    let n = hasher.finish();
-    let mut bytes = [0u8; 16];
-    bytes[..8].copy_from_slice(&n.to_le_bytes());
-    bytes[8..].copy_from_slice(&n.to_be_bytes());
-    uuid::Uuid::from_bytes(bytes)
+    const NAMESPACE: uuid::Uuid =
+        uuid::Uuid::from_u128(0x7465_726d_696e_7573_2d63_7265_6465_6e74);
+    uuid::Uuid::new_v5(
+        &NAMESPACE,
+        format!("{owner_kind}\n{owner_id}\n{kind}").as_bytes(),
+    )
 }
 
 /// Seal a host password into a [`crate::models::Credential`] row.
@@ -224,6 +224,114 @@ pub fn open_host_password(
         &envelope,
     )?;
     String::from_utf8(bytes).map_err(|e| Error::VaultError(format!("password utf8: {e}")))
+}
+
+/// Owner kind for managed SSH identity secrets.
+pub const OWNER_KIND_IDENTITY: &str = "identity";
+/// Envelope kind for a managed private key PEM.
+pub const CREDENTIAL_KIND_PRIVATE_KEY: &str = "private_key";
+/// Envelope kind for a managed private key's passphrase.
+pub const CREDENTIAL_KIND_KEY_PASSPHRASE: &str = "key_passphrase";
+/// Marker on an identity column holding a sealed [`SecretEnvelope`] (JSON).
+pub const SEALED_PREFIX: &str = "terminus-sealed:v1:";
+
+/// Whether a stored column value is a sealed envelope.
+pub fn is_sealed(value: &str) -> bool {
+    value.starts_with(SEALED_PREFIX)
+}
+
+/// True when opening `identity`'s secrets requires an unlocked vault.
+pub fn identity_needs_vault(identity: &crate::models::Identity) -> bool {
+    identity.private_key.as_deref().is_some_and(is_sealed)
+        || identity.passphrase.as_deref().is_some_and(is_sealed)
+}
+
+fn seal_field(
+    vault: &UnlockedVault,
+    owner_id: &uuid::Uuid,
+    kind: &str,
+    value: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(value) = value else { return Ok(None) };
+    if is_sealed(value) || value.is_empty() {
+        return Ok(Some(value.to_string()));
+    }
+    let envelope = vault.encrypt(
+        OWNER_KIND_IDENTITY,
+        &owner_id.to_string(),
+        kind,
+        value.as_bytes(),
+    )?;
+    Ok(Some(format!(
+        "{SEALED_PREFIX}{}",
+        serde_json::to_string(&envelope)?
+    )))
+}
+
+fn open_field(
+    vault: Option<&UnlockedVault>,
+    owner_id: &uuid::Uuid,
+    kind: &str,
+    value: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(value) = value else { return Ok(None) };
+    let Some(json) = value.strip_prefix(SEALED_PREFIX) else {
+        return Ok((!value.is_empty()).then(|| value.to_string()));
+    };
+    let vault = vault.ok_or_else(|| {
+        Error::VaultError("the vault is locked; unlock it to use this SSH key".into())
+    })?;
+    let envelope: SecretEnvelope = serde_json::from_str(json)?;
+    let bytes =
+        vault.decrypt(OWNER_KIND_IDENTITY, &owner_id.to_string(), kind, &envelope)?;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|e| Error::VaultError(format!("sealed key is not utf-8: {e}")))
+}
+
+/// Copy of `identity` with its private key and passphrase sealed by `vault`.
+/// Already-sealed fields are kept as they are.
+pub fn seal_identity(
+    vault: &UnlockedVault,
+    identity: &crate::models::Identity,
+) -> Result<crate::models::Identity> {
+    let mut sealed = identity.clone();
+    sealed.private_key = seal_field(
+        vault,
+        &identity.id,
+        CREDENTIAL_KIND_PRIVATE_KEY,
+        identity.private_key.as_deref(),
+    )?;
+    sealed.passphrase = seal_field(
+        vault,
+        &identity.id,
+        CREDENTIAL_KIND_KEY_PASSPHRASE,
+        identity.passphrase.as_deref(),
+    )?;
+    Ok(sealed)
+}
+
+/// `(private key PEM, passphrase)` of `identity`, unsealing when needed.
+///
+/// Legacy plaintext rows open without a vault; sealed ones need `vault`.
+pub fn open_identity_secrets(
+    vault: Option<&UnlockedVault>,
+    identity: &crate::models::Identity,
+) -> Result<(Option<String>, Option<String>)> {
+    Ok((
+        open_field(
+            vault,
+            &identity.id,
+            CREDENTIAL_KIND_PRIVATE_KEY,
+            identity.private_key.as_deref(),
+        )?,
+        open_field(
+            vault,
+            &identity.id,
+            CREDENTIAL_KIND_KEY_PASSPHRASE,
+            identity.passphrase.as_deref(),
+        )?,
+    ))
 }
 
 /// Persist / load the vault header JSON via settings.
@@ -286,6 +394,18 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, Error::VaultDecryptFailed));
+    }
+
+    #[test]
+    fn credential_id_is_a_fixed_uuid_v5() {
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let cid = credential_id(OWNER_KIND_HOST, &id, CREDENTIAL_KIND_HOST_PASSWORD);
+        assert_eq!(cid.get_version_num(), 5);
+        assert_ne!(
+            cid,
+            credential_id(OWNER_KIND_HOST, &id, "other_kind"),
+            "kind must be part of the id"
+        );
     }
 
     #[test]

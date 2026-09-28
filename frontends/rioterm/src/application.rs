@@ -1639,18 +1639,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::UnlockVault => {
-                                        let passphrase = route
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .sql_passphrase
-                                            .clone();
-                                        route
-                                            .window
-                                            .screen
-                                            .host_store
-                                            .unlock_vault(&passphrase);
+                                        route.window.screen.settings_unlock_vault();
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1680,6 +1669,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             .chrome
                                             .settings
                                             .sql_uri
+                                            .value
                                             .clone();
                                         route.window.screen.host_store.test_sync(&uri);
                                         route.request_overlay_redraw();
@@ -1718,11 +1708,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             } else {
                                                 Some(pem)
                                             };
+                                            let passphrase = route
+                                                .window
+                                                .screen
+                                                .chrome
+                                                .settings
+                                                .key_draft_passphrase();
                                             route
                                                 .window
                                                 .screen
                                                 .host_store
-                                                .create_ssh_key_with_pem(&name, pem);
+                                                .import_ssh_key(&name, pem, passphrase);
                                         }
                                         route.request_overlay_redraw();
                                         return;
@@ -1737,7 +1733,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::DeleteHost(id) => {
-                                        route.window.screen.host_store.delete_host(&id);
+                                        route.window.screen.delete_host_closing_sessions(
+                                            &id,
+                                            &mut self.router.clipboard,
+                                        );
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1792,7 +1791,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     ChromeAction::OpenSftp(id) => {
                                         match route.window.screen.open_sftp_pane(&id) {
                                             Ok(()) => {
-                                                route.request_redraw();
+                                                // Overlay redraw: a locked vault opens the unlock modal instead.
+                                                route.request_overlay_redraw();
                                             }
                                             Err(err) => {
                                                 route.window.screen.chrome.panel.notice =
@@ -1809,7 +1809,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             .open_sftp_other_pane(&id)
                                         {
                                             Ok(()) => {
-                                                route.request_redraw();
+                                                // Overlay redraw: a locked vault opens the unlock modal instead.
+                                                route.request_overlay_redraw();
                                             }
                                             Err(err) => {
                                                 route.window.screen.chrome.panel.notice =
@@ -3157,6 +3158,26 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 }
                                 terminus_ui::PendingVaultAction::SubmitHostForm => {
                                     route.window.screen.submit_host_form();
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::OpenSftp {
+                                    host_id,
+                                    other_pane,
+                                } => {
+                                    let screen = &mut route.window.screen;
+                                    let opened = if other_pane {
+                                        screen.open_sftp_other_pane(&host_id)
+                                    } else {
+                                        screen.open_sftp_pane(&host_id)
+                                    };
+                                    screen.chrome.panel.error = opened.err();
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::CreateVault => {
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::SaveSshKey => {
+                                    route.window.screen.submit_key_draft();
                                     route.request_overlay_redraw();
                                 }
                             }

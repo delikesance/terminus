@@ -124,8 +124,14 @@ pub enum PaletteAction {
     /// Browse stored SSH hosts. Same stay-open mode-switch pattern as
     /// [`Self::ListFonts`]. Enter on a host opens a session.
     ListHosts,
-    /// Open the SFTP dual-pane for a host (roadmap 2.4 — not wired yet).
+    /// Open the SFTP dual-pane: directly with one host, else via a picker.
     OpenSftp,
+    /// Look for a new Terminus release now.
+    CheckForUpdates,
+    /// Download and install the release found by the last check.
+    InstallUpdate,
+    /// Relaunch into an update that is already installed.
+    RestartToUpdate,
     Quit,
 }
 
@@ -267,6 +273,21 @@ const COMMANDS: &[Command] = &[
         action: PaletteAction::OpenSftp,
     },
     Command {
+        title: "Check for Updates",
+        shortcut: "",
+        action: PaletteAction::CheckForUpdates,
+    },
+    Command {
+        title: "Install Update",
+        shortcut: "",
+        action: PaletteAction::InstallUpdate,
+    },
+    Command {
+        title: "Restart to Update",
+        shortcut: "",
+        action: PaletteAction::RestartToUpdate,
+    },
+    Command {
         title: "Quit",
         shortcut: "Cmd+Q",
         action: PaletteAction::Quit,
@@ -291,6 +312,15 @@ enum PaletteMode {
     Commands,
     Fonts(Vec<String>),
     Hosts(Vec<HostPaletteItem>),
+}
+
+/// What confirming a host in the palette's hosts list does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostPick {
+    /// Open (or focus) a shell session.
+    Session,
+    /// Open the SFTP dual pane for it.
+    Sftp,
 }
 
 /// One stored SSH host as the palette needs it (no secrets).
@@ -500,6 +530,8 @@ pub struct CommandPalette {
     /// Snapshot of stored hosts for Commands-mode inline matching.
     /// Refreshed when the palette opens / when entering Hosts mode.
     hosts_cache: Vec<HostPaletteItem>,
+    /// What confirming a host in the hosts list does.
+    host_pick: HostPick,
     /// Timestamp for caret blinking
     caret_blink_start: Instant,
     /// Timestamp of the last event that actually changed `scroll_offset`.
@@ -520,6 +552,7 @@ impl Default for CommandPalette {
             has_adaptive_theme: false,
             mode: PaletteMode::Commands,
             hosts_cache: Vec::new(),
+            host_pick: HostPick::Session,
             caret_blink_start: Instant::now(),
             last_scroll_time: None,
         }
@@ -548,6 +581,7 @@ impl CommandPalette {
             // Always re-open into Commands mode — a stale Fonts/Hosts list
             // from a previous session would be misleading and surprising.
             self.mode = PaletteMode::Commands;
+            self.host_pick = HostPick::Session;
         }
     }
 
@@ -571,6 +605,21 @@ impl CommandPalette {
 
     /// Swap into host-browsing mode (same stay-open pattern as fonts).
     pub fn enter_hosts_mode(&mut self, hosts: Vec<HostPaletteItem>) {
+        self.enter_hosts_mode_for(hosts, HostPick::Session);
+    }
+
+    /// Host list whose confirmation does `pick` (session or SFTP).
+    pub fn enter_hosts_mode_for(&mut self, hosts: Vec<HostPaletteItem>, pick: HostPick) {
+        self.host_pick = pick;
+        self.enter_hosts_list(hosts);
+    }
+
+    /// What confirming a host does in the current hosts list.
+    pub fn host_pick(&self) -> HostPick {
+        self.host_pick
+    }
+
+    fn enter_hosts_list(&mut self, hosts: Vec<HostPaletteItem>) {
         self.hosts_cache = hosts.clone();
         self.mode = PaletteMode::Hosts(hosts);
         self.query.clear();
@@ -835,6 +884,9 @@ impl CommandPalette {
         let placeholder = match self.mode {
             PaletteMode::Commands => "Type a command or host…",
             PaletteMode::Fonts(_) => "Type a font name...",
+            PaletteMode::Hosts(_) if self.host_pick == HostPick::Sftp => {
+                "Open SFTP for host…"
+            }
             PaletteMode::Hosts(_) => "Type a host name…",
         };
         let display_text = if self.query.is_empty() {
@@ -1310,6 +1362,20 @@ mod tests {
     }
 
     #[test]
+    fn sftp_picker_lists_hosts_and_remembers_why() {
+        let mut palette = CommandPalette::new();
+        palette.set_enabled(true);
+        palette.enter_hosts_mode_for(sample_hosts(), HostPick::Sftp);
+        assert_eq!(palette.host_pick(), HostPick::Sftp);
+        assert_eq!(palette.filtered_rows().len(), 2);
+        palette.set_query("stag".to_string());
+        assert_eq!(palette.get_selected_host_id().as_deref(), Some("h2"));
+        // The plain "Open Host…" picker still opens sessions.
+        palette.enter_hosts_mode(sample_hosts());
+        assert_eq!(palette.host_pick(), HostPick::Session);
+    }
+
+    #[test]
     fn enter_hosts_mode_lists_all_hosts() {
         let mut palette = CommandPalette::new();
         palette.set_enabled(true);
@@ -1453,5 +1519,18 @@ mod tests {
                 || row.title().to_lowercase().contains("sftp")
         });
         assert!(found, "SFTP: Palette >sftp — not implemented yet");
+    }
+
+    #[test]
+    fn update_commands_are_listed() {
+        for (query, action) in [
+            ("check for updates", PaletteAction::CheckForUpdates),
+            ("install update", PaletteAction::InstallUpdate),
+            ("restart to update", PaletteAction::RestartToUpdate),
+        ] {
+            let mut palette = CommandPalette::new();
+            palette.set_query(query.to_string());
+            assert_eq!(palette.get_selected_action(), Some(action), "{query}");
+        }
     }
 }

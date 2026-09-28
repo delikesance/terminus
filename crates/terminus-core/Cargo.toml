@@ -16,10 +16,13 @@ chacha20poly1305 = "0.10"
 # the separate `xchacha20poly1305` crate does not exist on crates.io.
 zeroize = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 dashmap = "6"
 hex = "0.4"
 base64 = "0.23"
+# Hashed known_hosts entries (`|1|salt|hmac-sha1`), as OpenSSH writes them.
+hmac = "0.12"
+sha1 = "0.10"
 tracing = "0.1"
 thiserror = "1"
 dirs = "4"

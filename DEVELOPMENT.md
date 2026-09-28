@@ -35,7 +35,7 @@ so the mouse and the painter can never disagree.
 | layout + state + hit-testing | `crates/terminus-ui/src/` | where every chrome box is, what it means, what a click at (x, y) hits |
 | painting | `frontends/rioterm/src/renderer/chrome.rs` | turns those boxes into sugarloaf primitives |
 | host storage | `frontends/rioterm/src/hosts.rs` | SQLite behind a worker thread, so the UI thread never awaits |
-| wiring | `frontends/rioterm/src/screen/mod.rs`, `application.rs`, `router/mod.rs` | input routing, and reserving the chrome's strip in the grid margin |
+| wiring | `frontends/rioterm/src/screen/` modules, `application.rs`, `router/mod.rs` | input routing, and reserving the chrome's strip in the grid margin |
 
 Rules that hold this together:
 
@@ -65,7 +65,7 @@ Interactive host tabs and SFTP intentionally use **different** stacks today
 
 | Path | Implementation | Entry |
 | --- | --- | --- |
-| Shell tab | Local PTY + system `ssh` | `frontends/rioterm/src/screen/mod.rs` → `ssh_shell` / `open_host_session` |
+| Shell tab | Local PTY + system `ssh` | `frontends/rioterm/src/screen/shell.rs` → `ssh_shell` / `sessions.rs` → `open_host_session` |
 | SFTP pane | russh + worker | `terminus-bridge::sftp_worker` ← `sftp_ui.rs` |
 | Future unified shell | `SshTransport` (`EventedPty`) | Ready in bridge, **not wired** — debt **1.4-debt** |
 
@@ -312,20 +312,98 @@ Four things to know:
 
 ## Releases
 
-Tag a version (`vX.Y.Z`) after `misc/prepare-release.sh X.Y.Z` and push the tag.
-[`.github/workflows/release.yml`](.github/workflows/release.yml) builds in parallel:
+Tag a version (`vX.Y.Z`) after `misc/prepare-release.sh X.Y.Z`, then publish:
+
+```bash
+nix run .#release                 # Linux + Windows → GitHub Release
+nix run .#release -- --build-only # artifacts only, no publish
+```
+
+[`scripts/release.sh`](scripts/release.sh) (via `nix develop .#release`) produces:
 
 | Target | Artifact |
 | --- | --- |
-| Windows | `rio-windows-x86_64.zip` |
-| macOS (aarch64) | `rio-macos-aarch64.tar.gz` |
-| Fedora / RHEL | `rioterm-*.rpm` (via [`misc/nfpm-rioterm.yaml`](misc/nfpm-rioterm.yaml)) |
-| NixOS | `rio-nixos-x86_64` + push to the `rioterm` Cachix cache |
+| Linux | `terminus-linux-x86_64.tar.gz` |
+| Debian / Ubuntu | `terminus_*.deb` (via [`misc/nfpm-terminus.yaml`](misc/nfpm-terminus.yaml)) |
+| Fedora / RHEL | `terminus-*.rpm` |
+| NixOS (binary) | `terminus.nix` — `pkgs.callPackage` of the Linux tarball |
+| Windows | `terminus-setup-x86_64.exe` (NSIS), `terminus-x86_64.msi` |
+| All | `checksums.txt` and its minisign signature `checksums.txt.minisig` |
 
-Builds use `Swatinem/rust-cache` (and Cachix for the flake job). Set the
-repository secret `CACHIX_AUTH_TOKEN` so Nix store paths are published; without
-it the Nix job still builds and uploads the binary artifact but skips the cache
-push.
+The release tag must equal `v` + the `Cargo.toml` version (`release.sh` refuses
+otherwise): the in-app updater compares the two, so a mismatch would make every
+install download the release again.
 
-`workflow_dispatch` runs the same matrix and uploads run artifacts without
-creating a GitHub Release (useful to warm caches).
+### Signed updates
+
+Terminus checks the latest GitHub Release 20 s after start and then daily
+(`crates/terminus-update`, `frontends/rioterm/src/updater.rs`). It installs
+nothing unless `checksums.txt.minisig` verifies against the public key compiled
+into the binary and the downloaded file matches its SHA-256 in `checksums.txt`.
+
+One-time key setup (the secret key never leaves the release machine):
+
+```bash
+minisign -G -p terminus.pub -s ~/.minisign/terminus.key   # pick a password
+cp terminus.pub crates/terminus-update/update-public-key.txt
+git add crates/terminus-update/update-public-key.txt       # commit, then release
+```
+
+`release.sh` then signs every release with
+[`scripts/sign-release.sh`](scripts/sign-release.sh) (key path:
+`TERMINUS_SIGNING_KEY`, default `~/.minisign/terminus.key`) and checks the
+signature against the committed key, so a wrong key cannot ship. While
+`update-public-key.txt` is empty, releases are published unsigned and the app
+only announces new versions. Keep the secret key backed up: builds that trust a
+key can only be updated by releases signed with it.
+
+What an installed copy does with a new version:
+
+| Install | Update |
+| --- | --- |
+| Linux tarball (writable folder) | downloaded, verified and swapped in place; palette → **Restart to Update** |
+| `.deb` / `.rpm` | package downloaded to `~/Downloads` and verified; **Install Update** copies the `sudo apt/dnf install` command |
+| Windows (NSIS / MSI) | **Install Update** downloads the installer, which runs when Terminus quits |
+| Nix, dev builds, read-only folders | notice only (**Install Update** opens the release page) |
+
+Settings (`[updates]` in the config): `check = false` stops automatic checks
+(the palette's **Check for Updates** still works) and `auto-install = false`
+asks before swapping the binary. `TERMINUS_NO_UPDATE_CHECK=1` also disables
+automatic checks.
+
+`TERMINUS_UPDATE_URL` points the updater at another `releases/latest`-shaped
+JSON (HTTPS, or plain http on loopback). To try the whole flow against a local
+release, debug builds also accept a test key in `TERMINUS_UPDATE_PUBKEY`. `scripts/test-release-signing.sh`
+covers the signing step.
+
+### Nix / NixOS install
+
+**From this repo (source build):**
+
+```bash
+nix run .#terminus          # or: nix run .
+nix build .#terminus
+```
+
+As a flake input / overlay:
+
+```nix
+{
+  inputs.terminus.url = "github:delikesance/terminus";
+  # …
+  nixpkgs.overlays = [ inputs.terminus.overlays.default ];
+  environment.systemPackages = [ pkgs.terminus ];
+}
+```
+
+**From a GitHub Release (prebuilt Linux x86_64):** download `terminus.nix` from the release assets and:
+
+```nix
+environment.systemPackages = [
+  (pkgs.callPackage ./terminus.nix { })
+];
+```
+
+**FlakeHub:** tags matching `v*.*.*` are published by [`.github/workflows/flakehub.yml`](.github/workflows/flakehub.yml). After the first successful publish, consume via FlakeHub’s URL for this repo.
+
+**nixpkgs (planned):** upstream packaging will follow the in-repo [`package.nix`](package.nix) source build (not the release binary `terminus.nix`). Until then, use the flake or the release file above.

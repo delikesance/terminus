@@ -49,13 +49,17 @@ pub const KEY_CTA_GAP: f32 = 12.0;
 /// Stored key row height.
 pub const KEY_ROW_HEIGHT: f32 = 56.0;
 pub const KEY_ROW_GAP: f32 = 8.0;
-/// Inline generate form under the CTA (two field cards + actions + error).
-pub const KEY_DRAFT_HEIGHT: f32 = 252.0;
+/// Inline generate form under the CTA (three field cards + actions + error).
+pub const KEY_DRAFT_HEIGHT: f32 = 252.0 + FIELD_CARD_STEP;
 pub const KEY_DRAFT_GENERATE_WIDTH: f32 = 96.0;
 pub const KEY_DRAFT_CANCEL_WIDTH: f32 = 72.0;
 /// Max bytes for a pasted OpenSSH private key.
 pub const KEY_PEM_MAX_BYTES: usize = 16_384;
 pub const KEY_LABEL_MAX_BYTES: usize = 64;
+/// Max bytes accepted by the SqlSync connection-URI field.
+pub const SQL_URI_MAX_BYTES: usize = 1024;
+/// Max bytes accepted by the SqlSync encryption-passphrase field.
+pub const SQL_PASSPHRASE_MAX_BYTES: usize = 256;
 
 /// Shared input row geometry inside a SqlSync field card (equal card pad).
 pub fn field_input_in_card(card: Rect) -> Rect {
@@ -114,8 +118,10 @@ pub struct SettingsModal {
     pub engine_menu_open: bool,
     /// Hovered option index inside the engine dropdown.
     pub engine_menu_hover: Option<usize>,
-    pub sql_uri: String,
-    pub sql_passphrase: String,
+    /// Connection string draft (caret, selection, word jumps).
+    pub sql_uri: TextDraft,
+    /// Encryption passphrase draft (same editing model as the URI).
+    pub sql_passphrase: TextDraft,
     pub passphrase_visible: bool,
     pub sync_connected: bool,
     /// Baseline status shown on the action row (never replaced by errors).
@@ -136,6 +142,10 @@ pub struct SettingsModal {
     pub key_draft_focused: bool,
     /// Whether the PEM paste field owns the caret.
     pub key_draft_pem_focused: bool,
+    /// Passphrase for an encrypted OpenSSH key being imported (masked).
+    pub key_passphrase: TextDraft,
+    /// Whether the key passphrase field owns the caret.
+    pub key_draft_passphrase_focused: bool,
     /// Error shown under the generate form (empty label, worker failure, …).
     pub key_draft_error: Option<String>,
     /// Hovered Delete control index on the Keys list (red label).
@@ -153,8 +163,8 @@ impl Default for SettingsModal {
             sql_engine: 0,
             engine_menu_open: false,
             engine_menu_hover: None,
-            sql_uri: String::new(),
-            sql_passphrase: String::new(),
+            sql_uri: TextDraft::default(),
+            sql_passphrase: TextDraft::default(),
             passphrase_visible: false,
             sync_connected: false,
             sync_status: "Not configured".into(),
@@ -167,6 +177,8 @@ impl Default for SettingsModal {
             key_pem: TextDraft::default(),
             key_draft_focused: false,
             key_draft_pem_focused: false,
+            key_passphrase: TextDraft::default(),
+            key_draft_passphrase_focused: false,
             key_draft_error: None,
             key_delete_hover: None,
             key_row_hover: None,
@@ -185,6 +197,8 @@ pub enum SettingsHit {
     FocusKeyDraft,
     /// Focus the optional PEM paste field on the generate form.
     FocusKeyPem,
+    /// Focus the passphrase field for an encrypted key import.
+    FocusKeyPassphrase,
     /// Confirm generating an Ed25519 identity from the draft name.
     GenerateKey,
     /// Cancel the inline generate-key form.
@@ -220,7 +234,7 @@ impl SettingsModal {
         // While the URI field is focused, leave the draft alone entirely.
         if self.sql_focus != SqlSyncFocus::Uri {
             if !snap.uri.is_empty() {
-                self.sql_uri = snap.uri;
+                self.sql_uri = TextDraft::new(snap.uri);
             }
         }
         self.sync_connected = snap.connected;
@@ -259,41 +273,24 @@ impl SettingsModal {
 
     /// Paint model for the Connection URI field.
     pub fn uri_field_paint(&self) -> SqlFieldPaint {
-        FieldPaint::from_value(
+        FieldPaint::from_draft(
             &self.sql_uri,
             self.uri_placeholder(),
             self.sql_focus == SqlSyncFocus::Uri,
         )
     }
 
-    /// Paint model for the passphrase field (masking included).
+    /// Paint model for the passphrase field (masking included). Masking
+    /// rewrites only the visible glyphs: the caret prefix and the selection
+    /// range keep their display positions.
     pub fn passphrase_field_paint(&self) -> SqlFieldPaint {
         let focused = self.sql_focus == SqlSyncFocus::Passphrase;
-        if self.sql_passphrase.is_empty() && !focused {
-            FieldPaint {
-                text: self.passphrase_placeholder().to_string(),
-                placeholder: true,
-                show_caret: false,
-            }
-        } else if self.sql_passphrase.is_empty() {
-            FieldPaint {
-                text: String::new(),
-                placeholder: false,
-                show_caret: focused,
-            }
-        } else if self.passphrase_visible {
-            FieldPaint {
-                text: self.sql_passphrase.clone(),
-                placeholder: false,
-                show_caret: focused,
-            }
-        } else {
-            FieldPaint {
-                text: "•".repeat(self.sql_passphrase.chars().count()),
-                placeholder: false,
-                show_caret: focused,
-            }
-        }
+        FieldPaint::from_draft_masked(
+            &self.sql_passphrase,
+            self.passphrase_placeholder(),
+            focused,
+            !self.passphrase_visible,
+        )
     }
 
     pub fn open_tab(&mut self, tab: SettingsTab) {
@@ -325,8 +322,10 @@ impl SettingsModal {
         self.key_drafting = true;
         self.key_draft_focused = true;
         self.key_draft_pem_focused = false;
+        self.key_draft_passphrase_focused = false;
         self.key_label.clear();
         self.key_pem.clear();
+        self.key_passphrase.clear();
         self.key_draft_error = None;
         self.sql_focus = SqlSyncFocus::None;
     }
@@ -335,8 +334,10 @@ impl SettingsModal {
         self.key_drafting = false;
         self.key_draft_focused = false;
         self.key_draft_pem_focused = false;
+        self.key_draft_passphrase_focused = false;
         self.key_label.clear();
         self.key_pem.clear();
+        self.key_passphrase.clear();
         self.key_draft_error = None;
     }
 
@@ -344,6 +345,7 @@ impl SettingsModal {
         if self.key_drafting {
             self.key_draft_focused = true;
             self.key_draft_pem_focused = false;
+            self.key_draft_passphrase_focused = false;
             self.sql_focus = SqlSyncFocus::None;
         }
     }
@@ -352,8 +354,35 @@ impl SettingsModal {
         if self.key_drafting {
             self.key_draft_pem_focused = true;
             self.key_draft_focused = false;
+            self.key_draft_passphrase_focused = false;
             self.sql_focus = SqlSyncFocus::None;
         }
+    }
+
+    pub fn focus_key_passphrase(&mut self) {
+        if self.key_drafting {
+            self.key_draft_passphrase_focused = true;
+            self.key_draft_focused = false;
+            self.key_draft_pem_focused = false;
+            self.sql_focus = SqlSyncFocus::None;
+        }
+    }
+
+    /// Tab order through the draft form: label → PEM → passphrase → label.
+    pub fn focus_next_key_field(&mut self) {
+        if self.key_draft_focused {
+            self.focus_key_pem();
+        } else if self.key_draft_pem_focused {
+            self.focus_key_passphrase();
+        } else {
+            self.focus_key_draft();
+        }
+    }
+
+    /// Passphrase to decrypt the pasted key, when one was typed.
+    pub fn key_draft_passphrase(&self) -> Option<String> {
+        let value = self.key_passphrase.value.clone();
+        (!value.is_empty()).then_some(value)
     }
 
     /// Active text draft while key drafting, if any.
@@ -363,6 +392,8 @@ impl SettingsModal {
         }
         if self.key_draft_pem_focused {
             Some(&mut self.key_pem)
+        } else if self.key_draft_passphrase_focused {
+            Some(&mut self.key_passphrase)
         } else if self.key_draft_focused {
             Some(&mut self.key_label)
         } else {
@@ -377,6 +408,9 @@ impl SettingsModal {
         }
         let ok = if self.key_draft_pem_focused {
             self.key_pem.insert(text, KEY_PEM_MAX_BYTES, true)
+        } else if self.key_draft_passphrase_focused {
+            self.key_passphrase
+                .insert(text, KEY_LABEL_MAX_BYTES * 4, false)
         } else if self.key_draft_focused {
             self.key_label.insert(text, KEY_LABEL_MAX_BYTES, false)
         } else {
@@ -394,6 +428,9 @@ impl SettingsModal {
         }
         if self.key_draft_pem_focused {
             return self.key_pem.backspace(false);
+        }
+        if self.key_draft_passphrase_focused {
+            return self.key_passphrase.backspace(false);
         }
         if !self.key_draft_focused {
             return false;
@@ -426,11 +463,11 @@ impl SettingsModal {
         if !self.key_drafting || self.key_draft_error.is_none() {
             return None;
         }
-        let pem = self.key_draft_pem_rect(window_width, window_height)?;
+        let pass = self.key_draft_passphrase_rect(window_width, window_height)?;
         Some(Rect::new(
-            pem.x,
-            pem.bottom() + 8.0,
-            pem.width,
+            pass.x,
+            pass.bottom() + 8.0,
+            pass.width,
             ERROR_BANNER_HEIGHT,
         ))
     }
@@ -515,37 +552,33 @@ impl SettingsModal {
         "Enter passphrase…"
     }
 
-    /// Insert text into the focused SqlSync field.
-    pub fn insert_sql_text(&mut self, text: &str) -> bool {
-        if text.is_empty() || text.chars().any(char::is_control) {
-            return false;
-        }
+    /// Byte budget for the focused SqlSync field.
+    pub fn sql_text_max_bytes(&self) -> usize {
         match self.sql_focus {
-            SqlSyncFocus::Uri => {
-                self.sql_uri.push_str(text);
-                true
-            }
-            SqlSyncFocus::Passphrase => {
-                self.sql_passphrase.push_str(text);
-                true
-            }
-            SqlSyncFocus::None => false,
+            SqlSyncFocus::Passphrase => SQL_PASSPHRASE_MAX_BYTES,
+            _ => SQL_URI_MAX_BYTES,
         }
     }
 
-    /// Backspace in the focused SqlSync field.
-    pub fn sql_backspace(&mut self) -> bool {
+    /// The SqlSync draft that owns the caret, if any. Lets the input router
+    /// drive the same editing model (arrows, selection, word jumps) the
+    /// inline key form already uses.
+    pub fn sql_draft_active(&mut self) -> Option<&mut TextDraft> {
         match self.sql_focus {
-            SqlSyncFocus::Uri => {
-                if self.sql_uri.pop().is_some() {
-                    true
-                } else {
-                    false
-                }
-            }
-            SqlSyncFocus::Passphrase => self.sql_passphrase.pop().is_some(),
-            SqlSyncFocus::None => false,
+            SqlSyncFocus::Uri => Some(&mut self.sql_uri),
+            SqlSyncFocus::Passphrase => Some(&mut self.sql_passphrase),
+            SqlSyncFocus::None => None,
         }
+    }
+
+    /// Insert text at the caret of the focused SqlSync field.
+    pub fn insert_sql_text(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let max = self.sql_text_max_bytes();
+        self.sql_draft_active()
+            .is_some_and(|draft| draft.insert(text, max, false))
     }
 
     pub fn dialog_rect(&self, window_width: f32, window_height: f32) -> Rect {
@@ -656,6 +689,21 @@ impl SettingsModal {
         ))
     }
 
+    /// Passphrase card for an encrypted key import (under the PEM card).
+    pub fn key_draft_passphrase_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        let draft = self.key_draft_rect(window_width, window_height)?;
+        Some(Rect::new(
+            draft.x + FIELD_CARD_PAD,
+            draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP * 2.0,
+            (draft.width - 2.0 * FIELD_CARD_PAD).max(40.0),
+            FIELD_CARD_HEIGHT,
+        ))
+    }
+
     pub fn key_draft_generate_rect(
         &self,
         window_width: f32,
@@ -677,8 +725,8 @@ impl SettingsModal {
         window_height: f32,
     ) -> Option<Rect> {
         let draft = self.key_draft_rect(window_width, window_height)?;
-        // Sit below the PEM card; leave room for the soft error banner when shown.
-        let mut actions_y = draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP * 2.0;
+        // Sit below the passphrase card; leave room for the error banner when shown.
+        let mut actions_y = draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP * 3.0;
         if self.key_draft_error.is_some() {
             actions_y += ERROR_BANNER_HEIGHT + 8.0;
         }
@@ -948,6 +996,13 @@ impl SettingsModal {
                     return SettingsHit::FocusKeyPem;
                 }
             }
+            if let Some(pass) =
+                self.key_draft_passphrase_rect(window_width, window_height)
+            {
+                if pass.contains(x, y) {
+                    return SettingsHit::FocusKeyPassphrase;
+                }
+            }
             if self
                 .new_key_cta_rect(window_width, window_height)
                 .contains(x, y)
@@ -1047,7 +1102,8 @@ impl SettingsModal {
             SettingsHit::FocusUri
             | SettingsHit::FocusPassphrase
             | SettingsHit::FocusKeyDraft
-            | SettingsHit::FocusKeyPem => ChromeCursor::Text,
+            | SettingsHit::FocusKeyPem
+            | SettingsHit::FocusKeyPassphrase => ChromeCursor::Text,
             SettingsHit::Consume => ChromeCursor::Default,
             SettingsHit::Close
             | SettingsHit::Done
@@ -1143,8 +1199,9 @@ mod tests {
     #[test]
     fn defaults_are_empty_not_mock_connected() {
         let s = SettingsModal::default();
-        assert!(s.sql_uri.is_empty());
-        assert!(s.sql_passphrase.is_empty());
+        assert!(s.sql_uri.value.is_empty());
+        assert!(s.sql_passphrase.value.is_empty());
+        assert_eq!(s.sql_uri.caret, 0);
         assert!(!s.sync_connected);
         assert_eq!(s.sync_status, "Not configured");
         assert!(!s.vault_unlocked);
@@ -1156,12 +1213,210 @@ mod tests {
         assert!(!s.insert_sql_text("x"));
         s.focus_uri();
         assert!(s.insert_sql_text("sqlite:./remote.db"));
-        assert_eq!(s.sql_uri, "sqlite:./remote.db");
+        assert_eq!(s.sql_uri.value, "sqlite:./remote.db");
         s.focus_passphrase();
         assert!(s.insert_sql_text("secretpass"));
-        assert_eq!(s.sql_passphrase, "secretpass");
-        assert!(s.sql_backspace());
-        assert_eq!(s.sql_passphrase, "secretpas");
+        assert_eq!(s.sql_passphrase.value, "secretpass");
+        assert!(s
+            .sql_draft_active()
+            .expect("passphrase owns the caret")
+            .backspace(false));
+        assert_eq!(s.sql_passphrase.value, "secretpas");
+    }
+
+    #[test]
+    fn sql_caret_moves_and_typing_lands_at_the_caret() {
+        use crate::TextMoveKind;
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        assert!(s.insert_sql_text("sqlite:./remote.db"));
+        assert_eq!(s.sql_uri.caret, "sqlite:./remote.db".chars().count());
+
+        let draft = s.sql_draft_active().expect("uri owns the caret");
+        assert!(draft.move_home(TextMoveKind::Collapse));
+        draft.move_right(TextMoveKind::Collapse, false);
+        assert_eq!(s.sql_uri.caret, 1);
+        assert!(s.insert_sql_text("X"));
+        assert_eq!(s.sql_uri.value, "sXqlite:./remote.db");
+        assert_eq!(s.sql_uri.caret, 2);
+
+        let draft = s.sql_draft_active().expect("uri owns the caret");
+        assert!(draft.move_end(TextMoveKind::Collapse));
+        assert_eq!(s.sql_uri.caret, s.sql_uri.value.chars().count());
+    }
+
+    #[test]
+    fn sql_word_jumps_move_by_whole_words() {
+        use crate::TextMoveKind;
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        s.insert_sql_text("postgres://host/db");
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            assert!(draft.move_left(TextMoveKind::Collapse, true));
+        }
+        assert_eq!(s.sql_uri.caret, "postgres://host/".chars().count());
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            assert!(draft.move_right(TextMoveKind::Collapse, true));
+        }
+        assert_eq!(s.sql_uri.caret, s.sql_uri.value.chars().count());
+    }
+
+    #[test]
+    fn sql_shift_arrows_select_and_typing_replaces_the_selection() {
+        use crate::TextMoveKind;
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        s.insert_sql_text("abcdef");
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            draft.move_left(TextMoveKind::Extend, false);
+            draft.move_left(TextMoveKind::Extend, false);
+        }
+        assert_eq!(s.sql_uri.selection_range(), Some((4, 6)));
+        assert!(s.insert_sql_text("XY"));
+        assert_eq!(s.sql_uri.value, "abcdXY");
+        assert_eq!(s.sql_uri.selection_range(), None);
+    }
+
+    #[test]
+    fn sql_select_all_then_typing_replaces_the_whole_value() {
+        let mut s = SettingsModal::default();
+        s.focus_passphrase();
+        s.insert_sql_text("secret");
+        let draft = s.sql_draft_active().expect("passphrase owns the caret");
+        assert!(draft.select_all());
+        assert!(s.insert_sql_text("new"));
+        assert_eq!(s.sql_passphrase.value, "new");
+        assert_eq!(s.sql_passphrase.caret, 3);
+        assert_eq!(s.sql_passphrase.selection_range(), None);
+    }
+
+    #[test]
+    fn sql_backspace_and_delete_follow_the_caret() {
+        use crate::TextMoveKind;
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        s.insert_sql_text("abc");
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            draft.move_home(TextMoveKind::Collapse);
+        }
+        assert!(!s
+            .sql_draft_active()
+            .expect("uri owns the caret")
+            .backspace(false));
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            draft.move_end(TextMoveKind::Collapse);
+        }
+        assert!(s
+            .sql_draft_active()
+            .expect("uri owns the caret")
+            .backspace(false));
+        assert_eq!(s.sql_uri.value, "ab");
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            draft.move_home(TextMoveKind::Collapse);
+            assert!(draft.delete_forward(false));
+        }
+        assert_eq!(s.sql_uri.value, "b");
+    }
+
+    #[test]
+    fn sql_word_backspace_removes_a_whole_word() {
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        s.insert_sql_text("sqlite:./remote.db");
+        let draft = s.sql_draft_active().expect("uri owns the caret");
+        assert!(draft.backspace(true));
+        assert_eq!(s.sql_uri.value, "sqlite:./remote.");
+    }
+
+    #[test]
+    fn sql_fields_accept_spaces_and_reject_control_characters() {
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        assert!(s.insert_sql_text(" "));
+        assert_eq!(s.sql_uri.value, " ");
+        assert!(!s.insert_sql_text("a\nb"));
+        assert_eq!(s.sql_uri.value, " ");
+        s.focus_passphrase();
+        assert!(!s.insert_sql_text("\t"));
+    }
+
+    #[test]
+    fn uri_paint_exposes_caret_prefix_and_selection() {
+        use crate::TextMoveKind;
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        s.insert_sql_text("sqlite");
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            draft.move_home(TextMoveKind::Collapse);
+            draft.move_right(TextMoveKind::Collapse, false);
+        }
+        let paint = s.uri_field_paint();
+        assert_eq!(paint.text, "sqlite");
+        assert_eq!(paint.caret_prefix, "s");
+        assert!(paint.show_caret);
+        assert!(!paint.placeholder);
+        assert_eq!(paint.selection, None);
+
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            draft.move_right(TextMoveKind::Extend, false);
+            draft.move_right(TextMoveKind::Extend, false);
+        }
+        let paint = s.uri_field_paint();
+        assert_eq!(paint.selection, Some((1, 3)));
+        assert_eq!(paint.caret_prefix, "sql");
+    }
+
+    #[test]
+    fn passphrase_paint_masks_caret_prefix_and_keeps_selection() {
+        let mut s = SettingsModal::default();
+        s.focus_passphrase();
+        s.insert_sql_text("secret");
+        {
+            let draft = s.sql_draft_active().expect("passphrase owns the caret");
+            draft.select_all();
+        }
+        let paint = s.passphrase_field_paint();
+        assert_eq!(
+            paint.text,
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
+        assert_eq!(
+            paint.caret_prefix,
+            "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+        );
+        assert_eq!(paint.selection, Some((0, 6)));
+        assert!(paint.show_caret);
+
+        s.toggle_passphrase_visible();
+        let paint = s.passphrase_field_paint();
+        assert_eq!(paint.text, "secret");
+        assert_eq!(paint.caret_prefix, "secret");
+    }
+
+    #[test]
+    fn blurring_a_sql_field_hides_its_caret_and_selection() {
+        use crate::TextMoveKind;
+        let mut s = SettingsModal::default();
+        s.focus_uri();
+        s.insert_sql_text("sqlite");
+        {
+            let draft = s.sql_draft_active().expect("uri owns the caret");
+            draft.move_home(TextMoveKind::Extend);
+        }
+        assert!(s.uri_field_paint().show_caret);
+        assert!(s.uri_field_paint().selection.is_some());
+        s.clear_sql_focus();
+        let paint = s.uri_field_paint();
+        assert!(!paint.show_caret);
+        assert_eq!(paint.selection, None);
     }
 
     #[test]
@@ -1188,6 +1443,42 @@ mod tests {
         );
         s.insert_key_draft_text("Laptop");
         assert_eq!(s.take_key_draft_label().unwrap(), "Laptop");
+    }
+
+    #[test]
+    fn key_draft_has_passphrase_field_for_encrypted_imports() {
+        let mut s = SettingsModal::default();
+        s.open_tab(SettingsTab::Keys);
+        let (w, h) = (1000.0, 800.0);
+        s.open_key_draft();
+        let pem = s.key_draft_pem_rect(w, h).expect("pem");
+        let pass = s.key_draft_passphrase_rect(w, h).expect("passphrase");
+        assert!(
+            pass.y >= pem.bottom(),
+            "passphrase card sits below the PEM card"
+        );
+        let draft = s.key_draft_rect(w, h).unwrap();
+        let cancel = s.key_draft_cancel_rect(w, h).unwrap();
+        assert!(
+            cancel.y >= pass.bottom(),
+            "actions sit below the passphrase card"
+        );
+        assert!(
+            cancel.bottom() <= draft.bottom(),
+            "actions stay inside the form"
+        );
+        assert_eq!(
+            s.hit_test(w, h, pass.x + 2.0, pass.y + 2.0),
+            SettingsHit::FocusKeyPassphrase
+        );
+        s.focus_key_passphrase();
+        s.insert_key_draft_text("hunter2");
+        assert_eq!(s.key_passphrase.value, "hunter2");
+        assert!(s.key_label.value.is_empty() && s.key_pem.value.is_empty());
+        assert!(s.key_draft_backspace());
+        assert_eq!(s.key_passphrase.value, "hunter");
+        s.close_key_draft();
+        assert!(s.key_passphrase.value.is_empty(), "secret cleared on close");
     }
 
     #[test]
@@ -1260,13 +1551,13 @@ mod tests {
         assert!(s.vault_unlocked);
         assert_eq!(s.sync_status, "Last synced just now");
         assert!(!s.sync_status_is_error());
-        assert_eq!(s.sql_uri, "sqlite:./remote.db");
+        assert_eq!(s.sql_uri.value, "sqlite:./remote.db");
     }
 
     #[test]
     fn empty_worker_uri_does_not_wipe_local_draft() {
         let mut s = SettingsModal::default();
-        s.sql_uri = "sqlite:./draft.db".into();
+        s.sql_uri = TextDraft::new("sqlite:./draft.db");
         s.apply_sync_status(SyncUiStatus {
             uri: String::new(),
             connected: false,
@@ -1274,7 +1565,7 @@ mod tests {
             status_line: "Not configured".into(),
             is_error: false,
         });
-        assert_eq!(s.sql_uri, "sqlite:./draft.db");
+        assert_eq!(s.sql_uri.value, "sqlite:./draft.db");
     }
 
     #[test]
