@@ -117,6 +117,17 @@ impl Store {
         Ok(store)
     }
 
+    /// The underlying pool (the sync engine reads and merges through it).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// Create / upgrade the Terminus schema on `pool` (local store or a sync
+    /// remote: both carry the same tables).
+    pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
+        Self::migrate(pool).await
+    }
+
     async fn migrate(pool: &SqlitePool) -> Result<()> {
         sqlx::query(
             r#"
@@ -637,14 +648,23 @@ impl Store {
         };
         root.insert(insert_at, moved);
 
+        // Rows whose position changes get a fresh `updated_at` so the new
+        // order wins on other devices after a sync.
+        let now = Utc::now();
         for (i, entry) in root.into_iter().enumerate() {
             match entry {
                 RootEntry::Host(mut h) => {
-                    h.sort_order = i as i64;
+                    if h.sort_order != i as i64 {
+                        h.sort_order = i as i64;
+                        h.updated_at = now;
+                    }
                     self.upsert_host(&h).await?;
                 }
                 RootEntry::Group(mut g) => {
-                    g.sort_order = i as i64;
+                    if g.sort_order != i as i64 {
+                        g.sort_order = i as i64;
+                        g.updated_at = now;
+                    }
                     self.upsert_group(&g).await?;
                 }
             }
