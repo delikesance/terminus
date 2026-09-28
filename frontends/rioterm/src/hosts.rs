@@ -2371,6 +2371,30 @@ fn list_identities(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEven
     }
 }
 
+/// The import field takes a pasted private key or the path to one
+/// (`~/.ssh/id_ed25519`): most people already have a key on disk.
+fn resolve_private_key_input(input: &str, home: Option<&Path>) -> Result<String, String> {
+    let input = input.trim();
+    if input.contains("-----BEGIN") {
+        return Ok(input.to_string());
+    }
+    let path = match (input.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(input),
+    };
+    let text = std::fs::read_to_string(&path)
+        .map_err(|_| format!("No file at {input}. Paste the key or its path."))?;
+    if text.contains("-----BEGIN") {
+        Ok(text)
+    } else if text.trim_start().starts_with("ssh-") || input.ends_with(".pub") {
+        Err(format!(
+            "{input} is the public half. Use the file without .pub."
+        ))
+    } else {
+        Err(format!("{input} is not an OpenSSH private key."))
+    }
+}
+
 fn create_ssh_key(
     runtime: &tokio::runtime::Runtime,
     store: &Store,
@@ -2388,8 +2412,11 @@ fn create_ssh_key(
         );
     };
     let identity = match pem.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(pem) => terminus_core::import_openssh_identity(name, pem, passphrase)
-            .map_err(|e| e.to_string())?,
+        Some(input) => {
+            let pem = resolve_private_key_input(input, dirs::home_dir().as_deref())?;
+            terminus_core::import_openssh_identity(name, &pem, passphrase)
+                .map_err(|e| e.to_string())?
+        }
         None => {
             terminus_core::generate_ed25519_identity(name).map_err(|e| e.to_string())?
         }
@@ -3099,6 +3126,33 @@ mod tests {
         assert_eq!(row.endpoint(), "root@box.internal:2222");
         row.username = String::new();
         assert_eq!(row.endpoint(), "box.internal:2222");
+    }
+
+    #[test]
+    fn a_private_key_can_be_given_by_path() {
+        let dir = temp_dir("keypath");
+        std::fs::create_dir_all(&dir).unwrap();
+        let generated = terminus_core::generate_ed25519_identity("t").expect("pem");
+        let pem = generated.private_key.expect("private");
+        let key = dir.join("id_ed25519");
+        std::fs::write(&key, &pem).unwrap();
+        std::fs::write(dir.join("id_ed25519.pub"), generated.public_key.unwrap())
+            .unwrap();
+
+        let home = Some(dir.as_path());
+        // Pasted PEM is used as is.
+        let read = |input: &str| resolve_private_key_input(input, home).unwrap();
+        assert_eq!(read(&pem).trim(), pem.trim());
+        // A path, absolute or under ~, is read.
+        assert_eq!(read(key.to_str().unwrap()).trim(), pem.trim());
+        assert_eq!(read(" ~/id_ed25519 ").trim(), pem.trim());
+        // The public half is refused with a hint.
+        let err = resolve_private_key_input("~/id_ed25519.pub", home).unwrap_err();
+        assert!(err.contains("public"), "{err}");
+        // A missing file says so.
+        let err = resolve_private_key_input("~/nope", home).unwrap_err();
+        assert!(err.contains("No file"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

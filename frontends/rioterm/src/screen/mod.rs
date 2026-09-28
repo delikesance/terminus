@@ -76,7 +76,7 @@ pub struct Screen<'screen> {
     /// worker. `create` hands out no id, so the row is matched by name
     /// on the next refresh instead of guessing an index.
     /// Endpoint of the host the add/edit dialog just saved.
-    pending_host_select: Option<String>,
+    pending_host_select: Option<(String, String)>,
     /// The add-host dialog's "Connect": open a session once the new host
     /// is stored (editing only saves).
     pending_host_connect: bool,
