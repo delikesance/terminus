@@ -296,16 +296,21 @@ impl VaultUnlockPrompt {
                 text: "Repeat passphrase…".into(),
                 placeholder: true,
                 show_caret: self.confirm_focused,
+                caret_prefix: String::new(),
+                selection: None,
             }
         } else {
+            let text = if self.visible {
+                self.confirm.clone()
+            } else {
+                "•".repeat(self.confirm.chars().count())
+            };
             FieldPaint {
-                text: if self.visible {
-                    self.confirm.clone()
-                } else {
-                    "•".repeat(self.confirm.chars().count())
-                },
+                caret_prefix: text.clone(),
+                text,
                 placeholder: false,
                 show_caret: self.confirm_focused,
+                selection: None,
             }
         }
     }
@@ -325,18 +330,25 @@ impl VaultUnlockPrompt {
                 text: "Enter passphrase…".into(),
                 placeholder: true,
                 show_caret: caret,
+                caret_prefix: String::new(),
+                selection: None,
             }
         } else if self.visible {
             FieldPaint {
                 text: self.passphrase.clone(),
                 placeholder: false,
                 show_caret: caret,
+                caret_prefix: self.passphrase.clone(),
+                selection: None,
             }
         } else {
+            let masked = "•".repeat(self.passphrase.chars().count());
             FieldPaint {
-                text: "•".repeat(self.passphrase.chars().count()),
+                text: masked.clone(),
                 placeholder: false,
                 show_caret: caret,
+                caret_prefix: masked,
+                selection: None,
             }
         }
     }

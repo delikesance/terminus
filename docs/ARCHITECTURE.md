@@ -29,7 +29,7 @@ Sugarloaf draws are driven by primitive structs rather than a hierarchical objec
 
 To draw a rectangle:
 ```rust
-sugarloaf.rect(Some(rect.x), rect.y, rect.width, rect.height, rect.color);
+sugarloaf.rect(None, rect.x, rect.y, rect.width, rect.height, rect.color, depth, order);
 ```
 
 ## 2. Terminus UI Component System

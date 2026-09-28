@@ -59,7 +59,7 @@ RUN_LOG=""
 WATCH=1
 RUN_APP=1
 FEATURES="${TERMINUS_DEV_FEATURES:-}"
-LOG_LEVEL="${RIO_LOG_LEVEL:-info}"
+LOG_LEVEL="${TERMINUS_LOG_LEVEL:-info}"
 POLL_INTERVAL="${TERMINUS_DEV_POLL:-0.5}"
 DEBOUNCE="${TERMINUS_DEV_DEBOUNCE:-0.4}"
 APP_ARGS=()
@@ -72,13 +72,13 @@ Options:
   --once              build and launch once, do not watch
   --no-run            watch and rebuild, do not launch the app
   --features <list>   extra cargo features (e.g. wgpu)
-  --log-level <level> RIO_LOG_LEVEL for the app (default: info)
+  --log-level <level> TERMINUS_LOG_LEVEL for the app (default: info)
   -- <args...>        everything after -- is passed to the app
   -h, --help          this text
 
 Environment:
   TERMINUS_DEV_FEATURES   same as --features
-  RIO_LOG_LEVEL           same as --log-level
+  TERMINUS_LOG_LEVEL           same as --log-level
   TERMINUS_DEV_POLL       seconds between source polls (default 0.5)
   TERMINUS_DEV_DEBOUNCE   seconds to wait for saves to settle (default 0.4)
   TERMINUS_DEV_NO_NIX=1   do not re-exec inside the nix devshell
@@ -224,8 +224,8 @@ start_app() {
     (
         cd "$ROOT"
         exec env "${shell_env[@]}" \
-            RIO_CONFIG_HOME="$CONFIG_DIR" \
-            RIO_LOG_LEVEL="$LOG_LEVEL" \
+            TERMINUS_CONFIG_HOME="$CONFIG_DIR" \
+            TERMINUS_LOG_LEVEL="$LOG_LEVEL" \
             "$BIN" "${APP_ARGS[@]}"
     ) >>"$RUN_LOG" 2>&1 &
     echo $! >"$PID_FILE"

@@ -1669,6 +1669,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             .chrome
                                             .settings
                                             .sql_uri
+                                            .value
                                             .clone();
                                         route.window.screen.host_store.test_sync(&uri);
                                         route.request_overlay_redraw();
