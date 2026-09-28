@@ -20,6 +20,10 @@ const LABEL_ESTIMATE: f32 = 7.0;
 /// What selecting a context-menu row should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextAction {
+    /// Open another session on a stored SSH host.
+    NewSession(String),
+    /// Put the host's `ssh …` command line on the clipboard.
+    CopySshCommand(String),
     /// Soft-delete a stored SSH host.
     DeleteHost(String),
     /// Soft-delete a host group (hosts inside become ungrouped by the store).
@@ -136,7 +140,7 @@ impl ContextMenu {
     ) -> Option<Self> {
         let id = host_id.into();
         let mut items = vec![
-            ContextItem::new("Edit host", ContextAction::EditHost(id.clone())),
+            ContextItem::new("New session", ContextAction::NewSession(id.clone())),
             ContextItem::new("Open SFTP", ContextAction::OpenSftp(id.clone())),
         ];
         if sftp_open {
@@ -145,6 +149,14 @@ impl ContextMenu {
                 ContextAction::OpenSftpOtherPane(id.clone()),
             ));
         }
+        items.push(ContextItem::new(
+            "Copy SSH command",
+            ContextAction::CopySshCommand(id.clone()),
+        ));
+        items.push(ContextItem::new(
+            "Edit host",
+            ContextAction::EditHost(id.clone()),
+        ));
         items.push(ContextItem::new(
             "Rename",
             ContextAction::RenameHost(id.clone()),
@@ -340,6 +352,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_host_menu_leads_with_connecting() {
+        let menu = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
+        assert_eq!(menu.items[0].label, "New session");
+        assert!(menu.items.iter().any(|i| i.label == "Copy SSH command"));
+    }
+
+    #[test]
     fn delete_host_needs_a_second_click() {
         let mut menu = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
         let del = menu
@@ -373,9 +392,9 @@ mod tests {
         let group = ContextMenu::for_group(10.0, 10.0, "g1").unwrap();
         let host = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
         assert_eq!(group.items.len(), 2);
-        assert_eq!(host.items.len(), 4);
+        assert_eq!(host.items.len(), 6);
         assert_eq!(group.height(), ContextMenu::height_for(2));
-        assert_eq!(host.height(), ContextMenu::height_for(4));
+        assert_eq!(host.height(), ContextMenu::height_for(6));
         assert!(group.height() < host.height());
         assert_eq!(group.rect().height, group.height());
     }
@@ -383,29 +402,25 @@ mod tests {
     #[test]
     fn host_menu_hits_delete_and_dismisses_outside() {
         let menu = ContextMenu::for_host(100.0, 100.0, "h1").unwrap();
-        assert_eq!(menu.items.len(), 4);
-        let item = menu.item_rect(3).unwrap();
+        assert_eq!(menu.items.len(), 6);
+        let item = menu.item_rect(5).unwrap();
         assert_eq!(
             menu.hit_test(item.x + 2.0, item.y + 2.0),
-            ContextMenuHit::Item(3)
+            ContextMenuHit::Item(5)
         );
         assert_eq!(menu.hit_test(0.0, 0.0), ContextMenuHit::Dismiss);
-        assert_eq!(
-            menu.take_action(0),
-            Some(ContextAction::EditHost("h1".into()))
-        );
-        assert_eq!(
-            menu.take_action(1),
-            Some(ContextAction::OpenSftp("h1".into()))
-        );
-        assert_eq!(
-            menu.take_action(2),
-            Some(ContextAction::RenameHost("h1".into()))
-        );
-        assert_eq!(
-            menu.take_action(3),
-            Some(ContextAction::DeleteHost("h1".into()))
-        );
+        let id = || "h1".to_string();
+        let expected = [
+            ContextAction::NewSession(id()),
+            ContextAction::OpenSftp(id()),
+            ContextAction::CopySshCommand(id()),
+            ContextAction::EditHost(id()),
+            ContextAction::RenameHost(id()),
+            ContextAction::DeleteHost(id()),
+        ];
+        for (i, action) in expected.into_iter().enumerate() {
+            assert_eq!(menu.take_action(i), Some(action), "item {i}");
+        }
     }
 
     #[test]
