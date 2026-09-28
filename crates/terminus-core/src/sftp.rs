@@ -51,27 +51,55 @@ impl SftpEntry {
     }
 }
 
+/// Chunk size for streamed transfers (each chunk has its own timeout).
+const TRANSFER_CHUNK: usize = 256 * 1024;
+
+/// Hidden temp sibling of a resolved remote path: `/dir/.name.terminus-<tag>-<id>`.
+fn temp_sibling(target: &str, tag: &str) -> String {
+    let (dir, name) = match target.rsplit_once('/') {
+        Some((dir, name)) => (dir, name),
+        None => ("", target),
+    };
+    let id = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let leaf = format!(".{name}.terminus-{tag}-{id}");
+    if dir.is_empty() && target.starts_with('/') {
+        format!("/{leaf}")
+    } else if dir.is_empty() {
+        leaf
+    } else {
+        format!("{dir}/{leaf}")
+    }
+}
+
 /// Normalizes a remote path and rejects attempts to escape it.
 ///
-/// Backslashes are treated as separators too: OpenSSH for Windows accepts both,
-/// so `..\\..\\etc` must be rejected as firmly as `../../etc`.
+/// Names are kept byte-for-byte: POSIX file names may start or end with
+/// spaces and may contain `\\`, so neither is trimmed nor split in a `/` path.
+/// A path without any `/` that uses `\\` is a Windows-style path (OpenSSH for
+/// Windows accepts both separators) and is split on `\\`. Either way `..`
+/// hidden behind a backslash (`..\\..\\etc`) is rejected as traversal.
 pub fn normalize_remote_path(raw: &str) -> Result<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    if raw.trim().is_empty() {
         return Err(Error::PathTraversalError(
             "remote path is empty".to_string(),
         ));
     }
-    if trimmed.contains('\0') {
+    if raw.contains('\0') {
         return Err(Error::PathTraversalError(
             "remote path contains a NUL byte".to_string(),
         ));
     }
 
-    let absolute = trimmed.starts_with('/') || trimmed.starts_with('\\');
+    let windows_style = !raw.contains('/') && raw.contains('\\');
+    let path = if windows_style {
+        std::borrow::Cow::Owned(raw.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(raw)
+    };
+    let absolute = path.starts_with('/');
     let mut segments: Vec<&str> = Vec::new();
 
-    for segment in trimmed.split(['/', '\\']) {
+    for segment in path.split('/') {
         match segment {
             "" | "." => continue,
             ".." => {
@@ -80,6 +108,11 @@ pub fn normalize_remote_path(raw: &str) -> Result<String> {
                         "`..` escapes the root of {raw:?}"
                     )));
                 }
+            }
+            segment if segment.split('\\').any(|part| part == "..") => {
+                return Err(Error::PathTraversalError(format!(
+                    "backslash `..` traversal in {raw:?}"
+                )));
             }
             segment => segments.push(segment),
         }
@@ -246,19 +279,26 @@ impl SftpSession {
             .op("read_dir", self.inner.read_dir(resolved.clone()))
             .await?;
 
-        let mut entries: Vec<SftpEntry> = dir
-            .into_iter()
-            .map(|entry| {
-                let metadata = entry.metadata();
-                SftpEntry {
-                    name: entry.file_name(),
-                    path: entry.path(),
-                    is_dir: metadata.is_dir(),
-                    size: metadata.len(),
-                    modified: metadata.modified().ok().map(DateTime::<Utc>::from),
+        let mut entries: Vec<SftpEntry> = Vec::new();
+        for entry in dir {
+            let mut metadata = entry.metadata();
+            // readdir reports lstat attributes: resolve symlinks so a link to
+            // a directory browses like one (a dangling link stays a file).
+            if metadata.is_symlink() {
+                if let Ok(Ok(target)) =
+                    timeout(self.timeout, self.inner.metadata(entry.path())).await
+                {
+                    metadata = target;
                 }
-            })
-            .collect();
+            }
+            entries.push(SftpEntry {
+                name: entry.file_name(),
+                path: entry.path(),
+                is_dir: metadata.is_dir(),
+                size: metadata.len(),
+                modified: metadata.modified().ok().map(DateTime::<Utc>::from),
+            });
+        }
 
         entries.sort_by(|a, b| {
             b.is_dir
@@ -269,72 +309,334 @@ impl SftpSession {
         Ok(entries)
     }
 
-    /// Reads a whole remote file into memory.
+    /// Reads a whole remote file into memory (small files: edit, probes).
     ///
-    /// Always awaits an explicit handle close. Relying on [`Drop`] alone uses
-    /// `close_nowait`, which races under rapid sequential opens and trips the
-    /// server's SFTP handle limit (`Limit exceeded: handle limit reached`).
+    /// Each chunk read has its own [`Self::timeout`] budget, so a slow link
+    /// only fails when it actually stalls. Always awaits an explicit handle
+    /// close: relying on [`Drop`] alone uses `close_nowait`, which races under
+    /// rapid sequential opens and trips the server's SFTP handle limit.
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
-        use tokio::io::AsyncReadExt;
-
-        let resolved = self.resolve(path)?;
-        let mut file = self.op("open", self.inner.open(resolved)).await?;
         let mut buffer = Vec::new();
-        match timeout(self.timeout, file.read_to_end(&mut buffer)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(err)) => {
-                return Err(Error::SshError(format!("sftp read: {err}")));
-            }
-            Err(_) => {
-                return Err(Error::TimeoutError(format!(
-                    "sftp read timed out after {:?}",
-                    self.timeout
-                )));
-            }
-        }
-        match timeout(self.timeout, file.close()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return Err(Error::SshError(format!("sftp close: {err}")));
-            }
-            Err(_) => {
-                return Err(Error::TimeoutError(format!(
-                    "sftp close timed out after {:?}",
-                    self.timeout
-                )));
-            }
-        }
+        self.read_into(path, &mut buffer, |_| {}).await?;
         Ok(buffer)
     }
 
-    /// Writes (creating or truncating) a remote file.
-    ///
-    /// Awaits an explicit handle close (same rationale as [`Self::read`]).
-    pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
+    /// Stream `path` into `sink`, one timed chunk at a time.
+    async fn read_into<W, F>(
+        &self,
+        path: &str,
+        sink: &mut W,
+        mut on_chunk: F,
+    ) -> Result<u64>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+        F: FnMut(u64),
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let resolved = self.resolve(path)?;
-        let mut file = self.op("create", self.inner.create(resolved)).await?;
-        match timeout(self.timeout, file.write_all(data)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return Err(Error::SshError(format!("sftp write: {err}")));
+        let mut file = self.open_read(path).await?;
+        let mut buf = vec![0u8; TRANSFER_CHUNK];
+        let mut total = 0u64;
+        loop {
+            let n = match timeout(self.timeout, file.read(&mut buf)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => n,
+                Ok(Err(err)) => return Err(Error::SshError(format!("sftp read: {err}"))),
+                Err(_) => {
+                    return Err(Error::TimeoutError(format!(
+                        "sftp read stalled for {:?}",
+                        self.timeout
+                    )))
+                }
+            };
+            sink.write_all(&buf[..n])
+                .await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+            total = total.saturating_add(n as u64);
+            on_chunk(total);
+        }
+        self.close_file(file, "read").await?;
+        Ok(total)
+    }
+
+    /// Writes (creating or replacing) a remote file.
+    ///
+    /// The data lands in a temporary sibling first and replaces `path` only
+    /// once complete, so a failed or stalled write never leaves a truncated
+    /// file behind. Each chunk has its own timeout budget.
+    pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        let mut reader = data;
+        self.write_from(path, &mut reader, |_| {}).await.map(|_| ())
+    }
+
+    /// Stream `source` into `path` via a temp sibling, then swap it in.
+    ///
+    /// The temp file inherits the target's permission bits. A symlinked
+    /// target, or a directory where no new file can be created, is written in
+    /// place instead (still chunked with per-chunk timeouts), so the link or
+    /// the file's identity survives.
+    async fn write_from<R, F>(
+        &self,
+        path: &str,
+        source: &mut R,
+        on_chunk: F,
+    ) -> Result<u64>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+        F: FnMut(u64),
+    {
+        let target = self.resolve(path)?;
+        let existing = timeout(self.timeout, self.inner.symlink_metadata(target.clone()))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+        if existing.as_ref().is_some_and(|m| m.is_symlink()) {
+            return self.stream_into(&target, source, on_chunk).await;
+        }
+        let temp = temp_sibling(&target, "part");
+        let file = match self.op("create", self.inner.create(temp.clone())).await {
+            Ok(file) => file,
+            // Writable file in a directory we cannot add to: in place.
+            Err(_) => return self.stream_into(&target, source, on_chunk).await,
+        };
+        let copied = self.stream_to_file(file, source, on_chunk).await;
+        let copied = match copied {
+            Ok(n) => n,
+            Err(err) => {
+                let _ = timeout(self.timeout, self.inner.remove_file(temp)).await;
+                return Err(err);
             }
-            Err(_) => {
-                return Err(Error::TimeoutError(format!(
-                    "sftp write timed out after {:?}",
+        };
+        if let Some(mode) = existing.as_ref().and_then(|m| m.permissions) {
+            let mut attrs = russh_sftp::protocol::FileAttributes::empty();
+            attrs.permissions = Some(mode & 0o7777);
+            let _ =
+                timeout(self.timeout, self.inner.set_metadata(temp.clone(), attrs)).await;
+        }
+        if let Err(err) = self.replace(&temp, &target).await {
+            let _ = timeout(self.timeout, self.inner.remove_file(temp)).await;
+            return Err(err);
+        }
+        Ok(copied)
+    }
+
+    /// Truncate `target` and stream into it directly (no temp sibling).
+    async fn stream_into<R, F>(
+        &self,
+        target: &str,
+        source: &mut R,
+        on_chunk: F,
+    ) -> Result<u64>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+        F: FnMut(u64),
+    {
+        let file = self
+            .op("create", self.inner.create(target.to_string()))
+            .await?;
+        self.stream_to_file(file, source, on_chunk).await
+    }
+
+    /// Copy `source` into an open remote `file` in timed chunks, then close it.
+    async fn stream_to_file<R, F>(
+        &self,
+        mut file: russh_sftp::client::fs::File,
+        source: &mut R,
+        mut on_chunk: F,
+    ) -> Result<u64>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+        F: FnMut(u64),
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut buf = vec![0u8; TRANSFER_CHUNK];
+        let mut total = 0u64;
+        let written: Result<()> = async {
+            loop {
+                let n = source
+                    .read(&mut buf)
+                    .await
+                    .map_err(|e| Error::IoError(e.to_string()))?;
+                if n == 0 {
+                    break;
+                }
+                match timeout(self.timeout, file.write_all(&buf[..n])).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        return Err(Error::SshError(format!("sftp write: {err}")))
+                    }
+                    Err(_) => {
+                        return Err(Error::TimeoutError(format!(
+                            "sftp write stalled for {:?}",
+                            self.timeout
+                        )))
+                    }
+                }
+                total = total.saturating_add(n as u64);
+                on_chunk(total);
+            }
+            match timeout(self.timeout, file.flush()).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(err)) => Err(Error::SshError(format!("sftp write: {err}"))),
+                Err(_) => Err(Error::TimeoutError(format!(
+                    "sftp write stalled for {:?}",
                     self.timeout
-                )));
+                ))),
             }
         }
+        .await;
+        let closed = self.close_file(file, "write").await;
+        written.and(closed).map(|()| total)
+    }
+
+    /// Move the finished `temp` over `target` (already resolved paths).
+    ///
+    /// SFTP v3 `rename` refuses an existing target, so the old file is moved
+    /// aside first and restored if the swap fails; it is only deleted once
+    /// the new file is in place.
+    async fn replace(&self, temp: &str, target: &str) -> Result<()> {
+        let exists = matches!(
+            timeout(self.timeout, self.inner.try_exists(target.to_string())).await,
+            Ok(Ok(true))
+        );
+        if !exists {
+            return self
+                .op(
+                    "rename",
+                    self.inner.rename(temp.to_string(), target.to_string()),
+                )
+                .await;
+        }
+        let backup = temp_sibling(target, "old");
+        self.op(
+            "rename",
+            self.inner.rename(target.to_string(), backup.clone()),
+        )
+        .await?;
+        if let Err(err) = self
+            .op(
+                "rename",
+                self.inner.rename(temp.to_string(), target.to_string()),
+            )
+            .await
+        {
+            let _ = self
+                .op("rename", self.inner.rename(backup, target.to_string()))
+                .await;
+            return Err(err);
+        }
+        let _ = self.op("remove", self.inner.remove_file(backup)).await;
+        Ok(())
+    }
+
+    /// Close a handle explicitly (see [`Self::read`] on why not `Drop`).
+    async fn close_file(
+        &self,
+        file: russh_sftp::client::fs::File,
+        label: &str,
+    ) -> Result<()> {
         match timeout(self.timeout, file.close()).await {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(Error::SshError(format!("sftp close: {err}"))),
+            Ok(Err(err)) => Err(Error::SshError(format!("sftp {label} close: {err}"))),
             Err(_) => Err(Error::TimeoutError(format!(
-                "sftp close timed out after {:?}",
+                "sftp {label} close timed out after {:?}",
                 self.timeout
             ))),
         }
+    }
+
+    /// Upload local `from` to remote `to` in timed chunks via a temp sibling.
+    /// `on_progress(done, total)` fires after every chunk.
+    pub async fn upload_file<F>(
+        &self,
+        from: &std::path::Path,
+        to: &str,
+        mut on_progress: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64, u64),
+    {
+        let mut file = tokio::fs::File::open(from)
+            .await
+            .map_err(|e| Error::IoError(format!("{}: {e}", from.display())))?;
+        let total = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+        on_progress(0, total);
+        self.write_from(to, &mut file, |done| on_progress(done, total))
+            .await
+    }
+
+    /// Download remote `from` to local `to` in timed chunks. The data lands in
+    /// a temp sibling and replaces `to` only when complete.
+    pub async fn download_file<F>(
+        &self,
+        from: &str,
+        to: &std::path::Path,
+        mut on_progress: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64, u64),
+    {
+        use tokio::io::AsyncWriteExt;
+
+        let resolved = self.resolve(from)?;
+        let total = match timeout(self.timeout, self.inner.metadata(resolved)).await {
+            Ok(Ok(meta)) => meta.len(),
+            _ => 0,
+        };
+        on_progress(0, total);
+        if let Some(parent) = to.parent().filter(|p| !p.as_os_str().is_empty()) {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| Error::IoError(format!("{}: {e}", parent.display())))?;
+        }
+        let name = to
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "download".into());
+        let temp = to.with_file_name(format!(
+            ".{name}.terminus-part-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
+        let result: Result<u64> = async {
+            let mut file = tokio::fs::File::create(&temp)
+                .await
+                .map_err(|e| Error::IoError(format!("{}: {e}", temp.display())))?;
+            let copied = self
+                .read_into(from, &mut file, |done| on_progress(done, total))
+                .await?;
+            file.flush()
+                .await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+            file.sync_all()
+                .await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+            drop(file);
+            match tokio::fs::symlink_metadata(to).await {
+                // A symlinked destination keeps its link: copy through it.
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    tokio::fs::copy(&temp, to)
+                        .await
+                        .map_err(|e| Error::IoError(format!("{}: {e}", to.display())))?;
+                    let _ = tokio::fs::remove_file(&temp).await;
+                }
+                other => {
+                    if let Ok(meta) = other {
+                        let _ =
+                            tokio::fs::set_permissions(&temp, meta.permissions()).await;
+                    }
+                    tokio::fs::rename(&temp, to)
+                        .await
+                        .map_err(|e| Error::IoError(format!("{}: {e}", to.display())))?;
+                }
+            }
+            Ok(copied)
+        }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&temp).await;
+        }
+        result
     }
 
     /// Opens `path` for streaming reads (`AsyncRead`).
@@ -356,6 +658,7 @@ impl SftpSession {
     ///
     /// Each read/write is bounded by [`Self::timeout`]; the overall copy may
     /// run longer than one budget (progress via `on_progress(bytes_copied)`).
+    /// The destination is replaced only once the copy completed.
     pub async fn copy_to<F>(
         &self,
         from_path: &str,
@@ -366,66 +669,28 @@ impl SftpSession {
     where
         F: FnMut(u64),
     {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Relay through a bounded in-memory pipe: the reader side fills it
+        // chunk by chunk while `write_from` drains it into the temp file.
+        let (mut tx, mut rx) = tokio::io::duplex(TRANSFER_CHUNK * 4);
+        let read = async {
+            let copied = self.read_into(from_path, &mut tx, |_| {}).await;
+            drop(tx);
+            copied
+        };
+        let write = dest.write_from(to_path, &mut rx, |n| on_progress(n));
+        let (read, written) = tokio::join!(read, write);
+        read?;
+        written
+    }
 
-        let mut reader = self.open_read(from_path).await?;
-        let mut writer = dest.create_write(to_path).await?;
-        let mut buf = vec![0u8; 256 * 1024];
-        let mut total = 0u64;
-        loop {
-            let n = match timeout(self.timeout, reader.read(&mut buf)).await {
-                Ok(Ok(0)) => break,
-                Ok(Ok(n)) => n,
-                Ok(Err(err)) => {
-                    return Err(Error::SshError(format!("sftp copy read: {err}")));
-                }
-                Err(_) => {
-                    return Err(Error::TimeoutError(format!(
-                        "sftp copy read timed out after {:?}",
-                        self.timeout
-                    )));
-                }
-            };
-            match timeout(dest.timeout, writer.write_all(&buf[..n])).await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    return Err(Error::SshError(format!("sftp copy write: {err}")));
-                }
-                Err(_) => {
-                    return Err(Error::TimeoutError(format!(
-                        "sftp copy write timed out after {:?}",
-                        dest.timeout
-                    )));
-                }
-            }
-            total = total.saturating_add(n as u64);
-            on_progress(total);
+    /// The login directory (`realpath(".")` on the server), where a freshly
+    /// opened pane should start.
+    pub async fn home_dir(&self) -> Result<String> {
+        let home = self.op("realpath", self.inner.canonicalize(".")).await?;
+        match &self.root {
+            Some(root) if !is_within_root(root, &home) => Ok(root.clone()),
+            _ => Ok(home),
         }
-        match timeout(self.timeout, reader.close()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return Err(Error::SshError(format!("sftp copy read-close: {err}")));
-            }
-            Err(_) => {
-                return Err(Error::TimeoutError(format!(
-                    "sftp copy read-close timed out after {:?}",
-                    self.timeout
-                )));
-            }
-        }
-        match timeout(dest.timeout, writer.shutdown()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                return Err(Error::SshError(format!("sftp copy close: {err}")));
-            }
-            Err(_) => {
-                return Err(Error::TimeoutError(format!(
-                    "sftp copy close timed out after {:?}",
-                    dest.timeout
-                )));
-            }
-        }
-        Ok(total)
     }
 
     /// Renames/moves `old` to `new` (both resolved inside the root).
@@ -617,6 +882,28 @@ mod tests {
         assert_eq!(normalize_remote_path("/srv/./data").unwrap(), "/srv/data");
         assert_eq!(normalize_remote_path("/").unwrap(), "/");
         assert_eq!(normalize_remote_path("data/logs").unwrap(), "data/logs");
+    }
+
+    #[test]
+    fn normalization_keeps_edge_whitespace_and_literal_backslashes() {
+        // POSIX file names may end in spaces or contain `\`.
+        assert_eq!(
+            normalize_remote_path("/home/u/trail ").unwrap(),
+            "/home/u/trail "
+        );
+        assert_eq!(
+            normalize_remote_path("/home/u/ lead").unwrap(),
+            "/home/u/ lead"
+        );
+        assert_eq!(
+            normalize_remote_path("/home/u/a\\b.txt").unwrap(),
+            "/home/u/a\\b.txt"
+        );
+        // Windows-style paths (no `/`) still use `\` as the separator.
+        assert_eq!(normalize_remote_path("\\Users\\me").unwrap(), "/Users/me");
+        // …and `..` hidden behind backslashes is still traversal.
+        assert!(normalize_remote_path("/srv/..\\etc").is_err());
+        assert!(normalize_remote_path("/srv/x\\..\\..\\etc").is_err());
     }
 
     #[test]

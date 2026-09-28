@@ -256,7 +256,6 @@ fn detect_remote_os_reports_distro() {
 // ----------------------------------------------------- sftp session ----
 
 #[test]
-#[ignore = "BUG: symlinked directories are listed as files"]
 fn sftp_lists_symlinked_directory_as_directory() {
     let o = need!(opts("TERMINUS_E2E_SSHD", "symlink"));
     let rt = rt();
@@ -273,7 +272,6 @@ fn sftp_lists_symlinked_directory_as_directory() {
 }
 
 #[test]
-#[ignore = "BUG: remote names with trailing spaces or backslashes are unreachable"]
 fn sftp_handles_names_with_edge_whitespace_and_backslash() {
     let o = need!(opts("TERMINUS_E2E_SSHD", "names"));
     let rt = rt();
@@ -370,6 +368,11 @@ fn worker_upload_download_roundtrip_large_file() {
         .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
         .collect();
     std::fs::write(dir.join("up.bin"), &data).unwrap();
+    {
+        let rt = rt();
+        let c = rt.block_on(terminus_core::ssh::connect_sftp(&o)).unwrap();
+        let _ = rt.block_on(c.remove(&format!("{home}/up.bin")));
+    }
     let w = connect_worker(o, dir.clone());
     w.send(SftpCommand::Transfer {
         from_side: SftpSide::Left,
@@ -418,13 +421,17 @@ fn worker_upload_download_roundtrip_large_file() {
 }
 
 #[test]
-#[ignore = "BUG: whole-file transfers share one 30s timeout and leave truncated files"]
 fn worker_upload_over_slow_link_does_not_hit_30s_whole_file_timeout() {
     // 40 MB at ~1 MB/s ≈ 40 s: any per-transfer (not per-chunk) 30 s budget fails.
     let o = need!(opts("TERMINUS_E2E_SLOW_SSHD", "w-slow"));
     let home = remote_home(&o);
     let dir = scratch("w-slow-local");
     std::fs::write(dir.join("slow.bin"), vec![7u8; 40_000_000]).unwrap();
+    {
+        let rt = rt();
+        let c = rt.block_on(terminus_core::ssh::connect_sftp(&o)).unwrap();
+        let _ = rt.block_on(c.remove(&format!("{home}/slow.bin")));
+    }
     let w = connect_worker(o, dir.clone());
     let started = Instant::now();
     w.send(SftpCommand::Transfer {
@@ -452,27 +459,72 @@ fn worker_upload_over_slow_link_does_not_hit_30s_whole_file_timeout() {
 }
 
 #[test]
-#[ignore = "BUG: single-file transfer overwrites without a conflict prompt"]
 fn worker_single_file_transfer_prompts_before_overwrite() {
     let o = need!(opts("TERMINUS_E2E_SSHD", "w-ovr"));
     let home = remote_home(&o);
     let rt = rt();
     let c = rt.block_on(terminus_core::ssh::connect_sftp(&o)).unwrap();
-    rt.block_on(c.write(&format!("{home}/precious.txt"), b"REMOTE ORIGINAL"))
-        .unwrap();
+    let target = format!("{home}/precious.txt");
+    rt.block_on(c.write(&target, b"REMOTE ORIGINAL")).unwrap();
     let dir = scratch("w-ovr-local");
     std::fs::write(dir.join("precious.txt"), b"local").unwrap();
     let w = connect_worker(o, dir.clone());
-    w.send(SftpCommand::Transfer {
-        from_side: SftpSide::Left,
-        from_path: dir.join("precious.txt").to_string_lossy().into(),
-        to_side: SftpSide::Right,
-        to_cwd: home.clone(),
-        name: "precious.txt".into(),
+    let send = || {
+        w.send(SftpCommand::Transfer {
+            from_side: SftpSide::Left,
+            from_path: dir.join("precious.txt").to_string_lossy().into(),
+            to_side: SftpSide::Right,
+            to_cwd: home.clone(),
+            name: "precious.txt".into(),
+        })
+    };
+    let prompt = |w: &SftpWorker| {
+        wait(w, 20, |e| {
+            is_failed(e)
+                || matches!(e, SftpEvent::Conflict { .. })
+                || matches!(
+                    e,
+                    SftpEvent::Listed {
+                        side: SftpSide::Right,
+                        ..
+                    }
+                )
+        })
+    };
+
+    send();
+    let ev = prompt(&w);
+    let Ok(SftpEvent::Conflict { id, .. }) = ev else {
+        let now = rt.block_on(c.read(&target)).unwrap();
+        panic!(
+            "no conflict prompt ({ev:?}); remote now {:?}",
+            String::from_utf8_lossy(&now)
+        );
+    };
+    assert_eq!(rt.block_on(c.read(&target)).unwrap(), b"REMOTE ORIGINAL");
+
+    // Keep: the remote file is untouched.
+    w.send(SftpCommand::ResolveConflict {
+        id,
+        action: terminus_bridge::ConflictAction::Keep,
+        apply_to_all: false,
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(rt.block_on(c.read(&target)).unwrap(), b"REMOTE ORIGINAL");
+    let _ = w.drain(); // the Keep round's refresh
+
+    // Overwrite: replaced once confirmed.
+    send();
+    let Ok(SftpEvent::Conflict { id, .. }) = prompt(&w) else {
+        panic!("second prompt missing")
+    };
+    w.send(SftpCommand::ResolveConflict {
+        id,
+        action: terminus_bridge::ConflictAction::Overwrite,
+        apply_to_all: false,
     });
     let ev = wait(&w, 20, |e| {
         is_failed(e)
-            || matches!(e, SftpEvent::Conflict { .. })
             || matches!(
                 e,
                 SftpEvent::Listed {
@@ -481,13 +533,62 @@ fn worker_single_file_transfer_prompts_before_overwrite() {
                 }
             )
     });
-    let now = rt
-        .block_on(c.read(&format!("{home}/precious.txt")))
+    assert!(matches!(ev, Ok(SftpEvent::Listed { .. })), "{ev:?}");
+    assert_eq!(rt.block_on(c.read(&target)).unwrap(), b"local");
+}
+
+#[test]
+fn worker_remote_pane_starts_in_home() {
+    let o = need!(opts("TERMINUS_E2E_SSHD", "w-home"));
+    let home = remote_home(&o);
+    let w = connect_worker(o, scratch("w-home-local"));
+    w.send(SftpCommand::ListRemote {
+        side: SftpSide::Right,
+        path: terminus_bridge::REMOTE_HOME.into(),
+    });
+    let ev = wait(&w, 20, |e| {
+        is_failed(e)
+            || matches!(
+                e,
+                SftpEvent::Listed {
+                    side: SftpSide::Right,
+                    ..
+                }
+            )
+    });
+    let Ok(SftpEvent::Listed { path, .. }) = ev else {
+        panic!("{ev:?}")
+    };
+    assert_eq!(path, home);
+}
+
+#[test]
+fn interrupted_upload_never_truncates_the_existing_file() {
+    let o = need!(opts("TERMINUS_E2E_SSHD", "w-atomic"));
+    let slow = need!(opts("TERMINUS_E2E_SLOW_SSHD", "w-atomic-slow"));
+    let home = remote_home(&o);
+    let target = format!("{home}/atomic.bin");
+    let rt = rt();
+    let c = rt.block_on(terminus_core::ssh::connect_sftp(&o)).unwrap();
+    rt.block_on(c.write(&target, b"ORIGINAL")).unwrap();
+    let dir = scratch("w-atomic-local");
+    std::fs::write(dir.join("atomic.bin"), vec![1u8; 30_000_000]).unwrap();
+    let conn = rt
+        .block_on(terminus_core::ssh::connect_sftp(&slow))
         .unwrap();
+    // 30 MB over ~1 MB/s cannot finish in 2 s: the upload is cut mid-stream.
+    let local = dir.join("atomic.bin");
+    let upload = conn.upload_file(&local, &target, |_, _| {});
+    let cut =
+        rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), upload).await });
     assert!(
-        matches!(ev, Ok(SftpEvent::Conflict { .. })),
-        "no conflict prompt; remote now {:?}",
-        String::from_utf8_lossy(&now)
+        cut.is_err(),
+        "upload finished too fast to test interruption"
+    );
+    assert_eq!(
+        rt.block_on(c.read(&target)).unwrap(),
+        b"ORIGINAL",
+        "an interrupted upload replaced the file"
     );
 }
 
@@ -632,4 +733,32 @@ fn worker_remove_remote_recursive() {
         std::path::Path::new("/etc/passwd").exists(),
         "followed symlink out of tree!"
     );
+}
+
+#[test]
+fn overwrite_keeps_permissions_and_symlinks() {
+    let o = need!(opts("TERMINUS_E2E_SSHD", "w-perm"));
+    let home = remote_home(&o);
+    let rt = rt();
+    let c = rt.block_on(terminus_core::ssh::connect_sftp(&o)).unwrap();
+    let (code, _, err) = rt
+        .block_on(c.exec(
+            "cd ~ && rm -rf permtest && mkdir permtest && cd permtest && \
+             printf old > run.sh && chmod 755 run.sh && printf real > real.txt && ln -s real.txt link.txt",
+        ))
+        .unwrap();
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    rt.block_on(c.write(&format!("{home}/permtest/run.sh"), b"#!/bin/sh\necho new\n"))
+        .unwrap();
+    rt.block_on(c.write(&format!("{home}/permtest/link.txt"), b"through link"))
+        .unwrap();
+    let (_, out, _) = rt
+        .block_on(c.exec(
+            "cd ~/permtest && stat -c %a run.sh && test -L link.txt && echo LINK && cat real.txt",
+        ))
+        .unwrap();
+    let out = String::from_utf8_lossy(&out);
+    assert!(out.starts_with("755"), "mode lost: {out}");
+    assert!(out.contains("LINK"), "symlink replaced by a file: {out}");
+    assert!(out.contains("through link"), "{out}");
 }
