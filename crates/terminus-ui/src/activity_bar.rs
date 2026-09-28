@@ -110,6 +110,9 @@ pub struct ActivityBarState {
     pub cloud_sync_active: bool,
     /// Icon under the pointer: its name shows beside the rail.
     pub hover: Option<RailHit>,
+    /// Icon just clicked: its tooltip stays hidden until the pointer
+    /// leaves it, so it never covers what the click opened.
+    pub hover_dismissed: Option<RailHit>,
 }
 
 impl Default for ActivityBarState {
@@ -119,6 +122,7 @@ impl Default for ActivityBarState {
             collapsed: false,
             cloud_sync_active: false,
             hover: None,
+            hover_dismissed: None,
         }
     }
 }
