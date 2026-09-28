@@ -4,6 +4,9 @@ use super::Screen;
 use crate::hosts;
 use rio_backend::config::Shell;
 
+/// Extra environment for a spawned shell (`SSH_ASKPASS`, …).
+pub(super) type ShellEnv = Vec<(String, String)>;
+
 impl Screen<'_> {
     /// Resolve a row id into the shell its session should run.
     ///
@@ -13,7 +16,7 @@ impl Screen<'_> {
     pub(super) fn shell_for_row(
         &self,
         id: &str,
-    ) -> Result<(Option<Shell>, Option<Vec<(String, String)>>), String> {
+    ) -> Result<(Option<Shell>, Option<ShellEnv>), String> {
         if id == hosts::LOCAL_ID {
             return Ok((None, None));
         }
@@ -67,7 +70,7 @@ impl Screen<'_> {
                     None
                 } else {
                     match self.host_store.resolve_host_identity(id)? {
-                        Some(pair) => Some(pair),
+                        Some(identity) => Some(identity),
                         None => {
                             return Err(
                                 "No saved SSH key — edit the host and select one (Settings → Managed SSH Keys)"
@@ -79,8 +82,8 @@ impl Screen<'_> {
                 let (shell, env) = ssh_shell(
                     host,
                     password.as_deref(),
-                    identity.as_ref().map(|(pem, _)| pem.as_str()),
-                    identity.as_ref().and_then(|(_, pass)| pass.as_deref()),
+                    identity.as_ref().map(|id| id.pem.as_str()),
+                    identity.as_ref().and_then(|id| id.passphrase.as_deref()),
                 )?;
                 Ok((Some(shell), env))
             }
@@ -115,7 +118,7 @@ pub(super) fn ssh_shell(
     password: Option<&str>,
     identity_pem: Option<&str>,
     identity_passphrase: Option<&str>,
-) -> Result<(Shell, Option<Vec<(String, String)>>), String> {
+) -> Result<(Shell, Option<ShellEnv>), String> {
     let destination = if host.username.is_empty() {
         host.hostname.clone()
     } else {

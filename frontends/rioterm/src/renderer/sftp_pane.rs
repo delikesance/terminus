@@ -4,13 +4,14 @@ use rio_backend::sugarloaf::text::DrawOpts;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::sftp_pane::{
-    SftpFocus, SftpHit, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState, BTN_SIZE,
-    PANE_PAD, ROW_HEIGHT,
+    SftpFocus, SftpHit, SftpPaneLayout, SftpPaneState, SftpSideState, BTN_SIZE, PANE_PAD,
+    ROW_HEIGHT,
 };
 use terminus_ui::{ChromeTheme, Rect};
 
 use super::chrome::{
-    draw_icon, paint_field_card_at, paint_field_caret_prefix_at, paint_flat,
+    draw_icon, paint_field_card_at, paint_field_caret_prefix_at, paint_flat, FieldCard,
+    Layer,
 };
 
 const DEPTH: f32 = 0.05;
@@ -33,32 +34,20 @@ pub fn paint(
 
     paint_flat(sugarloaf, &layout.bounds, theme.panel_bg, DEPTH, ORDER);
     paint_toolbar(sugarloaf, state, &layout, theme, scale);
-    paint_side(
-        sugarloaf,
-        state,
-        theme,
-        scale,
-        &layout.left,
-        &layout.left_header,
-        &layout.left_parent_btn,
-        &layout.left_list,
-        &state.left,
-        state.focus == SftpFocus::Left,
-        true,
-    );
-    paint_side(
-        sugarloaf,
-        state,
-        theme,
-        scale,
-        &layout.right,
-        &layout.right_header,
-        &layout.right_parent_btn,
-        &layout.right_list,
-        &state.right,
-        state.focus == SftpFocus::Right,
-        false,
-    );
+    let left = SideRects {
+        pane: layout.left,
+        header: layout.left_header,
+        parent_btn: layout.left_parent_btn,
+        list: layout.left_list,
+    };
+    let right = SideRects {
+        pane: layout.right,
+        header: layout.right_header,
+        parent_btn: layout.right_parent_btn,
+        list: layout.right_list,
+    };
+    paint_side(sugarloaf, state, theme, scale, &left, true);
+    paint_side(sugarloaf, state, theme, scale, &right, false);
 
     paint_flat(sugarloaf, &layout.footer, theme.button_bg, DEPTH, ORDER);
     let footer_text = state.footer_text();
@@ -273,15 +262,16 @@ fn paint_toolbar(
         paint_field_card_at(
             sugarloaf,
             theme,
-            layout.name_field,
-            edit.field_label(),
-            &paint.text,
+            &FieldCard {
+                card: layout.name_field,
+                label: edit.field_label(),
+                value: &paint.text,
+                focused: true,
+                placeholder: paint.placeholder,
+                trailing_slot: 0.0,
+            },
             true,
-            paint.placeholder,
-            0.0,
-            true,
-            DEPTH,
-            ORDER,
+            Layer::new(DEPTH, ORDER),
         );
         if paint.show_caret {
             paint_field_caret_prefix_at(
@@ -380,19 +370,34 @@ fn paint_icon_btn(
     );
 }
 
+/// Where one side of the browser paints: the whole pane, its path header,
+/// the "up" button in it, and the file list below.
+struct SideRects {
+    pane: Rect,
+    header: Rect,
+    parent_btn: Rect,
+    list: Rect,
+}
+
 fn paint_side(
     sugarloaf: &mut Sugarloaf,
     state: &SftpPaneState,
     theme: &ChromeTheme,
     scale: f32,
-    pane: &Rect,
-    header: &Rect,
-    parent_btn: &Rect,
-    list: &Rect,
-    side: &SftpSideState,
-    focused: bool,
+    rects: &SideRects,
     is_left: bool,
 ) {
+    let SideRects {
+        pane,
+        header,
+        parent_btn,
+        list,
+    } = rects;
+    let (side, focused) = if is_left {
+        (&state.left, state.focus == SftpFocus::Left)
+    } else {
+        (&state.right, state.focus == SftpFocus::Right)
+    };
     let bg = if focused {
         theme.panel_bg
     } else {
@@ -466,17 +471,7 @@ fn paint_side(
         return;
     }
 
-    paint_entries(
-        sugarloaf,
-        theme,
-        scale,
-        list,
-        &side.entries,
-        side.selected,
-        side.scroll,
-        &state.hover,
-        is_left,
-    );
+    paint_entries(sugarloaf, theme, scale, list, side, &state.hover, is_left);
 }
 
 fn paint_entries(
@@ -484,12 +479,17 @@ fn paint_entries(
     theme: &ChromeTheme,
     scale: f32,
     list: &Rect,
-    entries: &[SftpRow],
-    selected: Option<usize>,
-    scroll: f32,
+    side: &SftpSideState,
     hover: &Option<SftpHit>,
     is_left: bool,
 ) {
+    let SftpSideState {
+        entries,
+        selected,
+        scroll,
+        ..
+    } = side;
+    let (selected, scroll) = (*selected, *scroll);
     let visible_bottom = list.bottom();
     for (i, entry) in entries.iter().enumerate() {
         let y = list.y + i as f32 * ROW_HEIGHT - scroll;

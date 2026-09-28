@@ -629,39 +629,36 @@ impl Route<'_> {
                                 }
                             }
                             Key::Named(NamedKey::Enter) => {
-                                match self
+                                if let Ok(name) = self
                                     .window
                                     .screen
                                     .chrome
                                     .settings
                                     .take_key_draft_label()
                                 {
-                                    Ok(name) => {
-                                        let pem = self
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .key_pem
-                                            .value
-                                            .clone();
-                                        let pem = if pem.trim().is_empty() {
-                                            None
-                                        } else {
-                                            Some(pem)
-                                        };
-                                        let passphrase = self
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .key_draft_passphrase();
-                                        self.window
-                                            .screen
-                                            .host_store
-                                            .import_ssh_key(&name, pem, passphrase);
-                                    }
-                                    Err(_) => {}
+                                    let pem = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .key_pem
+                                        .value
+                                        .clone();
+                                    let pem = if pem.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(pem)
+                                    };
+                                    let passphrase = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .key_draft_passphrase();
+                                    self.window
+                                        .screen
+                                        .host_store
+                                        .import_ssh_key(&name, pem, passphrase);
                                 }
                             }
                             Key::Named(NamedKey::Space) => {

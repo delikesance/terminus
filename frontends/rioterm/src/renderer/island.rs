@@ -7,6 +7,7 @@
 // which is licensed under MIT license.
 
 use crate::context::ContextManager;
+use crate::renderer::chrome::{Layer, Stroke};
 use crate::renderer::helpers::spring::Spring;
 use rio_backend::event::{EventProxy, ProgressReport, ProgressState};
 use rio_backend::sugarloaf::text::DrawOpts;
@@ -266,9 +267,7 @@ pub fn tab_strip_layout_from_widths(
             *w *= scale;
         }
     } else if available <= 0.0 {
-        for w in &mut widths {
-            *w = 0.0;
-        }
+        widths.fill(0.0);
     }
 
     TabStripLayout {
@@ -285,7 +284,7 @@ pub fn tab_strip_layout(
     num_tabs: usize,
     max_tab_width: f32,
 ) -> TabStripLayout {
-    let n = num_tabs.max(0);
+    let n = num_tabs;
     let natural = tab_slot_width_for_content(48.0, false, true)
         .min(max_tab_width.max(MIN_TAB_WIDTH))
         .max(MIN_TAB_WIDTH);
@@ -358,11 +357,12 @@ fn draw_island(
                     sugarloaf,
                     &card,
                     bg,
-                    Some(ring),
+                    Some(Stroke {
+                        color: ring,
+                        width: 1.0,
+                    }),
                     radius,
-                    1.0,
-                    0.05,
-                    order,
+                    Layer::new(0.05, order),
                     false,
                 );
                 let inner = terminus_ui::Rect::new(
@@ -371,15 +371,13 @@ fn draw_island(
                     (w - 2.0).max(0.0),
                     (h - 2.0).max(0.0),
                 );
-                crate::renderer::chrome::paint_surface_stroke(
+                crate::renderer::chrome::paint_surface(
                     sugarloaf,
                     &inner,
                     fill,
                     None,
                     (radius - 1.0).clamp(0.0, inner.width.min(inner.height) / 2.0),
-                    1.0,
-                    0.05,
-                    order,
+                    Layer::new(0.05, order),
                     false,
                 );
             } else {
@@ -387,18 +385,25 @@ fn draw_island(
                     sugarloaf,
                     &card,
                     fill,
-                    Some(ring),
+                    Some(Stroke {
+                        color: ring,
+                        width: 1.0,
+                    }),
                     radius,
-                    1.0,
-                    0.05,
-                    order,
+                    Layer::new(0.05, order),
                     false,
                 );
             }
         }
         None => {
-            crate::renderer::chrome::paint_surface_stroke(
-                sugarloaf, &card, fill, None, radius, 1.0, 0.05, order, false,
+            crate::renderer::chrome::paint_surface(
+                sugarloaf,
+                &card,
+                fill,
+                None,
+                radius,
+                Layer::new(0.05, order),
+                false,
             );
         }
     }
@@ -1176,7 +1181,7 @@ impl Island {
             if show_close {
                 if let Some(cx) = close_button_center(ix, iw) {
                     if self.close_hover {
-                        crate::renderer::chrome::paint_surface_stroke(
+                        crate::renderer::chrome::paint_surface(
                             sugarloaf,
                             &terminus_ui::Rect::new(
                                 cx - CLOSE_HOVER_HALF,
@@ -1187,9 +1192,7 @@ impl Island {
                             fills.close_hover,
                             None,
                             CLOSE_HOVER_CORNER_RADIUS,
-                            1.0,
-                            0.05,
-                            3,
+                            Layer::new(0.05, 3),
                             false,
                         );
                     }
@@ -1211,15 +1214,13 @@ impl Island {
                 let group_x = tab_x + TAB_GAP / 2.0 + TAB_PADDING_X;
                 let text_y = (ISLAND_HEIGHT / 2.0) - (TITLE_FONT_SIZE / 2.);
                 let dot_y = (ISLAND_HEIGHT - STATUS_DOT) / 2.0;
-                crate::renderer::chrome::paint_surface_stroke(
+                crate::renderer::chrome::paint_surface(
                     sugarloaf,
                     &terminus_ui::Rect::new(group_x, dot_y, STATUS_DOT, STATUS_DOT),
                     [0.20, 0.83, 0.60, 1.0],
                     None,
                     STATUS_DOT / 2.0,
-                    1.0,
-                    0.06,
-                    5,
+                    Layer::new(0.06, 5),
                     false,
                 );
                 let icon_x = group_x + STATUS_DOT + STATUS_GAP;
@@ -1251,15 +1252,13 @@ impl Island {
 
             // Soft elevation: a slightly inflated dark halo behind the
             // lifted island so it reads as floating over the strip.
-            crate::renderer::chrome::paint_surface_stroke(
+            crate::renderer::chrome::paint_surface(
                 sugarloaf,
                 &terminus_ui::Rect::new(ix - 2.0, iy - 1.0, iw + 4.0, ih + 3.0),
                 [0.0, 0.0, 0.0, 0.18],
                 None,
                 radius + 2.0,
-                1.0,
-                0.05,
-                11,
+                Layer::new(0.05, 11),
                 false,
             );
 
@@ -1554,15 +1553,13 @@ impl Island {
         let content_x = bg_x + padding;
 
         // Background
-        crate::renderer::chrome::paint_surface_stroke(
+        crate::renderer::chrome::paint_surface(
             sugarloaf,
             &terminus_ui::Rect::new(bg_x, bg_y, bg_width, PICKER_HEIGHT),
             [0.15, 0.15, 0.15, 1.0],
             None,
             4.0,
-            1.0,
-            0.0,
-            10,
+            Layer::new(0.0, 10),
             false,
         );
 
@@ -1583,15 +1580,16 @@ impl Island {
                         PICKER_SWATCH_SIZE + border * 2.0,
                     ),
                     *color,
-                    Some([1.0, 1.0, 1.0, 1.0]),
+                    Some(Stroke {
+                        color: [1.0, 1.0, 1.0, 1.0],
+                        width: border,
+                    }),
                     4.0,
-                    border,
-                    0.0,
-                    10,
+                    Layer::new(0.0, 10),
                     false,
                 );
             } else {
-                crate::renderer::chrome::paint_surface_stroke(
+                crate::renderer::chrome::paint_surface(
                     sugarloaf,
                     &terminus_ui::Rect::new(
                         sx,
@@ -1602,9 +1600,7 @@ impl Island {
                     *color,
                     None,
                     3.0,
-                    1.0,
-                    0.0,
-                    10,
+                    Layer::new(0.0, 10),
                     false,
                 );
             }
@@ -1626,15 +1622,16 @@ impl Island {
                     PICKER_SWATCH_SIZE + border * 2.0,
                 ),
                 reset_fill,
-                Some([1.0, 1.0, 1.0, 1.0]),
+                Some(Stroke {
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    width: border,
+                }),
                 4.0,
-                border,
-                0.0,
-                10,
+                Layer::new(0.0, 10),
                 false,
             );
         } else {
-            crate::renderer::chrome::paint_surface_stroke(
+            crate::renderer::chrome::paint_surface(
                 sugarloaf,
                 &terminus_ui::Rect::new(
                     reset_x,
@@ -1645,22 +1642,19 @@ impl Island {
                 reset_fill,
                 None,
                 3.0,
-                1.0,
-                0.0,
-                10,
+                Layer::new(0.0, 10),
                 false,
             );
         }
         let slash_inset = 3.0;
-        crate::renderer::chrome::paint_line(
-            sugarloaf,
+        sugarloaf.line(
             reset_x + slash_inset,
             swatch_y + PICKER_SWATCH_SIZE - slash_inset,
             reset_x + PICKER_SWATCH_SIZE - slash_inset,
             swatch_y + slash_inset,
             1.5,
-            [0.86, 0.26, 0.27, 1.0],
             0.0,
+            [0.86, 0.26, 0.27, 1.0],
             10,
         );
 
@@ -1670,15 +1664,13 @@ impl Island {
         let input_width = inner_width;
 
         // Input background
-        crate::renderer::chrome::paint_surface_stroke(
+        crate::renderer::chrome::paint_surface(
             sugarloaf,
             &terminus_ui::Rect::new(input_x, input_y, input_width, PICKER_INPUT_HEIGHT),
             [0.10, 0.10, 0.10, 1.0],
             None,
             3.0,
-            1.0,
-            0.0,
-            10,
+            Layer::new(0.0, 10),
             false,
         );
 

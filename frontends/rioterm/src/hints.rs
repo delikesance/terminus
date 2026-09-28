@@ -506,7 +506,7 @@ impl LogicalLine {
         // runs on mouse movement: unbounded backtracking here is a
         // denial of service. Hitting the budget reads as "no more
         // matches".
-        const RETRY_LIMIT: u32 = 100_000;
+        const RETRY_LIMIT: std::ffi::c_ulong = 100_000;
 
         let mut region = onig::Region::new();
         let mut offset = 0;
@@ -521,7 +521,7 @@ impl LogicalLine {
             unsafe {
                 onig_sys::onig_set_retry_limit_in_search_of_match_param(
                     match_param.as_raw(),
-                    RETRY_LIMIT.into(),
+                    RETRY_LIMIT,
                 );
             }
             match regex.search_with_param(

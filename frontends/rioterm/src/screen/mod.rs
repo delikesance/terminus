@@ -318,11 +318,12 @@ impl Screen<'_> {
         // carries it so the terminal reflows beside the rail instead of
         // being painted over.
         let chrome = {
-            let mut chrome = terminus_ui::chrome::Chrome::default();
             // The rail starts under the tab strip rather than behind
             // it, so it lines up with the terminal's own top margin.
-            chrome.top_inset = padding_y_top;
-            chrome
+            terminus_ui::chrome::Chrome {
+                top_inset: padding_y_top,
+                ..terminus_ui::chrome::Chrome::default()
+            }
         };
         let chrome_left = chrome.reserved_width();
 

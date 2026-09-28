@@ -49,15 +49,10 @@ pub fn track_layout_from_labels(
     let content = col_w * STEP_COUNT as f32 + STEP_COLUMN_GAP * (STEP_COUNT - 1) as f32;
     let dialog_width = (content + 2.0 * DIALOG_PAD).max(DIALOG_WIDTH);
     let start = DIALOG_PAD + (dialog_width - 2.0 * DIALOG_PAD - content).max(0.0) * 0.5;
-    let mut node_cx = [0.0; STEP_COUNT];
-    let mut x = start;
-    for i in 0..STEP_COUNT {
-        node_cx[i] = x + col_w * 0.5;
-        x += col_w;
-        if i + 1 < STEP_COUNT {
-            x += STEP_COLUMN_GAP;
-        }
-    }
+    // Columns sit side by side, STEP_COLUMN_GAP apart.
+    let node_cx: [f32; STEP_COUNT] = std::array::from_fn(|i| {
+        start + i as f32 * (col_w + STEP_COLUMN_GAP) + col_w * 0.5
+    });
     (dialog_width, node_cx)
 }
 
@@ -157,10 +152,7 @@ impl ConnectionSequence {
     }
 
     fn refresh_estimated_label_widths(&self) {
-        let mut widths = [NODE_SIZE; STEP_COUNT];
-        for i in 0..STEP_COUNT {
-            widths[i] = estimate_label_width(self.step_label(i));
-        }
+        let widths = std::array::from_fn(|i| estimate_label_width(self.step_label(i)));
         self.label_widths.set(widths);
     }
 

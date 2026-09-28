@@ -616,6 +616,22 @@ fn host_from_draft(draft: &HostDraft) -> Host {
     }
 }
 
+/// A managed private key unsealed for one connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostIdentity {
+    /// OpenSSH private key (PEM).
+    pub pem: String,
+    /// Passphrase for `pem`, when it is encrypted (never empty).
+    pub passphrase: Option<String>,
+}
+
+/// Everything needed to authenticate to one SSH host.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostCredentials {
+    pub password: Option<String>,
+    pub identity: Option<HostIdentity>,
+}
+
 enum Command {
     Refresh,
     CreateSnippet(terminus_ui::snippets::SnippetItem),
@@ -696,7 +712,7 @@ enum Command {
     /// Load the managed private key PEM for a host (key auth).
     ResolveHostIdentity {
         id: String,
-        reply: Sender<Result<Option<(String, Option<String>)>, String>>,
+        reply: Sender<Result<Option<HostIdentity>, String>>,
     },
     /// After SSH connect: probe remote OS and persist `os_id` for the sidebar icon.
     DetectOs {
@@ -984,7 +1000,7 @@ impl HostRepository {
     pub fn resolve_host_identity(
         &self,
         host_id: &str,
-    ) -> Result<Option<(String, Option<String>)>, String> {
+    ) -> Result<Option<HostIdentity>, String> {
         let (reply_tx, reply_rx) = channel();
         self.commands
             .send(Command::ResolveHostIdentity {
@@ -2045,7 +2061,7 @@ fn resolve_host_identity(
     store: &Store,
     vault: Option<&Arc<terminus_core::UnlockedVault>>,
     id: &str,
-) -> Result<Option<(String, Option<String>)>, String> {
+) -> Result<Option<HostIdentity>, String> {
     use terminus_core::HostAuthMethod;
 
     let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
@@ -2073,7 +2089,7 @@ fn resolve_host_identity(
         return Err("Selected SSH key has no private key material".into());
     };
 
-    Ok(Some((pem, passphrase)))
+    Ok(Some(HostIdentity { pem, passphrase }))
 }
 
 /// Load a managed key with its private key and passphrase unsealed.
@@ -2693,6 +2709,21 @@ fn reorder_group(
 #[cfg(test)]
 pub fn database_path(dir: &Path) -> PathBuf {
     dir.join("terminus.db")
+}
+
+fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
+    let mut mapped = Vec::new();
+    if let Ok(snippets) = runtime.block_on(store.list_snippets()) {
+        for s in snippets {
+            mapped.push(terminus_ui::snippets::SnippetItem {
+                id: s.id.to_string(),
+                name: s.title,
+                cmd: s.content,
+                desc: s.shortcut.unwrap_or_default(),
+            });
+        }
+    }
+    HostEvent::SnippetsLoaded(mapped)
 }
 
 #[cfg(test)]
@@ -3539,19 +3570,4 @@ mod tests {
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
-    let mut mapped = Vec::new();
-    if let Ok(snippets) = runtime.block_on(store.list_snippets()) {
-        for s in snippets {
-            mapped.push(terminus_ui::snippets::SnippetItem {
-                id: s.id.to_string(),
-                name: s.title,
-                cmd: s.content,
-                desc: s.shortcut.unwrap_or_default(),
-            });
-        }
-    }
-    HostEvent::SnippetsLoaded(mapped)
 }

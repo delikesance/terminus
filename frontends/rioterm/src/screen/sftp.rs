@@ -4,15 +4,14 @@ use super::Screen;
 use crate::hosts;
 use rio_window::window::CursorIcon;
 
-/// SFTP credentials for a host: `(password, (private key PEM, passphrase))`.
-pub(super) type SftpAuth = (Option<String>, Option<(String, Option<String>)>);
+use crate::hosts::HostCredentials;
 
 impl Screen<'_> {
     /// Resolve password / identity for an SSH host used by SFTP.
     pub(super) fn resolve_sftp_auth(
         &self,
         host: &hosts::HostRow,
-    ) -> Result<SftpAuth, String> {
+    ) -> Result<HostCredentials, String> {
         let password = if host.auth_method == "password" {
             match self.host_store.resolve_host_password(&host.id)? {
                 Some(pw) => Some(pw),
@@ -31,7 +30,7 @@ impl Screen<'_> {
             None
         } else {
             match self.host_store.resolve_host_identity(&host.id)? {
-                Some(pair) => Some(pair),
+                Some(identity) => Some(identity),
                 None => {
                     return Err(
                         "No saved SSH key — edit the host and select one (Settings → Managed SSH Keys)"
@@ -41,7 +40,7 @@ impl Screen<'_> {
             }
         };
 
-        Ok((password, identity))
+        Ok(HostCredentials { password, identity })
     }
 
     /// Open the dual-pane SFTP browser for `host_id` on the current leaf pane.
@@ -51,7 +50,7 @@ impl Screen<'_> {
         &mut self,
         host: &crate::hosts::HostRow,
         other_pane: bool,
-    ) -> Result<Option<SftpAuth>, String> {
+    ) -> Result<Option<HostCredentials>, String> {
         match self.resolve_sftp_auth(host) {
             Ok(auth) => Ok(Some(auth)),
             Err(err) if err.contains("Unlock the vault") => {
@@ -79,9 +78,7 @@ impl Screen<'_> {
 
     pub fn open_sftp_pane(&mut self, host_id: &str) -> Result<(), String> {
         let host = self.sftp_host_row(host_id)?;
-        let Some((password, identity)) =
-            self.resolve_sftp_auth_or_unlock(&host, false)?
-        else {
+        let Some(credentials) = self.resolve_sftp_auth_or_unlock(&host, false)? else {
             return Ok(());
         };
         let wake = self.sftp_wake.clone();
@@ -90,7 +87,7 @@ impl Screen<'_> {
             prev.close();
         }
 
-        let session = crate::sftp_ui::ActiveSftp::start(&host, password, identity, wake)?;
+        let session = crate::sftp_ui::ActiveSftp::start(&host, credentials, wake)?;
 
         {
             let grid = self.context_manager.current_grid_mut();
@@ -110,12 +107,11 @@ impl Screen<'_> {
             return self.open_sftp_pane(host_id);
         }
         let host = self.sftp_host_row(host_id)?;
-        let Some((password, identity)) = self.resolve_sftp_auth_or_unlock(&host, true)?
-        else {
+        let Some(credentials) = self.resolve_sftp_auth_or_unlock(&host, true)? else {
             return Ok(());
         };
         let session = self.sftp.as_mut().expect("checked above");
-        session.open_other_host(&host, password, identity)?;
+        session.open_other_host(&host, credentials)?;
         self.mark_dirty();
         Ok(())
     }

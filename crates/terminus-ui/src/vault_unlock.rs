@@ -72,7 +72,7 @@ pub enum VaultUnlockHit {
     Consume,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct VaultUnlockPrompt {
     open: bool,
     passphrase: String,
@@ -86,23 +86,6 @@ pub struct VaultUnlockPrompt {
     creating: bool,
     confirm: String,
     confirm_focused: bool,
-}
-
-impl Default for VaultUnlockPrompt {
-    fn default() -> Self {
-        Self {
-            creating: false,
-            confirm: String::new(),
-            confirm_focused: false,
-            open: false,
-            passphrase: String::new(),
-            visible: false,
-            remember: false,
-            error: None,
-            pending: None,
-            unlocking: false,
-        }
-    }
 }
 
 impl VaultUnlockPrompt {

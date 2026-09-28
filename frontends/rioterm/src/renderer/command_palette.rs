@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use crate::renderer::chrome::{Layer, Stroke};
 use crate::renderer::scrollbar;
 use rio_backend::sugarloaf::text::DrawOpts;
 use rio_backend::sugarloaf::Sugarloaf;
@@ -404,11 +405,12 @@ fn stroke_rounded_rect(
         sugarloaf,
         &terminus_ui::Rect::new(x, y, width, height),
         fill_color,
-        Some(stroke_color),
+        Some(Stroke {
+            color: stroke_color,
+            width: stroke,
+        }),
         radius,
-        stroke,
-        depth,
-        order,
+        Layer::new(depth, order),
         false,
     );
 }
@@ -887,15 +889,13 @@ impl CommandPalette {
             ORDER,
         );
 
-        crate::renderer::chrome::paint_surface_stroke(
+        crate::renderer::chrome::paint_surface(
             sugarloaf,
             &terminus_ui::Rect::new(palette_x, palette_y, palette_width, palette_height),
             BG_COLOR,
             None,
             PALETTE_CORNER_RADIUS,
-            1.0,
-            DEPTH_BG,
-            ORDER,
+            Layer::new(DEPTH_BG, ORDER),
             false,
         );
 
@@ -993,7 +993,7 @@ impl CommandPalette {
 
             // Selection highlight
             if is_selected {
-                crate::renderer::chrome::paint_surface_stroke(
+                crate::renderer::chrome::paint_surface(
                     sugarloaf,
                     &terminus_ui::Rect::new(
                         input_x,
@@ -1004,9 +1004,7 @@ impl CommandPalette {
                     SELECTED_BG_COLOR,
                     None,
                     4.0,
-                    1.0,
-                    DEPTH_ELEMENT,
-                    ORDER,
+                    Layer::new(DEPTH_ELEMENT, ORDER),
                     false,
                 );
             }

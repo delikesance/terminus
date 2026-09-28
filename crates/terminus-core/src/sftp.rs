@@ -664,7 +664,7 @@ impl SftpSession {
         from_path: &str,
         dest: &Self,
         to_path: &str,
-        mut on_progress: F,
+        on_progress: F,
     ) -> Result<u64>
     where
         F: FnMut(u64),
@@ -677,7 +677,7 @@ impl SftpSession {
             drop(tx);
             copied
         };
-        let write = dest.write_from(to_path, &mut rx, |n| on_progress(n));
+        let write = dest.write_from(to_path, &mut rx, on_progress);
         let (read, written) = tokio::join!(read, write);
         read?;
         written

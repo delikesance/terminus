@@ -43,20 +43,13 @@ where
     H: Handler + Send,
     H::Error: From<russh::Error> + Send + std::fmt::Debug,
 {
-    #[cfg(windows)]
-    {
-        let _ = session;
-        let _ = host;
-        return Err(Error::GssapiUnsupported);
-    }
     #[cfg(unix)]
     {
         unix::authenticate(session, host).await
     }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     {
-        let _ = session;
-        let _ = host;
+        let _unused = (session, host);
         Err(Error::GssapiUnsupported)
     }
 }

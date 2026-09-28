@@ -19,7 +19,7 @@ use terminus_ui::sftp_pane::{
     SftpSideState, SFTP_DRAG_THRESHOLD,
 };
 
-use crate::hosts::HostRow;
+use crate::hosts::{HostCredentials, HostIdentity, HostRow};
 
 /// Live dual-pane SFTP session (either side local or remote).
 pub struct ActiveSftp {
@@ -34,11 +34,10 @@ impl ActiveSftp {
     /// Left = local, right = `host`. Connects right and lists both sides.
     pub fn start(
         host: &HostRow,
-        password: Option<String>,
-        identity_pem: Option<(String, Option<String>)>,
+        credentials: HostCredentials,
         wake: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, String> {
-        let opts = connect_options_for_host(host, password, identity_pem)?;
+        let opts = connect_options_for_host(host, credentials)?;
         let local_root = local_fs::default_local_root();
         let label = host_label(host);
         let mut state = SftpPaneState::new_local_remote(
@@ -101,10 +100,9 @@ impl ActiveSftp {
     pub fn open_other_host(
         &mut self,
         host: &HostRow,
-        password: Option<String>,
-        identity_pem: Option<(String, Option<String>)>,
+        credentials: HostCredentials,
     ) -> Result<(), String> {
-        let opts = connect_options_for_host(host, password, identity_pem)?;
+        let opts = connect_options_for_host(host, credentials)?;
         if matches!(self.state.left.backend, SftpBackend::Remote { .. }) {
             self.worker.send(SftpCommand::Disconnect {
                 side: SftpSide::Left,
@@ -441,11 +439,7 @@ impl ActiveSftp {
                 let transfer = Some(self.transfer_label(SftpFocus::Left));
                 let can_edit = !row.is_dir;
                 terminus_ui::ContextMenu::for_sftp_entry(
-                    x,
-                    y,
-                    row.is_dir,
-                    transfer.as_deref(),
-                    can_edit,
+                    x, y, row.is_dir, transfer, can_edit,
                 )
             }
             SftpHit::RightRow(i) => {
@@ -455,11 +449,7 @@ impl ActiveSftp {
                 let transfer = Some(self.transfer_label(SftpFocus::Right));
                 let can_edit = !row.is_dir;
                 terminus_ui::ContextMenu::for_sftp_entry(
-                    x,
-                    y,
-                    row.is_dir,
-                    transfer.as_deref(),
-                    can_edit,
+                    x, y, row.is_dir, transfer, can_edit,
                 )
             }
             SftpHit::LeftParent | SftpHit::LeftCrumb => {
@@ -880,9 +870,9 @@ fn row_from_list_entry(entry: SftpListEntry) -> SftpRow {
 
 fn connect_options_for_host(
     host: &HostRow,
-    password: Option<String>,
-    identity_pem: Option<(String, Option<String>)>,
+    credentials: HostCredentials,
 ) -> Result<SshConnectOptions, String> {
+    let HostCredentials { password, identity } = credentials;
     let method = match host.auth_method.as_str() {
         "password" => HostAuthMethod::Password,
         "gssapi" => HostAuthMethod::Gssapi,
@@ -903,7 +893,7 @@ fn connect_options_for_host(
             });
         }
         HostAuthMethod::Key => {
-            let (pem, passphrase) = identity_pem.ok_or_else(|| {
+            let HostIdentity { pem, passphrase } = identity.ok_or_else(|| {
                 "No saved SSH key — edit the host and select one (Settings → Managed SSH Keys)"
                     .to_string()
             })?;

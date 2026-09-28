@@ -1246,8 +1246,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let logical_w =
                                     route.window.screen.sugarloaf.window_size().width
                                         / scale;
-                                let x = route.window.screen.mouse.x as f32 / scale as f32;
-                                let y = route.window.screen.mouse.y as f32 / scale as f32;
+                                let x = route.window.screen.mouse.x as f32 / scale;
+                                let y = route.window.screen.mouse.y as f32 / scale;
                                 crate::renderer::window_controls::hit_test(
                                     logical_w, x, y,
                                 )
@@ -2052,15 +2052,13 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         .screen
                                         .sftp_bounds()
                                         .is_some_and(|b| b.contains(mx, my))
-                                {
-                                    if route
+                                    && route
                                         .window
                                         .screen
                                         .handle_sftp_context_press(mx, my)
-                                    {
-                                        route.request_overlay_redraw();
-                                        return;
-                                    }
+                                {
+                                    route.request_overlay_redraw();
+                                    return;
                                 }
 
                                 match route.window.screen.chrome_context_press(mx, my) {

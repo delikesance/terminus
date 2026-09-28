@@ -65,7 +65,7 @@ fn button_rect(
 /// Hit-test in logical coordinates. `y` must already be inside the band.
 #[inline]
 pub fn hit_test(window_width_logical: f32, x: f32, y: f32) -> Option<WindowControl> {
-    if y < 0.0 || y > CONTEXT_BAR_HEIGHT {
+    if !(0.0..=CONTEXT_BAR_HEIGHT).contains(&y) {
         return None;
     }
     let left = strip_left(window_width_logical);

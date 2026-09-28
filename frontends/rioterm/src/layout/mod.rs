@@ -132,10 +132,10 @@ pub enum PaneKind {
     Sftp,
 }
 
-/// Sidebar and activity-bar metrics live in `terminus_ui` — see
-/// `terminus_ui::activity_bar::WIDTH` / `terminus_ui::sidebar::WIDTH`.
-/// Duplicating them here would let the reserved margin and the painted
-/// panel drift apart.
+// Sidebar and activity-bar metrics live in `terminus_ui` — see
+// `terminus_ui::activity_bar::WIDTH` / `terminus_ui::sidebar::WIDTH`.
+// Duplicating them here would let the reserved margin and the painted
+// panel drift apart.
 
 pub struct ContextGridItem<T: EventListener> {
     pub val: Context<T>,

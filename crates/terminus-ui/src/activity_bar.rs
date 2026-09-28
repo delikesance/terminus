@@ -230,7 +230,7 @@ pub fn tooltip_rect(origin_y: f32, height: f32, hit: RailHit, label: &str) -> Re
 
 /// Which rail target is under `(x, y)`.
 pub fn hit_test(origin_y: f32, height: f32, x: f32, y: f32) -> Option<RailHit> {
-    if x < 0.0 || x >= WIDTH {
+    if !(0.0..WIDTH).contains(&x) {
         return None;
     }
     for section in TOP_SECTIONS {

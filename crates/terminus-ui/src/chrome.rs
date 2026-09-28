@@ -452,9 +452,7 @@ impl Chrome {
     }
 
     fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
-        let Some(menu) = self.context_menu.as_mut() else {
-            return None;
-        };
+        let menu = self.context_menu.as_mut()?;
         match menu.hit_test(x, y) {
             ContextMenuHit::Dismiss => {
                 self.close_context_menu();
@@ -662,13 +660,8 @@ impl Chrome {
 
         // The connection modal sits above everything else: clicks never
         // fall through to the terminal or the add-host form behind it.
-        if self.connection.is_some() {
-            let hit = self.connection.as_ref().unwrap().hit_test(
-                window_width,
-                window_height,
-                x,
-                y,
-            );
+        if let Some(connection) = self.connection.as_ref() {
+            let hit = connection.hit_test(window_width, window_height, x, y);
             return match hit {
                 ConnectionHit::ToggleLogs => {
                     if let Some(conn) = self.connection.as_mut() {
@@ -1411,10 +1404,7 @@ impl Chrome {
         Some(outcome)
     }
 
-    /// Route keyboard input to the vault unlock prompt.
-    ///
-    /// Returns `Some(true)` when Unlock should be submitted.
-
+    /// Route a keyboard input to the snippet editor. `None` when it is closed.
     pub fn handle_snippet_form_input(
         &mut self,
         input: crate::add_snippet::FormInput,
@@ -1430,6 +1420,9 @@ impl Chrome {
         Some(outcome)
     }
 
+    /// Route keyboard input to the vault unlock prompt.
+    ///
+    /// Returns `Some(true)` when Unlock should be submitted.
     pub fn handle_vault_unlock_input(
         &mut self,
         input: FormInput,

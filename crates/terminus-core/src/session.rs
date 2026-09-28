@@ -270,9 +270,9 @@ impl SessionManager {
             }
         };
         if inserted {
-            self.sessions
-                .get(&id)
-                .map(|s| s.sink.on_state_change(id, SessionState::Starting));
+            if let Some(s) = self.sessions.get(&id) {
+                s.sink.on_state_change(id, SessionState::Starting)
+            }
         }
         inserted
     }

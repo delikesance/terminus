@@ -12,7 +12,7 @@ mod walk_remote;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -273,14 +273,7 @@ impl SftpWorker {
 
     /// Drain pending events without blocking.
     pub fn drain(&self) -> Vec<SftpEvent> {
-        let mut out = Vec::new();
-        loop {
-            match self.events.try_recv() {
-                Ok(event) => out.push(event),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
-        }
-        out
+        self.events.try_iter().collect()
     }
 }
 
@@ -413,26 +406,20 @@ fn worker(
     };
 
     runtime.block_on(async move {
-        let mut left_conn: Option<SftpConnection> = None;
-        let mut right_conn: Option<SftpConnection> = None;
-        let mut edit_sessions: Vec<EditSession> = Vec::new();
-        let mut next_edit_id: u64 = 1;
-        let conflicts = Arc::new(conflicts);
+        let mut state = WorkerState {
+            next_edit_id: 1,
+            ..WorkerState::default()
+        };
+        let io = Io {
+            events: &events,
+            wake: &wake,
+            conflicts: &conflicts,
+        };
 
         loop {
             match commands.recv_timeout(Duration::from_millis(500)) {
                 Ok(cmd) => {
-                    let should_break = handle_command(
-                        cmd,
-                        &mut left_conn,
-                        &mut right_conn,
-                        &mut edit_sessions,
-                        &mut next_edit_id,
-                        &events,
-                        &wake,
-                        &conflicts,
-                    )
-                    .await;
+                    let should_break = handle_command(cmd, &mut state, io).await;
                     if should_break {
                         break;
                     }
@@ -442,15 +429,50 @@ fn worker(
             }
 
             poll_edit_sessions(
-                &mut edit_sessions,
-                &left_conn,
-                &right_conn,
+                &mut state.edit_sessions,
+                &state.left,
+                &state.right,
                 &events,
                 &wake,
             )
             .await;
         }
     });
+}
+
+/// How a worker task reports back: events for the UI, the wake-up that
+/// makes the UI read them, and the user's answers to conflict prompts.
+#[derive(Clone, Copy)]
+struct Io<'a> {
+    events: &'a Sender<SftpEvent>,
+    wake: &'a Option<Arc<dyn Fn() + Send + Sync>>,
+    conflicts: &'a Receiver<ConflictReply>,
+}
+
+/// The connections of both panes (`None` for a local pane).
+#[derive(Clone, Copy)]
+struct Conns<'a> {
+    left: &'a Option<SftpConnection>,
+    right: &'a Option<SftpConnection>,
+}
+
+/// What a transfer copies, and where to.
+#[derive(Clone, Copy)]
+struct TransferSpec<'a> {
+    from_side: SftpSide,
+    from_path: &'a str,
+    to_side: SftpSide,
+    to_cwd: &'a str,
+    name: &'a str,
+}
+
+/// Everything the worker keeps between commands.
+#[derive(Default)]
+struct WorkerState {
+    left: Option<SftpConnection>,
+    right: Option<SftpConnection>,
+    edit_sessions: Vec<EditSession>,
+    next_edit_id: u64,
 }
 
 /// Tracked remote-edit: local temp file watched for mtime/size changes.
@@ -466,16 +488,14 @@ struct EditSession {
     stable_polls: u8,
 }
 
-async fn handle_command(
-    cmd: SftpCommand,
-    left_conn: &mut Option<SftpConnection>,
-    right_conn: &mut Option<SftpConnection>,
-    edit_sessions: &mut Vec<EditSession>,
-    next_edit_id: &mut u64,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
-) -> bool {
+async fn handle_command(cmd: SftpCommand, state: &mut WorkerState, io: Io<'_>) -> bool {
+    let WorkerState {
+        left: left_conn,
+        right: right_conn,
+        edit_sessions,
+        next_edit_id,
+    } = state;
+    let Io { events, wake, .. } = io;
     match cmd {
         SftpCommand::ResolveConflict { .. } | SftpCommand::CancelTransfer => {
             // Routed via `SftpWorker::send` onto the conflict channel.
@@ -597,24 +617,19 @@ async fn handle_command(
             to_cwd,
             name,
         } => {
-            match transfer(
-                left_conn, right_conn, from_side, &from_path, to_side, &to_cwd, &name,
-                events, wake, conflicts,
-            )
-            .await
-            {
-                Ok(()) => {
-                    let to_remote = side_is_remote(left_conn, right_conn, to_side);
-                    if to_remote {
-                        if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
-                            emit_listed_remote(events, wake, to_side, conn, &to_cwd)
-                                .await;
-                        }
-                    } else {
-                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd))
-                            .await;
-                    }
-                }
+            let conns = Conns {
+                left: left_conn,
+                right: right_conn,
+            };
+            let spec = TransferSpec {
+                from_side,
+                from_path: &from_path,
+                to_side,
+                to_cwd: &to_cwd,
+                name: &name,
+            };
+            match transfer(conns, spec, io).await {
+                Ok(()) => relist_target(conns, to_side, &to_cwd, io).await,
                 Err(err) => emit(events, wake, SftpEvent::Failed(err)),
             }
             false
@@ -624,16 +639,18 @@ async fn handle_command(
             remote_path,
             name,
         } => {
+            let conns = Conns {
+                left: left_conn,
+                right: right_conn,
+            };
             match start_edit_remote(
-                left_conn,
-                right_conn,
+                conns,
                 side,
                 &remote_path,
                 &name,
                 edit_sessions,
                 next_edit_id,
-                events,
-                wake,
+                io,
             )
             .await
             {
@@ -649,24 +666,19 @@ async fn handle_command(
             to_cwd,
             name,
         } => {
-            match transfer_folder(
-                left_conn, right_conn, from_side, &from_path, to_side, &to_cwd, &name,
-                events, wake, conflicts,
-            )
-            .await
-            {
-                Ok(()) => {
-                    let to_remote = side_is_remote(left_conn, right_conn, to_side);
-                    if to_remote {
-                        if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
-                            emit_listed_remote(events, wake, to_side, conn, &to_cwd)
-                                .await;
-                        }
-                    } else {
-                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd))
-                            .await;
-                    }
-                }
+            let conns = Conns {
+                left: left_conn,
+                right: right_conn,
+            };
+            let spec = TransferSpec {
+                from_side,
+                from_path: &from_path,
+                to_side,
+                to_cwd: &to_cwd,
+                name: &name,
+            };
+            match transfer_folder(conns, spec, io).await {
+                Ok(()) => relist_target(conns, to_side, &to_cwd, io).await,
                 Err(err) => emit(events, wake, SftpEvent::Failed(err)),
             }
             false
@@ -691,6 +703,17 @@ async fn handle_command(
             debug!("sftp worker closed");
             true
         }
+    }
+}
+
+/// Show the destination folder again after a transfer landed in it.
+async fn relist_target(conns: Conns<'_>, to_side: SftpSide, to_cwd: &str, io: Io<'_>) {
+    if side_is_remote(conns.left, conns.right, to_side) {
+        if let Some(conn) = conn_ref(conns.left, conns.right, to_side) {
+            emit_listed_remote(io.events, io.wake, to_side, conn, to_cwd).await;
+        }
+    } else {
+        emit_listed_local(io.events, io.wake, to_side, Path::new(to_cwd)).await;
     }
 }
 
@@ -719,16 +742,16 @@ fn cleanup_edit_temp(local_path: &Path) {
 }
 
 async fn start_edit_remote(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    conns: Conns<'_>,
     side: SftpSide,
     remote_path: &str,
     name: &str,
     sessions: &mut Vec<EditSession>,
     next_id: &mut u64,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+    io: Io<'_>,
 ) -> Result<(), String> {
+    let Conns { left, right } = conns;
+    let Io { events, wake, .. } = io;
     if !side_is_remote(left, right, side) {
         return Err("Edit is only available for remote files".into());
     }
@@ -786,7 +809,7 @@ async fn start_edit_remote(
 }
 
 async fn poll_edit_sessions(
-    sessions: &mut Vec<EditSession>,
+    sessions: &mut [EditSession],
     left: &Option<SftpConnection>,
     right: &Option<SftpConnection>,
     events: &Sender<SftpEvent>,
@@ -865,26 +888,28 @@ async fn poll_edit_sessions(
 }
 
 async fn transfer(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
-    from_side: SftpSide,
-    from_path: &str,
-    to_side: SftpSide,
-    to_cwd: &str,
-    name: &str,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conns: Conns<'_>,
+    spec: TransferSpec<'_>,
+    io: Io<'_>,
 ) -> Result<(), String> {
+    let Conns { left, right } = conns;
+    let TransferSpec {
+        from_side,
+        from_path,
+        to_side,
+        to_cwd,
+        name,
+    } = spec;
+    let Io {
+        events,
+        wake,
+        conflicts,
+    } = io;
     let from_remote = side_is_remote(left, right, from_side);
     let to_remote = side_is_remote(left, right, to_side);
 
     if is_directory(left, right, from_side, from_path, from_remote).await? {
-        return Box::pin(transfer_folder(
-            left, right, from_side, from_path, to_side, to_cwd, name, events, wake,
-            conflicts,
-        ))
-        .await;
+        return Box::pin(transfer_folder(conns, spec, io)).await;
     }
 
     // Never silently replace a file on the other side: ask first, like a
@@ -909,9 +934,11 @@ async fn transfer(
         let mut policy = ConflictPolicy::default();
         let mut next_id = SINGLE_FILE_CONFLICT_ID.fetch_add(1, Ordering::Relaxed);
         let action = ask_conflict(
-            conflicts,
-            events,
-            wake,
+            Io {
+                events,
+                wake,
+                conflicts,
+            },
             &mut policy,
             &mut next_id,
             ConflictKind::File,
@@ -934,20 +961,7 @@ async fn transfer(
         }
     }
 
-    transfer_file(
-        left,
-        right,
-        from_side,
-        from_path,
-        to_side,
-        to_cwd,
-        name,
-        from_remote,
-        to_remote,
-        events,
-        wake,
-    )
-    .await
+    transfer_file(conns, spec, from_remote, to_remote, io).await
 }
 
 /// Conflict ids for single-file transfers: disjoint from the per-folder
@@ -988,18 +1002,21 @@ fn same_local_file(a: &str, b: &str) -> bool {
 }
 
 async fn transfer_file(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
-    from_side: SftpSide,
-    from_path: &str,
-    to_side: SftpSide,
-    to_cwd: &str,
-    name: &str,
+    conns: Conns<'_>,
+    spec: TransferSpec<'_>,
     from_remote: bool,
     to_remote: bool,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+    io: Io<'_>,
 ) -> Result<(), String> {
+    let Conns { left, right } = conns;
+    let TransferSpec {
+        from_side,
+        from_path,
+        to_side,
+        to_cwd,
+        name,
+    } = spec;
+    let Io { events, wake, .. } = io;
     let to_path_remote = join_remote(to_cwd, name);
     let to_path_local = PathBuf::from(to_cwd).join(name);
     let from_path_local = PathBuf::from(from_path);
@@ -1650,17 +1667,23 @@ fn extract_local_archive(
 /// `Compress-Archive`. If the remote has none of these tools, the transfer
 /// fails with a clear error (no per-file SFTP fallback).
 async fn transfer_folder(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
-    from_side: SftpSide,
-    from_path: &str,
-    to_side: SftpSide,
-    to_cwd: &str,
-    name: &str,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conns: Conns<'_>,
+    spec: TransferSpec<'_>,
+    io: Io<'_>,
 ) -> Result<(), String> {
+    let Conns { left, right } = conns;
+    let TransferSpec {
+        from_side,
+        from_path,
+        to_side,
+        to_cwd,
+        name,
+    } = spec;
+    let Io {
+        events,
+        wake,
+        conflicts,
+    } = io;
     let from_remote = side_is_remote(left, right, from_side);
     let to_remote = side_is_remote(left, right, to_side);
 
@@ -1685,7 +1708,7 @@ async fn transfer_folder(
         let dest = join_remote(to_cwd, name);
         if to_conn.exists(&dest).await.unwrap_or(false) {
             return transfer_folder_differential_remote_to_remote(
-                from_conn, to_conn, from_path, to_cwd, name, events, wake, conflicts,
+                from_conn, to_conn, from_path, to_cwd, name, io,
             )
             .await;
         }
@@ -2163,7 +2186,7 @@ async fn transfer_download(
 // --- Differential folder download (size-first + BLAKE3) ---------------------
 
 fn drain_stale_conflicts(conflicts: &Receiver<ConflictReply>) {
-    while let Ok(_) = conflicts.try_recv() {}
+    while conflicts.try_recv().is_ok() {}
 }
 
 fn wait_conflict_reply(
@@ -2213,9 +2236,7 @@ fn join_rel_remote(root: &str, relative: &str) -> String {
 }
 
 async fn ask_conflict(
-    conflicts: &Receiver<ConflictReply>,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+    io: Io<'_>,
     policy: &mut ConflictPolicy,
     next_id: &mut u64,
     kind: ConflictKind,
@@ -2223,6 +2244,11 @@ async fn ask_conflict(
     remote_path: &str,
     local_path: &str,
 ) -> Result<ConflictAction, String> {
+    let Io {
+        events,
+        wake,
+        conflicts,
+    } = io;
     if let Some(auto) = policy.pending_auto() {
         return Ok(auto);
     }
@@ -2427,7 +2453,7 @@ async fn transfer_folder_differential_to_local(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conflicts: &Receiver<ConflictReply>,
 ) -> Result<(), String> {
     drain_stale_conflicts(conflicts);
     emit(
@@ -2505,9 +2531,11 @@ async fn transfer_folder_differential_to_local(
                 let remote = join_rel_remote(remote_root, &relative);
                 let local = join_rel_path(local_root, &relative);
                 let decision = ask_conflict(
-                    conflicts,
-                    events,
-                    wake,
+                    Io {
+                        events,
+                        wake,
+                        conflicts,
+                    },
                     &mut policy,
                     &mut next_id,
                     ConflictKind::File,
@@ -2529,9 +2557,11 @@ async fn transfer_folder_differential_to_local(
                 let remote = join_rel_remote(remote_root, &relative);
                 let local = join_rel_path(local_root, &relative);
                 let decision = ask_conflict(
-                    conflicts,
-                    events,
-                    wake,
+                    Io {
+                        events,
+                        wake,
+                        conflicts,
+                    },
                     &mut policy,
                     &mut next_id,
                     ConflictKind::Directory,
@@ -2594,10 +2624,13 @@ async fn transfer_folder_differential_remote_to_remote(
     from_path: &str,
     to_cwd: &str,
     name: &str,
-    events: &Sender<SftpEvent>,
-    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    io: Io<'_>,
 ) -> Result<(), String> {
+    let Io {
+        events,
+        wake,
+        conflicts,
+    } = io;
     drain_stale_conflicts(conflicts);
     emit(
         events,
@@ -2774,9 +2807,11 @@ async fn transfer_folder_differential_remote_to_remote(
                 let remote = join_rel_remote(from_path, &relative);
                 let dest = join_rel_remote(&dest_root, &relative);
                 let decision = ask_conflict(
-                    conflicts,
-                    events,
-                    wake,
+                    Io {
+                        events,
+                        wake,
+                        conflicts,
+                    },
                     &mut policy,
                     &mut next_id,
                     ConflictKind::File,
@@ -2796,9 +2831,11 @@ async fn transfer_folder_differential_remote_to_remote(
                 let remote = join_rel_remote(from_path, &relative);
                 let dest = join_rel_remote(&dest_root, &relative);
                 let decision = ask_conflict(
-                    conflicts,
-                    events,
-                    wake,
+                    Io {
+                        events,
+                        wake,
+                        conflicts,
+                    },
                     &mut policy,
                     &mut next_id,
                     ConflictKind::Directory,

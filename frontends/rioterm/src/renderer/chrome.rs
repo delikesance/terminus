@@ -52,6 +52,43 @@ const DEPTH_DIALOG: f32 = 0.1;
 const DEPTH_DIALOG_BG: f32 = 0.2;
 const DEPTH_GHOST: f32 = 0.35;
 
+/// Where a primitive sits in the paint stack: `order` picks the batch,
+/// `depth` sorts primitives within it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Layer {
+    pub depth: f32,
+    pub order: u8,
+}
+
+impl Layer {
+    pub(crate) const fn new(depth: f32, order: u8) -> Self {
+        Self { depth, order }
+    }
+}
+
+/// Logical window size plus the device scale factor icons rasterize at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Viewport {
+    width: f32,
+    height: f32,
+    scale: f32,
+}
+
+/// The vertical band the rail and side panel occupy: `height` logical
+/// pixels down from `origin_y`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Band {
+    origin_y: f32,
+    height: f32,
+}
+
+/// A border: its color and width in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Stroke {
+    pub color: [f32; 4],
+    pub width: f32,
+}
+
 const RAIL_ICON_SIZE: f32 = activity_bar::ICON_SIZE;
 const ADD_ICON_SIZE: f32 = 15.0;
 
@@ -123,11 +160,12 @@ pub fn render(
             sugarloaf,
             chrome,
             theme,
-            origin_y,
-            height,
-            window_width,
-            window_height,
-            device_scale,
+            Band { origin_y, height },
+            Viewport {
+                width: window_width,
+                height: window_height,
+                scale: device_scale,
+            },
             connecting_phase,
         );
     }
@@ -182,9 +220,11 @@ fn paint_modal_stack(
                     sugarloaf,
                     chrome,
                     theme,
-                    window_width,
-                    window_height,
-                    device_scale,
+                    Viewport {
+                        width: window_width,
+                        height: window_height,
+                        scale: device_scale,
+                    },
                     connecting_phase.unwrap_or(0.0),
                     paint_glyphs,
                 );
@@ -270,8 +310,7 @@ fn render_rail(
                 theme.rail_active_bg,
                 None,
                 activity_bar::PILL_RADIUS,
-                DEPTH_CONTENT,
-                ORDER_CONTENT,
+                Layer::new(DEPTH_CONTENT, ORDER_CONTENT),
                 false,
             );
         }
@@ -316,13 +355,16 @@ fn render_panel(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    window_width: f32,
-    window_height: f32,
-    device_scale: f32,
+    band: Band,
+    viewport: Viewport,
     connecting_phase: Option<f32>,
 ) {
+    let Band { origin_y, height } = band;
+    let Viewport {
+        width: window_width,
+        height: window_height,
+        scale: device_scale,
+    } = viewport;
     let panel = chrome.panel.rect(origin_y, height);
     paint_flat(sugarloaf, &panel, theme.panel_bg, DEPTH_BG, ORDER_PANEL);
     // A hairline separator against the terminal, on the panel's right edge.
@@ -400,8 +442,7 @@ fn render_panel(
             sugarloaf,
             chrome,
             theme,
-            origin_y,
-            height,
+            band,
             label_cover.as_ref(),
             device_scale,
             connecting_phase,
@@ -518,8 +559,7 @@ fn render_notice(
             opaque_over(theme.panel_bg, wash),
             Some(opaque_over(theme.panel_bg, ring)),
             12.0,
-            DEPTH_CONTENT + 0.05,
-            ORDER_CONTENT,
+            Layer::new(DEPTH_CONTENT + 0.05, ORDER_CONTENT),
             true,
         );
     } else {
@@ -529,8 +569,7 @@ fn render_notice(
             theme.notice_bg,
             Some(theme.panel_border),
             12.0,
-            DEPTH_CONTENT + 0.05,
-            ORDER_CONTENT,
+            Layer::new(DEPTH_CONTENT + 0.05, ORDER_CONTENT),
             true,
         );
     }
@@ -641,8 +680,7 @@ fn paint_search_field(
         theme.field_bg,
         Some(theme.panel_border),
         sidebar::CARD_RADIUS,
-        depth,
-        ORDER_CONTENT,
+        Layer::new(depth, ORDER_CONTENT),
         false,
     );
     if chrome.panel.filter_focused {
@@ -658,8 +696,7 @@ fn paint_search_field(
             theme.button_bg,
             Some(theme.field_border_focus),
             sidebar::CARD_RADIUS + 1.0,
-            depth + 0.002,
-            ORDER_CONTENT,
+            Layer::new(depth + 0.002, ORDER_CONTENT),
             false,
         );
     }
@@ -738,18 +775,19 @@ fn render_new_host_cta(
     paint_dashed_cta(
         sugarloaf,
         theme,
-        &cta,
-        sidebar::CARD_RADIUS,
-        bg,
-        border,
-        "New Host",
-        "Configure SSH connection",
-        title_color,
-        Icon::Plus,
+        &DashedCta {
+            rect: cta,
+            radius: sidebar::CARD_RADIUS,
+            bg,
+            border,
+            title: "New Host",
+            subtitle: "Configure SSH connection",
+            title_color,
+            icon: Icon::Plus,
+        },
         device_scale,
         labels,
-        DEPTH_CONTENT,
-        ORDER_CONTENT,
+        Layer::new(DEPTH_CONTENT, ORDER_CONTENT),
     );
 }
 
@@ -761,15 +799,18 @@ fn render_new_host_cta(
 /// `sugarloaf.arc` still ignores paint order, so we cannot use it here.
 fn draw_dashed_rounded_rect(
     sugarloaf: &mut Sugarloaf,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
+    rect: &Rect,
     radius: f32,
     color: [f32; 4],
-    depth: f32,
-    order: u8,
+    layer: Layer,
 ) {
+    let Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    } = *rect;
+    let Layer { depth, order } = layer;
     let stroke: f32 = 1.25;
     let dash: f32 = 5.0;
     let gap: f32 = 3.5;
@@ -793,8 +834,7 @@ fn draw_dashed_rounded_rect(
                 color,
                 None,
                 pill_r,
-                depth,
-                order,
+                Layer::new(depth, order),
                 false,
             );
         } else {
@@ -804,8 +844,7 @@ fn draw_dashed_rounded_rect(
                 color,
                 None,
                 pill_r,
-                depth,
-                order,
+                Layer::new(depth, order),
                 false,
             );
         }
@@ -858,8 +897,7 @@ fn draw_dashed_rounded_rect(
                     color,
                     None,
                     pill_r,
-                    depth,
-                    order,
+                    Layer::new(depth, order),
                     false,
                 );
             }
@@ -917,8 +955,7 @@ fn render_snippets(
             bg,
             Some(theme.panel_border),
             sidebar::CARD_RADIUS,
-            DEPTH_CONTENT,
-            ORDER_CONTENT,
+            Layer::new(DEPTH_CONTENT, ORDER_CONTENT),
             false,
         );
         if labels {
@@ -1003,7 +1040,6 @@ fn render_snippets(
         sugarloaf,
         chrome.snippets.add_button_rect(origin_y, height),
         chrome.snippets.add_hover,
-        Icon::Plus,
         "Add snippet",
         theme,
         labels,
@@ -1026,13 +1062,14 @@ fn render_settings_modal(
         theme,
         window_width,
         window_height,
-        &dialog,
-        terminus_ui::settings::RADIUS,
-        DialogBorderMode::Inset,
-        DEPTH_DIALOG_BG,
-        DEPTH_DIALOG,
-        ORDER_DIALOG,
-        None,
+        &DialogShell {
+            rect: dialog,
+            radius: terminus_ui::settings::RADIUS,
+            mode: DialogBorderMode::Inset,
+            scrim_layer: Layer::new(DEPTH_DIALOG_BG, ORDER_DIALOG),
+            panel_layer: Layer::new(DEPTH_DIALOG, ORDER_DIALOG),
+            scrim_alpha_clamp: None,
+        },
     );
     if !paint_glyphs {
         return;
@@ -1051,8 +1088,7 @@ fn render_settings_modal(
         theme.dialog_header,
         None,
         terminus_ui::settings::RADIUS - 1.0,
-        DEPTH_DIALOG + 0.02,
-        ORDER_DIALOG,
+        Layer::new(DEPTH_DIALOG + 0.02, ORDER_DIALOG),
         false,
     );
     // Square off header bottom corners
@@ -1083,8 +1119,7 @@ fn render_settings_modal(
         theme.accent_soft,
         Some(with_alpha(theme.accent, 0.20)),
         13.0,
-        DEPTH_DIALOG + 0.029,
-        ORDER_DIALOG,
+        Layer::new(DEPTH_DIALOG + 0.029, ORDER_DIALOG),
         false,
     );
     draw_icon(
@@ -1123,8 +1158,7 @@ fn render_settings_modal(
         theme.button_bg,
         Some(theme.panel_border),
         close.width * 0.5,
-        DEPTH_DIALOG + 0.03,
-        ORDER_DIALOG,
+        Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
         false,
     );
     draw_icon(
@@ -1160,8 +1194,7 @@ fn render_settings_modal(
                 theme.accent_soft,
                 None,
                 12.0,
-                DEPTH_DIALOG + 0.03,
-                ORDER_DIALOG,
+                Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
                 false,
             );
         }
@@ -1237,18 +1270,19 @@ fn render_settings_modal(
             paint_dashed_cta(
                 sugarloaf,
                 theme,
-                &cta,
-                12.0,
-                with_alpha(theme.button_bg, 0.40),
-                theme.panel_border,
-                "New SSH Key",
-                "Generate or import cryptographic identity",
-                theme.text,
-                Icon::Plus,
+                &DashedCta {
+                    rect: cta,
+                    radius: 12.0,
+                    bg: with_alpha(theme.button_bg, 0.40),
+                    border: theme.panel_border,
+                    title: "New SSH Key",
+                    subtitle: "Generate or import cryptographic identity",
+                    title_color: theme.text,
+                    icon: Icon::Plus,
+                },
                 device_scale,
                 true,
-                DEPTH_DIALOG + 0.03,
-                ORDER_DIALOG,
+                Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
             );
 
             if let Some(draft) =
@@ -1260,8 +1294,7 @@ fn render_settings_modal(
                     theme.button_bg,
                     Some(theme.panel_border),
                     12.0,
-                    DEPTH_DIALOG + 0.03,
-                    ORDER_DIALOG,
+                    Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
                     false,
                 );
                 if let Some(field) = chrome
@@ -1274,15 +1307,17 @@ fn render_settings_modal(
                         "Key label (e.g. Laptop Ed25519)",
                         focused,
                     );
-                    paint_settings_field_card(
+                    paint_field_card(
                         sugarloaf,
                         theme,
-                        field,
-                        "Label",
-                        &paint.text,
-                        focused,
-                        paint.placeholder,
-                        0.0,
+                        &FieldCard {
+                            card: field,
+                            label: "Label",
+                            value: &paint.text,
+                            focused,
+                            placeholder: paint.placeholder,
+                            trailing_slot: 0.0,
+                        },
                         true,
                     );
                     if paint.show_caret {
@@ -1316,15 +1351,17 @@ fn render_settings_modal(
                             focused,
                         )
                     };
-                    paint_settings_field_card(
+                    paint_field_card(
                         sugarloaf,
                         theme,
-                        pem_card,
-                        "Private key",
-                        &paint.text,
-                        focused,
-                        paint.placeholder,
-                        0.0,
+                        &FieldCard {
+                            card: pem_card,
+                            label: "Private key",
+                            value: &paint.text,
+                            focused,
+                            placeholder: paint.placeholder,
+                            trailing_slot: 0.0,
+                        },
                         true,
                     );
                     if paint.show_caret {
@@ -1359,15 +1396,17 @@ fn render_settings_modal(
                             selection: None,
                         }
                     };
-                    paint_settings_field_card(
+                    paint_field_card(
                         sugarloaf,
                         theme,
-                        pass_card,
-                        "Passphrase",
-                        &paint.text,
-                        focused,
-                        paint.placeholder,
-                        0.0,
+                        &FieldCard {
+                            card: pass_card,
+                            label: "Passphrase",
+                            value: &paint.text,
+                            focused,
+                            placeholder: paint.placeholder,
+                            trailing_slot: 0.0,
+                        },
                         true,
                     );
                     if paint.show_caret {
@@ -1445,8 +1484,7 @@ fn render_settings_modal(
                         opaque_over(theme.button_bg, wash),
                         Some(opaque_over(theme.button_bg, ring)),
                         12.0,
-                        DEPTH_DIALOG + 0.04,
-                        ORDER_DIALOG,
+                        Layer::new(DEPTH_DIALOG + 0.04, ORDER_DIALOG),
                         true,
                     );
                     let shown = elide(
@@ -1478,8 +1516,7 @@ fn render_settings_modal(
                     theme.button_bg,
                     Some(theme.panel_border),
                     12.0,
-                    DEPTH_DIALOG + 0.03,
-                    ORDER_DIALOG,
+                    Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
                     false,
                 );
                 draw_icon(
@@ -1532,8 +1569,7 @@ fn render_settings_modal(
                         theme.panel_bg,
                         Some(theme.panel_border),
                         8.0,
-                        DEPTH_DIALOG + 0.04,
-                        ORDER_DIALOG,
+                        Layer::new(DEPTH_DIALOG + 0.04, ORDER_DIALOG),
                         false,
                     );
                     let label = "Copy public key";
@@ -1605,8 +1641,7 @@ fn render_settings_modal(
                     rgba_u8(0x10, 0xb9, 0x81, 0.10),
                     None,
                     8.0,
-                    DEPTH_DIALOG + 0.03,
-                    ORDER_DIALOG,
+                    Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
                     false,
                 );
                 draw_text(
@@ -1639,15 +1674,17 @@ fn render_settings_modal(
             let status_row = chrome.settings.status_row_rect(window_width, window_height);
 
             // Engine selector card
-            paint_settings_field_card(
+            paint_field_card(
                 sugarloaf,
                 theme,
-                engine_card,
-                "Database Engine",
-                chrome.settings.engine_label(),
-                chrome.settings.engine_menu_open,
-                false,
-                terminus_ui::settings::FIELD_EYE_SLOT,
+                &FieldCard {
+                    card: engine_card,
+                    label: "Database Engine",
+                    value: chrome.settings.engine_label(),
+                    focused: chrome.settings.engine_menu_open,
+                    placeholder: false,
+                    trailing_slot: terminus_ui::settings::FIELD_EYE_SLOT,
+                },
                 true,
             );
             let engine_input = terminus_ui::settings::field_input_in_card(engine_card);
@@ -1672,15 +1709,17 @@ fn render_settings_modal(
             // the opaque menu (same pattern as tab-drag title hiding).
             let uri_paint = chrome.settings.uri_field_paint();
             let uri_paint_text = !chrome.settings.engine_menu_open;
-            paint_settings_field_card(
+            paint_field_card(
                 sugarloaf,
                 theme,
-                uri_card,
-                "Connection URI / String",
-                &uri_paint.text,
-                chrome.settings.sql_focus == terminus_ui::SqlSyncFocus::Uri,
-                uri_paint.placeholder,
-                0.0,
+                &FieldCard {
+                    card: uri_card,
+                    label: "Connection URI / String",
+                    value: &uri_paint.text,
+                    focused: chrome.settings.sql_focus == terminus_ui::SqlSyncFocus::Uri,
+                    placeholder: uri_paint.placeholder,
+                    trailing_slot: 0.0,
+                },
                 uri_paint_text,
             );
             if uri_paint_text {
@@ -1706,15 +1745,18 @@ fn render_settings_modal(
 
             // Passphrase field
             let pass_paint = chrome.settings.passphrase_field_paint();
-            paint_settings_field_card(
+            paint_field_card(
                 sugarloaf,
                 theme,
-                pass_card,
-                "Encryption Passphrase",
-                &pass_paint.text,
-                chrome.settings.sql_focus == terminus_ui::SqlSyncFocus::Passphrase,
-                pass_paint.placeholder,
-                terminus_ui::settings::FIELD_EYE_SLOT,
+                &FieldCard {
+                    card: pass_card,
+                    label: "Encryption Passphrase",
+                    value: &pass_paint.text,
+                    focused: chrome.settings.sql_focus
+                        == terminus_ui::SqlSyncFocus::Passphrase,
+                    placeholder: pass_paint.placeholder,
+                    trailing_slot: terminus_ui::settings::FIELD_EYE_SLOT,
+                },
                 true,
             );
             paint_field_selection(
@@ -1764,8 +1806,7 @@ fn render_settings_modal(
                 theme.button_bg,
                 None,
                 12.0,
-                DEPTH_DIALOG + 0.03,
-                ORDER_DIALOG,
+                Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
                 false,
             );
             // Status on its own line (full block width); Unlock / Test Sync sit
@@ -1863,8 +1904,7 @@ fn render_settings_modal(
                         0.35,
                     ]),
                     12.0,
-                    DEPTH_DIALOG + 0.03,
-                    ORDER_DIALOG,
+                    Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
                     true,
                 );
                 let err_shown = elide(
@@ -1898,8 +1938,7 @@ fn render_settings_modal(
                     theme.button_bg,
                     Some(theme.panel_border),
                     10.0,
-                    DEPTH_DIALOG,
-                    ORDER_DIALOG_POPOVER,
+                    Layer::new(DEPTH_DIALOG, ORDER_DIALOG_POPOVER),
                     false,
                 );
                 for i in 0..terminus_ui::SQL_ENGINES.len() {
@@ -1921,8 +1960,7 @@ fn render_settings_modal(
                             },
                             None,
                             6.0,
-                            DEPTH_DIALOG + 0.002,
-                            ORDER_DIALOG_POPOVER,
+                            Layer::new(DEPTH_DIALOG + 0.002, ORDER_DIALOG_POPOVER),
                             false,
                         );
                     }
@@ -2037,12 +2075,12 @@ fn render_host_rows(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
+    band: Band,
     label_cover: Option<&Rect>,
     device_scale: f32,
     connecting_phase: Option<f32>,
 ) {
+    let Band { origin_y, height } = band;
     let body = chrome.panel.body_rect(origin_y, height);
     if body.height <= 0.0 {
         return;
@@ -2158,8 +2196,7 @@ fn render_host_rows(
                     theme.item_hover,
                     None,
                     (sidebar::CARD_RADIUS - 1.0).max(0.0),
-                    DEPTH_CONTENT + 0.012,
-                    ORDER_CONTENT,
+                    Layer::new(DEPTH_CONTENT + 0.012, ORDER_CONTENT),
                     false,
                 );
             }
@@ -2386,8 +2423,7 @@ fn render_host_rows(
                     },
                     None,
                     sidebar::SESSION_RADIUS,
-                    DEPTH_CONTENT + 0.014,
-                    ORDER_CONTENT,
+                    Layer::new(DEPTH_CONTENT + 0.014, ORDER_CONTENT),
                     false,
                 );
             }
@@ -2599,8 +2635,7 @@ fn render_host_rows(
                             color,
                             None,
                             1.0,
-                            DEPTH_CONTENT + 0.02,
-                            ORDER_CONNECTING,
+                            Layer::new(DEPTH_CONTENT + 0.02, ORDER_CONNECTING),
                             false,
                         );
                     }
@@ -2663,8 +2698,7 @@ fn paint_host_drag_insertion_bar(
         theme.accent,
         None,
         2.0,
-        DEPTH_GHOST - 0.02,
-        ORDER_GHOST,
+        Layer::new(DEPTH_GHOST - 0.02, ORDER_GHOST),
         false,
     );
     // Soft glow wash under the bar for readability on dark cards.
@@ -2675,8 +2709,7 @@ fn paint_host_drag_insertion_bar(
         with_alpha(theme.accent, 0.22),
         None,
         4.0,
-        DEPTH_GHOST - 0.03,
-        ORDER_GHOST,
+        Layer::new(DEPTH_GHOST - 0.03, ORDER_GHOST),
         false,
     );
 }
@@ -2709,8 +2742,7 @@ fn paint_host_drag_ghost(
         fill,
         Some(border),
         sidebar::CARD_RADIUS,
-        DEPTH_GHOST,
-        ORDER_GHOST,
+        Layer::new(DEPTH_GHOST, ORDER_GHOST),
         false,
     );
 
@@ -2727,8 +2759,7 @@ fn paint_host_drag_ghost(
         with_alpha(theme.field_bg, OPACITY),
         None,
         8.0,
-        DEPTH_GHOST + 0.02,
-        ORDER_GHOST,
+        Layer::new(DEPTH_GHOST + 0.02, ORDER_GHOST),
         false,
     );
     draw_icon(
@@ -2772,11 +2803,23 @@ fn paint_host_drag_ghost(
 }
 
 /// How a dialog's 1px border is placed relative to the content rect.
+#[derive(Clone, Copy)]
 enum DialogBorderMode {
     /// Stroke occupies `dialog`; fill is inset (settings modal).
     Inset,
     /// Stroke expands outside `dialog`; fill is the content rect (add-host / connection).
     Outward,
+}
+
+/// Geometry and stacking of a dialog's scrim and bordered panel.
+struct DialogShell {
+    rect: Rect,
+    radius: f32,
+    mode: DialogBorderMode,
+    scrim_layer: Layer,
+    panel_layer: Layer,
+    /// Keeps the theme's scrim alpha within `(min, max)`.
+    scrim_alpha_clamp: Option<(f32, f32)>,
 }
 
 /// Full-window scrim + bordered dialog panel.
@@ -2785,14 +2828,16 @@ fn paint_dialog_shell(
     theme: &ChromeTheme,
     window_width: f32,
     window_height: f32,
-    dialog: &Rect,
-    radius: f32,
-    mode: DialogBorderMode,
-    scrim_depth: f32,
-    panel_depth: f32,
-    order: u8,
-    scrim_alpha_clamp: Option<(f32, f32)>,
+    shell: &DialogShell,
 ) {
+    let &DialogShell {
+        rect: ref dialog,
+        radius,
+        mode,
+        scrim_layer,
+        panel_layer,
+        scrim_alpha_clamp,
+    } = shell;
     let mut scrim = theme.scrim;
     if let Some((lo, hi)) = scrim_alpha_clamp {
         scrim[3] = scrim[3].max(lo).min(hi);
@@ -2802,10 +2847,10 @@ fn paint_dialog_shell(
         window_width,
         window_height,
         scrim,
-        scrim_depth,
-        order,
+        scrim_layer.depth,
+        scrim_layer.order,
     );
-    let shell = match mode {
+    let panel = match mode {
         DialogBorderMode::Inset => *dialog,
         DialogBorderMode::Outward => Rect::new(
             dialog.x - BORDER_WIDTH,
@@ -2816,12 +2861,11 @@ fn paint_dialog_shell(
     };
     paint_surface(
         sugarloaf,
-        &shell,
+        &panel,
         theme.dialog_bg,
         Some(theme.dialog_border),
         radius,
-        panel_depth,
-        order,
+        panel_layer,
         false,
     );
 }
@@ -2844,8 +2888,7 @@ fn paint_floating_surface(
         bg,
         border,
         radius,
-        DEPTH_CONTENT,
-        ORDER_CONTENT,
+        Layer::new(DEPTH_CONTENT, ORDER_CONTENT),
         true,
     );
 }
@@ -2854,27 +2897,20 @@ fn paint_floating_surface(
 ///
 /// `composite_alpha` matches [`paint_floating_surface`]: translucent fills are
 /// composited over a dark card base so washes stay soft.
-fn paint_surface(
+pub(crate) fn paint_surface(
     sugarloaf: &mut Sugarloaf,
     card: &Rect,
     bg: [f32; 4],
     border: Option<[f32; 4]>,
     radius: f32,
-    depth: f32,
-    order: u8,
+    layer: Layer,
     composite_alpha: bool,
 ) {
-    paint_surface_stroke(
-        sugarloaf,
-        card,
-        bg,
-        border,
-        radius,
-        BORDER_WIDTH,
-        depth,
-        order,
-        composite_alpha,
-    );
+    let border = border.map(|color| Stroke {
+        color,
+        width: BORDER_WIDTH,
+    });
+    paint_surface_stroke(sugarloaf, card, bg, border, radius, layer, composite_alpha);
 }
 
 /// Like [`paint_surface`], with an explicit border stroke width.
@@ -2882,19 +2918,22 @@ pub(crate) fn paint_surface_stroke(
     sugarloaf: &mut Sugarloaf,
     card: &Rect,
     bg: [f32; 4],
-    border: Option<[f32; 4]>,
+    border: Option<Stroke>,
     radius: f32,
-    stroke: f32,
-    depth: f32,
-    order: u8,
+    layer: Layer,
     composite_alpha: bool,
 ) {
+    let Layer { depth, order } = layer;
     let fill = if composite_alpha && bg[3] < 0.999 {
         opaque_over([0.133, 0.133, 0.149, 1.0], bg) // ≈ button_bg
     } else {
         bg
     };
-    if let Some(border_color) = border {
+    if let Some(Stroke {
+        color: border_color,
+        width: stroke,
+    }) = border
+    {
         sugarloaf.rounded_rect(
             None,
             card.x,
@@ -3009,55 +3048,63 @@ pub(crate) fn paint_caret(
     );
 }
 
-/// Shared labeled text-field card (Settings SqlSync, SFTP name, …).
+/// A labeled text field as painted: the card, its caption and value.
+pub(crate) struct FieldCard<'a> {
+    pub card: Rect,
+    pub label: &'a str,
+    pub value: &'a str,
+    pub focused: bool,
+    /// `value` is placeholder text, drawn dimmed.
+    pub placeholder: bool,
+    /// Room kept free on the right of the input for an adornment (e.g. the
+    /// passphrase eye) so the value never runs under it.
+    pub trailing_slot: f32,
+}
+
+/// Shared labeled text-field card (Settings, SFTP name, …).
+///
+/// When `paint_text` is false, only the card/input quads are drawn —
+/// used while a popover covers the card so UI text (always last pass)
+/// does not bleed through the menu.
 pub(crate) fn paint_field_card(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
-    card: Rect,
-    label: &str,
-    value: &str,
-    focused: bool,
-    placeholder: bool,
-    trailing_slot: f32,
+    field: &FieldCard<'_>,
     paint_text: bool,
 ) {
     paint_field_card_at(
         sugarloaf,
         theme,
+        field,
+        paint_text,
+        Layer::new(DEPTH_DIALOG, ORDER_DIALOG),
+    );
+}
+
+/// Field card on an explicit layer (SFTP toolbar vs dialog chrome).
+pub(crate) fn paint_field_card_at(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    field: &FieldCard<'_>,
+    paint_text: bool,
+    layer: Layer,
+) {
+    let &FieldCard {
         card,
         label,
         value,
         focused,
         placeholder,
         trailing_slot,
-        paint_text,
-        DEPTH_DIALOG,
-        ORDER_DIALOG,
-    );
-}
-
-/// Field card with explicit depth/order (SFTP toolbar vs dialog chrome).
-pub(crate) fn paint_field_card_at(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    card: Rect,
-    label: &str,
-    value: &str,
-    focused: bool,
-    placeholder: bool,
-    trailing_slot: f32,
-    paint_text: bool,
-    depth: f32,
-    order: u8,
-) {
+    } = field;
+    let Layer { depth, order } = layer;
     paint_surface(
         sugarloaf,
         &card,
         theme.button_bg,
         None,
         12.0,
-        depth + 0.03,
-        order,
+        Layer::new(depth + 0.03, order),
         false,
     );
     if paint_text {
@@ -3080,8 +3127,7 @@ pub(crate) fn paint_field_card_at(
             field_bg,
             Some(theme.field_border_focus),
             8.0,
-            depth + 0.039,
-            order,
+            Layer::new(depth + 0.039, order),
             false,
         );
     } else {
@@ -3091,8 +3137,7 @@ pub(crate) fn paint_field_card_at(
             field_bg,
             None,
             8.0,
-            depth + 0.04,
-            order,
+            Layer::new(depth + 0.04, order),
             false,
         );
     }
@@ -3297,21 +3342,6 @@ pub(crate) fn paint_scrim(
     );
 }
 
-/// Straight stroke (e.g. reset-swatch slash).
-pub(crate) fn paint_line(
-    sugarloaf: &mut Sugarloaf,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    stroke: f32,
-    color: [f32; 4],
-    depth: f32,
-    order: u8,
-) {
-    sugarloaf.line(x0, y0, x1, y1, stroke, depth, color, order);
-}
-
 /// Apple HIG title-bar strip + bottom hairline (island / context bar).
 pub(crate) fn paint_title_strip(sugarloaf: &mut Sugarloaf, logical_w: f32, height: f32) {
     let strip = [
@@ -3360,40 +3390,58 @@ fn paint_bordered_badge(
         fill,
         Some(border),
         radius,
-        depth,
-        order,
+        Layer::new(depth, order),
         false,
     );
+}
+
+/// Content and colors of a dashed call-to-action row ("New Host", …).
+struct DashedCta<'a> {
+    rect: Rect,
+    radius: f32,
+    bg: [f32; 4],
+    border: [f32; 4],
+    title: &'a str,
+    subtitle: &'a str,
+    title_color: [u8; 4],
+    icon: Icon,
 }
 
 /// Dashed CTA row: wash fill, dashed stroke, bordered badge, title + subtitle.
 fn paint_dashed_cta(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
-    cta: &Rect,
-    radius: f32,
-    bg: [f32; 4],
-    border: [f32; 4],
-    title: &str,
-    subtitle: &str,
-    title_color: [u8; 4],
-    icon: Icon,
+    cta: &DashedCta<'_>,
     device_scale: f32,
     labels: bool,
-    depth: f32,
-    order: u8,
+    layer: Layer,
 ) {
-    paint_surface(sugarloaf, cta, bg, None, radius, depth, order, false);
+    let &DashedCta {
+        rect: ref cta,
+        radius,
+        bg,
+        border,
+        title,
+        subtitle,
+        title_color,
+        icon,
+    } = cta;
+    let Layer { depth, order } = layer;
+    paint_surface(
+        sugarloaf,
+        cta,
+        bg,
+        None,
+        radius,
+        Layer::new(depth, order),
+        false,
+    );
     draw_dashed_rounded_rect(
         sugarloaf,
-        cta.x,
-        cta.y,
-        cta.width,
-        cta.height,
+        cta,
         radius,
         border,
-        depth + 0.01,
-        order,
+        Layer::new(depth + 0.01, order),
     );
     let badge =
         terminus_ui::dashed_cta_badge(*cta, sidebar::BADGE_TILE, sidebar::CARD_PAD);
@@ -3463,8 +3511,7 @@ fn paint_soft_badge_tile(
         theme.field_bg,
         None,
         HOST_BADGE_RADIUS,
-        DEPTH_CONTENT + 0.02,
-        ORDER_CONTENT,
+        Layer::new(DEPTH_CONTENT + 0.02, ORDER_CONTENT),
         false,
     );
 }
@@ -3491,8 +3538,7 @@ fn paint_status_dot(
         [0.067, 0.067, 0.075, 1.0], // panel_bg
         None,
         (d + 2.0) * 0.5,
-        DEPTH_CONTENT + 0.03,
-        ORDER_CONTENT,
+        Layer::new(DEPTH_CONTENT + 0.03, ORDER_CONTENT),
         false,
     );
     paint_surface(
@@ -3501,8 +3547,7 @@ fn paint_status_dot(
         color,
         None,
         d * 0.5,
-        DEPTH_CONTENT + 0.031,
-        ORDER_CONTENT,
+        Layer::new(DEPTH_CONTENT + 0.031, ORDER_CONTENT),
         false,
     );
 }
@@ -3527,8 +3572,7 @@ fn paint_new_group_button(
             with_alpha([1.0, 1.0, 1.0, 1.0], 0.06),
             None,
             6.0,
-            DEPTH_CONTENT + 0.02,
-            ORDER_CONTENT,
+            Layer::new(DEPTH_CONTENT + 0.02, ORDER_CONTENT),
             false,
         );
     }
@@ -3581,8 +3625,7 @@ fn paint_new_group_form(
         with_alpha([1.0, 1.0, 1.0, 1.0], 0.025),
         Some(theme.panel_border),
         10.0,
-        DEPTH_CONTENT + 0.02,
-        ORDER_CONTENT,
+        Layer::new(DEPTH_CONTENT + 0.02, ORDER_CONTENT),
         false,
     );
 
@@ -3603,8 +3646,7 @@ fn paint_new_group_form(
             theme.field_bg,
             Some(theme.field_border_focus),
             8.0,
-            DEPTH_CONTENT + 0.03,
-            ORDER_CONTENT,
+            Layer::new(DEPTH_CONTENT + 0.03, ORDER_CONTENT),
             false,
         );
     } else {
@@ -3614,8 +3656,7 @@ fn paint_new_group_form(
             theme.field_bg,
             None,
             8.0,
-            DEPTH_CONTENT + 0.03,
-            ORDER_CONTENT,
+            Layer::new(DEPTH_CONTENT + 0.03, ORDER_CONTENT),
             false,
         );
     }
@@ -3699,11 +3740,11 @@ fn render_panel_scrollbar(
     );
 }
 
+/// Full-width `+` button at the foot of a panel ("Add snippet").
 fn render_footer_button(
     sugarloaf: &mut Sugarloaf,
     button: Rect,
     hovered: bool,
-    icon: Icon,
     label: &str,
     theme: &ChromeTheme,
     labels: bool,
@@ -3722,8 +3763,7 @@ fn render_footer_button(
         },
         None,
         5.0,
-        DEPTH_CONTENT,
-        ORDER_CONTENT,
+        Layer::new(DEPTH_CONTENT, ORDER_CONTENT),
         false,
     );
 
@@ -3744,7 +3784,7 @@ fn render_footer_button(
     let icon_y = (button.y + (button.height - ADD_ICON_SIZE) / 2.0).round();
     draw_icon(
         sugarloaf,
-        icon,
+        Icon::Plus,
         IconPlacement::new(start_x, icon_y, ADD_ICON_SIZE),
         theme.accent,
         device_scale,
@@ -3783,13 +3823,14 @@ fn render_add_host(
         theme,
         window_width,
         window_height,
-        &dialog,
-        radius,
-        DialogBorderMode::Outward,
-        DEPTH_DIALOG,
-        DEPTH_DIALOG_BG,
-        ORDER_DIALOG,
-        None,
+        &DialogShell {
+            rect: dialog,
+            radius,
+            mode: DialogBorderMode::Outward,
+            scrim_layer: Layer::new(DEPTH_DIALOG, ORDER_DIALOG),
+            panel_layer: Layer::new(DEPTH_DIALOG_BG, ORDER_DIALOG),
+            scrim_alpha_clamp: None,
+        },
     );
     if !paint_glyphs {
         // Field shells only — keeps a dim silhouette under a higher modal.
@@ -3810,8 +3851,7 @@ fn render_add_host(
                 theme.button_bg,
                 Some(theme.field_border),
                 input_radius,
-                DEPTH_DIALOG_BG + 0.015,
-                ORDER_DIALOG,
+                Layer::new(DEPTH_DIALOG_BG + 0.015, ORDER_DIALOG),
                 false,
             );
         }
@@ -3858,8 +3898,7 @@ fn render_add_host(
                 theme.field_border
             }),
             input_radius,
-            DEPTH_DIALOG_BG + 0.015,
-            ORDER_DIALOG,
+            Layer::new(DEPTH_DIALOG_BG + 0.015, ORDER_DIALOG),
             false,
         );
 
@@ -4168,8 +4207,7 @@ fn render_add_host(
                 theme.button_bg,
                 Some(theme.panel_border),
                 10.0,
-                DEPTH_DIALOG,
-                ORDER_DIALOG_POPOVER,
+                Layer::new(DEPTH_DIALOG, ORDER_DIALOG_POPOVER),
                 false,
             );
             for i in 0..terminus_ui::AUTH_METHODS.len() {
@@ -4189,8 +4227,7 @@ fn render_add_host(
                         },
                         None,
                         6.0,
-                        DEPTH_DIALOG + 0.002,
-                        ORDER_DIALOG_POPOVER,
+                        Layer::new(DEPTH_DIALOG + 0.002, ORDER_DIALOG_POPOVER),
                         false,
                     );
                 }
@@ -4231,8 +4268,7 @@ fn render_add_host(
                 theme.button_bg,
                 Some(theme.panel_border),
                 10.0,
-                DEPTH_DIALOG,
-                ORDER_DIALOG_POPOVER,
+                Layer::new(DEPTH_DIALOG, ORDER_DIALOG_POPOVER),
                 false,
             );
             if form.identities().is_empty() {
@@ -4263,8 +4299,7 @@ fn render_add_host(
                         },
                         None,
                         6.0,
-                        DEPTH_DIALOG + 0.002,
-                        ORDER_DIALOG_POPOVER,
+                        Layer::new(DEPTH_DIALOG + 0.002, ORDER_DIALOG_POPOVER),
                         false,
                     );
                 }
@@ -4317,13 +4352,14 @@ fn render_vault_unlock(
         theme,
         window_width,
         window_height,
-        &dialog,
-        radius,
-        DialogBorderMode::Outward,
-        DEPTH_DIALOG,
-        DEPTH_DIALOG_BG,
-        ORDER_DIALOG,
-        None,
+        &DialogShell {
+            rect: dialog,
+            radius,
+            mode: DialogBorderMode::Outward,
+            scrim_layer: Layer::new(DEPTH_DIALOG, ORDER_DIALOG),
+            panel_layer: Layer::new(DEPTH_DIALOG_BG, ORDER_DIALOG),
+            scrim_alpha_clamp: None,
+        },
     );
     if !paint_glyphs {
         return;
@@ -4369,28 +4405,32 @@ fn render_vault_unlock(
     // Same field card + caret path as Settings → Encryption Passphrase.
     let card = layout.passphrase_card_rect();
     let paint = prompt.field_paint();
-    paint_settings_field_card(
+    paint_field_card(
         sugarloaf,
         theme,
-        card,
-        "Encryption Passphrase",
-        &paint.text,
-        !prompt.confirm_focused(),
-        paint.placeholder,
-        terminus_ui::settings::FIELD_EYE_SLOT,
+        &FieldCard {
+            card,
+            label: "Encryption Passphrase",
+            value: &paint.text,
+            focused: !prompt.confirm_focused(),
+            placeholder: paint.placeholder,
+            trailing_slot: terminus_ui::settings::FIELD_EYE_SLOT,
+        },
         true,
     );
     if let Some(confirm_card) = layout.confirm_card_rect() {
         let confirm = prompt.confirm_field_paint();
-        paint_settings_field_card(
+        paint_field_card(
             sugarloaf,
             theme,
-            confirm_card,
-            "Confirm Passphrase",
-            &confirm.text,
-            prompt.confirm_focused(),
-            confirm.placeholder,
-            0.0,
+            &FieldCard {
+                card: confirm_card,
+                label: "Confirm Passphrase",
+                value: &confirm.text,
+                focused: prompt.confirm_focused(),
+                placeholder: confirm.placeholder,
+                trailing_slot: 0.0,
+            },
             true,
         );
         if confirm.show_caret {
@@ -4473,8 +4513,7 @@ fn render_vault_unlock(
             theme.field_border
         }),
         4.0,
-        DEPTH_DIALOG_BG + 0.02,
-        ORDER_DIALOG,
+        Layer::new(DEPTH_DIALOG_BG + 0.02, ORDER_DIALOG),
         false,
     );
     if prompt.remember() {
@@ -4551,38 +4590,6 @@ fn draw_text(
         .draw(x, y, text, &opts(size, color, bold));
 }
 
-/// Shared settings field card (label + input row).
-///
-/// `trailing_slot` reserves space on the right of the input for an
-/// adornment (e.g. passphrase eye) so value text never overlaps it.
-///
-/// When `paint_text` is false, only the card/input quads are drawn —
-/// used while a popover covers the card so UI text (always last pass)
-/// does not bleed through the menu.
-fn paint_settings_field_card(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    card: Rect,
-    label: &str,
-    value: &str,
-    focused: bool,
-    placeholder: bool,
-    trailing_slot: f32,
-    paint_text: bool,
-) {
-    paint_field_card(
-        sugarloaf,
-        theme,
-        card,
-        label,
-        value,
-        focused,
-        placeholder,
-        trailing_slot,
-        paint_text,
-    );
-}
-
 fn render_context_menu(
     sugarloaf: &mut Sugarloaf,
     menu: &ContextMenu,
@@ -4599,8 +4606,7 @@ fn render_context_menu(
         theme.button_bg,
         Some(theme.panel_border),
         MENU_RADIUS,
-        DEPTH_DIALOG,
-        ORDER_GHOST,
+        Layer::new(DEPTH_DIALOG, ORDER_GHOST),
         false,
     );
 
@@ -4731,6 +4737,16 @@ fn ctx_menu_mask_id(kind: u32, content_w: f32, content_h: f32) -> u64 {
     id as u64
 }
 
+/// Opaque white, anti-aliased: coverage masks are tinted when drawn.
+fn mask_paint() -> tiny_skia::Paint<'static> {
+    let mut paint = tiny_skia::Paint {
+        anti_alias: true,
+        ..tiny_skia::Paint::default()
+    };
+    paint.set_color_rgba8(255, 255, 255, 255);
+    paint
+}
+
 fn rasterize_rounded_rect_mask(
     size: u16,
     content_w: f32,
@@ -4744,9 +4760,7 @@ fn rasterize_rounded_rect_mask(
     let h = content_h.min(size as f32).max(1.0);
     let r = radius.min(w * 0.5).min(h * 0.5).max(0.0);
     let path = rounded_rect_path(0.0, 0.0, w, h, r)?;
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = true;
-    paint.set_color_rgba8(255, 255, 255, 255);
+    let paint = mask_paint();
     if stroke_only {
         let stroke = tiny_skia::Stroke {
             width: 1.0,
@@ -4813,8 +4827,7 @@ fn paint_chrome_button(
             spec.fill(theme.accent, theme.button_bg),
             Some(theme.panel_border),
             spec.radius,
-            depth,
-            order,
+            Layer::new(depth, order),
             false,
         );
     } else {
@@ -4824,8 +4837,7 @@ fn paint_chrome_button(
             spec.fill(theme.accent, theme.button_bg),
             None,
             spec.radius,
-            depth,
-            order,
+            Layer::new(depth, order),
             false,
         );
     }
@@ -4952,9 +4964,7 @@ fn rasterize_icon(icon: Icon, size: u16) -> Option<CoverageMask> {
     let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
 
     let stroke_width = LUCIDE_STROKE * unit;
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = true;
-    paint.set_color_rgba8(255, 255, 255, 255);
+    let paint = mask_paint();
     let stroke = tiny_skia::Stroke {
         width: stroke_width,
         line_cap: tiny_skia::LineCap::Round,
@@ -5025,9 +5035,7 @@ fn rasterize_os_glyph(glyph: OsGlyph, size: u16) -> Option<CoverageMask> {
 
     let path = builder.finish()?;
     let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = true;
-    paint.set_color_rgba8(255, 255, 255, 255);
+    let paint = mask_paint();
     pixmap.fill_path(
         &path,
         &paint,
@@ -5045,12 +5053,15 @@ fn render_connection_modal(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
-    window_width: f32,
-    window_height: f32,
-    device_scale: f32,
+    viewport: Viewport,
     phase: f32,
     paint_glyphs: bool,
 ) {
+    let Viewport {
+        width: window_width,
+        height: window_height,
+        scale: device_scale,
+    } = viewport;
     let Some(conn) = chrome.connection.as_ref() else {
         return;
     };
@@ -5059,11 +5070,10 @@ fn render_connection_modal(
     // advances (no text clamp — width grows with content + padding).
     let mut label_widths = [0.0f32; STEP_COUNT];
     if paint_glyphs {
-        for i in 0..STEP_COUNT {
-            let label = conn.step_label(i);
-            label_widths[i] = sugarloaf
+        for (i, width) in label_widths.iter_mut().enumerate() {
+            *width = sugarloaf
                 .text_mut()
-                .measure(label, &opts(10.0, theme.text, false));
+                .measure(conn.step_label(i), &opts(10.0, theme.text, false));
         }
         conn.set_label_widths(label_widths);
     }
@@ -5075,13 +5085,14 @@ fn render_connection_modal(
         theme,
         window_width,
         window_height,
-        &dialog,
-        13.0,
-        DialogBorderMode::Outward,
-        DEPTH_DIALOG,
-        DEPTH_DIALOG_BG,
-        ORDER_DIALOG,
-        Some((0.55, 0.70)),
+        &DialogShell {
+            rect: dialog,
+            radius: 13.0,
+            mode: DialogBorderMode::Outward,
+            scrim_layer: Layer::new(DEPTH_DIALOG, ORDER_DIALOG),
+            panel_layer: Layer::new(DEPTH_DIALOG_BG, ORDER_DIALOG),
+            scrim_alpha_clamp: Some((0.55, 0.70)),
+        },
     );
     if !paint_glyphs {
         return;
@@ -5095,8 +5106,7 @@ fn render_connection_modal(
         with_alpha(theme.accent, 0.22),
         None,
         10.0,
-        DEPTH_DIALOG_BG + 0.02,
-        ORDER_DIALOG,
+        Layer::new(DEPTH_DIALOG_BG + 0.02, ORDER_DIALOG),
         false,
     );
     let header_glyph = match conn.kind {
@@ -5159,8 +5169,7 @@ fn render_connection_modal(
         theme.panel_border,
         None,
         2.0,
-        DEPTH_DIALOG_BG + 0.02,
-        ORDER_DIALOG,
+        Layer::new(DEPTH_DIALOG_BG + 0.02, ORDER_DIALOG),
         false,
     );
     let fill = conn.progress_fill_rect(dialog);
@@ -5171,14 +5180,13 @@ fn render_connection_modal(
             theme.accent,
             None,
             2.0,
-            DEPTH_DIALOG_BG + 0.03,
-            ORDER_DIALOG,
+            Layer::new(DEPTH_DIALOG_BG + 0.03, ORDER_DIALOG),
             false,
         );
     }
 
     let success = success_color();
-    for i in 0..STEP_COUNT {
+    for (i, &lw) in label_widths.iter().enumerate() {
         let node = conn.node_rect(dialog, i);
         let state = conn.node_state(i);
         let (fill_c, border_c, icon_c) = match state {
@@ -5207,8 +5215,7 @@ fn render_connection_modal(
                 with_alpha(theme.accent, 0.18 + 0.16 * pulse),
                 None,
                 (node.width + 2.0 * glow) * 0.5,
-                DEPTH_DIALOG_BG + 0.035,
-                ORDER_DIALOG,
+                Layer::new(DEPTH_DIALOG_BG + 0.035, ORDER_DIALOG),
                 false,
             );
         }
@@ -5223,11 +5230,12 @@ fn render_connection_modal(
             sugarloaf,
             &node_shell,
             fill_c,
-            Some(border_c),
+            Some(Stroke {
+                color: border_c,
+                width: 1.5,
+            }),
             (node.width + 3.0) * 0.5,
-            1.5,
-            DEPTH_DIALOG_BG + 0.04,
-            ORDER_DIALOG,
+            Layer::new(DEPTH_DIALOG_BG + 0.04, ORDER_DIALOG),
             false,
         );
 
@@ -5250,7 +5258,6 @@ fn render_connection_modal(
             NodeVisual::Active => as_u8(theme.accent),
             NodeVisual::Done => as_u8(success),
         };
-        let lw = label_widths[i];
         // Center under the node — columns share the widest label's width.
         let label_x = node.x + (node.width - lw) * 0.5;
         draw_text(
@@ -5292,8 +5299,7 @@ fn render_connection_modal(
             theme.field_bg,
             None,
             8.0,
-            DEPTH_DIALOG_BG + 0.02,
-            ORDER_DIALOG,
+            Layer::new(DEPTH_DIALOG_BG + 0.02, ORDER_DIALOG),
             false,
         );
         let mut y = logs.y + 8.0;
@@ -5360,8 +5366,7 @@ fn draw_orbit_indicator(
         ring_color,
         None,
         ring.radius,
-        DEPTH_CONTENT + 0.05,
-        ORDER_CONNECTING,
+        Layer::new(DEPTH_CONTENT + 0.05, ORDER_CONNECTING),
         false,
     );
 
@@ -5374,8 +5379,7 @@ fn draw_orbit_indicator(
             color,
             None,
             dot.radius,
-            DEPTH_CONTENT + 0.06,
-            ORDER_CONNECTING,
+            Layer::new(DEPTH_CONTENT + 0.06, ORDER_CONNECTING),
             false,
         );
     }
@@ -5498,72 +5502,6 @@ pub(crate) fn wrap_lines(
     lines
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_blocked_only_when_cover_overlaps() {
-        let cover = Rect::new(100.0, 100.0, 200.0, 200.0);
-        let under = Rect::new(120.0, 120.0, 40.0, 40.0);
-        let aside = Rect::new(10.0, 10.0, 40.0, 40.0);
-        assert!(text_blocked_by(Some(&cover), &under));
-        assert!(!text_blocked_by(Some(&cover), &aside));
-        assert!(!text_blocked_by(None, &under));
-    }
-
-    #[test]
-    fn rect_union_expands_to_bounds() {
-        let a = Rect::new(0.0, 0.0, 10.0, 10.0);
-        let b = Rect::new(5.0, 5.0, 20.0, 20.0);
-        let u = rect_union(a, b);
-        assert_eq!(u.x, 0.0);
-        assert_eq!(u.y, 0.0);
-        assert_eq!(u.right(), 25.0);
-        assert_eq!(u.bottom(), 25.0);
-    }
-
-    #[test]
-    fn colors_convert_from_bytes_without_clipping() {
-        assert_eq!(as_f32([0, 0, 0, 0]), [0.0, 0.0, 0.0, 0.0]);
-        assert_eq!(as_f32([255, 255, 255, 255]), [1.0, 1.0, 1.0, 1.0]);
-        let half = as_f32([128, 128, 128, 128]);
-        for channel in half {
-            assert!((channel - 0.502).abs() < 0.01, "{channel}");
-        }
-    }
-
-    /// The round trip has to be exact, or a theme colour would drift every
-    /// time it passed through the icon path.
-    #[test]
-    fn colors_survive_the_round_trip_to_bytes() {
-        for value in 0u8..=255 {
-            let byte = [value, value, value, value];
-            assert_eq!(as_u8(as_f32(byte)), byte, "{value} drifted");
-        }
-    }
-
-    #[test]
-    fn chrome_orders_sit_above_the_grid_and_below_the_overlays() {
-        // The terminal grid paints at order 3; the command palette,
-        // search and hint tooltip at 20. Chrome goes in between, and the
-        // editor above them all so it is never occluded. The host-drag
-        // ghost sits above dialogs so the phantom is always on top.
-        assert!(ORDER_RAIL > 3);
-        assert!(ORDER_PANEL > ORDER_RAIL);
-        assert!(ORDER_CONTENT > ORDER_PANEL);
-        assert!(ORDER_CONTENT < 20);
-        assert!(ORDER_DIALOG > 20);
-        assert!(ORDER_GHOST > ORDER_DIALOG);
-        assert!(DEPTH_GHOST > DEPTH_DIALOG_BG);
-    }
-
-    #[test]
-    fn the_dialog_depth_is_above_the_scrim() {
-        assert!(DEPTH_DIALOG_BG > DEPTH_DIALOG);
-    }
-}
-
 fn render_add_snippet(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
@@ -5594,13 +5532,14 @@ fn render_add_snippet(
         theme,
         window_width,
         window_height,
-        &layout.dialog,
-        terminus_ui::dialog_form::DIALOG_RADIUS,
-        DialogBorderMode::Outward,
-        DEPTH_DIALOG_BG,
-        DEPTH_DIALOG,
-        ORDER_DIALOG,
-        None,
+        &DialogShell {
+            rect: layout.dialog,
+            radius: terminus_ui::dialog_form::DIALOG_RADIUS,
+            mode: DialogBorderMode::Outward,
+            scrim_layer: Layer::new(DEPTH_DIALOG_BG, ORDER_DIALOG),
+            panel_layer: Layer::new(DEPTH_DIALOG, ORDER_DIALOG),
+            scrim_alpha_clamp: None,
+        },
     );
     if !paint_glyphs {
         return;
@@ -5652,8 +5591,7 @@ fn render_add_snippet(
                 theme.field_border
             }),
             12.0,
-            DEPTH_DIALOG_BG + 0.015,
-            ORDER_DIALOG,
+            Layer::new(DEPTH_DIALOG_BG + 0.015, ORDER_DIALOG),
             false,
         );
 
@@ -5744,4 +5682,72 @@ fn render_add_snippet(
         DEPTH_DIALOG,
         ORDER_DIALOG,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_blocked_only_when_cover_overlaps() {
+        let cover = Rect::new(100.0, 100.0, 200.0, 200.0);
+        let under = Rect::new(120.0, 120.0, 40.0, 40.0);
+        let aside = Rect::new(10.0, 10.0, 40.0, 40.0);
+        assert!(text_blocked_by(Some(&cover), &under));
+        assert!(!text_blocked_by(Some(&cover), &aside));
+        assert!(!text_blocked_by(None, &under));
+    }
+
+    #[test]
+    fn rect_union_expands_to_bounds() {
+        let a = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let b = Rect::new(5.0, 5.0, 20.0, 20.0);
+        let u = rect_union(a, b);
+        assert_eq!(u.x, 0.0);
+        assert_eq!(u.y, 0.0);
+        assert_eq!(u.right(), 25.0);
+        assert_eq!(u.bottom(), 25.0);
+    }
+
+    #[test]
+    fn colors_convert_from_bytes_without_clipping() {
+        assert_eq!(as_f32([0, 0, 0, 0]), [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(as_f32([255, 255, 255, 255]), [1.0, 1.0, 1.0, 1.0]);
+        let half = as_f32([128, 128, 128, 128]);
+        for channel in half {
+            assert!((channel - 0.502).abs() < 0.01, "{channel}");
+        }
+    }
+
+    /// The round trip has to be exact, or a theme colour would drift every
+    /// time it passed through the icon path.
+    #[test]
+    fn colors_survive_the_round_trip_to_bytes() {
+        for value in 0u8..=255 {
+            let byte = [value, value, value, value];
+            assert_eq!(as_u8(as_f32(byte)), byte, "{value} drifted");
+        }
+    }
+
+    #[test]
+    fn chrome_orders_sit_above_the_grid_and_below_the_overlays() {
+        // The terminal grid paints at order 3; the command palette,
+        // search and hint tooltip at 20. Chrome goes in between, and the
+        // editor above them all so it is never occluded. The host-drag
+        // ghost sits above dialogs so the phantom is always on top.
+        const {
+            assert!(ORDER_RAIL > 3);
+            assert!(ORDER_PANEL > ORDER_RAIL);
+            assert!(ORDER_CONTENT > ORDER_PANEL);
+            assert!(ORDER_CONTENT < 20);
+            assert!(ORDER_DIALOG > 20);
+            assert!(ORDER_GHOST > ORDER_DIALOG);
+            assert!(DEPTH_GHOST > DEPTH_DIALOG_BG);
+        };
+    }
+
+    #[test]
+    fn the_dialog_depth_is_above_the_scrim() {
+        const { assert!(DEPTH_DIALOG_BG > DEPTH_DIALOG) };
+    }
 }

@@ -26,6 +26,7 @@ use rio_backend::event::TerminalDamage;
 use crate::context::renderable::{PendingUpdate, RenderableContent};
 use crate::context::ContextManager;
 use crate::crosswords::style::{Style as CellStyle, StyleFlags};
+use chrome::Layer;
 use rio_backend::config::colors::term::TermColors;
 use rio_backend::config::colors::{
     term::{List, DIM_FACTOR},
@@ -120,15 +121,13 @@ fn draw_hint_tooltip(
     let x = TOOLTIP_MARGIN;
     let y = (logical_height - height - TOOLTIP_MARGIN).max(0.0);
 
-    crate::renderer::chrome::paint_surface_stroke(
+    crate::renderer::chrome::paint_surface(
         sugarloaf,
         &terminus_ui::Rect::new(x, y, width, height),
         TOOLTIP_BG_COLOR,
         None,
         TOOLTIP_CORNER_RADIUS,
-        1.0,
-        TOOLTIP_DEPTH_BG,
-        TOOLTIP_ORDER,
+        Layer::new(TOOLTIP_DEPTH_BG, TOOLTIP_ORDER),
         false,
     );
     sugarloaf.text_mut().draw(

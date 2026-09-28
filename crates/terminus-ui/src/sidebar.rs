@@ -2100,7 +2100,7 @@ mod tests {
         assert_eq!(BADGE_TILE, 32.0); // w-8 h-8 (New Host CTA)
         assert_eq!(HOST_BADGE_TILE, 28.0); // p-1.5 + 16px glyph
         assert_eq!(ITEM_HEIGHT, 56.0);
-        assert!(CTA_HEIGHT >= 56.0);
+        const { assert!(CTA_HEIGHT >= 56.0) };
         assert_eq!(SESSION_HEIGHT, 28.0);
         assert_eq!(SESSION_GAP, 6.0);
         assert_eq!(SESSION_AFTER_GAP, 18.0);

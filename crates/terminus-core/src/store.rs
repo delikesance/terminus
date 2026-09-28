@@ -684,14 +684,14 @@ impl Store {
             .into_iter()
             .filter(|h| h.group_id.is_none() && h.deleted_at.is_none())
             .collect();
-        hosts.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        hosts.sort_by_key(|a| a.name.to_lowercase());
         let mut groups: Vec<Group> = self
             .list_groups()
             .await?
             .into_iter()
             .filter(|g| g.deleted_at.is_none())
             .collect();
-        groups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        groups.sort_by_key(|a| a.name.to_lowercase());
 
         let mut i: i64 = 0;
         for mut h in hosts {

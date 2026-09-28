@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use crate::renderer::chrome::Layer;
 use rio_backend::error::{RioError, RioErrorLevel};
 use rio_backend::sugarloaf::text::DrawOpts;
 use rio_backend::sugarloaf::Sugarloaf;
@@ -278,15 +279,13 @@ impl AssistantOverlay {
         );
 
         // Background
-        crate::renderer::chrome::paint_surface_stroke(
+        crate::renderer::chrome::paint_surface(
             sugarloaf,
             &terminus_ui::Rect::new(ox, oy, ow, oh),
             BG_COLOR,
             None,
             OVERLAY_CORNER_RADIUS,
-            1.0,
-            DEPTH_BG,
-            ORDER,
+            Layer::new(DEPTH_BG, ORDER),
             false,
         );
 
@@ -348,15 +347,13 @@ impl AssistantOverlay {
         let docs_hovered = self.hovered_button == Some(AssistantOverlayAction::OpenDocs);
 
         if docs_hovered {
-            crate::renderer::chrome::paint_surface_stroke(
+            crate::renderer::chrome::paint_surface(
                 sugarloaf,
                 &terminus_ui::Rect::new(dbx, dby, dbw, dbh),
                 BUTTON_HOVER_BG,
                 None,
                 BUTTON_CORNER_RADIUS,
-                1.0,
-                DEPTH_ELEMENT,
-                ORDER,
+                Layer::new(DEPTH_ELEMENT, ORDER),
                 false,
             );
         }
@@ -366,15 +363,13 @@ impl AssistantOverlay {
         let is_hovered = self.hovered_button == Some(AssistantOverlayAction::Close);
 
         if is_hovered {
-            crate::renderer::chrome::paint_surface_stroke(
+            crate::renderer::chrome::paint_surface(
                 sugarloaf,
                 &terminus_ui::Rect::new(bx, by, bw, bh),
                 BUTTON_HOVER_BG,
                 None,
                 BUTTON_CORNER_RADIUS,
-                1.0,
-                DEPTH_ELEMENT,
-                ORDER,
+                Layer::new(DEPTH_ELEMENT, ORDER),
                 false,
             );
         }

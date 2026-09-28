@@ -282,10 +282,9 @@ impl Screen<'_> {
     ) -> terminus_ui::chrome::ChromeAction {
         let (width, height) = self.chrome_viewport();
         let sftp_open = self.sftp.is_some();
-        let action = self
-            .chrome
-            .handle_context_press(width, height, x, y, sftp_open);
-        action
+
+        self.chrome
+            .handle_context_press(width, height, x, y, sftp_open)
     }
 
     /// Right-click inside the SFTP pane: open a file/folder context menu.

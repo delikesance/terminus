@@ -442,9 +442,7 @@ impl Screen<'_> {
     /// Looping `0..1` phase for the active-node pulse.
     pub(super) fn connecting_phase(&self) -> Option<f32> {
         let started = self.connecting_started?;
-        if self.chrome.connection.is_none() {
-            return None;
-        }
+        self.chrome.connection.as_ref()?;
         Some(terminus_ui::loading_phase(started.elapsed().as_secs_f32()))
     }
 

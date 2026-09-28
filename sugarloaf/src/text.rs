@@ -391,7 +391,12 @@ impl Text {
     where
         F: FnOnce(u16) -> Option<CoverageMask>,
     {
-        self.draw_mask_to(false, x, y, artwork_id, size, color, rasterize)
+        let Some(inst) = self.mask_instance(x, y, artwork_id, size, color, rasterize)
+        else {
+            return false;
+        };
+        self.push_instance(inst, false);
+        true
     }
 
     /// Like [`Self::draw_mask`], but composited in the late UI-text pass.
@@ -407,38 +412,42 @@ impl Text {
     where
         F: FnOnce(u16) -> Option<CoverageMask>,
     {
-        self.draw_mask_to(true, x, y, artwork_id, size, color, rasterize)
+        let Some(inst) = self.mask_instance(x, y, artwork_id, size, color, rasterize)
+        else {
+            return false;
+        };
+        self.push_instance(inst, true);
+        true
     }
 
-    fn draw_mask_to<F>(
+    /// Place the mask for `artwork_id` at logical `(x, y)`, rasterizing it
+    /// into the atlas on first use. `None` when there is nothing to draw.
+    fn mask_instance<F>(
         &mut self,
-        late: bool,
         x: f32,
         y: f32,
         artwork_id: u64,
         size: u16,
         color: [u8; 4],
         rasterize: F,
-    ) -> bool
+    ) -> Option<TextInstance>
     where
         F: FnOnce(u16) -> Option<CoverageMask>,
     {
         if size == 0 {
-            return false;
+            return None;
         }
         let key = crate::grid::GlyphKey {
             font_id: MASK_FONT_ID,
             glyph_id: artwork_id as u32,
             size_bucket: size,
         };
-        let Some(slot) = self.mask_slot(key, size, rasterize) else {
-            return false;
-        };
+        let slot = self.mask_slot(key, size, rasterize)?;
         if slot.w == 0 || slot.h == 0 {
-            return false;
+            return None;
         }
         let scale = self.scale_factor;
-        let inst = TextInstance {
+        Some(TextInstance {
             pos: [(x * scale).round(), (y * scale).round()],
             glyph_pos: [slot.x as u32, slot.y as u32],
             glyph_size: [slot.w as u32, slot.h as u32],
@@ -447,7 +456,12 @@ impl Text {
             atlas: 0,
             page: slot.page,
             _pad: [0; 2],
-        };
+        })
+    }
+
+    /// Queue `inst` in the current pass: the overlay while one is open,
+    /// else the late UI-text pass or the main one.
+    fn push_instance(&mut self, inst: TextInstance, late: bool) {
         if self.overlay_mode {
             self.overlay_instances.push(inst);
         } else if late {
@@ -455,7 +469,6 @@ impl Text {
         } else {
             self.instances.push(inst);
         }
-        true
     }
 
     fn shape_for(&mut self, text: &str, opts: &DrawOpts) -> Option<ShapedRun> {
@@ -1011,9 +1024,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             let raster = mask.raster();
             return state.atlas_grayscale.insert(key, raster).or_else(|| {
                 if state.atlas_grayscale.grow() {
@@ -1030,9 +1041,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             let raster = mask.raster();
             return state.atlas_grayscale.insert(key, raster).or_else(|| {
                 if state
@@ -1052,9 +1061,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             return state.atlas_grayscale.insert(key, mask.raster());
         }
 
@@ -1064,9 +1071,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             return state.atlas_grayscale.insert(key, mask.raster());
         }
 

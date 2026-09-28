@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use crate::renderer::chrome::Layer;
 use rio_backend::sugarloaf::text::DrawOpts;
 use rio_backend::sugarloaf::Sugarloaf;
 use std::time::Instant;
@@ -241,15 +242,13 @@ impl SearchOverlay {
         let (ox, oy, ow, oh) = self.overlay_rect(window_width, scale_factor);
 
         // Background
-        crate::renderer::chrome::paint_surface_stroke(
+        crate::renderer::chrome::paint_surface(
             sugarloaf,
             &terminus_ui::Rect::new(ox, oy, ow, oh),
             BG_COLOR,
             None,
             OVERLAY_CORNER_RADIUS,
-            1.0,
-            DEPTH_BG,
-            ORDER,
+            Layer::new(DEPTH_BG, ORDER),
             false,
         );
 
@@ -259,15 +258,13 @@ impl SearchOverlay {
         let input_y = oy + 6.0;
         let input_height = oh - 12.0;
 
-        crate::renderer::chrome::paint_surface_stroke(
+        crate::renderer::chrome::paint_surface(
             sugarloaf,
             &terminus_ui::Rect::new(input_x, input_y, input_width, input_height),
             INPUT_BG_COLOR,
             None,
             4.0,
-            1.0,
-            DEPTH_ELEMENT,
-            ORDER,
+            Layer::new(DEPTH_ELEMENT, ORDER),
             false,
         );
 
@@ -363,15 +360,13 @@ impl SearchOverlay {
             let is_hovered = self.hovered_button == Some(actions[i]);
 
             if is_hovered {
-                crate::renderer::chrome::paint_surface_stroke(
+                crate::renderer::chrome::paint_surface(
                     sugarloaf,
                     &terminus_ui::Rect::new(*bx, *by, *bw, *bh),
                     BUTTON_HOVER_BG,
                     None,
                     BUTTON_CORNER_RADIUS,
-                    1.0,
-                    DEPTH_ELEMENT,
-                    ORDER,
+                    Layer::new(DEPTH_ELEMENT, ORDER),
                     false,
                 );
             }
