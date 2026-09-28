@@ -6,7 +6,6 @@ use crate::hosts;
 use rio_backend::config::layout::Margin;
 use rio_backend::event::ClickState;
 use rio_window::window::CursorIcon;
-use terminus_ui::sidebar::Badge;
 
 impl Screen<'_> {
     /// Window size in logical pixels, the space `terminus_ui` lays out in.
@@ -145,12 +144,10 @@ impl Screen<'_> {
                 self.chrome.panel.notice = Some(notice);
                 self.chrome.panel.error = None;
                 let connect = std::mem::take(&mut self.pending_host_connect);
-                if let Some(endpoint) = self.pending_host_select.take() {
-                    if let Some(index) = self.chrome.panel.rows.iter().position(|row| {
-                        row.host().is_some_and(|item| {
-                            item.endpoint == endpoint && item.badge == Badge::Ssh
-                        })
-                    }) {
+                if let Some((name, endpoint)) = self.pending_host_select.take() {
+                    if let Some(index) =
+                        self.chrome.panel.find_saved_host(&name, &endpoint)
+                    {
                         self.chrome.panel.selected = Some(index);
                         if connect {
                             // Opened on the next frame, where the clipboard

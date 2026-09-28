@@ -470,7 +470,10 @@ impl Screen<'_> {
         match result {
             Ok(()) => {
                 // Stay open until the worker reports Stored or Failed.
-                self.pending_host_select = draft.normalize().ok().map(|d| d.endpoint());
+                self.pending_host_select = draft
+                    .normalize()
+                    .ok()
+                    .map(|d| (d.name.clone(), d.endpoint()));
                 self.pending_host_connect = editing_id.is_none();
                 self.chrome.panel.error = None;
                 self.chrome.form.set_error(if editing_id.is_some() {
