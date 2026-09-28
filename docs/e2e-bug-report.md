@@ -48,6 +48,26 @@ Found and fixed while fixing the above:
 * Reordering hosts or groups and deleting a snippet did not bump
   `updated_at`, so those changes would not have synced.
 
+## Usability pass
+
+A second pass walked first launch, adding hosts, connecting, keys, the
+palette and SFTP in the running app, and removed the friction it found. Each
+change has a test that failed first and was re-checked in the GUI.
+
+| Area | Before | After | Commit |
+| --- | --- | --- | --- |
+| First launch | Rio's "press enter" screen with a raw config path. | Writes the default config and opens the app. | `2ef945c` |
+| Add host | `user@host:port` had to be split by hand; with no saved key the form started on a key picker that could not be used; "Connect" only saved. | The address field splits `user@host:port`, `ssh -p N user@host` and `ssh://…`; no saved key means password auth; the name is marked optional; "Connect" opens a session on the new host. | `29e2f60`, `778d311` |
+| Add host | Two hosts with the same (default) name: the first one was selected. | The saved host is found by name and endpoint. | `29e2f60`, `778d311` |
+| Errors | "Host unreachable: Connection refused (os error 111)", DNS errors cut mid-sentence. | "Nothing answers on that port. Is SSH running?", "Can't find that host…", and so on. | `d9f78a2` |
+| Rail | Four unlabelled icons; the sync icon was always green. | Hover labels; sync is green only when connected ("Cloud Sync: not set up" otherwise). | `e22bb9a`, `7d8dbaf` |
+| Host list | A blank panel with no hosts or no filter match; Esc left the filter applied. | "No saved hosts yet" / "No matches" with what to do; Esc clears the filter first. | `0d09512` |
+| Palette | macOS shortcuts (Cmd+T…) shown on Linux and Windows. | Labels read from the live key bindings (Ctrl+Shift+T…), remaps included. | `755e486` |
+| Keys | A generated key's public half was nowhere to be found; import needed pasted PEM. | "Copy public key" on each key; import takes a path such as `~/.ssh/id_ed25519`. | `b213951`, `778d311` |
+| Host menu | No way to connect from it. | New session first; Copy SSH command added. | `c641b52` |
+| Rename | Typing appended to the old name. | The old name starts selected. | `15f9726` |
+| SFTP | An unreachable host left an empty pane saying "Ready". | That pane says it could not connect, why, and how to retry. | `fd8fcee` |
+
 ## Known limits
 
 * Secret sync (`sync_secrets`) is off by default and has no toggle in
