@@ -77,6 +77,9 @@ pub struct Context<T: EventListener> {
     pub host_id: Option<String>,
     /// OS / distro hint for the tab strip glyph (`nixos`, `ubuntu`, …).
     pub os_id: Option<String>,
+    /// Human label of the host (`user@host:port`) for the title bar; the
+    /// `host_id` itself is an opaque UUID for stored hosts.
+    pub host_label: Option<String>,
     /// Home "This computer" tab — cannot be closed.
     pub pinned: bool,
     _io_thread: Option<JoinHandle<(Machine<teletypewriter::Pty, T>, performer::State)>>,
@@ -195,6 +198,7 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         title: ContextTitle::default(),
         host_id: None,
         os_id: None,
+        host_label: None,
         pinned: false,
         _io_thread: None,
     }
@@ -372,6 +376,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             title: ContextTitle::default(),
             host_id: None,
             os_id: None,
+            host_label: None,
             pinned: false,
             _io_thread: io_thread,
         })
@@ -811,6 +816,14 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     pub fn set_tab_os_id(&mut self, index: usize, os_id: Option<String>) {
         if let Some(grid) = self.contexts.get_mut(index) {
             grid.current_mut().os_id = os_id;
+        }
+    }
+
+    /// Title-bar label of the host the tab at `index` belongs to.
+    #[inline]
+    pub fn set_tab_host_label(&mut self, index: usize, label: Option<String>) {
+        if let Some(grid) = self.contexts.get_mut(index) {
+            grid.current_mut().host_label = label;
         }
     }
 

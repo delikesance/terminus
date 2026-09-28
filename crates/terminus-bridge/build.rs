@@ -1,7 +1,6 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -40,18 +39,14 @@ fn main() {
         .unwrap_or_else(|| musl_candidates[0].clone());
 
     if !musl_bin.is_file() {
-        // Best-effort auto-build (works with rustup; may fail inside pure nix without musl target).
-        let _ = Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "terminus-walk",
-                "--release",
-                "--target",
-                triple,
-            ])
-            .current_dir(&workspace)
-            .status();
+        // Do not spawn nested `cargo` here. The parent build holds the
+        // package lock; a child `cargo` waits on it forever (deadlock),
+        // including inside `nix build` / `buildRustPackage`.
+        // Pre-build when you need a real embed:
+        //   cargo build -p terminus-walk --release --target <triple>
+        println!(
+            "cargo:warning=terminus-walk musl binary not found; will embed empty placeholder (build with --target {triple} first to embed)"
+        );
     }
 
     let musl_bin = musl_candidates
