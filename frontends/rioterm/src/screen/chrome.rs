@@ -124,13 +124,12 @@ impl Screen<'_> {
                 .host_store
                 .identities()
                 .iter()
-                .map(|(id, name, fingerprint, created)| {
-                    terminus_ui::settings::SshKeyItem {
-                        id: id.clone(),
-                        name: name.clone(),
-                        fingerprint: fingerprint.clone(),
-                        created: created.clone(),
-                    }
+                .map(|key| terminus_ui::settings::SshKeyItem {
+                    id: key.id.clone(),
+                    name: key.name.clone(),
+                    fingerprint: key.fingerprint.clone(),
+                    created: key.created.clone(),
+                    public_key: key.public_key.clone(),
                 })
                 .collect();
             self.chrome.settings.set_keys(key_items.clone());
