@@ -75,7 +75,11 @@ pub struct Screen<'screen> {
     /// Host label to highlight once its insert comes back from the
     /// worker. `create` hands out no id, so the row is matched by name
     /// on the next refresh instead of guessing an index.
+    /// Endpoint of the host the add/edit dialog just saved.
     pending_host_select: Option<String>,
+    /// The add-host dialog's "Connect": open a session once the new host
+    /// is stored (editing only saves).
+    pending_host_connect: bool,
     /// After a vault-unlock prompt succeeds, retry this action once.
     pending_vault_continue: Option<terminus_ui::PendingVaultAction>,
     /// When the sidebar's connecting indicator started. Drives the orbit
@@ -412,6 +416,7 @@ impl Screen<'_> {
                 host_wake,
             ),
             pending_host_select: None,
+            pending_host_connect: false,
             pending_vault_continue: None,
             connecting_started: None,
             connecting_step_at: None,

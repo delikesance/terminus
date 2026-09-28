@@ -144,13 +144,23 @@ impl Screen<'_> {
                 }
                 self.chrome.panel.notice = Some(notice);
                 self.chrome.panel.error = None;
-                if let Some(label) = self.pending_host_select.take() {
+                let connect = std::mem::take(&mut self.pending_host_connect);
+                if let Some(endpoint) = self.pending_host_select.take() {
                     if let Some(index) = self.chrome.panel.rows.iter().position(|row| {
                         row.host().is_some_and(|item| {
-                            item.name == label && item.badge == Badge::Ssh
+                            item.endpoint == endpoint && item.badge == Badge::Ssh
                         })
                     }) {
                         self.chrome.panel.selected = Some(index);
+                        if connect {
+                            // Opened on the next frame, where the clipboard
+                            // a session switch needs is at hand.
+                            let id = self.chrome.panel.rows[index]
+                                .host()
+                                .map(|item| item.id.clone());
+                            self.pending_vault_continue =
+                                id.map(terminus_ui::PendingVaultAction::OpenHost);
+                        }
                     }
                 }
                 if self.chrome.add_host_is_open() {

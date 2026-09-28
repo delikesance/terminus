@@ -23,6 +23,69 @@ pub fn auth_method_label(method: &str) -> &'static str {
     }
 }
 
+/// An address as people paste it: `user@host:port`, `ssh -p 2222
+/// user@host`, `ssh://user@host:port` or `[::1]:22`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AddressParts {
+    pub host: String,
+    pub user: Option<String>,
+    pub port: Option<String>,
+}
+
+pub fn split_address(input: &str) -> AddressParts {
+    let mut words = input.split_whitespace().peekable();
+    if words.peek() == Some(&"ssh") {
+        words.next();
+    }
+    let mut port = None;
+    let mut target = None;
+    while let Some(word) = words.next() {
+        if word == "-p" {
+            port = words.next().map(str::to_string);
+        } else if let Some(p) = word.strip_prefix("-p").filter(|p| !p.is_empty()) {
+            port = Some(p.to_string());
+        } else if target.is_none() && !word.starts_with('-') {
+            target = Some(word);
+        }
+    }
+    let mut rest = target.unwrap_or("").trim();
+    rest = rest.strip_prefix("ssh://").unwrap_or(rest);
+    rest = rest.trim_end_matches('/');
+    let mut user = None;
+    if let Some((u, h)) = rest.rsplit_once('@') {
+        if !u.is_empty() {
+            user = Some(u.to_string());
+        }
+        rest = h;
+    }
+    let host = if let Some(inner) = rest.strip_prefix('[') {
+        // [v6]:port
+        match inner.split_once(']') {
+            Some((h, tail)) => {
+                if let Some(p) = tail.strip_prefix(':').filter(|p| !p.is_empty()) {
+                    port = Some(p.to_string());
+                }
+                h
+            }
+            None => inner,
+        }
+    } else {
+        match rest.split_once(':') {
+            // Exactly one colon: host:port. More is a bare IPv6 address.
+            Some((h, p)) if !p.contains(':') && !p.is_empty() => {
+                port = Some(p.to_string());
+                h
+            }
+            _ => rest,
+        }
+    };
+    AddressParts {
+        host: host.to_string(),
+        user,
+        port,
+    }
+}
+
 /// The fields, in tab order when all are visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
@@ -45,7 +108,7 @@ pub const FIELDS: [Field; 4] = BASE_FIELDS;
 impl Field {
     pub const fn label(self) -> &'static str {
         match self {
-            Field::Name => "Host Name / Label",
+            Field::Name => "Name (optional)",
             Field::Hostname => "IP Address or Hostname",
             Field::Username => "Username",
             Field::Port => "Port",
@@ -292,7 +355,13 @@ impl AddHostForm {
     pub fn open(&mut self) {
         self.values = Default::default();
         self.carets = [0; 4];
-        self.auth_method = "key".to_string();
+        // Nothing to pick in "Select Saved SSH Key" yet: start where the
+        // user can actually connect.
+        self.auth_method = if self.identities.is_empty() {
+            "password".to_string()
+        } else {
+            "key".to_string()
+        };
         self.password.clear();
         self.password_caret = 0;
         self.password_visible = false;
@@ -559,11 +628,19 @@ impl AddHostForm {
     }
 
     pub fn values(&self) -> HostFormValues {
+        let address = split_address(&self.values[1]);
+        let typed = |i: usize, parsed: Option<String>| {
+            if self.values[i].trim().is_empty() {
+                parsed.unwrap_or_default()
+            } else {
+                self.values[i].clone()
+            }
+        };
         HostFormValues {
             name: self.values[0].clone(),
-            hostname: self.values[1].clone(),
-            username: self.values[2].clone(),
-            port: self.values[3].clone(),
+            hostname: address.host,
+            username: typed(2, address.user),
+            port: typed(3, address.port),
             auth_method: self.auth_method.clone(),
             identity_id: self.identity_id.clone(),
             password: self.password.clone(),
@@ -744,8 +821,24 @@ impl AddHostForm {
         }
     }
 
+    /// Leaving the address: show the user and port it carried in their
+    /// own (empty) fields, so what gets saved is what the form shows.
+    fn settle_address(&mut self) {
+        if self.focus != Field::Hostname {
+            return;
+        }
+        let parsed = self.values();
+        for (i, value) in [(1, parsed.hostname), (2, parsed.username), (3, parsed.port)] {
+            if self.values[i] != value {
+                self.carets[i] = value.chars().count();
+                self.values[i] = value;
+            }
+        }
+    }
+
     /// Move focus `delta` fields forward, wrapping across visible rows.
     fn focus_by(&mut self, delta: isize) {
+        self.settle_address();
         let fields = self.visible_fields();
         let len = fields.len() as isize;
         let i = fields.iter().position(|&f| f == self.focus).unwrap_or(0) as isize;
@@ -762,6 +855,9 @@ impl AddHostForm {
 
     /// Focus a specific field (mouse click into an input).
     pub fn focus_field(&mut self, field: Field) {
+        if field != Field::Hostname {
+            self.settle_address();
+        }
         if self.visible_fields().contains(&field) {
             self.focus = field;
             if field != Field::AuthMethod {
@@ -1094,9 +1190,12 @@ impl AddHostLayout {
 mod tests {
     use super::*;
 
+    /// Key auth, the mode most tests exercise (a fresh form with no saved
+    /// keys starts on password instead).
     fn open_form() -> AddHostForm {
         let mut form = AddHostForm::default();
         form.open();
+        form.select_auth_method(0);
         form
     }
 
@@ -1105,6 +1204,77 @@ mod tests {
             let buf = ch.to_string();
             form.handle_input(FormInput::Text, &buf);
         }
+    }
+
+    #[test]
+    fn split_address_understands_what_people_paste() {
+        let parts = |s: &str| split_address(s);
+        assert_eq!(
+            parts("tuser@127.0.0.1:2222"),
+            AddressParts {
+                host: "127.0.0.1".into(),
+                user: Some("tuser".into()),
+                port: Some("2222".into()),
+            }
+        );
+        assert_eq!(
+            parts("ssh -p 2200 bob@box.internal"),
+            AddressParts {
+                host: "box.internal".into(),
+                user: Some("bob".into()),
+                port: Some("2200".into()),
+            }
+        );
+        assert_eq!(parts("ssh bob@box -p2200").port.as_deref(), Some("2200"));
+        assert_eq!(parts(" box.internal ").host, "box.internal");
+        assert_eq!(parts("box.internal").user, None);
+        assert_eq!(parts("[::1]:2222").host, "::1");
+        assert_eq!(parts("[::1]:2222").port.as_deref(), Some("2222"));
+        let v6 = parts("fe80::1");
+        assert_eq!((v6.host.as_str(), v6.port), ("fe80::1", None));
+        assert_eq!(parts("ssh://alice@h:2022").user.as_deref(), Some("alice"));
+        assert_eq!(parts("ssh://alice@h:2022").host, "h");
+    }
+
+    #[test]
+    fn leaving_the_address_fills_empty_user_and_port() {
+        let mut form = open_form();
+        form.handle_input(FormInput::Next, "");
+        type_into(&mut form, "tuser@127.0.0.1:2222");
+        form.handle_input(FormInput::Next, "");
+        assert_eq!(form.value(Field::Hostname), "127.0.0.1");
+        assert_eq!(form.value(Field::Username), "tuser");
+        assert_eq!(form.value(Field::Port), "2222");
+        assert_eq!(form.focused_field(), Field::Username);
+    }
+
+    #[test]
+    fn typed_user_and_port_win_over_the_address() {
+        let mut form = open_form();
+        form.focus_field(Field::Username);
+        type_into(&mut form, "admin");
+        form.focus_field(Field::Hostname);
+        type_into(&mut form, "bob@box:2200");
+        let values = form.values();
+        assert_eq!(values.hostname, "box");
+        assert_eq!(values.username, "admin");
+        assert_eq!(values.port, "2200");
+    }
+
+    #[test]
+    fn without_saved_keys_the_form_starts_on_password() {
+        let mut form = AddHostForm::default();
+        form.open();
+        assert_eq!(form.auth_method(), "password");
+        let mut with_keys = AddHostForm::default();
+        with_keys.set_identities(vec![("id1".into(), "laptop".into())]);
+        with_keys.open();
+        assert_eq!(with_keys.auth_method(), "key");
+    }
+
+    #[test]
+    fn the_name_is_labelled_optional() {
+        assert!(Field::Name.label().contains("optional"));
     }
 
     #[test]
@@ -1269,10 +1439,15 @@ mod tests {
         form.set_error("boom");
         form.cycle_auth_method(1);
         form.open();
-        assert_eq!(form.values(), HostFormValues::default());
+        // No saved keys: the fresh form starts on password.
+        let fresh = HostFormValues {
+            auth_method: "password".to_string(),
+            ..HostFormValues::default()
+        };
+        assert_eq!(form.values(), fresh);
         assert_eq!(form.focused_field(), Field::Name);
         assert_eq!(form.error(), None);
-        assert_eq!(form.auth_method(), "key");
+        assert_eq!(form.auth_method(), "password");
     }
 
     #[test]
