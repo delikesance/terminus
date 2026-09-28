@@ -35,7 +35,7 @@ so the mouse and the painter can never disagree.
 | layout + state + hit-testing | `crates/terminus-ui/src/` | where every chrome box is, what it means, what a click at (x, y) hits |
 | painting | `frontends/rioterm/src/renderer/chrome.rs` | turns those boxes into sugarloaf primitives |
 | host storage | `frontends/rioterm/src/hosts.rs` | SQLite behind a worker thread, so the UI thread never awaits |
-| wiring | `frontends/rioterm/src/screen/mod.rs`, `application.rs`, `router/mod.rs` | input routing, and reserving the chrome's strip in the grid margin |
+| wiring | `frontends/rioterm/src/screen/` modules, `application.rs`, `router/mod.rs` | input routing, and reserving the chrome's strip in the grid margin |
 
 Rules that hold this together:
 
@@ -65,7 +65,7 @@ Interactive host tabs and SFTP intentionally use **different** stacks today
 
 | Path | Implementation | Entry |
 | --- | --- | --- |
-| Shell tab | Local PTY + system `ssh` | `frontends/rioterm/src/screen/mod.rs` → `ssh_shell` / `open_host_session` |
+| Shell tab | Local PTY + system `ssh` | `frontends/rioterm/src/screen/shell.rs` → `ssh_shell` / `sessions.rs` → `open_host_session` |
 | SFTP pane | russh + worker | `terminus-bridge::sftp_worker` ← `sftp_ui.rs` |
 | Future unified shell | `SshTransport` (`EventedPty`) | Ready in bridge, **not wired** — debt **1.4-debt** |
 
@@ -312,20 +312,51 @@ Four things to know:
 
 ## Releases
 
-Tag a version (`vX.Y.Z`) after `misc/prepare-release.sh X.Y.Z` and push the tag.
-[`.github/workflows/release.yml`](.github/workflows/release.yml) builds in parallel:
+Tag a version (`vX.Y.Z`) after `misc/prepare-release.sh X.Y.Z`, then publish:
+
+```bash
+nix run .#release                 # Linux + Windows → GitHub Release
+nix run .#release -- --build-only # artifacts only, no publish
+```
+
+[`scripts/release.sh`](scripts/release.sh) (via `nix develop .#release`) produces:
 
 | Target | Artifact |
 | --- | --- |
-| Windows | `rio-windows-x86_64.zip` |
-| macOS (aarch64) | `rio-macos-aarch64.tar.gz` |
-| Fedora / RHEL | `rioterm-*.rpm` (via [`misc/nfpm-rioterm.yaml`](misc/nfpm-rioterm.yaml)) |
-| NixOS | `rio-nixos-x86_64` + push to the `rioterm` Cachix cache |
+| Linux | `terminus-linux-x86_64.tar.gz` |
+| Debian / Ubuntu | `terminus_*.deb` (via [`misc/nfpm-terminus.yaml`](misc/nfpm-terminus.yaml)) |
+| Fedora / RHEL | `terminus-*.rpm` |
+| NixOS (binary) | `terminus.nix` — `pkgs.callPackage` of the Linux tarball |
+| Windows | `terminus-setup-x86_64.exe` (NSIS), `terminus-x86_64.msi` |
 
-Builds use `Swatinem/rust-cache` (and Cachix for the flake job). Set the
-repository secret `CACHIX_AUTH_TOKEN` so Nix store paths are published; without
-it the Nix job still builds and uploads the binary artifact but skips the cache
-push.
+### Nix / NixOS install
 
-`workflow_dispatch` runs the same matrix and uploads run artifacts without
-creating a GitHub Release (useful to warm caches).
+**From this repo (source build):**
+
+```bash
+nix run .#terminus          # or: nix run .
+nix build .#terminus
+```
+
+As a flake input / overlay:
+
+```nix
+{
+  inputs.terminus.url = "github:delikesance/terminus";
+  # …
+  nixpkgs.overlays = [ inputs.terminus.overlays.default ];
+  environment.systemPackages = [ pkgs.terminus ];
+}
+```
+
+**From a GitHub Release (prebuilt Linux x86_64):** download `terminus.nix` from the release assets and:
+
+```nix
+environment.systemPackages = [
+  (pkgs.callPackage ./terminus.nix { })
+];
+```
+
+**FlakeHub:** tags matching `v*.*.*` are published by [`.github/workflows/flakehub.yml`](.github/workflows/flakehub.yml). After the first successful publish, consume via FlakeHub’s URL for this repo.
+
+**nixpkgs (planned):** upstream packaging will follow the in-repo [`package.nix`](package.nix) source build (not the release binary `terminus.nix`). Until then, use the flake or the release file above.
