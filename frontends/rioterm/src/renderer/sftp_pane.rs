@@ -94,6 +94,20 @@ fn paint_conflict(
     theme: &ChromeTheme,
     prompt: &terminus_ui::SftpConflictPrompt,
 ) {
+    // Overlay layer: UI text always composites above quads, so without it
+    // the list rows' glyphs (and the right pane) drew over the dialog.
+    sugarloaf.begin_overlay();
+    paint_conflict_card(sugarloaf, state, layout, theme, prompt);
+    sugarloaf.end_overlay();
+}
+
+fn paint_conflict_card(
+    sugarloaf: &mut Sugarloaf,
+    state: &SftpPaneState,
+    layout: &SftpPaneLayout,
+    theme: &ChromeTheme,
+    prompt: &terminus_ui::SftpConflictPrompt,
+) {
     // Dim scrim over the pane.
     paint_flat(
         sugarloaf,
@@ -120,14 +134,28 @@ fn paint_conflict(
         14.0,
         theme.text,
     );
-    draw_text(
+    // The message names the file and can be long: wrap it inside the card.
+    let opts = DrawOpts {
+        font_size: 12.0,
+        ..DrawOpts::default()
+    };
+    let lines = crate::renderer::chrome::wrap_lines(
         sugarloaf,
-        card.x + 16.0,
-        card.y + 40.0,
         &prompt.message(),
-        12.0,
-        theme.text_muted,
+        card.width - 32.0,
+        &opts,
+        2,
     );
+    for (i, line) in lines.iter().enumerate() {
+        draw_text(
+            sugarloaf,
+            card.x + 16.0,
+            card.y + 36.0 + i as f32 * 15.0,
+            line,
+            12.0,
+            theme.text_muted,
+        );
+    }
 
     let apply = layout.conflict_apply_all();
     let apply_hover = matches!(state.hover, Some(SftpHit::ConflictApplyAll));
