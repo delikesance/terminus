@@ -495,11 +495,12 @@ fn render_notice(
     let pad = 12.0;
     let max_w = (rect.width - 2.0 * pad).max(0.0);
     let text_opts = opts(HINT_SIZE, color, false);
-    let lines = if is_error {
-        wrap_lines(sugarloaf, message, max_w, &text_opts, 2)
+    let max_lines = if is_error {
+        2
     } else {
-        vec![elide(sugarloaf, message, max_w, &text_opts)]
+        chrome.panel.notice_lines()
     };
+    let lines = wrap_lines(sugarloaf, message, max_w, &text_opts, max_lines);
     let line_gap = 4.0;
     let block_h = lines.len() as f32 * HINT_SIZE
         + (lines.len().saturating_sub(1) as f32) * line_gap;

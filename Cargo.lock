@@ -5573,6 +5573,7 @@ dependencies = [
  "terminus-bridge",
  "terminus-core",
  "terminus-ui",
+ "terminus-update",
  "tiny-skia 0.12.0",
  "tinyvec",
  "tokio",

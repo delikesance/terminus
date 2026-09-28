@@ -126,6 +126,12 @@ pub enum PaletteAction {
     ListHosts,
     /// Open the SFTP dual-pane: directly with one host, else via a picker.
     OpenSftp,
+    /// Look for a new Terminus release now.
+    CheckForUpdates,
+    /// Download and install the release found by the last check.
+    InstallUpdate,
+    /// Relaunch into an update that is already installed.
+    RestartToUpdate,
     Quit,
 }
 
@@ -265,6 +271,21 @@ const COMMANDS: &[Command] = &[
         title: "Open SFTP",
         shortcut: "",
         action: PaletteAction::OpenSftp,
+    },
+    Command {
+        title: "Check for Updates",
+        shortcut: "",
+        action: PaletteAction::CheckForUpdates,
+    },
+    Command {
+        title: "Install Update",
+        shortcut: "",
+        action: PaletteAction::InstallUpdate,
+    },
+    Command {
+        title: "Restart to Update",
+        shortcut: "",
+        action: PaletteAction::RestartToUpdate,
     },
     Command {
         title: "Quit",
@@ -1498,5 +1519,18 @@ mod tests {
                 || row.title().to_lowercase().contains("sftp")
         });
         assert!(found, "SFTP: Palette >sftp — not implemented yet");
+    }
+
+    #[test]
+    fn update_commands_are_listed() {
+        for (query, action) in [
+            ("check for updates", PaletteAction::CheckForUpdates),
+            ("install update", PaletteAction::InstallUpdate),
+            ("restart to update", PaletteAction::RestartToUpdate),
+        ] {
+            let mut palette = CommandPalette::new();
+            palette.set_query(query.to_string());
+            assert_eq!(palette.get_selected_action(), Some(action), "{query}");
+        }
     }
 }
