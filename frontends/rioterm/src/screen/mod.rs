@@ -108,7 +108,7 @@ fn ssh_shell(
         let (askpass, secret_file) = write_ssh_askpass(password)?;
         args.extend([
             "-o".into(),
-            "PreferredAuthentications=password".into(),
+            "PreferredAuthentications=password,keyboard-interactive".into(),
             "-o".into(),
             "PubkeyAuthentication=no".into(),
             "-o".into(),
@@ -128,11 +128,7 @@ fn ssh_shell(
         ]);
         // Best-effort cleanup of the secret file after askpass has had time
         // to run (OpenSSH may call it more than once during handshake).
-        let cleanup = secret_file.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(120));
-            let _ = std::fs::remove_file(cleanup);
-        });
+        remove_after_ttl(secret_file.clone());
     } else if host.auth_method.eq_ignore_ascii_case("gssapi") {
         push_o_options(&mut args, GSSAPI_SSH_OPTIONS);
     } else if let Some(pem) = identity_pem {
@@ -158,17 +154,9 @@ fn ssh_shell(
                 ),
                 ("DISPLAY".into(), "terminus:0".into()),
             ]);
-            let cleanup_secret = secret_file.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(120));
-                let _ = std::fs::remove_file(cleanup_secret);
-            });
+            remove_after_ttl(secret_file.clone());
         }
-        let cleanup_key = key_file.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(120));
-            let _ = std::fs::remove_file(cleanup_key);
-        });
+        remove_after_ttl(key_file.clone());
     }
 
     args.push(destination);
@@ -198,95 +186,177 @@ fn push_o_options(args: &mut Vec<String>, options: &[&str]) {
     }
 }
 
-/// Write a managed OpenSSH private key to a temp IdentityFile (mode 0600).
-fn write_ssh_identity_file(pem: &str) -> Result<std::path::PathBuf, String> {
-    use std::io::Write;
+/// How long an askpass secret / temp identity may live before a sweep
+/// removes it (OpenSSH reads them during the handshake only).
+const SSH_TEMP_SECRET_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 
-    let dir = std::env::temp_dir().join("terminus-ssh-identity");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create identity dir: {e}"))?;
-
-    let id = uuid::Uuid::new_v4();
-    let path = dir.join(format!("{id}.pem"));
-    {
-        let mut f = std::fs::File::create(&path)
-            .map_err(|e| format!("Could not write identity file: {e}"))?;
-        f.write_all(pem.as_bytes())
-            .map_err(|e| format!("Could not write identity file: {e}"))?;
-        if !pem.ends_with('\n') {
-            f.write_all(b"\n")
-                .map_err(|e| format!("Could not write identity file: {e}"))?;
-        }
-    }
+/// Per-user private directory for SSH temp secrets (`0700`, owned by us).
+///
+/// Lives under `$XDG_RUNTIME_DIR` when set (already per-user), else the temp
+/// dir with the uid in the name. An existing directory is only reused when it
+/// is a real directory we own (never a symlink) and gets its mode tightened,
+/// so another local user cannot pre-create it, read the secrets or swap the
+/// askpass helper.
+fn private_temp_dir(name: &str) -> Result<std::path::PathBuf, String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&path)
-            .map_err(|e| format!("Could not chmod identity file: {e}"))?
-            .permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(&path, perms)
-            .map_err(|e| format!("Could not chmod identity file: {e}"))?;
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        let uid = unsafe { libc::getuid() };
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join(format!("terminus-{name}-{uid}"));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(format!("Could not create {}: {err}", dir.display())),
+        }
+        let meta = std::fs::symlink_metadata(&dir)
+            .map_err(|e| format!("Could not inspect {}: {e}", dir.display()))?;
+        if !meta.file_type().is_dir() || meta.uid() != uid {
+            return Err(format!(
+                "Refusing to use {}: not a directory owned by this user",
+                dir.display()
+            ));
+        }
+        if meta.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("Could not secure {}: {e}", dir.display()))?;
+        }
+        Ok(dir)
     }
+    #[cfg(not(unix))]
+    {
+        // %TEMP% is already per-user on Windows.
+        let dir = std::env::temp_dir().join(format!("terminus-{name}"));
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+        Ok(dir)
+    }
+}
+
+/// Create `path` exclusively with owner-only permissions and write `data`.
+fn write_private_file(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    file.write_all(data)
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))
+}
+
+/// Remove secrets older than [`SSH_TEMP_SECRET_TTL`] from `dir` (leftovers of
+/// a session whose cleanup thread died with the app).
+fn sweep_stale_secrets(dir: &std::path::Path, extensions: &[&str]) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let wanted = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| extensions.contains(&e));
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > SSH_TEMP_SECRET_TTL);
+        if wanted && stale {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Remove world-readable secrets left in the shared temp dirs used by older
+/// builds (`/tmp/terminus-ssh-askpass`, `/tmp/terminus-ssh-identity`).
+fn sweep_legacy_secret_dirs() {
+    for (name, ext) in [
+        ("terminus-ssh-askpass", "secret"),
+        ("terminus-ssh-identity", "pem"),
+    ] {
+        let dir = std::env::temp_dir().join(name);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
+/// Delete `path` after [`SSH_TEMP_SECRET_TTL`] on a background thread.
+fn remove_after_ttl(path: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        std::thread::sleep(SSH_TEMP_SECRET_TTL);
+        let _ = std::fs::remove_file(path);
+    });
+}
+
+/// Write a managed OpenSSH private key to a temp IdentityFile (mode 0600,
+/// in a per-user 0700 directory).
+fn write_ssh_identity_file(pem: &str) -> Result<std::path::PathBuf, String> {
+    sweep_legacy_secret_dirs();
+    let dir = private_temp_dir("ssh-identity")?;
+    sweep_stale_secrets(&dir, &["pem"]);
+    let path = dir.join(format!("{}.pem", uuid::Uuid::new_v4()));
+    let mut body = pem.as_bytes().to_vec();
+    if !pem.ends_with('\n') {
+        body.push(b'\n');
+    }
+    write_private_file(&path, &body)?;
     Ok(path)
 }
 
-/// Write a one-shot askpass helper + secret file under the temp directory.
+/// Write a one-shot askpass helper + secret file into a per-user private
+/// directory (secret `0600`, directory `0700`).
 fn write_ssh_askpass(
     password: &str,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    use std::io::Write;
+    sweep_legacy_secret_dirs();
+    let dir = private_temp_dir("ssh-askpass")?;
+    sweep_stale_secrets(&dir, &["secret"]);
 
-    let dir = std::env::temp_dir().join("terminus-ssh-askpass");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not create askpass dir: {e}"))?;
-
-    let id = uuid::Uuid::new_v4();
-    let secret_file = dir.join(format!("{id}.secret"));
-    {
-        let mut f = std::fs::File::create(&secret_file)
-            .map_err(|e| format!("Could not write askpass secret: {e}"))?;
-        f.write_all(password.as_bytes())
-            .map_err(|e| format!("Could not write askpass secret: {e}"))?;
-        f.write_all(b"\n")
-            .map_err(|e| format!("Could not write askpass secret: {e}"))?;
-    }
+    let secret_file = dir.join(format!("{}.secret", uuid::Uuid::new_v4()));
+    let mut body = password.as_bytes().to_vec();
+    body.push(b'\n');
+    write_private_file(&secret_file, &body)?;
 
     #[cfg(windows)]
-    let askpass = {
-        let path = dir.join("askpass.cmd");
-        if !path.exists() {
-            std::fs::write(
-                &path,
-                "@echo off\r\nif not defined TERMINUS_SSH_ASKPASS_FILE exit /b 1\r\ntype \"%TERMINUS_SSH_ASKPASS_FILE%\"\r\n",
-            )
-            .map_err(|e| format!("Could not write askpass helper: {e}"))?;
-        }
-        path
-    };
-
+    let (name, script) = (
+        "askpass.cmd",
+        "@echo off\r\nif not defined TERMINUS_SSH_ASKPASS_FILE exit /b 1\r\ntype \"%TERMINUS_SSH_ASKPASS_FILE%\"\r\n",
+    );
     #[cfg(not(windows))]
-    let askpass = {
-        let path = dir.join("askpass.sh");
-        if !path.exists() {
-            std::fs::write(
-                &path,
-                "#!/bin/sh\n# Terminus SSH_ASKPASS helper — prints the sealed password file.\nif [ -z \"$TERMINUS_SSH_ASKPASS_FILE\" ] || [ ! -f \"$TERMINUS_SSH_ASKPASS_FILE\" ]; then\n  exit 1\nfi\ncat \"$TERMINUS_SSH_ASKPASS_FILE\"\n",
-            )
-            .map_err(|e| format!("Could not write askpass helper: {e}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&path)
-                    .map_err(|e| format!("Could not chmod askpass helper: {e}"))?
-                    .permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&path, perms)
-                    .map_err(|e| format!("Could not chmod askpass helper: {e}"))?;
-            }
-        }
-        path
-    };
+    let (name, script) = (
+        "askpass.sh",
+        "#!/bin/sh\n# Terminus SSH_ASKPASS helper — prints the sealed password file.\nif [ -z \"$TERMINUS_SSH_ASKPASS_FILE\" ] || [ ! -f \"$TERMINUS_SSH_ASKPASS_FILE\" ]; then\n  exit 1\nfi\ncat \"$TERMINUS_SSH_ASKPASS_FILE\"\n",
+    );
+    // Always rewrite the helper: the directory is private, and the content
+    // must be ours even if an older build left a different one behind.
+    let askpass = dir.join(name);
+    let tmp = dir.join(format!("{name}.{}", uuid::Uuid::new_v4()));
+    write_private_file(&tmp, script.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Could not chmod askpass helper: {e}"))?;
+    }
+    std::fs::rename(&tmp, &askpass)
+        .map_err(|e| format!("Could not install askpass helper: {e}"))?;
 
     Ok((askpass, secret_file))
 }
@@ -7441,14 +7511,90 @@ mod tests {
         let host = host_row("password");
         let (shell, env) =
             ssh_shell(&host, Some("secret"), None, None).expect("password shell");
+        // keyboard-interactive too: PAM / 2FA servers (and macOS) disable
+        // the `password` method and prompt through it instead.
         assert!(shell
             .args
             .iter()
-            .any(|a| a == "PreferredAuthentications=password"));
+            .any(|a| a == "PreferredAuthentications=password,keyboard-interactive"));
         assert!(shell.args.iter().any(|a| a == "PubkeyAuthentication=no"));
         assert!(!shell.args.windows(2).any(|w| w[0] == "-i"));
         let env = env.expect("askpass env");
         assert!(env.iter().any(|(k, _)| k == "SSH_ASKPASS"));
+        let secret = env
+            .iter()
+            .find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            .map(|(_, v)| std::path::PathBuf::from(v))
+            .expect("secret file");
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &std::path::Path| {
+                std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+            };
+            assert_eq!(mode(&secret), 0o600, "askpass secret readable by others");
+            assert_eq!(
+                mode(secret.parent().unwrap()),
+                0o700,
+                "askpass dir not private"
+            );
+            let helper = env
+                .iter()
+                .find(|(k, _)| k == "SSH_ASKPASS")
+                .map(|(_, v)| std::path::PathBuf::from(v))
+                .unwrap();
+            assert_eq!(
+                helper.parent(),
+                secret.parent(),
+                "helper outside private dir"
+            );
+            assert_eq!(
+                mode(&helper) & 0o022,
+                0,
+                "askpass helper writable by others"
+            );
+        }
+        let _ = std::fs::remove_file(secret);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_temp_dir_tightens_a_loose_existing_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let name = format!("test-loose-{}", uuid::Uuid::new_v4());
+        let dir = private_temp_dir(&name).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let again = private_temp_dir(&name).unwrap();
+        assert_eq!(again, dir);
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn key_ssh_shell_identity_file_is_private() {
+        let host = host_row("key");
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        let (shell, _) = ssh_shell(&host, None, Some(pem), None).expect("key shell");
+        let path = shell
+            .args
+            .windows(2)
+            .find(|w| w[0] == "-i")
+            .map(|w| std::path::PathBuf::from(&w[1]))
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &std::path::Path| {
+                std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+            };
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(mode(path.parent().unwrap()), 0o700);
+        }
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
