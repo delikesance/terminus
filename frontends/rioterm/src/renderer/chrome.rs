@@ -5279,7 +5279,7 @@ fn elide(
 
 /// Word-wrap `text` into at most `max_lines` lines that fit `max_width`.
 /// The final line is elided when the message still overflows.
-fn wrap_lines(
+pub(crate) fn wrap_lines(
     sugarloaf: &mut Sugarloaf,
     text: &str,
     max_width: f32,

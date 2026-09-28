@@ -590,6 +590,8 @@ fn interrupted_upload_never_truncates_the_existing_file() {
         b"ORIGINAL",
         "an interrupted upload replaced the file"
     );
+    // Dropping the upload future skips its own cleanup of the temp sibling.
+    let _ = rt.block_on(c.exec("rm -f ~/.atomic.bin.terminus-part-*"));
 }
 
 #[test]

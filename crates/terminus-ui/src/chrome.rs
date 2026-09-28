@@ -471,8 +471,9 @@ impl Chrome {
                             .map_or(0, |h| h.session_count);
                         if sessions > 0 {
                             let plural = if sessions == 1 { "" } else { "s" };
-                            menu.items[index].label = format!(
-                                "Click again: delete, close {sessions} session{plural}"
+                            menu.set_label(
+                                index,
+                                format!("Click again: delete, close {sessions} session{plural}"),
                             );
                         }
                     }
