@@ -222,7 +222,7 @@ else
     # `gh release create` cannot reuse an unpushed local tag, so push the
     # tag first when it exists (the prepare-release.sh ceremony tags before
     # releasing). When there is no tag yet, let gh create it at HEAD.
-    if git tag -l "$TAG" >/dev/null; then
+    if [[ -n "$(git tag -l "$TAG")" ]]; then
         echo "Pushing tag $TAG to $REPO..."
         git push "${GITHUB_REMOTE_URL}" "$TAG" || {
             echo "release.sh: failed to push tag $TAG" >&2
