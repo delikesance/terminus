@@ -143,6 +143,9 @@ impl UnlockedVault {
             .decode(&envelope.ciphertext)
             .map_err(|e| Error::VaultError(format!("bad ciphertext: {e}")))?;
 
+        if nonce_bytes.len() != NONCE_LEN {
+            return Err(Error::VaultDecryptFailed);
+        }
         let nonce = XNonce::from_slice(&nonce_bytes);
         let cipher = XChaCha20Poly1305::new(self.dek[..].into());
         cipher
@@ -167,20 +170,17 @@ pub const CREDENTIAL_KIND_HOST_PASSWORD: &str = "host_password";
 pub const OWNER_KIND_HOST: &str = "host";
 
 /// Deterministic credential id for `(owner, kind)`.
+///
+/// UUIDv5 over the triple: the id is persisted and synced between devices, so
+/// it must not depend on `DefaultHasher`, whose algorithm is unspecified and
+/// may change between Rust releases.
 pub fn credential_id(owner_kind: &str, owner_id: &uuid::Uuid, kind: &str) -> uuid::Uuid {
-    // Stable UUIDv5-ish from namespaced bytes without pulling uuid v5 feature quirks:
-    // hash the triple and take the first 16 bytes as a UUID.
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    owner_kind.hash(&mut hasher);
-    owner_id.hash(&mut hasher);
-    kind.hash(&mut hasher);
-    let n = hasher.finish();
-    let mut bytes = [0u8; 16];
-    bytes[..8].copy_from_slice(&n.to_le_bytes());
-    bytes[8..].copy_from_slice(&n.to_be_bytes());
-    uuid::Uuid::from_bytes(bytes)
+    const NAMESPACE: uuid::Uuid =
+        uuid::Uuid::from_u128(0x7465_726d_696e_7573_2d63_7265_6465_6e74);
+    uuid::Uuid::new_v5(
+        &NAMESPACE,
+        format!("{owner_kind}\n{owner_id}\n{kind}").as_bytes(),
+    )
 }
 
 /// Seal a host password into a [`crate::models::Credential`] row.
@@ -286,6 +286,18 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, Error::VaultDecryptFailed));
+    }
+
+    #[test]
+    fn credential_id_is_a_fixed_uuid_v5() {
+        let id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let cid = credential_id(OWNER_KIND_HOST, &id, CREDENTIAL_KIND_HOST_PASSWORD);
+        assert_eq!(cid.get_version_num(), 5);
+        assert_ne!(
+            cid,
+            credential_id(OWNER_KIND_HOST, &id, "other_kind"),
+            "kind must be part of the id"
+        );
     }
 
     #[test]
