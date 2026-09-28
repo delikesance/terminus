@@ -924,7 +924,8 @@ impl HostPanel {
             is_group,
             name,
             caret,
-            sel_anchor: None,
+            // Whole name selected: typing replaces it, arrows keep it.
+            sel_anchor: (caret > 0).then_some(0),
             focused: true,
         });
     }
@@ -2486,6 +2487,16 @@ mod tests {
     }
 
     #[test]
+    fn renaming_starts_with_the_old_name_selected() {
+        let mut panel = panel(1);
+        panel.begin_rename("id-0".into(), false, "old-name");
+        let draft = panel.rename.as_mut().unwrap();
+        assert_eq!(draft.selection_range(), Some((0, 8)));
+        draft.insert("web", 64);
+        assert_eq!(draft.name, "web", "typing replaces the old name");
+    }
+
+    #[test]
     fn count_label_is_pluralised() {
         let mut panel = panel(0);
         assert_eq!(panel.count_label(), "empty");
@@ -2828,6 +2839,9 @@ mod tests {
         panel.begin_rename("h1".into(), false, "web");
         let draft = panel.rename.as_mut().unwrap();
         assert_eq!(draft.caret, 3);
+        // End drops the initial select-all, caret stays at the end.
+        draft.move_end(RenameMoveKind::Collapse);
+        assert_eq!(draft.selection_range(), None);
         assert!(draft.move_left(RenameMoveKind::Collapse, false));
         assert_eq!(draft.caret, 2);
         assert!(draft.insert(" ", 64));
