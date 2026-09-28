@@ -1278,6 +1278,54 @@ fn render_settings_modal(
                         );
                     }
                 }
+                if let Some(pass_card) = chrome
+                    .settings
+                    .key_draft_passphrase_rect(window_width, window_height)
+                {
+                    let focused = chrome.settings.key_draft_passphrase_focused;
+                    let value = &chrome.settings.key_passphrase.value;
+                    let paint = if value.is_empty() {
+                        terminus_ui::FieldPaint::from_draft(
+                            &chrome.settings.key_passphrase,
+                            "Key passphrase (only for an encrypted key)",
+                            focused,
+                        )
+                    } else {
+                        terminus_ui::FieldPaint {
+                            text: "•".repeat(value.chars().count()),
+                            placeholder: false,
+                            show_caret: focused,
+                        }
+                    };
+                    paint_settings_field_card(
+                        sugarloaf,
+                        theme,
+                        pass_card,
+                        "Passphrase",
+                        &paint.text,
+                        focused,
+                        paint.placeholder,
+                        0.0,
+                        true,
+                    );
+                    if paint.show_caret {
+                        let masked_prefix = "•".repeat(
+                            chrome
+                                .settings
+                                .key_passphrase
+                                .prefix_display()
+                                .chars()
+                                .count(),
+                        );
+                        paint_field_caret_prefix(
+                            sugarloaf,
+                            theme,
+                            pass_card,
+                            &masked_prefix,
+                            0.0,
+                        );
+                    }
+                }
                 if let Some(gen) = chrome
                     .settings
                     .key_draft_generate_rect(window_width, window_height)
