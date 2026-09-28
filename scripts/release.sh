@@ -3,7 +3,8 @@
 # Terminus release build & publish (Linux x86_64 + Windows x86_64).
 #
 # Intended to run inside `nix develop .#release` (which provides cargo,
-# cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, nfpm, nix and tar).
+# cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, nfpm, minisign, nix
+# and tar). Updates are signed with minisign: see scripts/sign-release.sh.
 # The convenient entry point is the flake app:
 #
 #   nix run .#release                 # build Linux + Windows and publish
@@ -21,7 +22,7 @@ cd "$ROOT"
 # release never lands on the upstream fork by accident.
 REPO="${GH_REPO:-}"
 if [[ -z "$REPO" ]]; then
-    REPO="$(git remote get-url github 2>/dev/null | sed -E -e 's#\.git$##' -e 's#^[^:]+[:/]([^/]+/[^/]+)$#\1#')"
+    REPO="$(git remote get-url github 2>/dev/null | sed -E -e 's#\.git$##' -e 's#^[^:]+[:/]([^/]+/[^/]+)$#\1#' || true)"
 fi
 [[ -z "$REPO" ]] && REPO="delikesance/terminus"
 GITHUB_REMOTE_URL="${GITHUB_REMOTE_URL:-$(git remote get-url github 2>/dev/null || git remote get-url origin 2>/dev/null)}"
@@ -67,6 +68,14 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# The in-app updater compares the release tag with the version compiled into
+# the binary; a mismatch would make every install re-download this release.
+if [[ "$TAG" != "v${VERSION}" ]]; then
+    echo "release.sh: tag $TAG does not match the Cargo version v${VERSION}" >&2
+    echo "  bump [workspace.package] version in Cargo.toml instead" >&2
+    exit 1
+fi
 
 # Fat LTO (Cargo.toml [profile.release]) can sit in the final link for an
 # hour on constrained machines. Releases do not need it here; these env
@@ -185,6 +194,10 @@ fi
 echo "=== Checksums ==="
 (cd "$DIST_DIR" && sha256sum "${UPLOAD[@]##*/}" > checksums.txt)
 UPLOAD+=("$DIST_DIR/checksums.txt")
+
+# Signature the in-app updater verifies before installing anything.
+TERMINUS_RELEASE_TAG="$TAG" bash "$ROOT/scripts/sign-release.sh" "$DIST_DIR"
+[[ -f "$DIST_DIR/checksums.txt.minisig" ]] && UPLOAD+=("$DIST_DIR/checksums.txt.minisig")
 
 if [[ "$BUILD_ONLY" == "1" ]]; then
     echo "Build complete (no publish). Artifacts:"
