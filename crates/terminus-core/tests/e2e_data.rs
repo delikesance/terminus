@@ -138,37 +138,63 @@ async fn store_file_is_private() {
     assert_eq!(mode & 0o077, 0, "terminus.db mode is {mode:o}");
 }
 
-/// Managed keys should be sealed at rest like host passwords are.
+/// Managed keys are sealed at rest like host passwords are.
 #[tokio::test]
-#[ignore = "BUG: managed private keys are stored as plaintext PEM"]
 async fn managed_private_key_not_stored_in_plaintext() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().to_path_buf()).await.unwrap();
+    let (_h, vault) = terminus_core::create_with_key("pw").unwrap();
     let ident = terminus_core::generate_ed25519_identity("k").unwrap();
-    store.upsert_identity(&ident).await.unwrap();
+    let pem = ident.private_key.clone().unwrap();
+    let sealed = terminus_core::seal_identity(&vault, &ident).unwrap();
+    store.upsert_identity(&sealed).await.unwrap();
+    drop(store);
     let raw = std::fs::read(dir.path().join("terminus.db")).unwrap();
     let needle = b"BEGIN OPENSSH PRIVATE KEY";
     assert!(
         !raw.windows(needle.len()).any(|w| w == needle),
         "private key PEM found in plaintext in terminus.db"
     );
+    let store = Store::open(dir.path().to_path_buf()).await.unwrap();
+    let back = store.get_identity(ident.id).await.unwrap().unwrap();
+    assert!(terminus_core::identity_needs_vault(&back));
+    let (opened, pass) =
+        terminus_core::open_identity_secrets(Some(&vault), &back).unwrap();
+    assert_eq!(opened.as_deref(), Some(pem.as_str()));
+    assert_eq!(pass, None);
+    assert!(terminus_core::open_identity_secrets(None, &back).is_err());
 }
 
-/// Settings → Import PEM passes no passphrase (hosts.rs `create_ssh_key`).
+/// A key saved before sealing existed still opens (and needs no vault).
 #[test]
-#[ignore = "BUG: Settings import cannot take a key passphrase"]
-fn import_encrypted_pem_without_passphrase_field() {
+fn legacy_plaintext_identity_still_opens() {
+    let ident = terminus_core::generate_ed25519_identity("old").unwrap();
+    assert!(!terminus_core::identity_needs_vault(&ident));
+    let (pem, _) = terminus_core::open_identity_secrets(None, &ident).unwrap();
+    assert_eq!(pem, ident.private_key);
+}
+
+/// Settings → Import PEM now carries the key passphrase.
+#[test]
+fn import_encrypted_pem_with_passphrase() {
     let Ok(path) = std::env::var("TERMINUS_E2E_ENC_KEY") else {
         eprintln!("skipped");
         return;
     };
     let pem = std::fs::read_to_string(path).unwrap();
-    let r = terminus_core::import_openssh_identity("enc", &pem, None);
+    let err = terminus_core::import_openssh_identity("enc", &pem, None).unwrap_err();
     assert!(
-        r.is_ok(),
-        "encrypted key cannot be imported from Settings: {:?}",
-        r.err()
+        err.to_string().contains("passphrase"),
+        "unhelpful error: {err}"
     );
+    let ident = terminus_core::import_openssh_identity("enc", &pem, Some("keypass"))
+        .expect("encrypted key imports with its passphrase");
+    assert_eq!(ident.passphrase.as_deref(), Some("keypass"));
+    let (_h, vault) = terminus_core::create_with_key("pw").unwrap();
+    let sealed = terminus_core::seal_identity(&vault, &ident).unwrap();
+    assert!(!sealed.passphrase.as_deref().unwrap().contains("keypass"));
+    let (_, pass) = terminus_core::open_identity_secrets(Some(&vault), &sealed).unwrap();
+    assert_eq!(pass.as_deref(), Some("keypass"));
 }
 
 /// A corrupted/foreign credential envelope must fail cleanly, not panic.

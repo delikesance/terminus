@@ -39,7 +39,8 @@ pub use ssh::{
 pub use store::Store;
 pub use sync::SyncEngine;
 pub use vault::{
-    create_with_key, encode_vault_header, open_host_password, parse_vault_header,
-    seal_host_password, SecretEnvelope, UnlockedVault, VaultHeader, VaultStatus,
+    create_with_key, encode_vault_header, identity_needs_vault, open_host_password,
+    open_identity_secrets, parse_vault_header, seal_host_password, seal_identity,
+    SecretEnvelope, UnlockedVault, VaultHeader, VaultStatus,
     CREDENTIAL_KIND_HOST_PASSWORD, OWNER_KIND_HOST, VAULT_HEADER_SETTING,
 };

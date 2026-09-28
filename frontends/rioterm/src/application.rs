@@ -1718,11 +1718,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             } else {
                                                 Some(pem)
                                             };
+                                            let passphrase = route
+                                                .window
+                                                .screen
+                                                .chrome
+                                                .settings
+                                                .key_draft_passphrase();
                                             route
                                                 .window
                                                 .screen
                                                 .host_store
-                                                .create_ssh_key_with_pem(&name, pem);
+                                                .import_ssh_key(&name, pem, passphrase);
                                         }
                                         route.request_overlay_redraw();
                                         return;
@@ -3157,6 +3163,23 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 }
                                 terminus_ui::PendingVaultAction::SubmitHostForm => {
                                     route.window.screen.submit_host_form();
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::OpenSftp {
+                                    host_id,
+                                    other_pane,
+                                } => {
+                                    let screen = &mut route.window.screen;
+                                    let opened = if other_pane {
+                                        screen.open_sftp_other_pane(&host_id)
+                                    } else {
+                                        screen.open_sftp_pane(&host_id)
+                                    };
+                                    screen.chrome.panel.error = opened.err();
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::SaveSshKey => {
+                                    route.window.screen.submit_key_draft();
                                     route.request_overlay_redraw();
                                 }
                             }

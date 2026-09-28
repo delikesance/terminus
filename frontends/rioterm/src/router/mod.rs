@@ -584,11 +584,8 @@ impl Route<'_> {
                                 self.window.screen.chrome.settings.close_key_draft();
                             }
                             Key::Named(NamedKey::Tab) => {
-                                if pem_focus {
-                                    self.window.screen.chrome.settings.focus_key_draft();
-                                } else {
-                                    self.window.screen.chrome.settings.focus_key_pem();
-                                }
+                                let _ = pem_focus;
+                                self.window.screen.chrome.settings.focus_next_key_field();
                             }
                             Key::Named(NamedKey::Backspace) => {
                                 if let Some(draft) =
@@ -654,10 +651,16 @@ impl Route<'_> {
                                         } else {
                                             Some(pem)
                                         };
+                                        let passphrase = self
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .settings
+                                            .key_draft_passphrase();
                                         self.window
                                             .screen
                                             .host_store
-                                            .create_ssh_key_with_pem(&name, pem);
+                                            .import_ssh_key(&name, pem, passphrase);
                                     }
                                     Err(_) => {}
                                 }
