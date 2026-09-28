@@ -315,10 +315,12 @@ fn is_rsa(algo: &russh::keys::Algorithm) -> bool {
 
 /// russh client config for `opts`, with host-key preference from known_hosts.
 fn client_config(opts: &SshConnectOptions) -> client::Config {
-    let mut config = client::Config::default();
-    config.keepalive_interval = opts.keepalive_interval;
-    config.inactivity_timeout = Some(DEFAULT_INACTIVITY_TIMEOUT);
-    config.channel_buffer_size = 256;
+    let mut config = client::Config {
+        keepalive_interval: opts.keepalive_interval,
+        inactivity_timeout: Some(DEFAULT_INACTIVITY_TIMEOUT),
+        channel_buffer_size: 256,
+        ..Default::default()
+    };
     let recorded = opts.known_hosts.lookup(&opts.hostname, opts.port);
     if !recorded.is_empty() {
         config.preferred.key =
