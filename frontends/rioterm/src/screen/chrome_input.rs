@@ -146,7 +146,7 @@ impl Screen<'_> {
             }
             match &key_event.logical_key {
                 Key::Named(NamedKey::Escape) => {
-                    self.chrome.panel.filter_focused = false;
+                    self.chrome.panel.escape_filter();
                     return Some(FormOutcome::Consumed);
                 }
                 Key::Named(NamedKey::Backspace) => {

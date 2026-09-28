@@ -68,6 +68,18 @@ pub const NEW_GROUP_FORM_HEIGHT: f32 = 40.0;
 pub const NEW_GROUP_BUTTON_WIDTH: f32 = 88.0;
 /// Alias kept for callers that shared the dual-action header width.
 pub const HOSTS_HEADER_ACTION_WIDTH: f32 = NEW_GROUP_BUTTON_WIDTH;
+/// Gap above the empty-list hint.
+pub const EMPTY_HINT_GAP: f32 = 6.0;
+/// Empty-list hint height: a title and up to two wrapped lines.
+pub const EMPTY_HINT_HEIGHT: f32 = 56.0;
+
+/// Guidance shown in place of a list with nothing in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptyHint {
+    pub title: &'static str,
+    pub body: String,
+}
+
 /// Sticky success notice height at the bottom of the panel.
 pub const NOTICE_HEIGHT: f32 = 40.0;
 /// Extra notice height per wrapped line beyond the first.
@@ -1612,6 +1624,51 @@ impl HostPanel {
         out
     }
 
+    /// What to say when the list shows no host of the user's: none saved
+    /// yet, or none matching the filter.
+    pub fn empty_hint(&self) -> Option<EmptyHint> {
+        let filter = self.filter.trim();
+        if !filter.is_empty() {
+            let any_host = self
+                .visible_row_indices()
+                .into_iter()
+                .any(|i| self.rows.get(i).is_some_and(|row| row.host().is_some()));
+            return (!any_host).then(|| EmptyHint {
+                title: "No matches",
+                body: format!(
+                    "Nothing matches \u{201c}{filter}\u{201d}. Press Esc to clear."
+                ),
+            });
+        }
+        (self.host_count() == 0).then(|| EmptyHint {
+            title: "No saved hosts yet",
+            body: "Click New Host above and paste user@host to connect.".to_string(),
+        })
+    }
+
+    /// Where [`Self::empty_hint`] goes: under the last visible row.
+    pub fn empty_hint_rect(&self, origin_y: f32, height: f32) -> Option<Rect> {
+        self.empty_hint()?;
+        let body = self.body_rect(origin_y, height);
+        Some(Rect::new(
+            body.x + PAD_X,
+            body.y + self.content_height() - self.scroll + EMPTY_HINT_GAP,
+            body.width - 2.0 * PAD_X,
+            EMPTY_HINT_HEIGHT,
+        ))
+    }
+
+    /// Esc in the filter: clear it first, leave the field on the next one,
+    /// so hosts are never left hidden behind a filter nobody sees.
+    pub fn escape_filter(&mut self) {
+        if self.filter.is_empty() {
+            self.filter_focused = false;
+        } else {
+            self.filter.clear();
+            self.scroll = 0.0;
+        }
+    }
+
     /// Total height of the visible rows, ignoring the viewport.
     pub fn content_height(&self) -> f32 {
         let hosts_idx = self.hosts_section_index();
@@ -2341,6 +2398,52 @@ mod tests {
 
         panel.notice = Some("x ".repeat(200));
         assert_eq!(panel.notice_lines(), 3, "capped");
+    }
+
+    #[test]
+    fn an_empty_list_says_how_to_add_a_host() {
+        let empty = panel(0);
+        let hint = empty.empty_hint().expect("hint");
+        assert_eq!(hint.title, "No saved hosts yet");
+        assert!(hint.body.contains("New Host"), "{}", hint.body);
+        assert!(panel(2).empty_hint().is_none());
+    }
+
+    #[test]
+    fn a_filter_with_no_match_says_so_and_how_to_clear_it() {
+        let mut panel = panel(2);
+        panel.filter = "zzz".to_string();
+        let hint = panel.empty_hint().expect("hint");
+        assert_eq!(hint.title, "No matches");
+        assert!(
+            hint.body.contains("zzz") && hint.body.contains("Esc"),
+            "{}",
+            hint.body
+        );
+        panel.filter = "host-1".to_string();
+        assert!(panel.empty_hint().is_none(), "a match hides the hint");
+    }
+
+    #[test]
+    fn the_hint_sits_below_the_list() {
+        let (oy, h) = tall();
+        let panel = panel(0);
+        let rect = panel.empty_hint_rect(oy, h).expect("rect");
+        let body = panel.body_rect(oy, h);
+        assert!(rect.y >= body.y + panel.content_height() - 0.01);
+        assert!(rect.x >= body.x && rect.right() <= body.right() + 0.01);
+    }
+
+    #[test]
+    fn escape_clears_the_filter_before_leaving_it() {
+        let mut panel = panel(2);
+        panel.filter = "zzz".to_string();
+        panel.filter_focused = true;
+        panel.escape_filter();
+        assert_eq!(panel.filter, "");
+        assert!(panel.filter_focused, "first Esc only clears");
+        panel.escape_filter();
+        assert!(!panel.filter_focused);
     }
 
     #[test]

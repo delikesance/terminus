@@ -429,7 +429,60 @@ fn render_panel(
         .notice_rect(origin_y, height)
         .map(|n| !text_blocked_by(label_cover.as_ref(), &n))
         .unwrap_or(true);
+    render_empty_hint(
+        sugarloaf,
+        chrome,
+        theme,
+        origin_y,
+        height,
+        label_cover.as_ref(),
+    );
     render_notice(sugarloaf, chrome, theme, origin_y, height, notice_labels);
+}
+
+/// "No saved hosts yet" / "No matches" under the list.
+fn render_empty_hint(
+    sugarloaf: &mut Sugarloaf,
+    chrome: &Chrome,
+    theme: &ChromeTheme,
+    origin_y: f32,
+    height: f32,
+    cover: Option<&Rect>,
+) {
+    let (Some(hint), Some(rect)) = (
+        chrome.panel.empty_hint(),
+        chrome.panel.empty_hint_rect(origin_y, height),
+    ) else {
+        return;
+    };
+    let body = chrome.panel.body_rect(origin_y, height);
+    if rect.bottom() > body.bottom() || text_blocked_by(cover, &rect) {
+        return;
+    }
+    draw_text(
+        sugarloaf,
+        rect.x + 6.0,
+        rect.y + 4.0,
+        hint.title,
+        ROW_TITLE_SIZE,
+        theme.text_muted,
+        false,
+    );
+    let text_opts = opts(ROW_SUB_SIZE, theme.text_muted, false);
+    let lines = wrap_lines(sugarloaf, &hint.body, rect.width - 12.0, &text_opts, 2);
+    let mut y = rect.y + 24.0;
+    for line in lines {
+        draw_text(
+            sugarloaf,
+            rect.x + 6.0,
+            y,
+            &line,
+            ROW_SUB_SIZE,
+            theme.text_muted,
+            false,
+        );
+        y += ROW_SUB_SIZE + 4.0;
+    }
 }
 
 fn render_notice(
@@ -838,7 +891,7 @@ fn render_snippets(
             sugarloaf,
             body.x + 16.0,
             body.y + 38.0,
-            "Save frequent commands here.",
+            "Save commands you run often: Add snippet below.",
             ROW_SUB_SIZE,
             theme.text_muted,
             false,
