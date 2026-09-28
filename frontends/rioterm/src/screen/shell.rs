@@ -3,6 +3,7 @@
 use super::Screen;
 use crate::hosts;
 use rio_backend::config::Shell;
+use terminus_core::HostAuthMethod;
 
 /// Extra environment for a spawned shell (`SSH_ASKPASS`, …).
 pub(super) type ShellEnv = Vec<(String, String)>;
@@ -51,7 +52,7 @@ impl Screen<'_> {
 
         match self.host_store.hosts().iter().find(|host| host.id == id) {
             Some(host) => {
-                let password = if host.auth_method == "password" {
+                let password = if host.auth_method == HostAuthMethod::Password {
                     match self.host_store.resolve_host_password(id)? {
                         Some(pw) => Some(pw),
                         None => {
@@ -64,9 +65,7 @@ impl Screen<'_> {
                 } else {
                     None
                 };
-                let identity = if host.auth_method == "password"
-                    || host.auth_method == "gssapi"
-                {
+                let identity = if host.auth_method != HostAuthMethod::Key {
                     None
                 } else {
                     match self.host_store.resolve_host_identity(id)? {
@@ -153,7 +152,7 @@ pub(super) fn ssh_shell(
         // Best-effort cleanup of the secret file after askpass has had time
         // to run (OpenSSH may call it more than once during handshake).
         remove_after_ttl(secret_file.clone());
-    } else if host.auth_method.eq_ignore_ascii_case("gssapi") {
+    } else if host.auth_method == HostAuthMethod::Gssapi {
         push_o_options(&mut args, GSSAPI_SSH_OPTIONS);
     } else if let Some(pem) = identity_pem {
         let key_file = write_ssh_identity_file(pem)?;

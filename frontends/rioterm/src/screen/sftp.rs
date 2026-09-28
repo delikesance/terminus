@@ -5,6 +5,7 @@ use crate::hosts;
 use rio_window::window::CursorIcon;
 
 use crate::hosts::HostCredentials;
+use terminus_core::HostAuthMethod;
 
 impl Screen<'_> {
     /// Resolve password / identity for an SSH host used by SFTP.
@@ -12,7 +13,7 @@ impl Screen<'_> {
         &self,
         host: &hosts::HostRow,
     ) -> Result<HostCredentials, String> {
-        let password = if host.auth_method == "password" {
+        let password = if host.auth_method == HostAuthMethod::Password {
             match self.host_store.resolve_host_password(&host.id)? {
                 Some(pw) => Some(pw),
                 None => {
@@ -26,7 +27,7 @@ impl Screen<'_> {
             None
         };
 
-        let identity = if host.auth_method == "password" || host.auth_method == "gssapi" {
+        let identity = if host.auth_method != HostAuthMethod::Key {
             None
         } else {
             match self.host_store.resolve_host_identity(&host.id)? {

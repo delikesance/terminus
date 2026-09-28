@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use terminus_core::machine::{self, LocalMachine};
 use terminus_core::models::{Group, Host};
 use terminus_core::wsl::{self, WslDistro};
-use terminus_core::Store;
+use terminus_core::{HostAuthMethod, Store};
 use terminus_ui::os_icons::HostStatus;
 use terminus_ui::sidebar::{Badge, HostItem, Row, SessionItem};
 use uuid::Uuid;
@@ -78,8 +78,7 @@ pub struct HostRow {
     pub hostname: String,
     pub port: u16,
     pub username: String,
-    /// `key` | `password` | `gssapi`.
-    pub auth_method: String,
+    pub auth_method: HostAuthMethod,
     pub identity_id: Option<String>,
     pub group_id: Option<String>,
     pub os_id: Option<String>,
@@ -97,7 +96,7 @@ impl HostRow {
             hostname: host.hostname.clone(),
             port: host.port,
             username: host.username.clone(),
-            auth_method: host.auth_method.clone(),
+            auth_method: HostAuthMethod::from_stored(&host.auth_method),
             identity_id: host.identity_id.map(|id| id.to_string()),
             group_id: host.group_id.map(|id| id.to_string()),
             os_id: host.os_id.clone(),
@@ -473,11 +472,10 @@ pub struct HostDraft {
     pub username: String,
     /// Raw text, so an empty field can mean "the default port".
     pub port: String,
-    /// `key` | `password` | `gssapi`.
-    pub auth_method: String,
-    /// Selected identity id when `auth_method == "key"`.
+    pub auth_method: HostAuthMethod,
+    /// Selected identity id for key auth.
     pub identity_id: Option<String>,
-    /// Plaintext password (memory only) when `auth_method == "password"`.
+    /// Plaintext password (memory only) for password auth.
     /// Empty while editing means keep the existing sealed credential.
     pub password: String,
 }
@@ -502,20 +500,7 @@ impl HostDraft {
             user => user.to_string(),
         };
 
-        let method = match terminus_core::parse_host_auth_method(&self.auth_method) {
-            Ok(ok) => ok.method,
-            Err(_) => {
-                // Empty / unset defaults to key (mock HIG default).
-                if self.auth_method.trim().is_empty() {
-                    terminus_core::HostAuthMethod::Key
-                } else {
-                    return Err(format!(
-                        "Unknown authentication method '{}'",
-                        self.auth_method.trim()
-                    ));
-                }
-            }
-        };
+        let method = self.auth_method;
 
         let identity_id = match method {
             terminus_core::HostAuthMethod::Key => {
@@ -552,7 +537,7 @@ impl HostDraft {
             hostname: hostname.to_string(),
             username,
             port: port.to_string(),
-            auth_method: method.as_str().to_string(),
+            auth_method: method,
             identity_id,
             password,
         })
@@ -602,7 +587,7 @@ fn host_from_draft(draft: &HostDraft) -> Host {
         hostname: draft.hostname.clone(),
         port: draft.resolved_port().unwrap_or(DEFAULT_PORT),
         username: draft.username.clone(),
-        auth_method: draft.auth_method.clone(),
+        auth_method: draft.auth_method.as_str().to_string(),
         password: None,
         identity_id,
         group_id: None,
@@ -1755,9 +1740,7 @@ fn probe_and_persist(
         probe_options_from_host, probe_ssh_auth, seal_host_password, HostAuthMethod,
     };
 
-    let method = terminus_core::parse_host_auth_method(&draft.auth_method)
-        .map(|ok| ok.method)
-        .map_err(|e| format!("Unknown authentication method '{}'", e.raw))?;
+    let method = draft.auth_method;
 
     if method == HostAuthMethod::Password && vault.is_none() {
         return Err(
@@ -1835,9 +1818,7 @@ fn probe_and_update(
         return Err("Host not found".into());
     };
 
-    let method = terminus_core::parse_host_auth_method(&draft.auth_method)
-        .map(|ok| ok.method)
-        .map_err(|e| format!("Unknown authentication method '{}'", e.raw))?;
+    let method = draft.auth_method;
 
     let identity_id = draft
         .identity_id
@@ -1872,7 +1853,7 @@ fn probe_and_update(
     existing.hostname = draft.hostname.clone();
     existing.port = draft.resolved_port().unwrap_or(DEFAULT_PORT);
     existing.username = draft.username.clone();
-    existing.auth_method = draft.auth_method.clone();
+    existing.auth_method = draft.auth_method.as_str().to_string();
     existing.identity_id = identity_id;
     existing.password = None;
     existing.updated_at = Utc::now();
@@ -1950,9 +1931,7 @@ fn detect_and_store_os(
         return Err("Host not found".into());
     };
 
-    let method = terminus_core::parse_host_auth_method(&host.auth_method)
-        .map(|ok| ok.method)
-        .unwrap_or(HostAuthMethod::Key);
+    let method = HostAuthMethod::from_stored(&host.auth_method);
 
     let mut probe_host = host.clone();
     if method == HostAuthMethod::Password {
@@ -2027,9 +2006,7 @@ fn resolve_host_password(
         return Err("Host not found".into());
     };
 
-    let method = terminus_core::parse_host_auth_method(&host.auth_method)
-        .map(|ok| ok.method)
-        .unwrap_or(terminus_core::HostAuthMethod::Key);
+    let method = terminus_core::HostAuthMethod::from_stored(&host.auth_method);
     if method != terminus_core::HostAuthMethod::Password {
         return Ok(None);
     }
@@ -2072,9 +2049,7 @@ fn resolve_host_identity(
         return Err("Host not found".into());
     };
 
-    let method = terminus_core::parse_host_auth_method(&host.auth_method)
-        .map(|ok| ok.method)
-        .unwrap_or(HostAuthMethod::Key);
+    let method = HostAuthMethod::from_stored(&host.auth_method);
     if method != HostAuthMethod::Key {
         return Ok(None);
     }
@@ -2766,7 +2741,7 @@ mod tests {
             hostname: "box.example".into(),
             port: 22,
             username: "u".into(),
-            auth_method: "key".into(),
+            auth_method: HostAuthMethod::Key,
             identity_id: None,
             group_id: None,
             sort_order: 0,
@@ -2833,7 +2808,7 @@ mod tests {
             hostname: format!("{name}.internal"),
             port: 22,
             username: "root".to_string(),
-            auth_method: "key".to_string(),
+            auth_method: HostAuthMethod::Key,
             identity_id: None,
             group_id: None,
             os_id: None,
@@ -2877,7 +2852,7 @@ mod tests {
             hostname: format!("{id}.internal"),
             port: 22,
             username: "root".to_string(),
-            auth_method: "key".to_string(),
+            auth_method: HostAuthMethod::Key,
             identity_id: None,
             group_id: Some("g1".to_string()),
             os_id: None,
@@ -3142,7 +3117,7 @@ mod tests {
             hostname: " box.internal ".to_string(),
             username: String::new(),
             port: String::new(),
-            auth_method: "gssapi".to_string(),
+            auth_method: HostAuthMethod::Gssapi,
             ..HostDraft::default()
         }
         .normalize()
@@ -3151,27 +3126,27 @@ mod tests {
         assert_eq!(draft.username, "root");
         assert_eq!(draft.hostname, "box.internal");
         assert_eq!(draft.resolved_port(), Ok(22));
-        assert_eq!(draft.auth_method, "gssapi");
+        assert_eq!(draft.auth_method, HostAuthMethod::Gssapi);
 
         assert!(HostDraft::default().normalize().is_err());
         let bad_port = HostDraft {
             hostname: "box".to_string(),
             port: "not-a-port".to_string(),
-            auth_method: "gssapi".to_string(),
+            auth_method: HostAuthMethod::Gssapi,
             ..HostDraft::default()
         };
         assert!(bad_port.normalize().is_err());
 
         let key_missing = HostDraft {
             hostname: "box".to_string(),
-            auth_method: "key".to_string(),
+            auth_method: HostAuthMethod::Key,
             ..HostDraft::default()
         };
         assert!(key_missing.normalize().unwrap_err().contains("SSH key"));
 
         let pw_missing = HostDraft {
             hostname: "box".to_string(),
-            auth_method: "password".to_string(),
+            auth_method: HostAuthMethod::Password,
             ..HostDraft::default()
         };
         assert!(pw_missing.normalize().unwrap_err().contains("Password"));
@@ -3179,7 +3154,7 @@ mod tests {
         let pw_keep = HostDraft {
             id: Some("existing".into()),
             hostname: "box".to_string(),
-            auth_method: "password".to_string(),
+            auth_method: HostAuthMethod::Password,
             ..HostDraft::default()
         };
         assert!(pw_keep.normalize().is_ok());
@@ -3193,7 +3168,7 @@ mod tests {
             hostname: "box.internal".to_string(),
             port: 22,
             username: "root".to_string(),
-            auth_method: "key".to_string(),
+            auth_method: HostAuthMethod::Key,
             identity_id: None,
             group_id: None,
             os_id: None,
@@ -3242,7 +3217,7 @@ mod tests {
             hostname: " 127.0.0.1 ".to_string(),
             username: "tuser".to_string(),
             port: "2223".to_string(),
-            auth_method: "gssapi".to_string(),
+            auth_method: HostAuthMethod::Gssapi,
             ..HostDraft::default()
         }
         .normalize()
@@ -3250,7 +3225,7 @@ mod tests {
         assert_eq!(draft.endpoint(), "tuser@127.0.0.1:2223");
         let default_port = HostDraft {
             hostname: "box".to_string(),
-            auth_method: "gssapi".to_string(),
+            auth_method: HostAuthMethod::Gssapi,
             ..HostDraft::default()
         }
         .normalize()
@@ -3275,7 +3250,7 @@ mod tests {
             hostname: "web-01.example.com".to_string(),
             username: "deploy".to_string(),
             port: "2222".to_string(),
-            auth_method: "gssapi".to_string(),
+            auth_method: HostAuthMethod::Gssapi,
             ..HostDraft::default()
         })
         .expect("valid draft");
@@ -3370,7 +3345,7 @@ mod tests {
             name: "synced-box".to_string(),
             hostname: "box.example.com".to_string(),
             username: "deploy".to_string(),
-            auth_method: "gssapi".to_string(),
+            auth_method: HostAuthMethod::Gssapi,
             ..HostDraft::default()
         })
         .unwrap();

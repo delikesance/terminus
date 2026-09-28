@@ -1792,14 +1792,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                                 hostname: host.hostname,
                                                 username: host.username,
                                                 port,
-                                                auth_method: if host
-                                                    .auth_method
-                                                    .is_empty()
-                                                {
-                                                    "key".into()
-                                                } else {
-                                                    host.auth_method
-                                                },
+                                                auth_method: host.auth_method,
                                                 identity_id: host.identity_id,
                                                 password: String::new(),
                                             };

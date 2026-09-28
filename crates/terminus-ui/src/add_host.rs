@@ -5,23 +5,12 @@
 //! which is the single place that decides whether a host is storable; a
 //! rejection comes back as [`AddHostForm::set_error`] so the form stays
 //! open with its text intact.
-//!
-//! Auth methods are plain strings (`"key"` | `"password"` | `"gssapi"`)
-//! so this crate stays independent of terminus-core's typed enum.
 
 use crate::geom::Rect;
+pub use terminus_core::HostAuthMethod;
 
-/// Canonical auth-method wire values, in cycle order.
-pub const AUTH_METHODS: [&str; 3] = ["key", "password", "gssapi"];
-
-/// Human label for an auth-method wire value.
-pub fn auth_method_label(method: &str) -> &'static str {
-    match method {
-        "password" => "Password Authentication",
-        "gssapi" => "Kerberos (GSSAPI)",
-        _ => "SSH Cryptographic Key",
-    }
-}
+/// Auth methods in the selector's (and the keyboard cycle's) order.
+pub const AUTH_METHODS: [HostAuthMethod; 3] = HostAuthMethod::ALL;
 
 /// An address as people paste it: `user@host:port`, `ssh -p 2222
 /// user@host`, `ssh://user@host:port` or `[::1]:22`.
@@ -220,7 +209,7 @@ pub struct HostFormValues {
     pub hostname: String,
     pub username: String,
     pub port: String,
-    pub auth_method: String,
+    pub auth_method: HostAuthMethod,
     pub identity_id: Option<String>,
     pub password: String,
 }
@@ -232,7 +221,7 @@ impl Default for HostFormValues {
             hostname: String::new(),
             username: String::new(),
             port: String::new(),
-            auth_method: "key".to_string(),
+            auth_method: HostAuthMethod::Key,
             identity_id: None,
             password: String::new(),
         }
@@ -278,7 +267,7 @@ pub struct AddHostForm {
     values: [String; 4],
     /// Caret position, in characters (not bytes), per base text field.
     carets: [usize; 4],
-    auth_method: String,
+    auth_method: HostAuthMethod,
     identity_id: Option<String>,
     identities: Vec<(String, String)>,
     password: String,
@@ -304,7 +293,7 @@ impl Default for AddHostForm {
             editing_id: None,
             values: Default::default(),
             carets: [0; 4],
-            auth_method: "key".to_string(),
+            auth_method: HostAuthMethod::Key,
             identity_id: None,
             identities: Vec::new(),
             password: String::new(),
@@ -326,20 +315,20 @@ impl AddHostForm {
         let mut fields = Vec::with_capacity(6);
         fields.extend_from_slice(&BASE_FIELDS);
         fields.push(Field::AuthMethod);
-        match self.auth_method.as_str() {
-            "password" => fields.push(Field::Password),
-            "gssapi" => {}
-            _ => fields.push(Field::Identity),
+        match self.auth_method {
+            HostAuthMethod::Password => fields.push(Field::Password),
+            HostAuthMethod::Gssapi => {}
+            HostAuthMethod::Key => fields.push(Field::Identity),
         }
         fields
     }
 
     pub fn shows_identity(&self) -> bool {
-        self.auth_method != "password" && self.auth_method != "gssapi"
+        self.auth_method == HostAuthMethod::Key
     }
 
     pub fn shows_password(&self) -> bool {
-        self.auth_method == "password"
+        self.auth_method == HostAuthMethod::Password
     }
 
     /// Total dialog height, including a hint/error line.
@@ -358,9 +347,9 @@ impl AddHostForm {
         // Nothing to pick in "Select Saved SSH Key" yet: start where the
         // user can actually connect.
         self.auth_method = if self.identities.is_empty() {
-            "password".to_string()
+            HostAuthMethod::Password
         } else {
-            "key".to_string()
+            HostAuthMethod::Key
         };
         self.password.clear();
         self.password_caret = 0;
@@ -386,11 +375,7 @@ impl AddHostForm {
             self.values[2].chars().count(),
             self.values[3].chars().count(),
         ];
-        self.auth_method = if values.auth_method.trim().is_empty() {
-            "key".to_string()
-        } else {
-            values.auth_method
-        };
+        self.auth_method = values.auth_method;
         self.password.clear();
         self.password_caret = 0;
         self.password_visible = false;
@@ -470,8 +455,8 @@ impl AddHostForm {
         &self.identities
     }
 
-    pub fn auth_method(&self) -> &str {
-        &self.auth_method
+    pub fn auth_method(&self) -> HostAuthMethod {
+        self.auth_method
     }
 
     pub fn auth_menu_open(&self) -> bool {
@@ -501,7 +486,7 @@ impl AddHostForm {
         if index >= AUTH_METHODS.len() {
             return;
         }
-        self.auth_method = AUTH_METHODS[index].to_string();
+        self.auth_method = AUTH_METHODS[index];
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
         self.close_identity_menu();
@@ -594,7 +579,7 @@ impl AddHostForm {
             Field::Hostname => &self.values[1],
             Field::Username => &self.values[2],
             Field::Port => &self.values[3],
-            Field::AuthMethod => &self.auth_method,
+            Field::AuthMethod => self.auth_method.as_str(),
             Field::Identity => self.identity_id.as_deref().unwrap_or(""),
             Field::Password => &self.password,
         }
@@ -641,7 +626,7 @@ impl AddHostForm {
             hostname: address.host,
             username: typed(2, address.user),
             port: typed(3, address.port),
-            auth_method: self.auth_method.clone(),
+            auth_method: self.auth_method,
             identity_id: self.identity_id.clone(),
             password: self.password.clone(),
         }
@@ -649,14 +634,19 @@ impl AddHostForm {
 
     /// Auth-only readiness (host fields still belong to the repository).
     pub fn auth_validation_error(&self) -> Option<&'static str> {
-        match self.auth_method.as_str() {
-            "key" if self.identity_id.is_none() => Some("Select an SSH key"),
+        match self.auth_method {
+            HostAuthMethod::Key if self.identity_id.is_none() => {
+                Some("Select an SSH key")
+            }
             // When editing, an empty password means "keep the stored one".
-            "password" if self.password.is_empty() && self.editing_id.is_none() => {
+            HostAuthMethod::Password
+                if self.password.is_empty() && self.editing_id.is_none() =>
+            {
                 Some("Enter a password")
             }
-            "key" | "password" | "gssapi" => None,
-            _ => Some("Unknown authentication method"),
+            HostAuthMethod::Key | HostAuthMethod::Password | HostAuthMethod::Gssapi => {
+                None
+            }
         }
     }
 
@@ -667,7 +657,7 @@ impl AddHostForm {
             .position(|&m| m == self.auth_method)
             .unwrap_or(0);
         let next = (i as isize + delta).rem_euclid(AUTH_METHODS.len() as isize) as usize;
-        self.auth_method = AUTH_METHODS[next].to_string();
+        self.auth_method = AUTH_METHODS[next];
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
         self.close_identity_menu();
@@ -1265,11 +1255,11 @@ mod tests {
     fn without_saved_keys_the_form_starts_on_password() {
         let mut form = AddHostForm::default();
         form.open();
-        assert_eq!(form.auth_method(), "password");
+        assert_eq!(form.auth_method(), HostAuthMethod::Password);
         let mut with_keys = AddHostForm::default();
         with_keys.set_identities(vec![("id1".into(), "laptop".into())]);
         with_keys.open();
-        assert_eq!(with_keys.auth_method(), "key");
+        assert_eq!(with_keys.auth_method(), HostAuthMethod::Key);
     }
 
     #[test]
@@ -1315,13 +1305,13 @@ mod tests {
         assert_eq!(form.focused_field(), Field::Identity);
 
         form.cycle_auth_method(1); // password
-        assert_eq!(form.auth_method(), "password");
+        assert_eq!(form.auth_method(), HostAuthMethod::Password);
         assert!(form.visible_fields().contains(&Field::Password));
         assert!(!form.visible_fields().contains(&Field::Identity));
         assert_eq!(form.focused_field(), Field::Password);
 
         form.cycle_auth_method(1); // gssapi
-        assert_eq!(form.auth_method(), "gssapi");
+        assert_eq!(form.auth_method(), HostAuthMethod::Gssapi);
         assert!(!form.shows_identity());
         assert!(!form.shows_password());
         assert_eq!(form.focused_field(), Field::AuthMethod);
@@ -1441,13 +1431,13 @@ mod tests {
         form.open();
         // No saved keys: the fresh form starts on password.
         let fresh = HostFormValues {
-            auth_method: "password".to_string(),
+            auth_method: HostAuthMethod::Password,
             ..HostFormValues::default()
         };
         assert_eq!(form.values(), fresh);
         assert_eq!(form.focused_field(), Field::Name);
         assert_eq!(form.error(), None);
-        assert_eq!(form.auth_method(), "password");
+        assert_eq!(form.auth_method(), HostAuthMethod::Password);
     }
 
     #[test]
@@ -1472,7 +1462,7 @@ mod tests {
                 hostname: "web.example".into(),
                 username: "deploy".into(),
                 port: "2222".into(),
-                auth_method: "key".into(),
+                auth_method: HostAuthMethod::Key,
                 identity_id: Some("k1".into()),
                 password: String::new(),
             },
@@ -1489,7 +1479,7 @@ mod tests {
         form.select_auth_method(
             AUTH_METHODS
                 .iter()
-                .position(|&m| m == "password")
+                .position(|&m| m == HostAuthMethod::Password)
                 .expect("password"),
         );
         // Empty password allowed while editing.
@@ -1527,7 +1517,7 @@ mod tests {
                 hostname: "web-01.example.com".to_string(),
                 username: "deploy".to_string(),
                 port: "2222".to_string(),
-                auth_method: "password".to_string(),
+                auth_method: HostAuthMethod::Password,
                 identity_id: Some("k1".to_string()),
                 password: "s3cret".to_string(),
             }
@@ -1540,11 +1530,11 @@ mod tests {
         form.set_identities(vec![("a".into(), "A".into()), ("b".into(), "B".into())]);
         form.focus_field(Field::AuthMethod);
         form.handle_input(FormInput::Right, "");
-        assert_eq!(form.auth_method(), "password");
+        assert_eq!(form.auth_method(), HostAuthMethod::Password);
         form.handle_input(FormInput::Right, "");
-        assert_eq!(form.auth_method(), "gssapi");
+        assert_eq!(form.auth_method(), HostAuthMethod::Gssapi);
         form.handle_input(FormInput::Right, "");
-        assert_eq!(form.auth_method(), "key");
+        assert_eq!(form.auth_method(), HostAuthMethod::Key);
 
         form.focus_field(Field::Identity);
         form.handle_input(FormInput::Right, "");
@@ -1567,7 +1557,7 @@ mod tests {
         assert_eq!(form.auth_validation_error(), None);
 
         form.cycle_auth_method(1);
-        assert_eq!(form.auth_method(), "gssapi");
+        assert_eq!(form.auth_method(), HostAuthMethod::Gssapi);
         assert_eq!(form.auth_validation_error(), None);
     }
 
@@ -1648,7 +1638,7 @@ mod tests {
             AddHostHit::SelectAuth(1)
         );
         form.select_auth_method(1);
-        assert_eq!(form.auth_method(), "password");
+        assert_eq!(form.auth_method(), HostAuthMethod::Password);
         assert!(!form.auth_menu_open());
         assert!(form.visible_fields().contains(&Field::Password));
     }

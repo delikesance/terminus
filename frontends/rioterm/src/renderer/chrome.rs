@@ -19,7 +19,7 @@ use rio_backend::sugarloaf::text::{CoverageMask, DrawOpts};
 use rio_backend::sugarloaf::Sugarloaf;
 
 use terminus_ui::activity_bar;
-use terminus_ui::add_host::{auth_method_label, Field};
+use terminus_ui::add_host::Field;
 use terminus_ui::chrome::Chrome;
 use terminus_ui::connection::{NodeVisual, STEP_COUNT};
 use terminus_ui::context_menu::{
@@ -3928,7 +3928,7 @@ fn render_add_host(
                     sugarloaf,
                     text_x,
                     text_y,
-                    auth_method_label(form.auth_method()),
+                    form.auth_method().label(),
                     INPUT_SIZE,
                     theme.text,
                     false,
@@ -4235,7 +4235,7 @@ fn render_add_host(
                     sugarloaf,
                     opt.x + 12.0,
                     opt.y + 8.0,
-                    auth_method_label(terminus_ui::AUTH_METHODS[i]),
+                    terminus_ui::AUTH_METHODS[i].label(),
                     ROW_SUB_SIZE,
                     if selected {
                         color_from_f32(theme.accent)

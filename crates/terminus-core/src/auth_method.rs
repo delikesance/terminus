@@ -3,9 +3,10 @@
 //! Mirrors the production `authMethod.ts` contract so UI and store agree.
 
 /// Supported SSH auth methods for a stored host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HostAuthMethod {
     /// Public-key auth using a saved [`crate::models::Identity`].
+    #[default]
     Key,
     /// Password auth; secret lives in the vault, not on the host row.
     Password,
@@ -14,6 +15,18 @@ pub enum HostAuthMethod {
 }
 
 impl HostAuthMethod {
+    /// Every method, in the add-host selector's order.
+    pub const ALL: [Self; 3] = [Self::Key, Self::Password, Self::Gssapi];
+
+    /// The method of a stored host row. A value this build cannot read
+    /// falls back to key auth, never to password: connecting then asks for
+    /// a saved key rather than a secret.
+    pub fn from_stored(raw: &str) -> Self {
+        parse_host_auth_method(raw)
+            .map(|ok| ok.method)
+            .unwrap_or_default()
+    }
+
     /// Canonical store / wire value.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -111,6 +124,34 @@ pub fn host_auth_ui(method: &str) -> HostAuthUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_lists_the_methods_in_selector_order() {
+        assert_eq!(
+            HostAuthMethod::ALL,
+            [
+                HostAuthMethod::Key,
+                HostAuthMethod::Password,
+                HostAuthMethod::Gssapi
+            ]
+        );
+        assert_eq!(HostAuthMethod::default(), HostAuthMethod::Key);
+    }
+
+    #[test]
+    fn stored_values_parse_and_unknown_ones_fall_back_to_key() {
+        assert_eq!(
+            HostAuthMethod::from_stored("password"),
+            HostAuthMethod::Password
+        );
+        assert_eq!(
+            HostAuthMethod::from_stored(" GSSAPI"),
+            HostAuthMethod::Gssapi
+        );
+        // Never password: an unreadable row must not prompt for a secret.
+        assert_eq!(HostAuthMethod::from_stored("agent"), HostAuthMethod::Key);
+        assert_eq!(HostAuthMethod::from_stored(""), HostAuthMethod::Key);
+    }
 
     #[test]
     fn parse_accepts_the_three_canonical_methods() {

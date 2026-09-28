@@ -544,15 +544,16 @@ mod tests {
     use super::*;
     use crate::hosts;
     use chrono::Utc;
+    use terminus_core::HostAuthMethod;
 
-    fn host_row(auth_method: &str) -> hosts::HostRow {
+    fn host_row(auth_method: HostAuthMethod) -> hosts::HostRow {
         hosts::HostRow {
             id: "host-1".into(),
             name: "Box".into(),
             hostname: "box.example".into(),
             port: 22,
             username: "alice".into(),
-            auth_method: auth_method.into(),
+            auth_method,
             identity_id: None,
             group_id: None,
             os_id: None,
@@ -571,7 +572,7 @@ mod tests {
 
     #[test]
     fn gssapi_ssh_shell_sets_gssapi_options_without_identity_file() {
-        let host = host_row("gssapi");
+        let host = host_row(HostAuthMethod::Gssapi);
         let (shell, env) = ssh_shell(&host, None, None, None).expect("gssapi shell");
         assert_eq!(shell.program.as_deref(), Some("ssh"));
         assert!(shell.args.iter().any(|a| a == "GSSAPIAuthentication=yes"));
@@ -590,7 +591,7 @@ mod tests {
 
     #[test]
     fn key_ssh_shell_passes_identity_file() {
-        let host = host_row("key");
+        let host = host_row(HostAuthMethod::Key);
         let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
         let (shell, env) = ssh_shell(&host, None, Some(pem), None).expect("key shell");
         assert!(shell.args.windows(2).any(|w| w[0] == "-i"));
@@ -608,7 +609,7 @@ mod tests {
 
     #[test]
     fn password_ssh_shell_disables_pubkey() {
-        let host = host_row("password");
+        let host = host_row(HostAuthMethod::Password);
         let (shell, env) =
             ssh_shell(&host, Some("secret"), None, None).expect("password shell");
         // keyboard-interactive too: PAM / 2FA servers (and macOS) disable
@@ -676,7 +677,7 @@ mod tests {
 
     #[test]
     fn key_ssh_shell_identity_file_is_private() {
-        let host = host_row("key");
+        let host = host_row(HostAuthMethod::Key);
         let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
         let (shell, _) = ssh_shell(&host, None, Some(pem), None).expect("key shell");
         let path = shell

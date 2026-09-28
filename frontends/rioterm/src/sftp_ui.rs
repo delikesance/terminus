@@ -873,11 +873,7 @@ fn connect_options_for_host(
     credentials: HostCredentials,
 ) -> Result<SshConnectOptions, String> {
     let HostCredentials { password, identity } = credentials;
-    let method = match host.auth_method.as_str() {
-        "password" => HostAuthMethod::Password,
-        "gssapi" => HostAuthMethod::Gssapi,
-        _ => HostAuthMethod::Key,
-    };
+    let method = host.auth_method;
 
     let mut auth = SshAuth {
         username: host.username.clone(),

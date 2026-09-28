@@ -1472,6 +1472,7 @@ mod tests {
     use super::*;
     use crate::activity_bar::RailAction;
     use crate::add_host::Field;
+    use crate::add_host::HostAuthMethod;
     use crate::settings::SettingsTab;
     use crate::sidebar::Badge;
 
@@ -1957,7 +1958,7 @@ mod tests {
                 hostname: "1.2.3.4".into(),
                 username: "u".into(),
                 port: "22".into(),
-                auth_method: "password".into(),
+                auth_method: HostAuthMethod::Password,
                 password: String::new(),
                 identity_id: None,
             },
