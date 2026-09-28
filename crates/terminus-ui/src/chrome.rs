@@ -171,6 +171,8 @@ pub struct Chrome {
     pub snippet_form: crate::add_snippet::AddSnippetForm,
     /// Prompt when a sealed secret is needed and the vault is locked.
     pub vault_unlock: VaultUnlockPrompt,
+    /// Whether a vault already exists; when not, the prompt creates one.
+    pub vault_configured: bool,
     /// Live SSH/WSL connecting modal, when a session is starting.
     pub connection: Option<ConnectionSequence>,
     /// Right-click context menu, when open.
@@ -194,6 +196,7 @@ impl Default for Chrome {
             form: AddHostForm::default(),
             snippet_form: crate::add_snippet::AddSnippetForm::default(),
             vault_unlock: VaultUnlockPrompt::default(),
+            vault_configured: true,
             connection: None,
             context_menu: None,
             top_inset: 0.0,
@@ -288,6 +291,7 @@ impl Chrome {
     /// Ask for the vault passphrase, then retry `pending` after unlock.
     pub fn open_vault_unlock(&mut self, pending: PendingVaultAction) {
         self.vault_unlock.open(pending);
+        self.vault_unlock.set_creating(!self.vault_configured);
     }
 
     /// Open the add-host editor.
@@ -443,7 +447,7 @@ impl Chrome {
     }
 
     fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
-        let Some(menu) = self.context_menu.as_ref() else {
+        let Some(menu) = self.context_menu.as_mut() else {
             return None;
         };
         match menu.hit_test(x, y) {
@@ -454,6 +458,26 @@ impl Chrome {
             }
             ContextMenuHit::Consume => Some(ChromeAction::Consumed),
             ContextMenuHit::Item(index) => {
+                if !menu.confirm(index) {
+                    // Destructive item armed; wait for the second click. Say
+                    // so when deleting a host also closes its open sessions.
+                    if let Some(ContextAction::DeleteHost(id)) = menu.take_action(index) {
+                        let sessions = self
+                            .panel
+                            .rows
+                            .iter()
+                            .filter_map(crate::sidebar::Row::host)
+                            .find(|h| h.id == id)
+                            .map_or(0, |h| h.session_count);
+                        if sessions > 0 {
+                            let plural = if sessions == 1 { "" } else { "s" };
+                            menu.items[index].label = format!(
+                                "Click again: delete, close {sessions} session{plural}"
+                            );
+                        }
+                    }
+                    return Some(ChromeAction::Consumed);
+                }
                 let action = menu.take_action(index);
                 self.close_context_menu();
                 Some(match action {
@@ -496,9 +520,20 @@ impl Chrome {
         // Vault unlock sits above every other dialog: a sealed secret was
         // requested and nothing else can proceed until the user answers.
         if self.vault_unlock.is_open() {
-            let layout = VaultUnlockLayout::centered(window_width, window_height);
+            let layout = VaultUnlockLayout::for_prompt(
+                window_width,
+                window_height,
+                &self.vault_unlock,
+            );
             return match layout.hit_test(x, y) {
-                VaultUnlockHit::Field => ChromeAction::Consumed,
+                VaultUnlockHit::Field => {
+                    self.vault_unlock.focus_passphrase();
+                    ChromeAction::Consumed
+                }
+                VaultUnlockHit::ConfirmField => {
+                    self.vault_unlock.focus_confirm();
+                    ChromeAction::Consumed
+                }
                 VaultUnlockHit::ToggleVisible => {
                     self.vault_unlock.toggle_visible();
                     ChromeAction::Consumed
@@ -1012,9 +1047,15 @@ impl Chrome {
             };
         }
         if self.vault_unlock.is_open() {
-            let layout = VaultUnlockLayout::centered(window_width, window_height);
+            let layout = VaultUnlockLayout::for_prompt(
+                window_width,
+                window_height,
+                &self.vault_unlock,
+            );
             return match layout.hit_test(x, y) {
-                VaultUnlockHit::Field => ChromeCursor::Text,
+                VaultUnlockHit::Field | VaultUnlockHit::ConfirmField => {
+                    ChromeCursor::Text
+                }
                 VaultUnlockHit::ToggleVisible
                 | VaultUnlockHit::ToggleRemember
                 | VaultUnlockHit::Unlock
@@ -1343,6 +1384,10 @@ impl Chrome {
                 self.vault_unlock.close();
                 Some(false)
             }
+            FormInput::Next | FormInput::Previous => {
+                self.vault_unlock.toggle_field();
+                Some(false)
+            }
             _ => Some(false),
         }
     }
@@ -1398,6 +1443,11 @@ mod tests {
         assert_eq!(open, ChromeAction::Consumed);
         let menu = chrome.context_menu.as_ref().expect("menu open");
         let item = menu.item_rect(3).unwrap();
+        // First click only arms the destructive row…
+        let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
+        assert_eq!(action, ChromeAction::Consumed);
+        assert!(chrome.context_menu.is_some(), "menu stays open to confirm");
+        // …the second click on it deletes.
         let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
         assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
         assert!(chrome.context_menu.is_none());

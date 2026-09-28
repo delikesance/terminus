@@ -1639,18 +1639,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::UnlockVault => {
-                                        let passphrase = route
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .sql_passphrase
-                                            .clone();
-                                        route
-                                            .window
-                                            .screen
-                                            .host_store
-                                            .unlock_vault(&passphrase);
+                                        route.window.screen.settings_unlock_vault();
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -1743,7 +1732,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::DeleteHost(id) => {
-                                        route.window.screen.host_store.delete_host(&id);
+                                        route.window.screen.delete_host_closing_sessions(
+                                            &id,
+                                            &mut self.router.clipboard,
+                                        );
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -3176,6 +3168,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         screen.open_sftp_pane(&host_id)
                                     };
                                     screen.chrome.panel.error = opened.err();
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::CreateVault => {
                                     route.request_overlay_redraw();
                                 }
                                 terminus_ui::PendingVaultAction::SaveSshKey => {
