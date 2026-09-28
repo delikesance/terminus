@@ -304,6 +304,15 @@ impl ContextMenu {
         self.items.get(index).map(|i| i.action.clone())
     }
 
+    /// Relabel item `index`, widening the menu so the new label fits.
+    pub fn set_label(&mut self, index: usize, label: impl Into<String>) {
+        if let Some(item) = self.items.get_mut(index) {
+            item.label = label.into();
+            let needed = item.label.chars().count() as f32 * LABEL_ESTIMATE + 24.0;
+            self.width = self.width.max(needed);
+        }
+    }
+
     /// Whether a click on `index` should act now.
     ///
     /// Deleting a stored host or group cannot be undone, so the first click
@@ -320,10 +329,8 @@ impl ContextMenu {
         if !destructive || self.armed == Some(index) {
             return true;
         }
-        item.label = "Click again to delete".into();
         self.armed = Some(index);
-        let needed = item.label.chars().count() as f32 * LABEL_ESTIMATE + 24.0;
-        self.width = self.width.max(needed);
+        self.set_label(index, "Click again to delete");
         false
     }
 }

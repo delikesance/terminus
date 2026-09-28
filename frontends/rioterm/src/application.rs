@@ -1790,7 +1790,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     ChromeAction::OpenSftp(id) => {
                                         match route.window.screen.open_sftp_pane(&id) {
                                             Ok(()) => {
-                                                route.request_redraw();
+                                                // Overlay redraw: a locked vault opens the unlock modal instead.
+                                                route.request_overlay_redraw();
                                             }
                                             Err(err) => {
                                                 route.window.screen.chrome.panel.notice =
@@ -1807,7 +1808,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             .open_sftp_other_pane(&id)
                                         {
                                             Ok(()) => {
-                                                route.request_redraw();
+                                                // Overlay redraw: a locked vault opens the unlock modal instead.
+                                                route.request_overlay_redraw();
                                             }
                                             Err(err) => {
                                                 route.window.screen.chrome.panel.notice =
