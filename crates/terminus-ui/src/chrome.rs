@@ -754,6 +754,8 @@ impl Chrome {
         }
         let chrome_height = (window_height - origin_y).max(0.0);
         if let Some(hit) = activity_bar::hit_test(origin_y, chrome_height, x, y) {
+            self.activity.hover = None;
+            self.activity.hover_dismissed = Some(hit);
             return match hit {
                 RailHit::Section(section) => {
                     if section == self.activity.selected {
@@ -1015,7 +1017,12 @@ impl Chrome {
         }
         let origin_y = self.origin_y();
         let height = window_height - origin_y;
-        let rail = activity_bar::hit_test(origin_y, height, x, y);
+        let mut rail = activity_bar::hit_test(origin_y, height, x, y);
+        if rail != self.activity.hover_dismissed {
+            self.activity.hover_dismissed = None;
+        } else {
+            rail = None;
+        }
         let rail_changed = self.activity.hover != rail;
         self.activity.hover = rail;
         if self.snippets_visible() {
@@ -1490,6 +1497,29 @@ mod tests {
         );
         chrome.activity.cloud_sync_active = true;
         assert_eq!(chrome.rail_tooltip(800.0).unwrap().1, "Cloud Sync: on");
+    }
+
+    #[test]
+    fn clicking_a_rail_icon_hides_its_tooltip_until_the_pointer_leaves() {
+        let mut chrome = chrome_with_hosts(1);
+        let oy = chrome.origin_y();
+        let item = activity_bar::section_rect(oy, activity_bar::Section::Snippets);
+        let (cx, cy) = (item.x + item.width / 2.0, item.y + item.height / 2.0);
+        chrome.handle_hover(800.0, cx, cy);
+        assert!(chrome.rail_tooltip(800.0).is_some());
+        chrome.handle_press(1200.0, 800.0, cx, cy);
+        assert!(
+            chrome.rail_tooltip(800.0).is_none(),
+            "clicked: out of the way"
+        );
+        chrome.handle_hover(800.0, cx + 1.0, cy);
+        assert!(
+            chrome.rail_tooltip(800.0).is_none(),
+            "still on the same icon"
+        );
+        chrome.handle_hover(800.0, activity_bar::WIDTH + 50.0, cy);
+        chrome.handle_hover(800.0, cx, cy);
+        assert!(chrome.rail_tooltip(800.0).is_some(), "back after leaving");
     }
 
     #[test]
