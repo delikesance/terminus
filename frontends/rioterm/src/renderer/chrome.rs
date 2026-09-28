@@ -3941,21 +3941,31 @@ fn render_add_host(
     );
 
     if let Some(error) = form.error() {
-        let text = elide(
+        // Two wrapped lines beside the buttons: a one-line elide hid the
+        // part of the message that says what went wrong.
+        let lines = wrap_lines(
             sugarloaf,
             error,
             hint.width - 180.0,
             &opts(HINT_SIZE, theme.danger, false),
+            2,
         );
-        draw_text(
-            sugarloaf,
-            hint.x,
-            hint.y + 12.0,
-            &text,
-            HINT_SIZE,
-            theme.danger,
-            false,
-        );
+        let top = if lines.len() > 1 {
+            hint.y + 4.0
+        } else {
+            hint.y + 12.0
+        };
+        for (i, line) in lines.iter().enumerate() {
+            draw_text(
+                sugarloaf,
+                hint.x,
+                top + i as f32 * (HINT_SIZE + 3.0),
+                line,
+                HINT_SIZE,
+                theme.danger,
+                false,
+            );
+        }
     }
 
     // Cancel + Connect footer — shared ButtonSpec paint path.
@@ -4154,7 +4164,8 @@ fn render_vault_unlock(
     paint_glyphs: bool,
 ) {
     let prompt = &chrome.vault_unlock;
-    let layout = terminus_ui::VaultUnlockLayout::centered(window_width, window_height);
+    let layout =
+        terminus_ui::VaultUnlockLayout::for_prompt(window_width, window_height, prompt);
     let dialog = layout.rect();
     let radius = terminus_ui::vault_unlock::RADIUS;
 
@@ -4180,26 +4191,37 @@ fn render_vault_unlock(
         sugarloaf,
         title.x,
         title.y + 4.0,
-        "Unlock Vault",
+        prompt.title(),
         DIALOG_TITLE_SIZE,
         theme.text,
         true,
     );
 
+    // Wrapped to the dialog width (two lines at most) so it never runs
+    // past the dialog edge.
     let subtitle = layout.subtitle_rect();
-    let subtitle_text = prompt
-        .pending()
-        .map(terminus_ui::PendingVaultAction::subtitle)
-        .unwrap_or("Enter your vault passphrase.");
-    draw_text(
+    let subtitle_opts = DrawOpts {
+        font_size: HINT_SIZE,
+        ..DrawOpts::default()
+    };
+    let lines = wrap_lines(
         sugarloaf,
-        subtitle.x,
-        subtitle.y + 4.0,
-        subtitle_text,
-        HINT_SIZE,
-        theme.text_muted,
-        false,
+        &prompt.subtitle(),
+        subtitle.width,
+        &subtitle_opts,
+        2,
     );
+    for (i, line) in lines.iter().enumerate() {
+        draw_text(
+            sugarloaf,
+            subtitle.x,
+            subtitle.y + 2.0 + i as f32 * (HINT_SIZE + 4.0),
+            line,
+            HINT_SIZE,
+            theme.text_muted,
+            false,
+        );
+    }
 
     // Same field card + caret path as Settings → Encryption Passphrase.
     let card = layout.passphrase_card_rect();
@@ -4210,11 +4232,33 @@ fn render_vault_unlock(
         card,
         "Encryption Passphrase",
         &paint.text,
-        true,
+        !prompt.confirm_focused(),
         paint.placeholder,
         terminus_ui::settings::FIELD_EYE_SLOT,
         true,
     );
+    if let Some(confirm_card) = layout.confirm_card_rect() {
+        let confirm = prompt.confirm_field_paint();
+        paint_settings_field_card(
+            sugarloaf,
+            theme,
+            confirm_card,
+            "Confirm Passphrase",
+            &confirm.text,
+            prompt.confirm_focused(),
+            confirm.placeholder,
+            0.0,
+            true,
+        );
+        if confirm.show_caret {
+            let prefix = if confirm.placeholder {
+                ""
+            } else {
+                confirm.text.as_str()
+            };
+            paint_settings_caret(sugarloaf, theme, confirm_card, prefix, 0.0);
+        }
+    }
     if paint.show_caret {
         let caret_prefix = if paint.placeholder {
             ""
@@ -4266,7 +4310,11 @@ fn render_vault_unlock(
             sugarloaf,
             hint.x,
             hint.y + 2.0,
-            "Unlocking…",
+            if prompt.creating() {
+                "Creating…"
+            } else {
+                "Unlocking…"
+            },
             HINT_SIZE,
             theme.text_muted,
             false,
@@ -4329,7 +4377,7 @@ fn render_vault_unlock(
         sugarloaf,
         theme,
         terminus_ui::ButtonSpec::primary(unlock).with_radius(input_radius),
-        "Unlock",
+        prompt.action_label(),
         HINT_SIZE,
         DEPTH_DIALOG_BG + 0.025,
         ORDER_DIALOG,

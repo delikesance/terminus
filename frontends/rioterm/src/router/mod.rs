@@ -758,17 +758,7 @@ impl Route<'_> {
                         Key::Named(NamedKey::Enter) => {
                             match self.window.screen.chrome.settings.sql_focus {
                                 SqlSyncFocus::Passphrase => {
-                                    let passphrase = self
-                                        .window
-                                        .screen
-                                        .chrome
-                                        .settings
-                                        .sql_passphrase
-                                        .clone();
-                                    self.window
-                                        .screen
-                                        .host_store
-                                        .unlock_vault(&passphrase);
+                                    self.window.screen.settings_unlock_vault();
                                 }
                                 SqlSyncFocus::Uri | SqlSyncFocus::None => {
                                     let uri = self
