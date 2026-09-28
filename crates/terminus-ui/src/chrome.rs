@@ -1015,15 +1015,52 @@ impl Chrome {
         }
         let origin_y = self.origin_y();
         let height = window_height - origin_y;
+        let rail = activity_bar::hit_test(origin_y, height, x, y);
+        let rail_changed = self.activity.hover != rail;
+        self.activity.hover = rail;
         if self.snippets_visible() {
             let hit = self.snippets.hit_test(origin_y, height, x, y);
-            return self.snippets.set_hover(hit);
+            return self.snippets.set_hover(hit) | rail_changed;
         }
         if !self.hosts_visible() {
-            return false;
+            return rail_changed;
         }
         let hover = self.panel.hover_at(origin_y, height, x, y);
-        self.panel.set_hover(hover)
+        self.panel.set_hover(hover) | rail_changed
+    }
+
+    /// Name of the rail icon under the pointer, and where to draw it.
+    pub fn rail_tooltip(
+        &self,
+        window_height: f32,
+    ) -> Option<(crate::geom::Rect, String)> {
+        let dialog_open = self.context_menu.is_some()
+            || self.settings.open
+            || self.connection.is_some()
+            || self.form.is_open()
+            || self.snippet_form.is_open()
+            || self.vault_unlock.is_open();
+        if dialog_open {
+            return None;
+        }
+        let hit = self.activity.hover?;
+        let label = match hit {
+            RailHit::Section(section) => section.label().to_string(),
+            RailHit::Action(RailAction::CloudSync) => format!(
+                "{}: {}",
+                RailAction::CloudSync.label(),
+                if self.activity.cloud_sync_active {
+                    "on"
+                } else {
+                    "not set up"
+                }
+            ),
+            RailHit::Action(action) => action.label().to_string(),
+        };
+        let origin_y = self.origin_y();
+        let rect =
+            activity_bar::tooltip_rect(origin_y, window_height - origin_y, hit, &label);
+        Some((rect, label))
     }
 
     /// Remember the last layout width so hover/cursor can rebuild dialog rects.
@@ -1414,6 +1451,60 @@ mod tests {
     use crate::add_host::Field;
     use crate::settings::SettingsTab;
     use crate::sidebar::Badge;
+
+    #[test]
+    fn hovering_a_rail_icon_names_it() {
+        let mut chrome = chrome_with_hosts(2);
+        let oy = chrome.origin_y();
+        let item = activity_bar::section_rect(oy, activity_bar::Section::Snippets);
+        let (cx, cy) = (item.x + item.width / 2.0, item.y + item.height / 2.0);
+        assert!(chrome.handle_hover(800.0, cx, cy), "repaint to show it");
+        let (rect, label) = chrome.rail_tooltip(800.0).expect("tooltip");
+        assert_eq!(label, "Snippets");
+        assert!(
+            rect.x >= activity_bar::WIDTH,
+            "beside the rail, not over it"
+        );
+        assert!(rect.y <= cy && rect.bottom() >= cy, "level with the icon");
+
+        chrome.handle_hover(800.0, activity_bar::WIDTH + 100.0, cy);
+        assert!(
+            chrome.rail_tooltip(800.0).is_none(),
+            "gone once the pointer leaves"
+        );
+    }
+
+    #[test]
+    fn the_sync_icon_says_whether_sync_is_set_up() {
+        let mut chrome = Chrome::default();
+        assert!(
+            !chrome.activity.cloud_sync_active,
+            "off until a remote connects"
+        );
+        let oy = chrome.origin_y();
+        let item = activity_bar::action_rect(oy, 800.0 - oy, RailAction::CloudSync);
+        chrome.handle_hover(800.0, item.x + 20.0, item.y + 10.0);
+        assert_eq!(
+            chrome.rail_tooltip(800.0).unwrap().1,
+            "Cloud Sync: not set up"
+        );
+        chrome.activity.cloud_sync_active = true;
+        assert_eq!(chrome.rail_tooltip(800.0).unwrap().1, "Cloud Sync: on");
+    }
+
+    #[test]
+    fn no_rail_tooltip_over_an_open_dialog() {
+        let mut chrome = Chrome::default();
+        let oy = chrome.origin_y();
+        let item = activity_bar::action_rect(oy, 800.0 - oy, RailAction::Settings);
+        chrome.handle_hover(800.0, item.x + 20.0, item.y + 10.0);
+        assert!(chrome.rail_tooltip(800.0).is_some());
+        chrome.settings.open = true;
+        assert!(chrome.rail_tooltip(800.0).is_none());
+        chrome.settings.open = false;
+        chrome.form.open();
+        assert!(chrome.rail_tooltip(800.0).is_none());
+    }
 
     fn chrome_with_hosts(n: usize) -> Chrome {
         let mut chrome = Chrome::default();

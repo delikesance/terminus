@@ -145,6 +145,9 @@ pub fn render(
     if let Some(menu) = chrome.context_menu.as_ref() {
         render_context_menu(sugarloaf, menu, theme, device_scale);
     }
+    if let Some((rect, label)) = chrome.rail_tooltip(window_height) {
+        render_rail_tooltip(sugarloaf, &rect, &label, theme, device_scale);
+    }
 
     // Insertion bar while dragging, then ghost at max z-order.
     paint_host_drag_insertion_bar(sugarloaf, chrome, theme);
@@ -4613,6 +4616,45 @@ fn render_context_menu(
     }
 }
 
+/// Name of the hovered rail icon, drawn in the late pass like the context
+/// menu so it covers host labels in the panel beside the rail.
+fn render_rail_tooltip(
+    sugarloaf: &mut Sugarloaf,
+    rect: &Rect,
+    label: &str,
+    theme: &ChromeTheme,
+    device_scale: f32,
+) {
+    let scale = device_scale.max(1.0);
+    let content_w = (rect.width * scale).round().max(1.0);
+    let content_h = (rect.height * scale).round().max(1.0);
+    let side = (content_w.max(content_h).ceil() as u16).max(1);
+    let radius_px = 6.0 * scale;
+    for (kind, color, stroke) in [
+        (TOOLTIP_BG_KIND, theme.button_bg, false),
+        (TOOLTIP_BORDER_KIND, theme.panel_border, true),
+    ] {
+        sugarloaf.text_mut().draw_mask_late(
+            rect.x,
+            rect.y,
+            ctx_menu_mask_id(kind, content_w, content_h),
+            side,
+            color_from_f32(color),
+            move |size| {
+                rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, stroke)
+            },
+        );
+    }
+    sugarloaf.text_mut().draw_late(
+        rect.x + terminus_ui::activity_bar::TOOLTIP_PAD_X,
+        rect.y + (rect.height - ROW_SUB_SIZE) * 0.5,
+        label,
+        &opts(ROW_SUB_SIZE, theme.text, false),
+    );
+}
+
+const TOOLTIP_BG_KIND: u32 = 0x03;
+const TOOLTIP_BORDER_KIND: u32 = 0x04;
 const CTX_MENU_BG_KIND: u32 = 0x01;
 const CTX_MENU_BORDER_KIND: u32 = 0x02;
 const CTX_MENU_HOVER_KIND: u32 = 0x10;

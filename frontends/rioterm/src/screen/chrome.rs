@@ -134,6 +134,7 @@ impl Screen<'_> {
                 })
                 .collect();
             self.chrome.settings.set_keys(key_items.clone());
+            self.chrome.activity.cloud_sync_active = self.host_store.sync_connected();
             self.chrome
                 .form
                 .set_identities(key_items.into_iter().map(|k| (k.id, k.name)).collect());
