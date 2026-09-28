@@ -7138,6 +7138,7 @@ dependencies = [
  "tracing",
  "ureq",
  "uuid",
+ "zip",
 ]
 
 [[package]]
