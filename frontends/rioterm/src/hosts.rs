@@ -3168,7 +3168,11 @@ mod tests {
         assert!(drain_until(&mut b, Duration::from_secs(10), |r| {
             r.hosts().iter().any(|h| h.name == "synced-box")
         }));
-        assert!(b.sync_status_line().contains("pulled 1"), "{}", b.sync_status_line());
+        assert!(
+            b.sync_status_line().contains("pulled 1"),
+            "{}",
+            b.sync_status_line()
+        );
 
         drop(a);
         drop(b);
