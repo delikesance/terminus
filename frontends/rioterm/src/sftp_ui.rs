@@ -146,6 +146,10 @@ impl ActiveSftp {
                         path: terminus_bridge::REMOTE_HOME.into(),
                     });
                 }
+                SftpEvent::ConnectFailed { side, message } => {
+                    self.state.set_connect_error(focus_from_side(side), message);
+                    self.state.status = "Not connected".into();
+                }
                 SftpEvent::Listed {
                     side,
                     path,

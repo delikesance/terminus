@@ -167,6 +167,11 @@ pub enum SftpEvent {
     Ready {
         side: SftpSide,
     },
+    /// The host on `side` could not be reached; `message` is for people.
+    ConnectFailed {
+        side: SftpSide,
+        message: String,
+    },
     Listed {
         side: SftpSide,
         path: String,
@@ -486,7 +491,9 @@ async fn handle_command(
                     emit(events, wake, SftpEvent::Ready { side });
                 }
                 Err(err) => {
-                    emit(events, wake, SftpEvent::Failed(err.to_string()));
+                    let message =
+                        terminus_core::ProbeError::from_error(err).user_message();
+                    emit(events, wake, SftpEvent::ConnectFailed { side, message });
                 }
             }
             false
@@ -2863,6 +2870,32 @@ async fn transfer_folder_differential_remote_to_remote(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_refused_connection_names_its_pane_in_plain_words() {
+        // Port 1 on loopback: nothing listens there.
+        let worker = SftpWorker::spawn(None);
+        worker.send(SftpCommand::Connect {
+            side: SftpSide::Right,
+            opts: terminus_core::SshConnectOptions::password("127.0.0.1", 1, "u", "p"),
+        });
+        let mut failure = None;
+        for _ in 0..100 {
+            for event in worker.drain() {
+                if let SftpEvent::ConnectFailed { side, message } = event {
+                    failure = Some((side, message));
+                }
+            }
+            if failure.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let (side, message) = failure.expect("connect failure reported");
+        assert_eq!(side, SftpSide::Right);
+        assert!(message.contains("port"), "{message}");
+        assert!(!message.contains("os error"), "{message}");
+    }
 
     #[test]
     fn local_list_command_routes_without_remote() {

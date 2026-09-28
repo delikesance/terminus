@@ -61,8 +61,11 @@ pub fn paint(
     );
 
     paint_flat(sugarloaf, &layout.footer, theme.button_bg, DEPTH, ORDER);
-    let footer_text = state.error.as_deref().unwrap_or(state.status.as_str());
-    let footer_color = if state.error.is_some() {
+    let footer_text = state.footer_text();
+    let footer_failed = state.error.is_some()
+        || state.left.connect_error.is_some()
+        || state.right.connect_error.is_some();
+    let footer_color = if footer_failed {
         theme.danger
     } else {
         theme.text_muted
@@ -442,6 +445,26 @@ fn paint_side(
         DEPTH,
         ORDER,
     );
+
+    if let Some(message) = side.connect_error.as_deref() {
+        // Say why the pane is empty, and how to try again.
+        let x = list.x + PANE_PAD;
+        let room = list.width - 2.0 * PANE_PAD;
+        let mut y = list.y + 18.0;
+        for (text, color) in [
+            (format!("Couldn't connect to {}", side.title()), theme.text),
+            (message.to_string(), theme.danger),
+            (
+                "Right-click the host and choose Open SFTP to retry.".to_string(),
+                theme.text_muted,
+            ),
+        ] {
+            let shown = fit_text(sugarloaf, &text, 12.0, room, Elide::Tail);
+            draw_text(sugarloaf, x, y, &shown, 12.0, color);
+            y += 20.0;
+        }
+        return;
+    }
 
     paint_entries(
         sugarloaf,
