@@ -168,6 +168,15 @@ if [[ "$LINUX_ONLY" == "0" ]]; then
         echo "release.sh: terminus.exe not found in target/x86_64-pc-windows-msvc/release" >&2
         exit 1
     fi
+    # Zip the in-app updater installs from (per-user and portable copies
+    # replace their own terminus.exe; see crates/terminus-update).
+    WIN_STAGE="$(mktemp -d)"
+    cp "$WIN_BIN" "$WIN_STAGE/terminus.exe"
+    rm -f "$DIST_DIR/terminus-windows-x86_64.zip"
+    (cd "$WIN_STAGE" && zip -q -9 "$DIST_DIR/terminus-windows-x86_64.zip" terminus.exe)
+    rm -rf "$WIN_STAGE"
+    UPLOAD+=("$DIST_DIR/terminus-windows-x86_64.zip")
+
     # Build Windows NSIS Setup Wizard (.exe)
     if command -v makensis >/dev/null 2>&1; then
         echo "Building Windows installer (terminus-setup-x86_64.exe) with NSIS..."
