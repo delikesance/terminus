@@ -8,8 +8,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use terminus_update::{
-    cleanup_after_update, detect_install, install, plan, Client, InstallKind, Installer,
-    Os, Probe, UpdateError, UpdatePlan,
+    cleanup_after_update, detect_install, install, install_renaming_aside, plan, Client,
+    InstallKind, Installer, Os, Probe, UpdateError, UpdatePlan, WINDOWS_BINARY,
+    WINDOWS_ZIP,
 };
 
 type Routes = Arc<Mutex<HashMap<String, Vec<u8>>>>;
@@ -58,6 +59,7 @@ struct Fixture {
     routes: Routes,
     public_key: String,
     new_binary: Vec<u8>,
+    windows_exe: Vec<u8>,
 }
 
 /// A signed release with the assets `scripts/release.sh` publishes.
@@ -73,6 +75,11 @@ fn fixture(tag: &str) -> Fixture {
         ("terminus/terminus", &new_binary),
         ("terminus/rio.terminfo", b"terminfo".as_slice()),
     ]);
+    let windows_exe = format!("MZ terminus {tag}").into_bytes();
+    let zip = zip_many(&[
+        ("terminus.exe", windows_exe.as_slice()),
+        ("README.txt", b"portable".as_slice()),
+    ]);
     let setup = b"MZ nsis setup".to_vec();
     let msi = b"MSI package".to_vec();
     let deb = b"!<arch> deb".to_vec();
@@ -81,6 +88,7 @@ fn fixture(tag: &str) -> Fixture {
     let rpm_name = format!("terminus-{version}-1.x86_64.rpm");
     let files: Vec<(String, Vec<u8>)> = vec![
         ("terminus-linux-x86_64.tar.gz".into(), tarball),
+        ("terminus-windows-x86_64.zip".into(), zip),
         ("terminus-setup-x86_64.exe".into(), setup),
         ("terminus-x86_64.msi".into(), msi),
         (deb_name, deb),
@@ -135,7 +143,23 @@ fn fixture(tag: &str) -> Fixture {
         routes,
         public_key,
         new_binary,
+        windows_exe,
     }
+}
+
+fn zip_many(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut out);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, data) in entries {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    out.into_inner()
 }
 
 fn tar_gz_many(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -428,10 +452,95 @@ fn install_kind_follows_how_terminus_was_installed() {
         detect_install(&p("D:/tools/terminus.exe"), Os::Windows, &none),
         InstallKind::Unknown { .. }
     ));
+    // Per-user install (writable, even with an uninstaller) and portable
+    // copies replace their own exe: no installer, no admin prompt.
+    let per_user = FakeProbe {
+        files: vec!["C:/Users/me/AppData/Local/Programs/Terminus/Uninstall.exe"],
+        writable: vec!["C:/Users/me/AppData/Local/Programs/Terminus"],
+    };
+    let exe = p("C:/Users/me/AppData/Local/Programs/Terminus/terminus.exe");
+    assert_eq!(
+        detect_install(&exe, Os::Windows, &per_user),
+        InstallKind::WindowsSelf { exe: exe.clone() }
+    );
+    let portable = FakeProbe {
+        files: vec![],
+        writable: vec!["D:/tools"],
+    };
+    assert!(matches!(
+        detect_install(&p("D:/tools/terminus.exe"), Os::Windows, &portable),
+        InstallKind::WindowsSelf { .. }
+    ));
     assert!(matches!(
         detect_install(&p("/Applications/Terminus/terminus"), Os::Macos, &none),
         InstallKind::Unknown { .. }
     ));
+}
+
+#[test]
+fn windows_self_updates_from_the_signed_zip() {
+    let f = fixture("v9.9.9");
+    let client = client(&f);
+    let release = client.check("0.5.30").unwrap().expect("newer");
+    let exe = std::path::PathBuf::from("C:/x/terminus.exe");
+    let UpdatePlan::ReplaceBinary { asset, entry, .. } =
+        plan(InstallKind::WindowsSelf { exe })
+    else {
+        panic!("windows self-install replaces the binary")
+    };
+    assert_eq!(
+        (asset.as_str(), entry.as_str()),
+        (WINDOWS_ZIP, WINDOWS_BINARY)
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let staged = client
+        .stage_binary(&release, &asset, &entry, dir.path())
+        .expect("zip staged");
+    assert_eq!(std::fs::read(&staged).unwrap(), f.windows_exe);
+}
+
+#[test]
+fn a_running_exe_is_moved_aside_then_replaced() {
+    // Windows cannot overwrite a running .exe but can rename it.
+    let dir = tempfile::tempdir().unwrap();
+    let exe = dir.path().join("terminus.exe");
+    std::fs::write(&exe, b"old").unwrap();
+    let staged = dir.path().join(".terminus-update-new");
+    std::fs::write(&staged, b"new").unwrap();
+    install_renaming_aside(&staged, &exe).expect("swapped");
+    assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+    assert!(!staged.exists());
+    let aside: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".terminus-update-")
+        })
+        .collect();
+    assert_eq!(aside.len(), 1, "old exe kept aside until the next start");
+    cleanup_after_update(&exe);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn a_quick_check_gives_up_on_a_silent_server() {
+    // Accepts connections and never answers.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            held.push(stream);
+        }
+    });
+    let client = Client::new(&format!("http://{addr}/latest"), None)
+        .unwrap()
+        .with_timeout(std::time::Duration::from_millis(500));
+    let started = std::time::Instant::now();
+    assert!(client.check("0.5.30").is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
 }
 
 #[test]

@@ -43,6 +43,10 @@ pub const SIGNATURE_ASSET: &str = "checksums.txt.minisig";
 pub const LINUX_TARBALL: &str = "terminus-linux-x86_64.tar.gz";
 /// Binary name inside [`LINUX_TARBALL`] (`terminus/terminus`).
 pub const LINUX_BINARY: &str = "terminus";
+/// Windows zip the app updates itself from (`terminus.exe` inside).
+pub const WINDOWS_ZIP: &str = "terminus-windows-x86_64.zip";
+/// Binary name inside [`WINDOWS_ZIP`].
+pub const WINDOWS_BINARY: &str = "terminus.exe";
 /// NSIS setup wizard.
 pub const WINDOWS_SETUP: &str = "terminus-setup-x86_64.exe";
 /// MSI package.
@@ -169,6 +173,9 @@ impl Probe for FsProbe {
 pub enum InstallKind {
     /// `terminus-linux-x86_64.tar.gz` unpacked into a folder we can write.
     LinuxTarball { exe: PathBuf },
+    /// Windows copy in a folder we can write (per-user install or
+    /// portable): replaces its own exe from [`WINDOWS_ZIP`].
+    WindowsSelf { exe: PathBuf },
     /// `.deb` (dpkg owns the binary).
     Deb,
     /// `.rpm` (rpm owns the binary).
@@ -253,7 +260,11 @@ pub fn detect_install(exe: &Path, os: Os, probe: &dyn Probe) -> InstallKind {
             }
         }
         Os::Windows => {
-            if probe.exists(&dir.join("Uninstall.exe")) {
+            if probe.dir_writable(dir) {
+                InstallKind::WindowsSelf {
+                    exe: exe.to_path_buf(),
+                }
+            } else if probe.exists(&dir.join("Uninstall.exe")) {
                 InstallKind::WindowsNsis
             } else if text.to_ascii_lowercase().contains("/program files/") {
                 InstallKind::WindowsMsi
@@ -277,6 +288,11 @@ pub fn plan(kind: InstallKind) -> UpdatePlan {
             exe,
             asset: LINUX_TARBALL.into(),
             entry: LINUX_BINARY.into(),
+        },
+        InstallKind::WindowsSelf { exe } => UpdatePlan::ReplaceBinary {
+            exe,
+            asset: WINDOWS_ZIP.into(),
+            entry: WINDOWS_BINARY.into(),
         },
         InstallKind::WindowsNsis => UpdatePlan::RunInstaller {
             asset: WINDOWS_SETUP.into(),
@@ -376,21 +392,19 @@ impl Client {
         // OS trust store (works behind TLS-inspecting corporate proxies).
         // TLS is not what makes an update trustworthy: the minisign signature
         // over the checksums is, so a proxy can at worst block an update.
-        let tls = ureq::tls::TlsConfig::builder()
-            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-            .build();
-        let agent = ureq::Agent::config_builder()
-            .tls_config(tls)
-            .timeout_connect(Some(Duration::from_secs(15)))
-            .timeout_recv_body(Some(Duration::from_secs(60)))
-            .user_agent(format!("terminus-updater/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .new_agent();
+        let agent = build_agent(None);
         Ok(Self {
             endpoint: endpoint.to_string(),
             public_key,
             agent,
         })
+    }
+
+    /// Give every request at most `limit` in total (the launch-time check
+    /// must not hold up the app on a slow or silent network).
+    pub fn with_timeout(mut self, limit: Duration) -> Self {
+        self.agent = build_agent(Some(limit));
+        self
     }
 
     /// Client for the official releases and the compiled-in key.
@@ -618,7 +632,57 @@ fn expected_hash(checksums: &str, name: &str) -> Option<String> {
 
 /// Extract the file whose name is `entry_name` (at any depth) from a
 /// verified `.tar.gz` into `dest` (mode 0755).
+fn build_agent(total: Option<Duration>) -> ureq::Agent {
+    let tls = ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    ureq::Agent::config_builder()
+        .tls_config(tls)
+        .timeout_global(total)
+        .timeout_connect(Some(total.unwrap_or(Duration::from_secs(15))))
+        .timeout_recv_body(Some(Duration::from_secs(60)))
+        .user_agent(format!("terminus-updater/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .new_agent()
+}
+
+/// Copy the file named `entry_name` out of a zip archive into `dest`.
+fn extract_zip_entry(archive: &Path, entry_name: &str, dest: &Path) -> Result<bool> {
+    let file = std::fs::File::open(archive)?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| UpdateError::BadRelease(format!("bad zip: {e}")))?;
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| UpdateError::BadRelease(format!("bad zip: {e}")))?;
+        let name = entry.name().replace('\\', "/");
+        if entry.is_file() && name.rsplit('/').next() == Some(entry_name) {
+            let mut out = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(dest)?;
+            std::io::copy(&mut entry, &mut out)?;
+            out.sync_all()?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn extract_entry(archive: &Path, entry_name: &str, dest: &Path) -> Result<()> {
+    let mut magic = [0u8; 4];
+    let is_zip = std::fs::File::open(archive)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok()
+        && magic == *b"PK\x03\x04";
+    if is_zip {
+        if !extract_zip_entry(archive, entry_name, dest)? {
+            return Err(UpdateError::MissingAsset(format!(
+                "{entry_name} inside the archive"
+            )));
+        }
+        return Ok(());
+    }
     let file = std::fs::File::open(archive)?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     let mut found = false;
@@ -655,16 +719,38 @@ fn extract_entry(archive: &Path, entry_name: &str, dest: &Path) -> Result<()> {
 /// running binary (atomic; the running process keeps its open inode).
 /// The mode of the old binary is kept.
 pub fn install(new_binary: &Path, exe: &Path) -> Result<()> {
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(exe)
-            .map(|m| m.permissions().mode() & 0o7777)
-            .unwrap_or(0o755)
-            | 0o100;
-        std::fs::set_permissions(new_binary, std::fs::Permissions::from_mode(mode))?;
+        install_renaming_aside(new_binary, exe)
     }
-    std::fs::rename(new_binary, exe)?;
+    #[cfg(not(windows))]
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(exe)
+                .map(|m| m.permissions().mode() & 0o7777)
+                .unwrap_or(0o755)
+                | 0o100;
+            std::fs::set_permissions(new_binary, std::fs::Permissions::from_mode(mode))?;
+        }
+        std::fs::rename(new_binary, exe)?;
+        Ok(())
+    }
+}
+
+/// Windows swap: a running .exe cannot be replaced or deleted, but it can
+/// be renamed. Move it aside (swept by [`cleanup_after_update`] on the next
+/// start), then move the new binary into its place; put the old one back if
+/// that fails.
+pub fn install_renaming_aside(new_binary: &Path, exe: &Path) -> Result<()> {
+    let dir = exe.parent().unwrap_or(Path::new("."));
+    let aside = dir.join(format!("{STAGE_PREFIX}old-{}.exe", uuid::Uuid::new_v4()));
+    std::fs::rename(exe, &aside)?;
+    if let Err(err) = std::fs::rename(new_binary, exe) {
+        let _ = std::fs::rename(&aside, exe);
+        return Err(err.into());
+    }
     Ok(())
 }
 
