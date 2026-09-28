@@ -158,10 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let (mut config, config_error) = match rio_backend::config::Config::try_load() {
-        Ok(config) => (config, None),
-        Err(err) => (rio_backend::config::Config::default(), Some(err)),
-    };
+    let (mut config, config_error) = startup_config(
+        rio_backend::config::Config::try_load(),
+        || rio_backend::config::create_config_file(None),
+    );
 
     // Read platform property and overwrite values per OS
     //
@@ -256,4 +256,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// A missing config file is a first run, not an error: write the defaults
+/// and open the app instead of a "press enter" welcome screen.
+fn startup_config(
+    loaded: Result<rio_backend::config::Config, rio_backend::config::ConfigError>,
+    create_default: impl FnOnce(),
+) -> (
+    rio_backend::config::Config,
+    Option<rio_backend::config::ConfigError>,
+) {
+    match loaded {
+        Ok(config) => (config, None),
+        Err(rio_backend::config::ConfigError::PathNotFound) => {
+            create_default();
+            (rio_backend::config::Config::default(), None)
+        }
+        Err(err) => (rio_backend::config::Config::default(), Some(err)),
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use rio_backend::config::{Config, ConfigError};
+
+    #[test]
+    fn a_first_run_writes_the_default_config_instead_of_a_welcome_screen() {
+        let mut created = false;
+        let (_, error) = startup_config(Err(ConfigError::PathNotFound), || created = true);
+        assert!(created, "default config written");
+        assert!(error.is_none(), "no welcome/error route on first run");
+    }
+
+    #[test]
+    fn a_broken_config_is_still_reported() {
+        let mut created = false;
+        let (_, error) = startup_config(
+            Err(ConfigError::ErrLoadingConfig("bad toml".into())),
+            || created = true,
+        );
+        assert!(!created);
+        assert!(error.is_some());
+    }
+
+    #[test]
+    fn a_valid_config_is_used_as_is() {
+        let (_, error) = startup_config(Ok(Config::default()), || panic!("no write"));
+        assert!(error.is_none());
+    }
 }
