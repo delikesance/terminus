@@ -47,8 +47,6 @@ pub enum Modal {
     Assistant,
     /// A non-terminal route (the welcome / config screens).
     Route,
-    /// TOFU host key approval dialog (blocks SSH handshake).
-    TofuHostKeyApproval,
     /// Vault unlock passphrase entry.
     VaultUnlock,
     /// Host editor (add/edit host configuration).
@@ -56,8 +54,6 @@ pub enum Modal {
     AddSnippet,
     /// Settings modal (SQL Sync text fields).
     Settings,
-    /// SFTP dual-pane browser overlay.
-    SftpPane,
 }
 
 pub struct Route<'a> {
@@ -874,14 +870,6 @@ impl Route<'_> {
                 self.request_overlay_redraw();
                 true
             }
-
-            // Terminus overlays (TOFU host-key approval, vault unlock,
-            // SFTP dual-pane): scaffolding placeholders — swallow input
-            // until their handlers land (see milestone.md).
-            Modal::TofuHostKeyApproval
-            | Modal::VaultUnlock
-            | Modal::SftpPane
-            | Modal::AddSnippet => true,
         }
     }
 }

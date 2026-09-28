@@ -438,6 +438,7 @@ impl Updater {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn exit_action_armed(&self) -> bool {
         self.on_exit.is_some()
     }

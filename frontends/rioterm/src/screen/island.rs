@@ -3,7 +3,6 @@
 use super::{ChromePress, Screen};
 use crate::renderer::island;
 use crate::renderer::island::{TabStripLayout, CONTEXT_BAR_HEIGHT};
-use raw_window_handle::RawWindowHandle;
 use rio_backend::clipboard::Clipboard;
 use rio_window::event::ElementState;
 
@@ -209,34 +208,6 @@ impl Screen<'_> {
             ) {
                 if !is_right_click {
                     self.apply_window_control(window, control);
-                }
-                return true;
-            }
-        }
-
-        // Logo / + / search sit in the title bar outside the tab strip.
-        {
-            let mouse_y_unscaled = mouse_y as f32 / scale_factor;
-            let window_width_logical = window_width / scale_factor;
-            if let Some(action) = island::title_bar_hit(
-                window_width_logical,
-                mouse_x_unscaled,
-                mouse_y_unscaled,
-            ) {
-                if !is_right_click {
-                    match action {
-                        island::TitleBarAction::Logo => {}
-                        island::TitleBarAction::NewTab => {
-                            self.create_tab(clipboard);
-                        }
-                        island::TitleBarAction::Search => {
-                            self.chrome.panel.filter_focused = true;
-                            self.chrome.activity.selected = terminus_ui::Section::Servers;
-                            self.chrome.activity.collapsed = false;
-                            self.chrome.panel_visible = true;
-                        }
-                    }
-                    self.mark_dirty();
                 }
                 return true;
             }

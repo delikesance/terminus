@@ -468,17 +468,19 @@ fn normalize_name(name: &str) -> String {
 /// terminal. There is nothing to hide on the WSL side, so the flag is
 /// Windows-only.
 fn wsl_probe(exe: &Path) -> std::process::Command {
-    let mut command = std::process::Command::new(exe);
+    let command = std::process::Command::new(exe);
 
     #[cfg(target_os = "windows")]
-    {
+    let command = {
         use std::os::windows::process::CommandExt;
 
         /// `CREATE_NO_WINDOW`, from `Win32_System_Threading`.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+        let mut command = command;
         command.creation_flags(CREATE_NO_WINDOW);
-    }
+        command
+    };
 
     command
 }

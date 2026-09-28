@@ -97,6 +97,12 @@ export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
 
+# The static helper terminus-bridge embeds for SFTP folder diffs; both the
+# Linux and Windows builds embed it (it runs on the remote Linux host).
+echo "=== terminus-walk (x86_64-unknown-linux-musl) ==="
+cargo build --release -p terminus-walk --target x86_64-unknown-linux-musl
+export TERMINUS_REQUIRE_WALK=1
+
 DIST_DIR="$ROOT/dist"
 # Start empty: files left by an earlier build (another version's .deb/.rpm)
 # would otherwise be picked up by the globs below and published again.

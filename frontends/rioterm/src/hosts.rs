@@ -38,8 +38,6 @@ use terminus_ui::os_icons::HostStatus;
 use terminus_ui::sidebar::{Badge, HostItem, Row, SessionItem};
 use uuid::Uuid;
 
-/// Legacy WSL section label (no longer emitted by [`sidebar_rows`]).
-pub const WSL_SECTION: &str = "Windows (WSL)";
 /// Section label above this computer and WSL distros.
 pub const LOCAL_SECTION: &str = "Local";
 /// Section label above the stored SSH hosts and groups.
@@ -623,6 +621,7 @@ enum Command {
     CreateSnippet(terminus_ui::snippets::SnippetItem),
     DeleteSnippet(String),
     /// Persist without SSH probe (tests / legacy).
+    #[cfg(test)]
     Create(HostDraft),
     /// Probe SSH, then persist (+ seal password) on success.
     ProbeAndCreate(HostDraft),
@@ -807,6 +806,7 @@ impl HostRepository {
     }
 
     /// Whether a first load is still outstanding.
+    #[cfg(test)]
     pub fn loading(&self) -> bool {
         self.loading
     }
@@ -842,10 +842,6 @@ impl HostRepository {
 
     pub fn take_vault_message(&mut self) -> Option<String> {
         self.vault_message.take()
-    }
-
-    pub fn vault_message(&self) -> Option<&str> {
-        self.vault_message.as_deref()
     }
 
     pub fn sync_uri(&self) -> &str {
@@ -886,10 +882,12 @@ impl HostRepository {
         &self.platform
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.hosts.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.hosts.is_empty()
     }
@@ -1000,11 +998,13 @@ impl HostRepository {
     }
 
     /// Generate and persist a new Ed25519 managed SSH key.
+    #[cfg(test)]
     pub fn create_ssh_key(&mut self, name: &str) {
         self.create_ssh_key_with_pem(name, None);
     }
 
     /// Generate, or import `pem` when provided.
+    #[cfg(test)]
     pub fn create_ssh_key_with_pem(&mut self, name: &str, pem: Option<String>) {
         self.import_ssh_key(name, pem, None);
     }
@@ -1055,6 +1055,7 @@ impl HostRepository {
     }
 
     /// Persist without probing (tests). Prefer [`Self::probe_and_create`] in UI.
+    #[cfg(test)]
     pub fn create(&mut self, draft: &HostDraft) -> Result<(), String> {
         match draft.normalize() {
             Ok(normalized) => {
@@ -1177,7 +1178,6 @@ impl HostRepository {
                 Ok(HostEvent::SnippetsLoaded(snippets)) => {
                     self.snippet_items = snippets;
                 }
-                Ok(HostEvent::SnippetsLoaded(_)) => {}
                 Ok(HostEvent::VaultStatus {
                     unlocked,
                     configured,
@@ -1352,6 +1352,7 @@ fn worker(
                 ));
                 let _ = events.send(HostEvent::Platform(discover_platform()));
             }
+            #[cfg(test)]
             Command::Create(draft) => {
                 // Test / skip-probe path: no SSH round-trip.
                 let mut host = host_from_draft(&draft);
@@ -1431,7 +1432,7 @@ fn worker(
             Command::DeleteSnippet(id_str) => {
                 let r = runtime.block_on(async {
                     if let Ok(id_uuid) = uuid::Uuid::parse_str(&id_str) {
-                        let mut all = store.list_snippets().await.unwrap_or_default();
+                        let all = store.list_snippets().await.unwrap_or_default();
                         if let Some(mut snip) = all.into_iter().find(|s| s.id == id_uuid)
                         {
                             let now = chrono::Utc::now();
@@ -2688,7 +2689,8 @@ fn reorder_group(
     Ok("Reordered group".to_string())
 }
 
-/// Where the database file for `dir` lives (used by tests and diagnostics).
+/// Where the database file for `dir` lives.
+#[cfg(test)]
 pub fn database_path(dir: &Path) -> PathBuf {
     dir.join("terminus.db")
 }

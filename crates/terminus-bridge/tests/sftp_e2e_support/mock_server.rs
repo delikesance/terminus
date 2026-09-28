@@ -389,6 +389,7 @@ fn mock_tar_create(
 
     // Pack under a different root name: symlink on Unix, temp rename elsewhere.
     let link = parent.join(root_name);
+    #[cfg(not(unix))]
     let src = parent.join(base);
     #[cfg(unix)]
     {

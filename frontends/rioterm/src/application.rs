@@ -1239,26 +1239,22 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         if route.window.screen.mouse.y
                             <= (CONTEXT_BAR_HEIGHT * scale) as f64
                         {
+                            // Drag the window from the title bar, except over the
+                            // Windows caption buttons.
+                            #[cfg(target_os = "windows")]
                             let start_drag = {
                                 let logical_w =
                                     route.window.screen.sugarloaf.window_size().width
                                         / scale;
                                 let x = route.window.screen.mouse.x as f32 / scale as f32;
                                 let y = route.window.screen.mouse.y as f32 / scale as f32;
-                                let on_action = crate::renderer::island::title_bar_hit(
+                                crate::renderer::window_controls::hit_test(
                                     logical_w, x, y,
                                 )
-                                .is_some();
-                                #[cfg(target_os = "windows")]
-                                let on_caption =
-                                    crate::renderer::window_controls::hit_test(
-                                        logical_w, x, y,
-                                    )
-                                    .is_some();
-                                #[cfg(not(target_os = "windows"))]
-                                let on_caption = false;
-                                !on_action && !on_caption
+                                .is_none()
                             };
+                            #[cfg(not(target_os = "windows"))]
+                            let start_drag = true;
                             if start_drag {
                                 let _ = route.window.winit_window.drag_window();
                             }
@@ -1428,7 +1424,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::SubmitAddSnippet(values) => {
+                                    ChromeAction::SubmitAddSnippet => {
                                         route.window.screen.submit_snippet_form();
                                         route.request_overlay_redraw();
                                         return;
@@ -1989,12 +1985,6 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::RunSnippet(cmd) => {
-                                        let line = format!("{cmd}\r");
-                                        route.window.screen.paste(&line, false);
-                                        route.request_overlay_redraw();
-                                        return;
-                                    }
                                     // Toggling the panel changes the margin
                                     // `chrome_press` already re-applied; the
                                     // grid re-layout marks itself dirty, but a
@@ -2078,7 +2068,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::SubmitAddSnippet(values) => {
+                                    ChromeAction::SubmitAddSnippet => {
                                         route.window.screen.submit_snippet_form();
                                         route.request_overlay_redraw();
                                         return;
@@ -2100,7 +2090,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    other => {
+                                    _other => {
                                         route.request_overlay_redraw();
                                         return;
                                     }

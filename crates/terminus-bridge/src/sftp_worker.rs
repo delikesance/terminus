@@ -23,7 +23,6 @@ use tracing::{debug, warn};
 
 use crate::folder_diff::{
     plan_differential, ConflictAction, ConflictPolicy, DiffAction, FileNode,
-    FOLDER_SYNC_CACHE_NAME,
 };
 
 pub use crate::folder_diff::ConflictAction as SftpConflictAction;

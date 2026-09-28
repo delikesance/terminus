@@ -68,6 +68,7 @@ impl ActiveSftp {
     }
 
     /// Both panes local — used by unit/E2E harnesses (no SSH).
+    #[cfg(test)]
     pub fn start_local_dual(
         left: PathBuf,
         right: PathBuf,

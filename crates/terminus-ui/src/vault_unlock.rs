@@ -6,8 +6,7 @@
 
 use crate::geom::Rect;
 use crate::settings::{
-    field_input_in_card, FIELD_CARD_HEIGHT, FIELD_CARD_PAD, FIELD_EYE_ICON,
-    FIELD_EYE_SLOT,
+    field_input_in_card, FIELD_CARD_HEIGHT, FIELD_EYE_ICON, FIELD_EYE_SLOT,
 };
 
 pub const WIDTH: f32 = 400.0;
@@ -569,7 +568,6 @@ mod tests {
             layout.hit_test(text.x + 2.0, text.y + 2.0),
             VaultUnlockHit::Field
         );
-        let _ = FIELD_CARD_PAD;
     }
 
     #[test]

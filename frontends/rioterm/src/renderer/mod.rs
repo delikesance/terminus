@@ -6,19 +6,6 @@ pub(crate) fn is_printable_text(text: &str) -> bool {
     !text.is_empty() && text.chars().all(|c| !c.is_control())
 }
 
-/// The RGB triplet behind a config color, for the chrome palette.
-///
-/// Config colors are linear-ish `[f32; 4]`; the chrome wants plain
-/// bytes so it can do its own arithmetic on them.
-#[inline]
-pub(crate) fn rgb_u8(color: [f32; 4]) -> [u8; 3] {
-    [
-        (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[1].clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color[2].clamp(0.0, 1.0) * 255.0).round() as u8,
-    ]
-}
-
 pub mod assistant;
 pub mod chrome;
 pub mod command_palette;

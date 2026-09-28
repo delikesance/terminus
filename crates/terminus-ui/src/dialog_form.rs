@@ -13,6 +13,12 @@ pub const FIELD_GAP: f32 = 12.0;
 pub const DIALOG_RADIUS: f32 = 16.0;
 pub const BUTTON_HEIGHT: f32 = 32.0;
 pub const BUTTON_GAP: f32 = 8.0;
+/// Height of the error line above the buttons.
+pub const ERROR_LINE_HEIGHT: f32 = 24.0;
+/// Primary (save) button width.
+pub const SAVE_BUTTON_WIDTH: f32 = 84.0;
+/// Cancel button width.
+pub const CANCEL_BUTTON_WIDTH: f32 = 72.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormFieldData {
@@ -205,13 +211,9 @@ impl DialogFormLayout {
             height += n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP;
         }
 
-        let error_rect = if form.error.is_some() {
-            height += PAD;
-            height += 24.0; // error text height space
-            Some(Rect::new(0.0, 0.0, 0.0, 0.0)) // assigned later
-        } else {
-            None
-        };
+        if form.error.is_some() {
+            height += PAD + ERROR_LINE_HEIGHT;
+        }
 
         height += PAD + BUTTON_HEIGHT + PAD;
 
@@ -233,18 +235,15 @@ impl DialogFormLayout {
             fields.last().unwrap().bottom() + PAD
         };
 
-        let mut final_error_rect = None;
-        if form.error.is_some() {
-            final_error_rect =
-                Some(Rect::new(x + PAD, bottom_y, width - 2.0 * PAD, 24.0));
-            bottom_y += 24.0 + PAD;
-        }
+        let error_line = form.error.is_some().then(|| {
+            let line = Rect::new(x + PAD, bottom_y, width - 2.0 * PAD, ERROR_LINE_HEIGHT);
+            bottom_y += ERROR_LINE_HEIGHT + PAD;
+            line
+        });
 
-        // buttons are aligned to the right like AddHostForm
-        // wait, AddHostForm has CANCEL_BUTTON_WIDTH and CONNECT_BUTTON_WIDTH
-        // Let's use 84.0 and 72.0
-        let btn_w = 84.0;
-        let cancel_w = 72.0;
+        // Buttons are right-aligned, like the add-host dialog.
+        let btn_w = SAVE_BUTTON_WIDTH;
+        let cancel_w = CANCEL_BUTTON_WIDTH;
 
         // Right alignment
         let save_x = x + width - PAD - btn_w;
@@ -257,7 +256,7 @@ impl DialogFormLayout {
             dialog,
             title,
             fields,
-            error_line: final_error_rect,
+            error_line,
             cancel_btn,
             save_btn,
         }

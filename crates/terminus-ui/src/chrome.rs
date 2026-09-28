@@ -53,7 +53,7 @@ pub enum ChromeAction {
     /// The add-host row was pressed: open the editor.
     AddHost,
     OpenAddSnippet,
-    SubmitAddSnippet(crate::add_snippet::SnippetFormValues),
+    SubmitAddSnippet,
     DeleteSnippet(String),
     /// The new-group control was pressed: toggle the inline form.
     NewGroup,
@@ -694,7 +694,7 @@ impl Chrome {
                         ChromeAction::Consumed
                     }
                     crate::dialog_form::DynamicFormHit::Save => {
-                        ChromeAction::SubmitAddSnippet(self.snippet_form.values())
+                        ChromeAction::SubmitAddSnippet
                     }
                     crate::dialog_form::DynamicFormHit::Cancel
                     | crate::dialog_form::DynamicFormHit::Background => {

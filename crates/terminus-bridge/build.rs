@@ -32,44 +32,24 @@ fn main() {
         workspace.join("crates/terminus-walk/src/main.rs").display()
     );
 
-    let musl_bin = musl_candidates
-        .iter()
-        .find(|p| p.is_file())
-        .cloned()
-        .unwrap_or_else(|| musl_candidates[0].clone());
-
-    if !musl_bin.is_file() {
-        // Do not spawn nested `cargo` here. The parent build holds the
-        // package lock; a child `cargo` waits on it forever (deadlock),
-        // including inside `nix build` / `buildRustPackage`.
-        // Pre-build when you need a real embed:
-        //   cargo build -p terminus-walk --release --target <triple>
-        println!(
-            "cargo:warning=terminus-walk musl binary not found; will embed empty placeholder (build with --target {triple} first to embed)"
-        );
-    }
-
-    let musl_bin = musl_candidates
-        .iter()
-        .find(|p| p.is_file())
-        .cloned()
-        .unwrap_or(musl_bin);
+    // Releases must ship the helper: scripts/release.sh builds it first and
+    // sets TERMINUS_REQUIRE_WALK=1. Development builds embed an empty
+    // placeholder instead, and the SFTP folder diff reports it clearly at
+    // runtime (see walk_remote.rs). We never spawn a nested `cargo` here:
+    // the parent build holds the package lock (deadlock, also under nix).
+    println!("cargo:rerun-if-env-changed=TERMINUS_REQUIRE_WALK");
+    let required = env::var_os("TERMINUS_REQUIRE_WALK").is_some_and(|v| v != "0");
 
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let embedded = out.join("terminus-walk.embedded");
-    if musl_bin.is_file() {
-        fs::copy(&musl_bin, &embedded).expect("copy musl terminus-walk into OUT_DIR");
-        println!(
-            "cargo:warning=embedded terminus-walk from {} ({} bytes)",
-            musl_bin.display(),
-            fs::metadata(&musl_bin).map(|m| m.len()).unwrap_or(0)
-        );
-    } else {
-        // Placeholder so include_bytes! still compiles; runtime will error clearly.
-        fs::write(&embedded, []).expect("write empty embed placeholder");
-        println!(
-            "cargo:warning=terminus-walk musl binary missing at {}; run: cargo build -p terminus-walk --release --target {triple}",
-            musl_bin.display()
-        );
+    match musl_candidates.iter().find(|p| p.is_file()) {
+        Some(musl_bin) => {
+            fs::copy(musl_bin, &embedded).expect("copy musl terminus-walk into OUT_DIR");
+        }
+        None if required => panic!(
+            "terminus-walk is required but missing at {}; run: cargo build -p terminus-walk --release --target {triple}",
+            musl_candidates[0].display()
+        ),
+        None => fs::write(&embedded, []).expect("write empty embed placeholder"),
     }
 }

@@ -561,6 +561,7 @@ pub fn create_pty_with_spawn(
 
     // No program means the caller wants the user's default shell, which is the
     // only case that goes through `login`. A named program is spawned as given.
+    #[cfg(target_os = "macos")]
     let uses_default_shell = shell.is_none();
     let shell_program = shell.unwrap_or(&user.shell);
 
@@ -1161,7 +1162,6 @@ mod login_argv_tests {
 
 #[cfg(test)]
 mod termp_tests {
-    use super::*;
 
     // The pty output-queue watermark is derived from the baud rate on
     // BSD/XNU; a zero speed clamps it to a ~100-byte floor and caps

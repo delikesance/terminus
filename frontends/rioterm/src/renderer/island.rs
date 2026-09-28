@@ -33,6 +33,7 @@ const TITLE_ELLIPSIS: char = '…';
 const DRAG_THRESHOLD: f32 = 4.0;
 const DRAG_ANIMATION_LENGTH: f32 = 0.15;
 const DRAG_MAX_DT: f32 = 0.05;
+#[cfg(not(target_os = "windows"))]
 const ISLAND_MARGIN_RIGHT: f32 = 8.0;
 
 /// Color picker constants
@@ -78,11 +79,11 @@ const CLOSE_ALPHA_IDLE: f32 = 0.55;
 const CLOSE_ALPHA_HOVER: f32 = 0.95;
 const INACTIVE_CUSTOM_MUTE: f32 = 0.55;
 
-/// Right margin of the tab strip: caption buttons (Windows) + action
-/// strip (+ / search), or a small gap + actions elsewhere.
+/// Right margin of the tab strip: caption buttons on Windows, a small gap
+/// elsewhere.
 #[inline]
 fn island_margin_right() -> f32 {
-    action_strip_width() + {
+    {
         #[cfg(target_os = "windows")]
         {
             crate::renderer::window_controls::MARGIN_RIGHT
@@ -107,37 +108,10 @@ fn island_margin_left() -> f32 {
     }
 }
 
-/// Width of the + / search action strip before window controls.
-/// Apple HIG mock has no search/+ strip — only traffic lights / captions + tabs.
-pub const ACTION_SLOT: f32 = 0.0;
-const ACTION_STRIP_COUNT: f32 = 0.0;
 /// App-logo hit/paint slot on the left of the title bar.
 /// Non-macOS: small inset instead of a logo (mock has no logo).
 pub const LOGO_SLOT: f32 = 12.0;
 const TITLEBAR_ICON: f32 = 14.0;
-
-#[inline]
-pub fn action_strip_width() -> f32 {
-    0.0
-}
-
-/// Title-bar chrome hit (excluding tabs / window controls).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TitleBarAction {
-    Logo,
-    NewTab,
-    Search,
-}
-
-/// Hit-test logo / + / search in logical coordinates.
-/// Apple HIG mock: no logo / search / + — always `None`.
-pub fn title_bar_hit(
-    _window_width_logical: f32,
-    _x: f32,
-    _y: f32,
-) -> Option<TitleBarAction> {
-    None
-}
 
 struct TabDrag {
     // Index of the dragged tab, follows the tab as it reorders.
@@ -362,17 +336,6 @@ fn island_fills(bg: [f32; 4]) -> IslandFills {
     }
 }
 
-#[inline]
-fn over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
-    let a = src[3];
-    [
-        src[0] * a + dst[0] * (1.0 - a),
-        src[1] * a + dst[1] * (1.0 - a),
-        src[2] * a + dst[2] * (1.0 - a),
-        dst[3],
-    ]
-}
-
 #[allow(clippy::too_many_arguments)]
 fn draw_island(
     sugarloaf: &mut Sugarloaf,
@@ -576,7 +539,20 @@ pub struct Island {
     window_control_hover: Option<crate::renderer::window_controls::WindowControl>,
 }
 
+/// `src` composited over `dst` (tests check blended tab colors with it).
+#[cfg(test)]
+fn over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
+    let a = src[3];
+    [
+        src[0] * a + dst[0] * (1.0 - a),
+        src[1] * a + dst[1] * (1.0 - a),
+        src[2] * a + dst[2] * (1.0 - a),
+        dst[3],
+    ]
+}
+
 impl Island {
+    #[cfg(test)]
     pub fn new(
         inactive_text_color: [f32; 4],
         active_text_color: [f32; 4],
@@ -626,12 +602,6 @@ impl Island {
         self.hovered_tab = tab;
         self.close_hover = on_close;
         changed
-    }
-
-    /// Set whether the cursor hovers a tab's close button.
-    /// Returns true when the state changed (the caller redraws).
-    pub fn set_close_hover(&mut self, hover: bool) -> bool {
-        self.set_tab_hover(self.hovered_tab, hover)
     }
 
     /// Set which Windows caption button is hovered. Returns true when
@@ -979,7 +949,7 @@ impl Island {
         sugarloaf: &mut Sugarloaf,
         dimensions: (f32, f32, f32),
         context_manager: &ContextManager<EventProxy>,
-        bg_color: [f32; 4],
+        _bg_color: [f32; 4],
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         window_maximized: bool,
     ) {
@@ -2212,7 +2182,7 @@ mod tests {
     fn test_layout() -> TabStripLayout {
         TabStripLayout {
             left_margin: 0.0,
-            right_margin: ISLAND_MARGIN_RIGHT,
+            right_margin: island_margin_right(),
             widths: smallvec::smallvec![100.0, 100.0, 100.0, 100.0],
         }
     }
@@ -2223,7 +2193,7 @@ mod tests {
         // the button centers at 354 - CLOSE_MARGIN_RIGHT.
         let layout = TabStripLayout {
             left_margin: 0.0,
-            right_margin: ISLAND_MARGIN_RIGHT,
+            right_margin: island_margin_right(),
             widths: smallvec::smallvec![180.0, 180.0],
         };
         let cx = close_button_center_x(&layout, 1).unwrap();
@@ -2238,7 +2208,7 @@ mod tests {
         // rendering and click handling agree via the shared helper.
         let narrow = TabStripLayout {
             left_margin: 0.0,
-            right_margin: ISLAND_MARGIN_RIGHT,
+            right_margin: island_margin_right(),
             widths: smallvec::smallvec![60.0; 10],
         };
         assert_eq!(close_button_center_x(&narrow, 3), None);
@@ -2250,7 +2220,7 @@ mod tests {
         // max_text; the close hit box must start at or after that point.
         let layout = TabStripLayout {
             left_margin: 0.0,
-            right_margin: ISLAND_MARGIN_RIGHT,
+            right_margin: island_margin_right(),
             widths: smallvec::smallvec![180.0, 180.0],
         };
         let cx = close_button_center_x(&layout, 0).unwrap();

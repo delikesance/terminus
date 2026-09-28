@@ -10,17 +10,6 @@ use crate::event::{Msg, RioEvent};
 pub use crate::layout::{ContextDimension, ContextGrid, ContextGridItem};
 use crate::messenger::Messenger;
 
-/// Specifies the kind of session a context should open.
-#[derive(Debug, Clone)]
-pub enum SessionSpec {
-    /// Launch a local shell via teletypewriter PTY.
-    Local {
-        shell: Vec<String>,
-        working_dir: Option<String>,
-    },
-    /// Connect to a remote host via SSH (from terminus-core store).
-    Ssh { host_id: String },
-}
 use crate::performer::{self, Machine};
 use renderable::Cursor;
 use renderable::RenderableContent;
@@ -1214,7 +1203,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
     }
 
-    #[inline]
+    #[cfg(test)]
     pub fn add_context(&mut self, redirect: bool, rich_text_id: usize) {
         let _ = self.add_context_with_shell(redirect, rich_text_id, None, None, None);
     }

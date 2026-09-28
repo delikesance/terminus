@@ -33,7 +33,6 @@ use crate::crosswords::grid::Scroll;
 use crate::crosswords::pos::Pos;
 use crate::crosswords::Mode;
 use crate::hints::HintState;
-use crate::hosts;
 use crate::layout::ContextDimension;
 use crate::mouse::{calculate_mouse_position, Mouse};
 use crate::renderer::utils::padding_top_from_config;
@@ -51,7 +50,6 @@ use rio_backend::sugarloaf::{
     SugarloafWindowSize,
 };
 use rio_window::event::Modifiers;
-use rio_window::keyboard::ModifiersState;
 use std::error::Error;
 use touch::TouchPurpose;
 
@@ -536,12 +534,14 @@ impl Screen<'_> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::hint_actions::post_process_hyperlink_uri;
     #[cfg(unix)]
     use super::shell::private_temp_dir;
     use super::shell::{ssh_shell, GSSAPI_SSH_OPTIONS};
     use super::*;
+    use crate::hosts;
     use chrono::Utc;
 
     fn host_row(auth_method: &str) -> hosts::HostRow {

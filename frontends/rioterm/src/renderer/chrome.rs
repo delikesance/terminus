@@ -3699,48 +3699,6 @@ fn render_panel_scrollbar(
     );
 }
 
-fn render_footer(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    labels: bool,
-    device_scale: f32,
-) {
-    let footer = chrome.panel.footer_rect(origin_y, height);
-    paint_hairline_h(
-        sugarloaf,
-        footer.x,
-        footer.y,
-        footer.width,
-        theme.panel_border,
-        DEPTH_CONTENT,
-        ORDER_CONTENT,
-    );
-
-    render_footer_button(
-        sugarloaf,
-        chrome.panel.add_button_rect(origin_y, height),
-        chrome.panel.add_hover,
-        terminus_ui::icons::Icon::Plus,
-        "Add host",
-        theme,
-        labels,
-        device_scale,
-    );
-    render_footer_button(
-        sugarloaf,
-        chrome.panel.new_group_button_rect(origin_y, height),
-        chrome.panel.new_group_hover,
-        terminus_ui::icons::Icon::Folder,
-        "New group",
-        theme,
-        labels,
-        device_scale,
-    );
-}
-
 fn render_footer_button(
     sugarloaf: &mut Sugarloaf,
     button: Rect,
@@ -5612,7 +5570,7 @@ fn render_add_snippet(
     theme: &ChromeTheme,
     window_width: f32,
     window_height: f32,
-    device_scale: f32,
+    _device_scale: f32,
     paint_glyphs: bool,
 ) {
     let form = &chrome.snippet_form.inner;

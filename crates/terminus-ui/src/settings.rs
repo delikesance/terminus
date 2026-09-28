@@ -715,7 +715,8 @@ impl SettingsModal {
         window_width: f32,
         window_height: f32,
     ) -> Option<Rect> {
-        let draft = self.key_draft_rect(window_width, window_height)?;
+        // Only while the key draft form is open.
+        self.key_draft_rect(window_width, window_height)?;
         let cancel = self.key_draft_cancel_rect(window_width, window_height)?;
         Some(Rect::new(
             cancel.x - 8.0 - KEY_DRAFT_GENERATE_WIDTH,

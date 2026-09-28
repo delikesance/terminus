@@ -739,6 +739,22 @@ enum ImageTexture {
     Vulkan(vulkan::VulkanImageTexture),
 }
 
+#[cfg(feature = "wgpu")]
+impl ImageTexture {
+    /// The WebGPU view, when this texture was uploaded for WebGPU. (A plain
+    /// accessor rather than `if let`, which is irrefutable on platforms
+    /// where WebGPU is the only backend.)
+    fn wgpu_view(&self) -> Option<&wgpu::TextureView> {
+        match self {
+            ImageTexture::Wgpu { view, .. } => Some(view),
+            #[cfg(target_os = "macos")]
+            ImageTexture::Metal(_) => None,
+            #[cfg(target_os = "linux")]
+            ImageTexture::Vulkan(_) => None,
+        }
+    }
+}
+
 /// Per-image texture entry stored in the renderer.
 struct ImageTextureEntry {
     gpu: ImageTexture,
@@ -2064,7 +2080,7 @@ impl Renderer {
             // composite on top. Single fullscreen instance, dedicated
             // vertex buffer, reuses the kitty image pipeline + sampler.
             if let Some(bg_tex) = background_image_texture.as_ref() {
-                if let ImageTexture::Wgpu { view, .. } = &bg_tex.gpu {
+                if let Some(view) = bg_tex.gpu.wgpu_view() {
                     let instance = ImageInstance {
                         dest_pos: [0.0, 0.0],
                         dest_size: [ctx.size.width, ctx.size.height],
@@ -2130,7 +2146,7 @@ impl Renderer {
                         continue;
                     }
                     if let Some(img) = image_textures.get(&draw.image_id) {
-                        if let ImageTexture::Wgpu { view, .. } = &img.gpu {
+                        if let Some(view) = img.gpu.wgpu_view() {
                             let bg = ctx.device.create_bind_group(
                                 &wgpu::BindGroupDescriptor {
                                     label: None,
@@ -2288,7 +2304,7 @@ impl Renderer {
                         continue;
                     }
                     if let Some(img) = image_textures.get(&draw.image_id) {
-                        if let ImageTexture::Wgpu { view, .. } = &img.gpu {
+                        if let Some(view) = img.gpu.wgpu_view() {
                             let bg = ctx.device.create_bind_group(
                                 &wgpu::BindGroupDescriptor {
                                     label: None,

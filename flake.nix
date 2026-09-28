@@ -50,7 +50,8 @@
           channel = rustToolchainToml.toolchain.channel;
           profile = rustToolchainToml.toolchain.profile or "minimal";
           components = rustToolchainToml.toolchain.components or [];
-          targets = ["x86_64-pc-windows-msvc"];
+          # musl: the static terminus-walk helper embedded for SFTP diffs.
+          targets = ["x86_64-pc-windows-msvc" "x86_64-unknown-linux-musl"];
         };
         windowsPackages = [
           self'.formatter

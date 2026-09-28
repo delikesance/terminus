@@ -1,10 +1,6 @@
 //! `Screen` chrome input surface, split out of `screen/mod.rs`.
 
 use super::Screen;
-use crate::context;
-use crate::hosts;
-use rio_window::event::ElementState;
-use rio_window::keyboard::{Key, NamedKey};
 
 impl Screen<'_> {
     /// Route a key to the add-host editor. `None` when it is closed.
