@@ -1312,7 +1312,7 @@ fn render_settings_modal(
                     } else {
                         terminus_ui::FieldPaint::from_draft(
                             &chrome.settings.key_pem,
-                            "Paste OpenSSH private key to import (optional)",
+                            "Paste a private key or its path, e.g. ~/.ssh/id_ed25519",
                             focused,
                         )
                     };

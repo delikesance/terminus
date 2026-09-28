@@ -1624,6 +1624,20 @@ impl HostPanel {
         out
     }
 
+    /// Row of the stored SSH host just saved: its name and endpoint when
+    /// both match (names and endpoints can each repeat), else its endpoint.
+    pub fn find_saved_host(&self, name: &str, endpoint: &str) -> Option<usize> {
+        let ssh = |row: &Row| {
+            row.host()
+                .filter(|item| item.badge == Badge::Ssh && item.endpoint == endpoint)
+                .map(|item| item.name == name)
+        };
+        self.rows
+            .iter()
+            .position(|row| ssh(row) == Some(true))
+            .or_else(|| self.rows.iter().position(|row| ssh(row).is_some()))
+    }
+
     /// What to say when the list shows no host of the user's: none saved
     /// yet, or none matching the filter.
     pub fn empty_hint(&self) -> Option<EmptyHint> {
@@ -2444,6 +2458,31 @@ mod tests {
         assert!(panel.filter_focused, "first Esc only clears");
         panel.escape_filter();
         assert!(!panel.filter_focused);
+    }
+
+    #[test]
+    fn a_saved_host_is_found_by_name_and_endpoint() {
+        let mut hosts = items(2);
+        // Same endpoint, different names (e.g. one per key).
+        hosts[1].endpoint = hosts[0].endpoint.clone();
+        let panel = {
+            let mut p = HostPanel::default();
+            p.set_items(hosts);
+            p
+        };
+        let second = panel
+            .find_saved_host("host-1", "deploy@host-0:2222")
+            .expect("row");
+        assert_eq!(panel.rows[second].host().unwrap().id, "id-1");
+        let first = panel
+            .find_saved_host("renamed", "deploy@host-0:2222")
+            .expect("row");
+        assert_eq!(
+            panel.rows[first].host().unwrap().id,
+            "id-0",
+            "endpoint fallback"
+        );
+        assert_eq!(panel.find_saved_host("x", "nobody@nowhere"), None);
     }
 
     #[test]
