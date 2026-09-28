@@ -82,4 +82,34 @@ else
     fail "release.sh rejects a tag that differs from the Cargo version"; cat "$WORK/out"
 fi
 
+# Publishing again under a tag that already has a release used to replace
+# its files silently. It must stop before building, unless --replace.
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/gh" <<'GH'
+#!/bin/sh
+# `gh release view` succeeds: the release exists. Anything else is a bug.
+[ "$1 $2" = "release view" ] && exit 0
+echo "unexpected gh $*" >&2; exit 97
+GH
+cat > "$WORK/bin/cargo" <<'CARGO'
+#!/bin/sh
+echo "cargo must not run" >&2; exit 98
+CARGO
+chmod +x "$WORK/bin/gh" "$WORK/bin/cargo"
+VERSION="$(grep -m 1 '^version = ' "$ROOT/Cargo.toml" | awk -F '"' '{print $2}')"
+PATH="$WORK/bin:$PATH" bash "$ROOT/scripts/release.sh" >"$WORK/out" 2>&1
+status=$?
+if [[ $status -ne 0 ]] && grep -q "already published" "$WORK/out" \
+    && grep -q "prepare-release.sh" "$WORK/out" && ! grep -q "cargo must not run" "$WORK/out"; then
+    pass "release.sh refuses to overwrite v$VERSION before building"
+else
+    fail "release.sh refuses to overwrite v$VERSION before building"; cat "$WORK/out"
+fi
+PATH="$WORK/bin:$PATH" bash "$ROOT/scripts/release.sh" --replace >"$WORK/out" 2>&1
+if grep -q "cargo must not run" "$WORK/out"; then
+    pass "--replace goes on to build"
+else
+    fail "--replace goes on to build"; cat "$WORK/out"
+fi
+
 exit "$FAILED"

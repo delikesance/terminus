@@ -330,6 +330,11 @@ nix run .#release -- --build-only # artifacts only, no publish
 | Windows | `terminus-setup-x86_64.exe` (NSIS), `terminus-x86_64.msi` |
 | All | `checksums.txt` and its minisign signature `checksums.txt.minisig` |
 
+The tag comes from the `Cargo.toml` version of the checkout you run it in,
+so bump it (and merge the bump) before releasing: if that tag already has a
+release, `release.sh` stops before building instead of overwriting it
+(`--replace` overwrites on purpose).
+
 The release tag must equal `v` + the `Cargo.toml` version (`release.sh` refuses
 otherwise): the in-app updater compares the two, so a mismatch would make every
 install download the release again.
