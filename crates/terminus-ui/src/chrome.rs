@@ -572,6 +572,10 @@ impl Chrome {
                     self.settings.focus_key_pem();
                     ChromeAction::FocusKeyDraft
                 }
+                SettingsHit::FocusKeyPassphrase => {
+                    self.settings.focus_key_passphrase();
+                    ChromeAction::FocusKeyDraft
+                }
                 SettingsHit::GenerateKey => match self.settings.take_key_draft_label() {
                     Ok(_name) => ChromeAction::GenerateSshKey,
                     Err(_) => ChromeAction::Consumed,

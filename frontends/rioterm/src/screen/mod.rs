@@ -59,6 +59,9 @@ use std::ffi::OsStr;
 use terminus_ui::sidebar::Badge;
 use touch::TouchPurpose;
 
+/// SFTP credentials for a host: `(password, (private key PEM, passphrase))`.
+type SftpAuth = (Option<String>, Option<(String, Option<String>)>);
+
 /// Maximum number of lines for the blocking search while still typing the search regex.
 const MAX_SEARCH_WHILE_TYPING: Option<usize> = Some(1000);
 
@@ -847,7 +850,15 @@ impl Screen<'_> {
             }
             if let Some(message) = self.host_store.error().map(str::to_string) {
                 if self.chrome.settings.key_drafting {
-                    self.chrome.settings.key_draft_error = Some(message.clone());
+                    if message.contains("Unlock the vault")
+                        && !self.chrome.vault_unlock_is_open()
+                    {
+                        self.open_vault_unlock_for(
+                            terminus_ui::PendingVaultAction::SaveSshKey,
+                        );
+                    } else {
+                        self.chrome.settings.key_draft_error = Some(message.clone());
+                    }
                 }
                 if self.chrome.add_host_is_open() {
                     if message.contains("Unlock the vault")
@@ -1423,6 +1434,18 @@ impl Screen<'_> {
     ///
     /// The store is the only validator, so a rejection comes back as the
     /// dialog's error line and the form stays open with its text.
+    /// Send the Settings "New SSH Key" draft to the worker (generate or import).
+    pub fn submit_key_draft(&mut self) {
+        let settings = &mut self.chrome.settings;
+        let Ok(name) = settings.take_key_draft_label() else {
+            return;
+        };
+        let pem = settings.key_pem.value.clone();
+        let pem = (!pem.trim().is_empty()).then_some(pem);
+        let passphrase = settings.key_draft_passphrase();
+        self.host_store.import_ssh_key(&name, pem, passphrase);
+    }
+
     pub fn submit_host_form(&mut self) {
         let values = self.chrome.form.values();
         let editing_id = self.chrome.form.editing_id().map(str::to_string);
@@ -3405,10 +3428,7 @@ impl Screen<'_> {
     }
 
     /// Resolve password / identity for an SSH host used by SFTP.
-    fn resolve_sftp_auth(
-        &self,
-        host: &hosts::HostRow,
-    ) -> Result<(Option<String>, Option<(String, Option<String>)>), String> {
+    fn resolve_sftp_auth(&self, host: &hosts::HostRow) -> Result<SftpAuth, String> {
         let password = if host.auth_method == "password" {
             match self.host_store.resolve_host_password(&host.id)? {
                 Some(pw) => Some(pw),
@@ -3453,9 +3473,33 @@ impl Screen<'_> {
     }
 
     /// Open the dual-pane SFTP browser for `host_id` on the current leaf pane.
+    /// Resolve SFTP credentials; a locked vault opens the unlock modal and
+    /// retries once unlocked (`Ok(None)`), like opening a shell does.
+    fn resolve_sftp_auth_or_unlock(
+        &mut self,
+        host: &crate::hosts::HostRow,
+        other_pane: bool,
+    ) -> Result<Option<SftpAuth>, String> {
+        match self.resolve_sftp_auth(host) {
+            Ok(auth) => Ok(Some(auth)),
+            Err(err) if err.contains("Unlock the vault") => {
+                self.open_vault_unlock_for(terminus_ui::PendingVaultAction::OpenSftp {
+                    host_id: host.id.clone(),
+                    other_pane,
+                });
+                Ok(None)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     pub fn open_sftp_pane(&mut self, host_id: &str) -> Result<(), String> {
         let host = self.sftp_host_row(host_id)?;
-        let (password, identity) = self.resolve_sftp_auth(&host)?;
+        let Some((password, identity)) =
+            self.resolve_sftp_auth_or_unlock(&host, false)?
+        else {
+            return Ok(());
+        };
         let wake = self.sftp_wake.clone();
 
         if let Some(prev) = self.sftp.take() {
@@ -3482,7 +3526,10 @@ impl Screen<'_> {
             return self.open_sftp_pane(host_id);
         }
         let host = self.sftp_host_row(host_id)?;
-        let (password, identity) = self.resolve_sftp_auth(&host)?;
+        let Some((password, identity)) = self.resolve_sftp_auth_or_unlock(&host, true)?
+        else {
+            return Ok(());
+        };
         let session = self.sftp.as_mut().expect("checked above");
         session.open_other_host(&host, password, identity)?;
         self.mark_dirty();

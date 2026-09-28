@@ -49,8 +49,8 @@ pub const KEY_CTA_GAP: f32 = 12.0;
 /// Stored key row height.
 pub const KEY_ROW_HEIGHT: f32 = 56.0;
 pub const KEY_ROW_GAP: f32 = 8.0;
-/// Inline generate form under the CTA (two field cards + actions + error).
-pub const KEY_DRAFT_HEIGHT: f32 = 252.0;
+/// Inline generate form under the CTA (three field cards + actions + error).
+pub const KEY_DRAFT_HEIGHT: f32 = 252.0 + FIELD_CARD_STEP;
 pub const KEY_DRAFT_GENERATE_WIDTH: f32 = 96.0;
 pub const KEY_DRAFT_CANCEL_WIDTH: f32 = 72.0;
 /// Max bytes for a pasted OpenSSH private key.
@@ -136,6 +136,10 @@ pub struct SettingsModal {
     pub key_draft_focused: bool,
     /// Whether the PEM paste field owns the caret.
     pub key_draft_pem_focused: bool,
+    /// Passphrase for an encrypted OpenSSH key being imported (masked).
+    pub key_passphrase: TextDraft,
+    /// Whether the key passphrase field owns the caret.
+    pub key_draft_passphrase_focused: bool,
     /// Error shown under the generate form (empty label, worker failure, …).
     pub key_draft_error: Option<String>,
     /// Hovered Delete control index on the Keys list (red label).
@@ -167,6 +171,8 @@ impl Default for SettingsModal {
             key_pem: TextDraft::default(),
             key_draft_focused: false,
             key_draft_pem_focused: false,
+            key_passphrase: TextDraft::default(),
+            key_draft_passphrase_focused: false,
             key_draft_error: None,
             key_delete_hover: None,
             key_row_hover: None,
@@ -185,6 +191,8 @@ pub enum SettingsHit {
     FocusKeyDraft,
     /// Focus the optional PEM paste field on the generate form.
     FocusKeyPem,
+    /// Focus the passphrase field for an encrypted key import.
+    FocusKeyPassphrase,
     /// Confirm generating an Ed25519 identity from the draft name.
     GenerateKey,
     /// Cancel the inline generate-key form.
@@ -325,8 +333,10 @@ impl SettingsModal {
         self.key_drafting = true;
         self.key_draft_focused = true;
         self.key_draft_pem_focused = false;
+        self.key_draft_passphrase_focused = false;
         self.key_label.clear();
         self.key_pem.clear();
+        self.key_passphrase.clear();
         self.key_draft_error = None;
         self.sql_focus = SqlSyncFocus::None;
     }
@@ -335,8 +345,10 @@ impl SettingsModal {
         self.key_drafting = false;
         self.key_draft_focused = false;
         self.key_draft_pem_focused = false;
+        self.key_draft_passphrase_focused = false;
         self.key_label.clear();
         self.key_pem.clear();
+        self.key_passphrase.clear();
         self.key_draft_error = None;
     }
 
@@ -344,6 +356,7 @@ impl SettingsModal {
         if self.key_drafting {
             self.key_draft_focused = true;
             self.key_draft_pem_focused = false;
+            self.key_draft_passphrase_focused = false;
             self.sql_focus = SqlSyncFocus::None;
         }
     }
@@ -352,8 +365,35 @@ impl SettingsModal {
         if self.key_drafting {
             self.key_draft_pem_focused = true;
             self.key_draft_focused = false;
+            self.key_draft_passphrase_focused = false;
             self.sql_focus = SqlSyncFocus::None;
         }
+    }
+
+    pub fn focus_key_passphrase(&mut self) {
+        if self.key_drafting {
+            self.key_draft_passphrase_focused = true;
+            self.key_draft_focused = false;
+            self.key_draft_pem_focused = false;
+            self.sql_focus = SqlSyncFocus::None;
+        }
+    }
+
+    /// Tab order through the draft form: label → PEM → passphrase → label.
+    pub fn focus_next_key_field(&mut self) {
+        if self.key_draft_focused {
+            self.focus_key_pem();
+        } else if self.key_draft_pem_focused {
+            self.focus_key_passphrase();
+        } else {
+            self.focus_key_draft();
+        }
+    }
+
+    /// Passphrase to decrypt the pasted key, when one was typed.
+    pub fn key_draft_passphrase(&self) -> Option<String> {
+        let value = self.key_passphrase.value.clone();
+        (!value.is_empty()).then_some(value)
     }
 
     /// Active text draft while key drafting, if any.
@@ -363,6 +403,8 @@ impl SettingsModal {
         }
         if self.key_draft_pem_focused {
             Some(&mut self.key_pem)
+        } else if self.key_draft_passphrase_focused {
+            Some(&mut self.key_passphrase)
         } else if self.key_draft_focused {
             Some(&mut self.key_label)
         } else {
@@ -377,6 +419,9 @@ impl SettingsModal {
         }
         let ok = if self.key_draft_pem_focused {
             self.key_pem.insert(text, KEY_PEM_MAX_BYTES, true)
+        } else if self.key_draft_passphrase_focused {
+            self.key_passphrase
+                .insert(text, KEY_LABEL_MAX_BYTES * 4, false)
         } else if self.key_draft_focused {
             self.key_label.insert(text, KEY_LABEL_MAX_BYTES, false)
         } else {
@@ -394,6 +439,9 @@ impl SettingsModal {
         }
         if self.key_draft_pem_focused {
             return self.key_pem.backspace(false);
+        }
+        if self.key_draft_passphrase_focused {
+            return self.key_passphrase.backspace(false);
         }
         if !self.key_draft_focused {
             return false;
@@ -426,11 +474,11 @@ impl SettingsModal {
         if !self.key_drafting || self.key_draft_error.is_none() {
             return None;
         }
-        let pem = self.key_draft_pem_rect(window_width, window_height)?;
+        let pass = self.key_draft_passphrase_rect(window_width, window_height)?;
         Some(Rect::new(
-            pem.x,
-            pem.bottom() + 8.0,
-            pem.width,
+            pass.x,
+            pass.bottom() + 8.0,
+            pass.width,
             ERROR_BANNER_HEIGHT,
         ))
     }
@@ -656,6 +704,21 @@ impl SettingsModal {
         ))
     }
 
+    /// Passphrase card for an encrypted key import (under the PEM card).
+    pub fn key_draft_passphrase_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        let draft = self.key_draft_rect(window_width, window_height)?;
+        Some(Rect::new(
+            draft.x + FIELD_CARD_PAD,
+            draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP * 2.0,
+            (draft.width - 2.0 * FIELD_CARD_PAD).max(40.0),
+            FIELD_CARD_HEIGHT,
+        ))
+    }
+
     pub fn key_draft_generate_rect(
         &self,
         window_width: f32,
@@ -677,8 +740,8 @@ impl SettingsModal {
         window_height: f32,
     ) -> Option<Rect> {
         let draft = self.key_draft_rect(window_width, window_height)?;
-        // Sit below the PEM card; leave room for the soft error banner when shown.
-        let mut actions_y = draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP * 2.0;
+        // Sit below the passphrase card; leave room for the error banner when shown.
+        let mut actions_y = draft.y + FIELD_CARD_PAD + FIELD_CARD_STEP * 3.0;
         if self.key_draft_error.is_some() {
             actions_y += ERROR_BANNER_HEIGHT + 8.0;
         }
@@ -948,6 +1011,13 @@ impl SettingsModal {
                     return SettingsHit::FocusKeyPem;
                 }
             }
+            if let Some(pass) =
+                self.key_draft_passphrase_rect(window_width, window_height)
+            {
+                if pass.contains(x, y) {
+                    return SettingsHit::FocusKeyPassphrase;
+                }
+            }
             if self
                 .new_key_cta_rect(window_width, window_height)
                 .contains(x, y)
@@ -1047,7 +1117,8 @@ impl SettingsModal {
             SettingsHit::FocusUri
             | SettingsHit::FocusPassphrase
             | SettingsHit::FocusKeyDraft
-            | SettingsHit::FocusKeyPem => ChromeCursor::Text,
+            | SettingsHit::FocusKeyPem
+            | SettingsHit::FocusKeyPassphrase => ChromeCursor::Text,
             SettingsHit::Consume => ChromeCursor::Default,
             SettingsHit::Close
             | SettingsHit::Done
@@ -1188,6 +1259,42 @@ mod tests {
         );
         s.insert_key_draft_text("Laptop");
         assert_eq!(s.take_key_draft_label().unwrap(), "Laptop");
+    }
+
+    #[test]
+    fn key_draft_has_passphrase_field_for_encrypted_imports() {
+        let mut s = SettingsModal::default();
+        s.open_tab(SettingsTab::Keys);
+        let (w, h) = (1000.0, 800.0);
+        s.open_key_draft();
+        let pem = s.key_draft_pem_rect(w, h).expect("pem");
+        let pass = s.key_draft_passphrase_rect(w, h).expect("passphrase");
+        assert!(
+            pass.y >= pem.bottom(),
+            "passphrase card sits below the PEM card"
+        );
+        let draft = s.key_draft_rect(w, h).unwrap();
+        let cancel = s.key_draft_cancel_rect(w, h).unwrap();
+        assert!(
+            cancel.y >= pass.bottom(),
+            "actions sit below the passphrase card"
+        );
+        assert!(
+            cancel.bottom() <= draft.bottom(),
+            "actions stay inside the form"
+        );
+        assert_eq!(
+            s.hit_test(w, h, pass.x + 2.0, pass.y + 2.0),
+            SettingsHit::FocusKeyPassphrase
+        );
+        s.focus_key_passphrase();
+        s.insert_key_draft_text("hunter2");
+        assert_eq!(s.key_passphrase.value, "hunter2");
+        assert!(s.key_label.value.is_empty() && s.key_pem.value.is_empty());
+        assert!(s.key_draft_backspace());
+        assert_eq!(s.key_passphrase.value, "hunter");
+        s.close_key_draft();
+        assert!(s.key_passphrase.value.is_empty(), "secret cleared on close");
     }
 
     #[test]

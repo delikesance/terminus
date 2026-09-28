@@ -29,16 +29,26 @@ pub enum PendingVaultAction {
     OpenHost(String),
     AddHostSession(String),
     SubmitHostForm,
+    /// Retry saving the Settings "New SSH Key" draft (keys are sealed).
+    SaveSshKey,
+    /// Retry opening SFTP for a host (`other_pane`: the left side).
+    OpenSftp {
+        host_id: String,
+        other_pane: bool,
+    },
 }
 
 impl PendingVaultAction {
     pub fn subtitle(&self) -> &'static str {
         match self {
-            Self::OpenHost(_) | Self::AddHostSession(_) => {
+            Self::OpenHost(_) | Self::AddHostSession(_) | Self::OpenSftp { .. } => {
                 "Enter your vault passphrase to use the saved SSH password."
             }
             Self::SubmitHostForm => {
                 "Enter your vault passphrase to encrypt and save the password."
+            }
+            Self::SaveSshKey => {
+                "Enter your vault passphrase to encrypt and save the key."
             }
         }
     }

@@ -632,6 +632,8 @@ enum Command {
         name: String,
         /// When set, import this OpenSSH PEM instead of generating.
         pem: Option<String>,
+        /// Passphrase of an encrypted `pem`.
+        passphrase: Option<String>,
     },
     /// Soft-delete a managed SSH key.
     DeleteSshKey {
@@ -967,9 +969,20 @@ impl HostRepository {
 
     /// Generate, or import `pem` when provided.
     pub fn create_ssh_key_with_pem(&mut self, name: &str, pem: Option<String>) {
+        self.import_ssh_key(name, pem, None);
+    }
+
+    /// Generate, or import `pem` (decrypted with `passphrase`) when provided.
+    pub fn import_ssh_key(
+        &mut self,
+        name: &str,
+        pem: Option<String>,
+        passphrase: Option<String>,
+    ) {
         self.send(Command::CreateSshKey {
             name: name.to_string(),
             pem,
+            passphrase,
         });
     }
 
@@ -1452,6 +1465,10 @@ fn worker(
             } => match unlock_or_create_vault(&runtime, &store, &passphrase) {
                 Ok(unlocked) => {
                     let shared = Arc::new(unlocked);
+                    if let Err(err) = seal_plaintext_identities(&runtime, &store, &shared)
+                    {
+                        tracing::warn!("could not seal stored SSH keys: {err}");
+                    }
                     runtime.block_on(sync_engine.attach_vault(Arc::clone(&shared)));
                     vault = Some(shared);
                     if remember {
@@ -1476,8 +1493,19 @@ fn worker(
                     });
                 }
             },
-            Command::CreateSshKey { name, pem } => {
-                match create_ssh_key(&runtime, &store, &name, pem.as_deref()) {
+            Command::CreateSshKey {
+                name,
+                pem,
+                passphrase,
+            } => {
+                match create_ssh_key(
+                    &runtime,
+                    &store,
+                    vault.as_deref(),
+                    &name,
+                    pem.as_deref(),
+                    passphrase.as_deref(),
+                ) {
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(label));
                         let _ = events.send(list_identities(&runtime, &store));
@@ -1554,7 +1582,7 @@ fn worker(
                 let _ = reply.send(result);
             }
             Command::ResolveHostIdentity { id, reply } => {
-                let result = resolve_host_identity(&runtime, &store, &id);
+                let result = resolve_host_identity(&runtime, &store, vault.as_ref(), &id);
                 let _ = reply.send(result);
             }
             Command::DetectOs { id } => {
@@ -1646,12 +1674,7 @@ fn probe_and_persist(
             let id = host
                 .identity_id
                 .ok_or_else(|| "Select a saved SSH key".to_string())?;
-            Some(
-                runtime
-                    .block_on(store.get_identity(id))
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| "Selected SSH key was not found".to_string())?,
-            )
+            Some(load_open_identity(runtime, store, vault.as_ref(), id)?)
         }
         _ => None,
     };
@@ -1767,7 +1790,7 @@ fn probe_and_update(
         let identity = match method {
             HAM::Key => {
                 if let Some(iid) = identity_id {
-                    runtime.block_on(store.get_identity(iid)).ok().flatten()
+                    load_open_identity(runtime, store, vault.as_ref(), iid).ok()
                 } else {
                     None
                 }
@@ -1836,11 +1859,7 @@ fn detect_and_store_os(
             let Some(iid) = host.identity_id else {
                 return Err("No SSH key on host".into());
             };
-            runtime
-                .block_on(store.get_identity(iid))
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "SSH key missing".to_string())
-                .map(Some)?
+            Some(load_open_identity(runtime, store, vault, iid)?)
         }
         _ => None,
     };
@@ -1934,6 +1953,7 @@ fn resolve_host_password(
 fn resolve_host_identity(
     runtime: &tokio::runtime::Runtime,
     store: &Store,
+    vault: Option<&Arc<terminus_core::UnlockedVault>>,
     id: &str,
 ) -> Result<Option<(String, Option<String>)>, String> {
     use terminus_core::HostAuthMethod;
@@ -1957,17 +1977,75 @@ fn resolve_host_identity(
         return Ok(None);
     };
 
-    let identity = runtime
-        .block_on(store.get_identity(identity_id))
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Selected SSH key was not found".to_string())?;
-
+    let identity = load_open_identity(runtime, store, vault, identity_id)?;
     let passphrase = identity.passphrase.filter(|p| !p.is_empty());
     let Some(pem) = identity.private_key.filter(|p| !p.trim().is_empty()) else {
         return Err("Selected SSH key has no private key material".into());
     };
 
     Ok(Some((pem, passphrase)))
+}
+
+/// Load a managed key with its private key and passphrase unsealed.
+///
+/// Sealed keys need the vault; the error names "Unlock the vault" so the UI
+/// opens the unlock modal instead of failing the connection.
+fn load_open_identity(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: Option<&Arc<terminus_core::UnlockedVault>>,
+    identity_id: Uuid,
+) -> Result<terminus_core::Identity, String> {
+    let mut identity = runtime
+        .block_on(store.get_identity(identity_id))
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Selected SSH key was not found".to_string())?;
+    if terminus_core::identity_needs_vault(&identity) && vault.is_none() {
+        return Err(
+            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)"
+                .into(),
+        );
+    }
+    let (pem, passphrase) =
+        terminus_core::open_identity_secrets(vault.map(|v| v.as_ref()), &identity)
+            .map_err(|e| format!("Could not decrypt the SSH key: {e}"))?;
+    identity.private_key = pem;
+    identity.passphrase = passphrase;
+    Ok(identity)
+}
+
+/// Seal every managed key still stored as plaintext (keys saved before the
+/// vault sealed them). Runs on each unlock; already-sealed rows are skipped.
+fn seal_plaintext_identities(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: &terminus_core::UnlockedVault,
+) -> Result<usize, String> {
+    let identities = runtime
+        .block_on(store.list_identities())
+        .map_err(|e| e.to_string())?;
+    let mut sealed = 0;
+    for identity in identities {
+        let plaintext = identity
+            .private_key
+            .as_deref()
+            .is_some_and(|k| !k.is_empty() && !terminus_core::vault::is_sealed(k))
+            || identity
+                .passphrase
+                .as_deref()
+                .is_some_and(|p| !p.is_empty() && !terminus_core::vault::is_sealed(p));
+        if !plaintext {
+            continue;
+        }
+        let mut row =
+            terminus_core::seal_identity(vault, &identity).map_err(|e| e.to_string())?;
+        row.updated_at = Utc::now();
+        runtime
+            .block_on(store.upsert_identity(&row))
+            .map_err(|e| e.to_string())?;
+        sealed += 1;
+    }
+    Ok(sealed)
 }
 
 /// Snapshot the SyncEngine into a UI event.
@@ -2158,11 +2236,21 @@ fn list_identities(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEven
 fn create_ssh_key(
     runtime: &tokio::runtime::Runtime,
     store: &Store,
+    vault: Option<&terminus_core::UnlockedVault>,
     name: &str,
     pem: Option<&str>,
+    passphrase: Option<&str>,
 ) -> Result<String, String> {
+    // Private keys are sealed at rest like host passwords, so saving one
+    // needs the vault.
+    let Some(vault) = vault else {
+        return Err(
+            "Unlock the vault before saving an SSH key (Settings → Remote SQL Sync passphrase)"
+                .into(),
+        );
+    };
     let identity = match pem.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(pem) => terminus_core::import_openssh_identity(name, pem, None)
+        Some(pem) => terminus_core::import_openssh_identity(name, pem, passphrase)
             .map_err(|e| e.to_string())?,
         None => {
             terminus_core::generate_ed25519_identity(name).map_err(|e| e.to_string())?
@@ -2170,8 +2258,10 @@ fn create_ssh_key(
     };
     let label = identity.name.clone();
     let imported = pem.map(str::trim).is_some_and(|p| !p.is_empty());
+    let sealed =
+        terminus_core::seal_identity(vault, &identity).map_err(|e| e.to_string())?;
     runtime
-        .block_on(store.upsert_identity(&identity))
+        .block_on(store.upsert_identity(&sealed))
         .map_err(|e| e.to_string())?;
     Ok(if imported {
         format!("SSH key “{label}” imported")
@@ -3039,6 +3129,18 @@ mod tests {
             !repo.loading()
         }));
 
+        // Keys are sealed at rest, so saving one needs the vault.
+        repo.create_ssh_key("Locked");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.error().is_some_and(|n| n.contains("Unlock the vault"))
+        }));
+        assert!(repo.identities().is_empty());
+        repo.unlock_vault("long-enough-passphrase");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.vault_unlocked()
+        }));
+        let _ = repo.take_notice();
+
         repo.create_ssh_key("Laptop Ed25519");
         assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
             repo.identities().iter().any(|(id, name, fp, created)| {
@@ -3051,6 +3153,13 @@ mod tests {
         assert!(repo
             .take_notice()
             .is_some_and(|n| n.contains("Laptop Ed25519")));
+
+        let raw = std::fs::read(dir.join("terminus.db")).unwrap_or_default();
+        let needle = b"BEGIN OPENSSH PRIVATE KEY";
+        assert!(
+            !raw.windows(needle.len()).any(|w| w == needle),
+            "managed key stored in plaintext"
+        );
 
         let id = repo.identities()[0].0.clone();
         repo.delete_ssh_key(&id);
@@ -3069,6 +3178,35 @@ mod tests {
         }));
 
         drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worker_unlock_seals_legacy_plaintext_keys() {
+        let dir = temp_dir("seal-legacy");
+        {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let store = rt.block_on(Store::open(dir.clone())).unwrap();
+            let ident = terminus_core::generate_ed25519_identity("legacy").unwrap();
+            rt.block_on(store.upsert_identity(&ident)).unwrap();
+        }
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+        repo.unlock_vault("long-enough-passphrase");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.vault_unlocked()
+        }));
+        drop(repo);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store = rt.block_on(Store::open(dir.clone())).unwrap();
+        let ids = rt.block_on(store.list_identities()).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(
+            terminus_core::identity_needs_vault(&ids[0]),
+            "legacy key not sealed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
