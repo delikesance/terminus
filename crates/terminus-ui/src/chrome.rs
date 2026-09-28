@@ -89,6 +89,8 @@ pub enum ChromeAction {
     GenerateSshKey,
     /// Settings: soft-delete a managed SSH key by id.
     DeleteSshKey(String),
+    /// Put this OpenSSH public key on the clipboard.
+    CopyPublicKey(String),
     /// Soft-delete a stored host (context menu).
     DeleteHost(String),
     /// Soft-delete a host group (context menu).
@@ -316,6 +318,7 @@ impl Chrome {
 
     pub fn open_settings(&mut self, tab: SettingsTab) {
         self.settings.open_tab(tab);
+        self.settings.keys_notice = None;
     }
 
     /// Replace the host list.
@@ -619,6 +622,18 @@ impl Chrome {
                 SettingsHit::CancelKeyDraft => {
                     self.settings.close_key_draft();
                     ChromeAction::Consumed
+                }
+                SettingsHit::CopyPublicKey(index) => {
+                    match self.settings.keys.get(index) {
+                        Some(key) if !key.public_key.is_empty() => {
+                            self.settings.keys_notice = Some(format!(
+                                "Copied {}'s public key. Add it to ~/.ssh/authorized_keys on your server.",
+                                key.name
+                            ));
+                            ChromeAction::CopyPublicKey(key.public_key.clone())
+                        }
+                        _ => ChromeAction::Consumed,
+                    }
                 }
                 SettingsHit::DeleteKey(index) => {
                     if let Some(key) = self.settings.keys.get(index) {
@@ -1520,6 +1535,29 @@ mod tests {
         chrome.handle_hover(800.0, activity_bar::WIDTH + 50.0, cy);
         chrome.handle_hover(800.0, cx, cy);
         assert!(chrome.rail_tooltip(800.0).is_some(), "back after leaving");
+    }
+
+    #[test]
+    fn a_key_row_copies_its_public_key() {
+        let mut chrome = Chrome::default();
+        chrome.open_settings(SettingsTab::Keys);
+        chrome.settings.set_keys(vec![crate::settings::SshKeyItem {
+            id: "k1".into(),
+            name: "laptop".into(),
+            fingerprint: "SHA256:abc".into(),
+            created: "2026-09-28".into(),
+            public_key: "ssh-ed25519 AAAA laptop".into(),
+        }]);
+        let copy = chrome.settings.key_copy_rect(1200.0, 800.0, 0);
+        let delete = chrome.settings.key_delete_rect(1200.0, 800.0, 0);
+        assert!(copy.right() <= delete.x, "beside delete, not over it");
+        let action = chrome.handle_press(1200.0, 800.0, copy.x + 4.0, copy.y + 4.0);
+        assert_eq!(
+            action,
+            ChromeAction::CopyPublicKey("ssh-ed25519 AAAA laptop".into())
+        );
+        let notice = chrome.settings.keys_notice.clone().expect("confirmation");
+        assert!(notice.contains("authorized_keys"), "{notice}");
     }
 
     #[test]

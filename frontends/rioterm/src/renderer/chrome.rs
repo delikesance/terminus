@@ -1503,7 +1503,13 @@ fn render_settings_modal(
                     theme.text,
                     true,
                 );
-                let fp_max = (del.x - text_x - 12.0).max(40.0);
+                let copy =
+                    chrome
+                        .settings
+                        .key_copy_rect(window_width, window_height, index);
+                let has_public = !key.public_key.is_empty();
+                let fp_right = if has_public { copy.x } else { del.x };
+                let fp_max = (fp_right - text_x - 12.0).max(40.0);
                 let fp_shown = elide(
                     sugarloaf,
                     &key.fingerprint,
@@ -1519,6 +1525,31 @@ fn render_settings_modal(
                     theme.text_muted,
                     false,
                 );
+                if has_public {
+                    paint_surface(
+                        sugarloaf,
+                        &copy,
+                        theme.panel_bg,
+                        Some(theme.panel_border),
+                        8.0,
+                        DEPTH_DIALOG + 0.04,
+                        ORDER_DIALOG,
+                        false,
+                    );
+                    let label = "Copy public key";
+                    let label_w = sugarloaf
+                        .text_mut()
+                        .measure(label, &opts(ROW_SUB_SIZE, theme.text, false));
+                    draw_text(
+                        sugarloaf,
+                        copy.x + (copy.width - label_w) * 0.5,
+                        copy.y + (copy.height - ROW_SUB_SIZE) * 0.5,
+                        label,
+                        ROW_SUB_SIZE,
+                        theme.text,
+                        false,
+                    );
+                }
                 // Delete only appears while the row is hovered (mock:
                 // opacity-0 group-hover:opacity-100). Turns red when the
                 // pointer is on the control itself.
@@ -1537,6 +1568,22 @@ fn render_settings_modal(
                         del_color,
                         false,
                     );
+                }
+            }
+            if let (Some(notice), Some(last)) = (
+                chrome.settings.keys_notice.as_deref(),
+                chrome.settings.keys.len().checked_sub(1),
+            ) {
+                let row = chrome
+                    .settings
+                    .key_row_rect(window_width, window_height, last);
+                let color = color_from_f32(theme.success);
+                let text_opts = opts(HINT_SIZE, color, false);
+                let lines = wrap_lines(sugarloaf, notice, row.width, &text_opts, 2);
+                let mut y = row.bottom() + 12.0;
+                for line in lines {
+                    draw_text(sugarloaf, row.x, y, &line, HINT_SIZE, color, false);
+                    y += HINT_SIZE + 4.0;
                 }
             }
         }
