@@ -121,6 +121,20 @@ impl HostRow {
             format!("{}{}:{}", user, self.hostname, self.port)
         }
     }
+
+    /// The OpenSSH command that reaches this host from any terminal.
+    pub fn ssh_command(&self) -> String {
+        let target = if self.username.is_empty() {
+            self.hostname.clone()
+        } else {
+            format!("{}@{}", self.username, self.hostname)
+        };
+        if self.port == DEFAULT_PORT {
+            format!("ssh {target}")
+        } else {
+            format!("ssh -p {} {target}", self.port)
+        }
+    }
 }
 
 /// What the sidebar shows besides the stored hosts.
@@ -3122,8 +3136,10 @@ mod tests {
             updated_at: Utc::now(),
         };
         assert_eq!(row.endpoint(), "root@box.internal");
+        assert_eq!(row.ssh_command(), "ssh root@box.internal");
         row.port = 2222;
         assert_eq!(row.endpoint(), "root@box.internal:2222");
+        assert_eq!(row.ssh_command(), "ssh -p 2222 root@box.internal");
         row.username = String::new();
         assert_eq!(row.endpoint(), "box.internal:2222");
     }

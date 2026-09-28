@@ -1723,6 +1723,25 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::CopySshCommand(id) => {
+                                        let screen = &mut route.window.screen;
+                                        if let Some(host) = screen
+                                            .host_store
+                                            .hosts()
+                                            .iter()
+                                            .find(|h| h.id == id)
+                                        {
+                                            let command = host.ssh_command();
+                                            screen.chrome.panel.notice =
+                                                Some(format!("Copied: {command}"));
+                                            self.router.clipboard.set(
+                                                rio_backend::clipboard::ClipboardType::Clipboard,
+                                                command,
+                                            );
+                                        }
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::CopyPublicKey(key) => {
                                         self.router.clipboard.set(
                                             rio_backend::clipboard::ClipboardType::Clipboard,

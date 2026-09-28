@@ -91,6 +91,8 @@ pub enum ChromeAction {
     DeleteSshKey(String),
     /// Put this OpenSSH public key on the clipboard.
     CopyPublicKey(String),
+    /// Put this stored host's `ssh …` command on the clipboard.
+    CopySshCommand(String),
     /// Soft-delete a stored host (context menu).
     DeleteHost(String),
     /// Soft-delete a host group (context menu).
@@ -485,6 +487,12 @@ impl Chrome {
                 let action = menu.take_action(index);
                 self.close_context_menu();
                 Some(match action {
+                    Some(ContextAction::NewSession(id)) => {
+                        ChromeAction::AddHostSession(id)
+                    }
+                    Some(ContextAction::CopySshCommand(id)) => {
+                        ChromeAction::CopySshCommand(id)
+                    }
                     Some(ContextAction::DeleteHost(id)) => ChromeAction::DeleteHost(id),
                     Some(ContextAction::DeleteGroup(id)) => ChromeAction::DeleteGroup(id),
                     Some(ContextAction::EditHost(id)) => ChromeAction::EditHost(id),
@@ -1602,7 +1610,14 @@ mod tests {
             chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
         assert_eq!(open, ChromeAction::Consumed);
         let menu = chrome.context_menu.as_ref().expect("menu open");
-        let item = menu.item_rect(3).unwrap();
+        let delete = menu
+            .items
+            .iter()
+            .position(|i| {
+                matches!(i.action, crate::context_menu::ContextAction::DeleteHost(_))
+            })
+            .expect("delete item");
+        let item = menu.item_rect(delete).unwrap();
         // First click only arms the destructive row…
         let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
         assert_eq!(action, ChromeAction::Consumed);
