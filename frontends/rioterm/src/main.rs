@@ -158,10 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let (mut config, config_error) = startup_config(
-        rio_backend::config::Config::try_load(),
-        || rio_backend::config::create_config_file(None),
-    );
+    let (mut config, config_error) =
+        startup_config(rio_backend::config::Config::try_load(), || {
+            rio_backend::config::create_config_file(None)
+        });
 
     // Read platform property and overwrite values per OS
     //
@@ -285,7 +285,8 @@ mod startup_tests {
     #[test]
     fn a_first_run_writes_the_default_config_instead_of_a_welcome_screen() {
         let mut created = false;
-        let (_, error) = startup_config(Err(ConfigError::PathNotFound), || created = true);
+        let (_, error) =
+            startup_config(Err(ConfigError::PathNotFound), || created = true);
         assert!(created, "default config written");
         assert!(error.is_none(), "no welcome/error route on first run");
     }

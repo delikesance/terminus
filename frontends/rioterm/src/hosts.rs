@@ -550,6 +550,20 @@ impl HostDraft {
     pub fn resolved_port(&self) -> Result<u16, String> {
         parse_port(&self.port)
     }
+
+    /// `user@host[:port]`, as the stored row's [`HostRow::endpoint`] shows
+    /// it. Names repeat (they default to the hostname); endpoints don't.
+    pub fn endpoint(&self) -> String {
+        let user = if self.username.is_empty() {
+            String::new()
+        } else {
+            format!("{}@", self.username)
+        };
+        match self.resolved_port() {
+            Ok(DEFAULT_PORT) | Err(_) => format!("{user}{}", self.hostname),
+            Ok(port) => format!("{user}{}:{port}", self.hostname),
+        }
+    }
 }
 
 /// Parse the port field: empty means the SSH default.
@@ -3069,6 +3083,28 @@ mod tests {
         assert_eq!(row.endpoint(), "root@box.internal:2222");
         row.username = String::new();
         assert_eq!(row.endpoint(), "box.internal:2222");
+    }
+
+    #[test]
+    fn a_draft_names_the_same_endpoint_as_its_stored_row() {
+        let draft = HostDraft {
+            hostname: " 127.0.0.1 ".to_string(),
+            username: "tuser".to_string(),
+            port: "2223".to_string(),
+            auth_method: "gssapi".to_string(),
+            ..HostDraft::default()
+        }
+        .normalize()
+        .expect("valid");
+        assert_eq!(draft.endpoint(), "tuser@127.0.0.1:2223");
+        let default_port = HostDraft {
+            hostname: "box".to_string(),
+            auth_method: "gssapi".to_string(),
+            ..HostDraft::default()
+        }
+        .normalize()
+        .expect("valid");
+        assert_eq!(default_port.endpoint(), "root@box");
     }
 
     #[test]
