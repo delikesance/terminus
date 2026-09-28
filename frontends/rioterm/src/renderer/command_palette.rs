@@ -137,159 +137,168 @@ pub enum PaletteAction {
 
 struct Command {
     title: &'static str,
-    shortcut: &'static str,
     action: PaletteAction,
+}
+
+/// Every action the command catalog offers.
+pub fn command_actions() -> impl Iterator<Item = PaletteAction> {
+    COMMANDS.iter().map(|cmd| cmd.action)
+}
+
+impl PaletteAction {
+    /// The key-binding action this command runs, whose shortcut the
+    /// palette shows. `None` for palette-only commands.
+    pub fn binding_action(self) -> Option<crate::bindings::Action> {
+        use crate::bindings::Action;
+        Some(match self {
+            PaletteAction::TabCreate => Action::TabCreateNew,
+            PaletteAction::TabClose => Action::TabCloseCurrent,
+            PaletteAction::TabCloseUnfocused => Action::TabCloseUnfocused,
+            PaletteAction::SelectNextTab => Action::SelectNextTab,
+            PaletteAction::SelectPrevTab => Action::SelectPrevTab,
+            PaletteAction::SplitRight => Action::SplitRight,
+            PaletteAction::SplitDown => Action::SplitDown,
+            PaletteAction::SelectNextSplit => Action::SelectNextSplit,
+            PaletteAction::SelectPrevSplit => Action::SelectPrevSplit,
+            PaletteAction::CloseCurrentSplitOrTab => Action::CloseCurrentSplitOrTab,
+            PaletteAction::ConfigEditor => Action::ConfigEditor,
+            PaletteAction::WindowCreateNew => Action::WindowCreateNew,
+            PaletteAction::IncreaseFontSize => Action::IncreaseFontSize,
+            PaletteAction::DecreaseFontSize => Action::DecreaseFontSize,
+            PaletteAction::ResetFontSize => Action::ResetFontSize,
+            PaletteAction::ToggleViMode => Action::ToggleViMode,
+            PaletteAction::ToggleFullscreen => Action::ToggleFullscreen,
+            PaletteAction::ToggleAppearanceTheme => Action::ToggleAppearanceTheme,
+            PaletteAction::Copy => Action::Copy,
+            PaletteAction::Paste => Action::Paste,
+            PaletteAction::SearchForward => Action::SearchForward,
+            PaletteAction::SearchBackward => Action::SearchBackward,
+            PaletteAction::ClearHistory => Action::ClearHistory,
+            PaletteAction::Quit => Action::Quit,
+            _ => return None,
+        })
+    }
 }
 
 const COMMANDS: &[Command] = &[
     Command {
         title: "New Tab",
-        shortcut: "Cmd+T",
         action: PaletteAction::TabCreate,
     },
     Command {
         title: "Close Tab",
-        shortcut: "Cmd+W",
         action: PaletteAction::TabClose,
     },
     Command {
         title: "Close Other Tabs",
-        shortcut: "",
         action: PaletteAction::TabCloseUnfocused,
     },
     Command {
         title: "Next Tab",
-        shortcut: "Ctrl+Tab",
         action: PaletteAction::SelectNextTab,
     },
     Command {
         title: "Previous Tab",
-        shortcut: "Ctrl+Shift+Tab",
         action: PaletteAction::SelectPrevTab,
     },
     Command {
         title: "Split Right",
-        shortcut: "Cmd+D",
         action: PaletteAction::SplitRight,
     },
     Command {
         title: "Split Down",
-        shortcut: "Cmd+Shift+D",
         action: PaletteAction::SplitDown,
     },
     Command {
         title: "Next Split",
-        shortcut: "",
         action: PaletteAction::SelectNextSplit,
     },
     Command {
         title: "Previous Split",
-        shortcut: "",
         action: PaletteAction::SelectPrevSplit,
     },
     Command {
         title: "Close Split or Tab",
-        shortcut: "",
         action: PaletteAction::CloseCurrentSplitOrTab,
     },
     Command {
         title: "Settings",
-        shortcut: "Cmd+,",
         action: PaletteAction::ConfigEditor,
     },
     Command {
         title: "New Window",
-        shortcut: "Cmd+N",
         action: PaletteAction::WindowCreateNew,
     },
     Command {
         title: "Increase Font Size",
-        shortcut: "Cmd++",
         action: PaletteAction::IncreaseFontSize,
     },
     Command {
         title: "Decrease Font Size",
-        shortcut: "Cmd+-",
         action: PaletteAction::DecreaseFontSize,
     },
     Command {
         title: "Reset Font Size",
-        shortcut: "Cmd+0",
         action: PaletteAction::ResetFontSize,
     },
     Command {
         title: "Toggle Vi Mode",
-        shortcut: "",
         action: PaletteAction::ToggleViMode,
     },
     Command {
         title: "Toggle Fullscreen",
-        shortcut: "",
         action: PaletteAction::ToggleFullscreen,
     },
     Command {
         title: "Toggle Appearance Theme",
-        shortcut: "",
         action: PaletteAction::ToggleAppearanceTheme,
     },
     Command {
         title: "Copy",
-        shortcut: "Cmd+C",
         action: PaletteAction::Copy,
     },
     Command {
         title: "Paste",
-        shortcut: "Cmd+V",
         action: PaletteAction::Paste,
     },
     Command {
         title: "Search Forward",
-        shortcut: "Cmd+F",
         action: PaletteAction::SearchForward,
     },
     Command {
         title: "Search Backward",
-        shortcut: "",
         action: PaletteAction::SearchBackward,
     },
     Command {
         title: "Clear History",
-        shortcut: "",
         action: PaletteAction::ClearHistory,
     },
     Command {
         title: "List Fonts",
-        shortcut: "",
         action: PaletteAction::ListFonts,
     },
     Command {
         title: "Open Host…",
-        shortcut: "",
         action: PaletteAction::ListHosts,
     },
     Command {
         title: "Open SFTP",
-        shortcut: "",
         action: PaletteAction::OpenSftp,
     },
     Command {
         title: "Check for Updates",
-        shortcut: "",
         action: PaletteAction::CheckForUpdates,
     },
     Command {
         title: "Install Update",
-        shortcut: "",
         action: PaletteAction::InstallUpdate,
     },
     Command {
         title: "Restart to Update",
-        shortcut: "",
         action: PaletteAction::RestartToUpdate,
     },
     Command {
         title: "Quit",
-        shortcut: "Cmd+Q",
         action: PaletteAction::Quit,
     },
 ];
@@ -540,6 +549,8 @@ pub struct CommandPalette {
     /// `scrollbar::opacity_from_last_scroll`. `None` while the palette
     /// has never scrolled since it opened — scrollbar stays hidden.
     last_scroll_time: Option<Instant>,
+    /// Shortcut labels from the window's live key bindings.
+    shortcuts: Vec<(PaletteAction, String)>,
 }
 
 impl Default for CommandPalette {
@@ -555,6 +566,7 @@ impl Default for CommandPalette {
             host_pick: HostPick::Session,
             caret_blink_start: Instant::now(),
             last_scroll_time: None,
+            shortcuts: Vec::new(),
         }
     }
 }
@@ -702,6 +714,18 @@ impl CommandPalette {
             })
     }
 
+    /// Shortcut labels to show, from the window's live key bindings.
+    pub fn set_shortcuts(&mut self, shortcuts: Vec<(PaletteAction, String)>) {
+        self.shortcuts = shortcuts;
+    }
+
+    fn shortcut_for(&self, action: PaletteAction) -> &str {
+        self.shortcuts
+            .iter()
+            .find(|(a, _)| *a == action)
+            .map_or("", |(_, label)| label.as_str())
+    }
+
     /// Filtered list of rows for the current mode. Modes share the same
     /// fuzzy-score + sort pipeline so typing behaves identically.
     fn filtered_rows(&self) -> Vec<(i32, PaletteRow<'_>)> {
@@ -722,7 +746,7 @@ impl CommandPalette {
                             score,
                             PaletteRow::Command {
                                 title: cmd.title,
-                                shortcut: cmd.shortcut,
+                                shortcut: self.shortcut_for(cmd.action),
                                 action: cmd.action,
                             },
                         ))
@@ -1519,6 +1543,37 @@ mod tests {
                 || row.title().to_lowercase().contains("sftp")
         });
         assert!(found, "SFTP: Palette >sftp — not implemented yet");
+    }
+
+    #[test]
+    fn shortcuts_shown_are_the_live_bindings() {
+        let mut palette = CommandPalette::new();
+        palette.set_shortcuts(vec![(PaletteAction::TabCreate, "Ctrl+Shift+T".into())]);
+        palette.set_query("new tab".to_string());
+        let rows = palette.filtered_rows();
+        assert_eq!(rows[0].1.title(), "New Tab");
+        assert_eq!(rows[0].1.shortcut(), "Ctrl+Shift+T");
+        palette.set_query("split right".to_string());
+        assert_eq!(
+            palette.filtered_rows()[0].1.shortcut(),
+            "",
+            "unbound: no guess"
+        );
+    }
+
+    #[test]
+    fn commands_map_to_their_key_binding_actions() {
+        use crate::bindings::Action;
+        assert_eq!(
+            PaletteAction::TabCreate.binding_action(),
+            Some(Action::TabCreateNew)
+        );
+        assert_eq!(PaletteAction::Copy.binding_action(), Some(Action::Copy));
+        assert_eq!(
+            PaletteAction::CloseCurrentSplitOrTab.binding_action(),
+            Some(Action::CloseCurrentSplitOrTab)
+        );
+        assert_eq!(PaletteAction::ListHosts.binding_action(), None);
     }
 
     #[test]

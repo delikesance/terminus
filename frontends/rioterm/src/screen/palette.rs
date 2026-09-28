@@ -206,6 +206,20 @@ impl Screen<'_> {
         }
     }
 
+    /// Shortcut labels for palette commands, read from this window's key
+    /// bindings so they match the platform and the user's remaps.
+    pub(super) fn palette_shortcuts(
+        &self,
+    ) -> Vec<(crate::renderer::command_palette::PaletteAction, String)> {
+        crate::renderer::command_palette::command_actions()
+            .filter_map(|action| {
+                let binding = action.binding_action()?;
+                let label = crate::bindings::shortcut_label(&self.bindings, &binding)?;
+                Some((action, label))
+            })
+            .collect()
+    }
+
     pub(super) fn open_url(url: &str) {
         #[cfg(target_os = "macos")]
         {
