@@ -98,6 +98,7 @@
             ++ [
               pkgs.gh
               pkgs.nfpm
+              pkgs.minisign
               pkgs.nsis
               pkgs.msitools
               pkgs.p7zip

@@ -328,6 +328,53 @@ nix run .#release -- --build-only # artifacts only, no publish
 | Fedora / RHEL | `terminus-*.rpm` |
 | NixOS (binary) | `terminus.nix` — `pkgs.callPackage` of the Linux tarball |
 | Windows | `terminus-setup-x86_64.exe` (NSIS), `terminus-x86_64.msi` |
+| All | `checksums.txt` and its minisign signature `checksums.txt.minisig` |
+
+The release tag must equal `v` + the `Cargo.toml` version (`release.sh` refuses
+otherwise): the in-app updater compares the two, so a mismatch would make every
+install download the release again.
+
+### Signed updates
+
+Terminus checks the latest GitHub Release 20 s after start and then daily
+(`crates/terminus-update`, `frontends/rioterm/src/updater.rs`). It installs
+nothing unless `checksums.txt.minisig` verifies against the public key compiled
+into the binary and the downloaded file matches its SHA-256 in `checksums.txt`.
+
+One-time key setup (the secret key never leaves the release machine):
+
+```bash
+minisign -G -p terminus.pub -s ~/.minisign/terminus.key   # pick a password
+cp terminus.pub crates/terminus-update/update-public-key.txt
+git add crates/terminus-update/update-public-key.txt       # commit, then release
+```
+
+`release.sh` then signs every release with
+[`scripts/sign-release.sh`](scripts/sign-release.sh) (key path:
+`TERMINUS_SIGNING_KEY`, default `~/.minisign/terminus.key`) and checks the
+signature against the committed key, so a wrong key cannot ship. While
+`update-public-key.txt` is empty, releases are published unsigned and the app
+only announces new versions. Keep the secret key backed up: builds that trust a
+key can only be updated by releases signed with it.
+
+What an installed copy does with a new version:
+
+| Install | Update |
+| --- | --- |
+| Linux tarball (writable folder) | downloaded, verified and swapped in place; palette → **Restart to Update** |
+| `.deb` / `.rpm` | package downloaded to `~/Downloads` and verified; **Install Update** copies the `sudo apt/dnf install` command |
+| Windows (NSIS / MSI) | **Install Update** downloads the installer, which runs when Terminus quits |
+| Nix, dev builds, read-only folders | notice only (**Install Update** opens the release page) |
+
+Settings (`[updates]` in the config): `check = false` stops automatic checks
+(the palette's **Check for Updates** still works) and `auto-install = false`
+asks before swapping the binary. `TERMINUS_NO_UPDATE_CHECK=1` also disables
+automatic checks.
+
+`TERMINUS_UPDATE_URL` points the updater at another `releases/latest`-shaped
+JSON (HTTPS, or plain http on loopback). To try the whole flow against a local
+release, debug builds also accept a test key in `TERMINUS_UPDATE_PUBKEY`. `scripts/test-release-signing.sh`
+covers the signing step.
 
 ### Nix / NixOS install
 
