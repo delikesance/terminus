@@ -3108,6 +3108,34 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     RoutePath::Welcome => {
                         route.window.screen.render_welcome();
                     }
+                    RoutePath::Updating => {
+                        use crate::updater::StartupPhase;
+                        match route.window.screen.render_updating() {
+                            StartupPhase::Downloading { .. } => {}
+                            StartupPhase::Relaunch => {
+                                // The new binary starts; this one leaves
+                                // without asking (nothing ran here yet).
+                                match route.window.screen.updater.relaunch_now() {
+                                    Ok(()) => std::process::exit(0),
+                                    Err(err) => {
+                                        tracing::error!("update relaunch: {err}");
+                                        route.window.screen.updater.end_startup();
+                                        route.path = RoutePath::Terminal;
+                                    }
+                                }
+                            }
+                            StartupPhase::Failed(message) => {
+                                route.window.screen.updater.end_startup();
+                                route.window.screen.chrome.panel.notice = Some(format!(
+                                    "Update skipped ({message}). Terminus {} opened.",
+                                    crate::updater::CURRENT_VERSION
+                                ));
+                                route.path = RoutePath::Terminal;
+                            }
+                            StartupPhase::None => route.path = RoutePath::Terminal,
+                        }
+                        route.request_redraw();
+                    }
                     RoutePath::Terminal => {
                         if let Some(window_update) = route.window.screen.render() {
                             use crate::context::renderable::{
