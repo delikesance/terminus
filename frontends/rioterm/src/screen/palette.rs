@@ -187,7 +187,7 @@ impl Screen<'_> {
                         self.renderer.assistant.clear();
                     }
                     AssistantOverlayAction::OpenDocs => {
-                        Self::open_docs_url();
+                        Self::open_url("https://rioterm.com/docs/config");
                     }
                 }
                 self.mark_dirty();
@@ -206,8 +206,7 @@ impl Screen<'_> {
         }
     }
 
-    pub(super) fn open_docs_url() {
-        let url = "https://rioterm.com/docs/config";
+    pub(super) fn open_url(url: &str) {
         #[cfg(target_os = "macos")]
         {
             let _ = std::process::Command::new("open").arg(url).spawn();
@@ -338,6 +337,32 @@ impl Screen<'_> {
                         self.chrome.panel.notice =
                             Some("Add a host first to open SFTP".into());
                     }
+                }
+            }
+            PaletteAction::CheckForUpdates => {
+                self.chrome.panel.notice = Some("Checking for updates…".into());
+                self.updater.check_now();
+            }
+            PaletteAction::InstallUpdate => {
+                use crate::updater::{install_action, InstallAction};
+                match install_action(self.updater.state()) {
+                    InstallAction::Install => {
+                        self.chrome.panel.notice = Some("Preparing the update…".into());
+                        self.updater.install();
+                    }
+                    InstallAction::CopyCommand(command) => {
+                        self.chrome.panel.notice =
+                            Some(format!("Copied, paste in a terminal: {command}"));
+                        clipboard.set(ClipboardType::Clipboard, command);
+                    }
+                    InstallAction::OpenPage(url) => Self::open_url(&url),
+                }
+            }
+            PaletteAction::RestartToUpdate => {
+                // The new binary starts only once the quit is confirmed.
+                match self.updater.arm_exit_action() {
+                    Ok(()) => self.context_manager.quit(),
+                    Err(err) => self.chrome.panel.notice = Some(err),
                 }
             }
             PaletteAction::Quit => {

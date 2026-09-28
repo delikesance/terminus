@@ -19,7 +19,8 @@ impl Screen<'_> {
     /// Apply anything the host worker has sent, and refresh session washes
     /// from the open tabs. Returns whether the chrome changed.
     pub fn pump_chrome(&mut self) -> bool {
-        let store_changed = self.host_store.drain();
+        let update_changed = self.pump_updater();
+        let store_changed = self.host_store.drain() || update_changed;
         let sftp_changed = self.sftp.as_mut().is_some_and(|s| s.pump());
         let store_changed = store_changed || sftp_changed;
 
@@ -220,6 +221,27 @@ impl Screen<'_> {
         &mut self,
     ) -> Option<terminus_ui::PendingVaultAction> {
         self.pending_vault_continue.take()
+    }
+
+    /// Surface update progress on the sidebar notice band, and start a
+    /// downloaded installer (it replaces the running executable, so the app
+    /// quits right after). Returns whether anything changed.
+    fn pump_updater(&mut self) -> bool {
+        if !self.updater.pump() {
+            return false;
+        }
+        if let Some(notice) = self.updater.take_notice() {
+            self.chrome.panel.notice = Some(notice);
+        }
+        if matches!(
+            self.updater.state(),
+            crate::updater::UpdateState::InstallerReady { .. }
+        ) && self.updater.arm_exit_action().is_ok()
+        {
+            // The installer starts once the quit is confirmed.
+            self.context_manager.quit();
+        }
+        true
     }
 
     pub(super) fn open_vault_unlock_for(

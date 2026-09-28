@@ -335,6 +335,7 @@ impl Route<'_> {
 
     #[inline]
     pub fn quit(&mut self) {
+        self.window.screen.updater.run_exit_action();
         std::process::exit(0);
     }
 
@@ -457,10 +458,12 @@ impl Route<'_> {
                     match &key_event.logical_key {
                         Key::Character(c) if c.as_str() == "n" || c.as_str() == "N" => {
                             self.window.screen.renderer.confirm_quit.set_active(false);
+                            self.window.screen.updater.disarm_exit_action();
                             self.request_overlay_redraw();
                         }
                         Key::Named(NamedKey::Escape) => {
                             self.window.screen.renderer.confirm_quit.set_active(false);
+                            self.window.screen.updater.disarm_exit_action();
                             self.request_overlay_redraw();
                         }
                         Key::Character(c) if c.as_str() == "y" || c.as_str() == "Y" => {

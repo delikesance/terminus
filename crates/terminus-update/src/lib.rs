@@ -394,13 +394,14 @@ impl Client {
     }
 
     /// Client for the official releases and the compiled-in key.
-    /// `TERMINUS_UPDATE_URL` overrides the endpoint (testing, mirrors).
+    /// `TERMINUS_UPDATE_URL` overrides the endpoint (testing, mirrors); the
+    /// signature check still applies, so a mirror cannot change what installs.
     pub fn official() -> Result<Self> {
         let endpoint = std::env::var("TERMINUS_UPDATE_URL")
             .ok()
             .filter(|u| !u.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
-        Self::new(&endpoint, Some(PUBLIC_KEY))
+        Self::new(&endpoint, Some(&trusted_key()))
     }
 
     /// Whether downloads can be verified (a trusted key is configured).
@@ -564,6 +565,20 @@ impl Client {
         file.sync_all()?;
         Ok(hex::encode(hasher.finalize()))
     }
+}
+
+/// The trusted signing key: [`PUBLIC_KEY`]. Debug builds (never shipped)
+/// also accept `TERMINUS_UPDATE_PUBKEY`, so the update flow can be exercised
+/// end to end against a locally signed test release.
+fn trusted_key() -> String {
+    #[cfg(debug_assertions)]
+    if let Some(key) = std::env::var("TERMINUS_UPDATE_PUBKEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+    {
+        return key;
+    }
+    PUBLIC_KEY.to_string()
 }
 
 fn parse_public_key(key: &str) -> Result<minisign_verify::PublicKey> {

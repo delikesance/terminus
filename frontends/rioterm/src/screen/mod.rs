@@ -68,6 +68,8 @@ pub struct Screen<'screen> {
     /// renderer) because the chrome, the keyboard and the painter all
     /// need it, and only the screen sees mouse and key events.
     pub host_store: crate::hosts::HostRepository,
+    /// Background release check / self-update.
+    pub updater: crate::updater::Updater,
     /// Terminus chrome: activity rail, host panel and add-host editor.
     pub chrome: terminus_ui::chrome::Chrome,
     /// Host label to highlight once its insert comes back from the
@@ -401,6 +403,10 @@ impl Screen<'_> {
             mouse: Mouse::new(config.scroll.multiplier, config.scroll.divider),
             touchpurpose: TouchPurpose::default(),
             renderer,
+            updater: crate::updater::Updater::spawn(
+                config.updates.into(),
+                host_wake.clone(),
+            ),
             host_store: crate::hosts::HostRepository::spawn(
                 crate::hosts::data_dir(),
                 host_wake,
