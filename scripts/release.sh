@@ -35,6 +35,7 @@ LINUX_ONLY=0
 WINDOWS_ONLY=0
 DRAFT=0
 PRERELEASE=0
+REPLACE=0
 NOTES=""
 
 usage() {
@@ -47,6 +48,7 @@ Options:
   --tag <tag>      Release tag (default: $TAG)
   --draft          Mark the GitHub release as draft
   --prerelease     Mark the GitHub release as pre-release
+  --replace        Replace the files of an already-published release
   --title <title>  Release title (default: Terminus $TAG)
   --notes <text>   Release body; omit to auto-generate notes
   -h, --help       Show this help
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
         --notes) NOTES="${2:?--notes needs a value}"; shift ;;
         --draft) DRAFT=1 ;;
         --prerelease) PRERELEASE=1 ;;
+        --replace) REPLACE=1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "release.sh: unknown option '$1' (see --help)" >&2; exit 2 ;;
     esac
@@ -74,6 +77,16 @@ done
 if [[ "$TAG" != "v${VERSION}" ]]; then
     echo "release.sh: tag $TAG does not match the Cargo version v${VERSION}" >&2
     echo "  bump [workspace.package] version in Cargo.toml instead" >&2
+    exit 1
+fi
+
+# The tag comes from Cargo.toml, so forgetting to bump the version would
+# rebuild and overwrite the files of the last release. Stop before building.
+if [[ "$BUILD_ONLY" == "0" && "$REPLACE" == "0" ]] && command -v gh >/dev/null 2>&1 \
+    && gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+    echo "release.sh: $TAG is already published on $REPO." >&2
+    echo "  Bump the version first:  misc/prepare-release.sh <next version>" >&2
+    echo "  (or pass --replace to overwrite that release's files)" >&2
     exit 1
 fi
 
@@ -216,7 +229,7 @@ gh_flags=(--repo "$REPO")
 [[ "$PRERELEASE" == "1" ]] && gh_flags+=(--prerelease)
 
 if gh release view "$TAG" "${gh_flags[@]}" >/dev/null 2>&1; then
-    echo "Release $TAG exists; uploading assets (clobber)."
+    echo "Release $TAG exists; replacing its assets (--replace)."
     gh release upload "$TAG" "${UPLOAD[@]}" "${gh_flags[@]}" --clobber
 else
     # `gh release create` cannot reuse an unpushed local tag, so push the
