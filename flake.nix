@@ -102,6 +102,7 @@
               pkgs.nsis
               pkgs.msitools
               pkgs.p7zip
+              pkgs.zip
               pkgs.gnutar
               pkgs.gzip
               pkgs.git

@@ -16,9 +16,11 @@ SetCompressor /SOLID lzma
 
 Name "${PRODUCT_NAME} ${VERSION}"
 OutFile "${OUTFILE}"
-InstallDir "$PROGRAMFILES64\Terminus"
-InstallDirRegKey HKLM "${PRODUCT_DIR_REGKEY}" ""
-RequestExecutionLevel admin
+; Per-user install: no admin prompt, and Terminus can replace its own
+; terminus.exe when it updates itself (see crates/terminus-update).
+InstallDir "$LOCALAPPDATA\Programs\Terminus"
+InstallDirRegKey HKCU "${PRODUCT_DIR_REGKEY}" ""
+RequestExecutionLevel user
 
 ; UI settings
 !define MUI_ABORTWARNING
@@ -50,7 +52,7 @@ Function AddToPath
   Push $1
   Push $2
 
-  ReadRegStr $1 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
+  ReadRegStr $1 HKCU "Environment" "Path"
   StrCmp $1 "" not_found
 
   ; Check if already in PATH
@@ -62,12 +64,12 @@ Function AddToPath
   Goto done
 
 add_to_path:
-  WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$1;$0"
+  WriteRegExpandStr HKCU "Environment" "Path" "$1;$0"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=2000
   Goto done
 
 not_found:
-  WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$0"
+  WriteRegExpandStr HKCU "Environment" "Path" "$0"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=2000
 
 done:
@@ -83,7 +85,7 @@ Function un.RemoveFromPath
   Push $3
   Push $4
 
-  ReadRegStr $1 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
+  ReadRegStr $1 HKCU "Environment" "Path"
   StrCmp $1 "" un_done
 
   ; Replace ";$0" with ""
@@ -100,7 +102,7 @@ Function un.RemoveFromPath
   Call un.StrRep
   Pop $1
 
-  WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$1"
+  WriteRegExpandStr HKCU "Environment" "Path" "$1"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=2000
 
 un_done:
@@ -176,6 +178,17 @@ un_done:
   Exch $R0
 FunctionEnd
 
+; Versions before 0.6 installed for all users in Program Files. Offer to
+; remove that copy so only the self-updating per-user one remains.
+Function .onInit
+  SetShellVarContext current
+  ReadRegStr $0 HKLM "${PRODUCT_UNINST_KEY}" "UninstallString"
+  StrCmp $0 "" no_machine_install
+  MessageBox MB_YESNO|MB_ICONQUESTION "An older Terminus is installed for all users in Program Files.$\r$\n$\r$\nRemove it now? (recommended; Windows will ask for administrator rights)" IDNO no_machine_install
+  ExecShellWait "open" "$0"
+no_machine_install:
+FunctionEnd
+
 ; Installation sections
 Section "!Terminus (required)" SEC_CORE
   SectionIn RO
@@ -185,19 +198,19 @@ Section "!Terminus (required)" SEC_CORE
   File "/oname=terminus.ico" "${SRCDIR}\misc\windows\rio.ico"
 
   ; App Paths (allows Win+R > terminus)
-  WriteRegStr HKLM "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\terminus.exe"
-  WriteRegStr HKLM "${PRODUCT_DIR_REGKEY}" "Path" "$INSTDIR"
+  WriteRegStr HKCU "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\terminus.exe"
+  WriteRegStr HKCU "${PRODUCT_DIR_REGKEY}" "Path" "$INSTDIR"
 
   ; Add/Remove Programs entry
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\terminus.exe,0"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
-  WriteRegStr HKLM "${PRODUCT_UNINST_KEY}" "QuietUninstallString" "$INSTDIR\Uninstall.exe /S"
-  WriteRegDWORD HKLM "${PRODUCT_UNINST_KEY}" "NoModify" 1
-  WriteRegDWORD HKLM "${PRODUCT_UNINST_KEY}" "NoRepair" 1
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayName" "${PRODUCT_NAME}"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\terminus.exe,0"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "QuietUninstallString" "$INSTDIR\Uninstall.exe /S"
+  WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoRepair" 1
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 SectionEnd
@@ -219,14 +232,14 @@ SectionEnd
 
 Section "Open in Terminus context menu" SEC_CONTEXT
   ; Background context menu (right-click inside a folder)
-  WriteRegStr HKCR "Directory\Background\shell\Terminus" "" "Open in Terminus"
-  WriteRegStr HKCR "Directory\Background\shell\Terminus" "Icon" "$INSTDIR\terminus.exe"
-  WriteRegStr HKCR "Directory\Background\shell\Terminus\command" "" '"$INSTDIR\terminus.exe" --working-dir "%V"'
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus" "" "Open in Terminus"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus" "Icon" "$INSTDIR\terminus.exe"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus\command" "" '"$INSTDIR\terminus.exe" --working-dir "%V"'
 
   ; Directory context menu (right-click on a folder)
-  WriteRegStr HKCR "Directory\shell\Terminus" "" "Open in Terminus"
-  WriteRegStr HKCR "Directory\shell\Terminus" "Icon" "$INSTDIR\terminus.exe"
-  WriteRegStr HKCR "Directory\shell\Terminus\command" "" '"$INSTDIR\terminus.exe" --working-dir "%1"'
+  WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus" "" "Open in Terminus"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus" "Icon" "$INSTDIR\terminus.exe"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus\command" "" '"$INSTDIR\terminus.exe" --working-dir "%1"'
 SectionEnd
 
 ; Section descriptions
@@ -234,23 +247,23 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CORE} "Installs the Terminus executable and core files."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_STARTMENU} "Creates shortcuts in the Start Menu."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_DESKTOP} "Creates a shortcut on the Desktop."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_PATH} "Adds Terminus to the system PATH so you can launch it from command prompt."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SEC_PATH} "Adds Terminus to your PATH so you can launch it from a command prompt."
   !insertmacro MUI_DESCRIPTION_TEXT ${SEC_CONTEXT} "Adds 'Open in Terminus' to the Windows Explorer context menu."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 ; Uninstallation section
 Section "Uninstall"
   ; Remove context menus
-  DeleteRegKey HKCR "Directory\Background\shell\Terminus"
-  DeleteRegKey HKCR "Directory\shell\Terminus"
+  DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\Terminus"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\Terminus"
 
   ; Remove from PATH
   Push "$INSTDIR"
   Call un.RemoveFromPath
 
   ; Remove App Paths & Uninstall registry
-  DeleteRegKey HKLM "${PRODUCT_DIR_REGKEY}"
-  DeleteRegKey HKLM "${PRODUCT_UNINST_KEY}"
+  DeleteRegKey HKCU "${PRODUCT_DIR_REGKEY}"
+  DeleteRegKey HKCU "${PRODUCT_UNINST_KEY}"
 
   ; Remove shortcuts
   Delete "$DESKTOP\Terminus.lnk"
@@ -262,5 +275,7 @@ Section "Uninstall"
   Delete "$INSTDIR\terminus.exe"
   Delete "$INSTDIR\terminus.ico"
   Delete "$INSTDIR\Uninstall.exe"
+  ; Old executables a self-update moved aside while they were running.
+  Delete "$INSTDIR\.terminus-update-*"
   RMDir "$INSTDIR"
 SectionEnd
