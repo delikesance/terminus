@@ -586,8 +586,18 @@ impl ProbeError {
     pub fn user_message(&self) -> String {
         match self {
             Self::Unreachable(detail) => {
+                let lower = detail.to_ascii_lowercase();
+                let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
                 if detail.is_empty() {
                     "Host unreachable".into()
+                } else if has(&["refused"]) {
+                    "Nothing answers on that port. Is SSH running?".into()
+                } else if has(&["lookup", "name or service", "resolve", "nodename"]) {
+                    "Can't find that host. Check the address.".into()
+                } else if has(&["timed out", "timeout"]) {
+                    "No answer from the host (firewall or VPN?)".into()
+                } else if has(&["network is unreachable", "no route"]) {
+                    "Can't reach that network. Check VPN/Wi-Fi.".into()
                 } else {
                     format!("Host unreachable: {detail}")
                 }
@@ -1322,6 +1332,25 @@ mod tests {
         };
         assert!(!refused.accepted());
         assert_eq!(refused.fingerprint(), None);
+    }
+
+    #[test]
+    fn unreachable_hosts_are_explained_in_plain_words() {
+        let msg = |d: &str| ProbeError::Unreachable(d.into()).user_message();
+        let refused = msg("Connection refused (os error 111)");
+        assert!(refused.contains("port"), "{refused}");
+        assert!(!refused.contains("os error"), "{refused}");
+        let dns = msg("failed to lookup address information: Name or service not known");
+        assert!(dns.contains("find that host"), "{dns}");
+        let timeout = msg("connection timed out");
+        assert!(timeout.contains("No answer"), "{timeout}");
+        let route = msg("Network is unreachable (os error 101)");
+        assert!(route.contains("network"), "{route}");
+        // Unknown causes still show their detail.
+        assert!(msg("weird thing").contains("weird thing"));
+        for m in [&refused, &dns, &timeout, &route] {
+            assert!(m.chars().count() <= 56, "fits two error lines: {m}");
+        }
     }
 
     #[test]
