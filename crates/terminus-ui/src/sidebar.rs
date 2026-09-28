@@ -1644,10 +1644,11 @@ impl HostPanel {
     pub fn empty_hint(&self) -> Option<EmptyHint> {
         let filter = self.filter.trim();
         if !filter.is_empty() {
-            let any_host = self
-                .visible_row_indices()
-                .into_iter()
-                .any(|i| self.rows.get(i).is_some_and(|row| row.host().is_some()));
+            let any_host = self.visible_row_indices().into_iter().any(|i| {
+                self.rows
+                    .get(i)
+                    .is_some_and(|row| matches!(row, Row::Host(_) | Row::Group { .. }))
+            });
             return (!any_host).then(|| EmptyHint {
                 title: "No matches",
                 body: format!(
@@ -1710,8 +1711,17 @@ impl HostPanel {
     pub fn host_count(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| row.host().is_some_and(|host| host.stored))
-            .count()
+            .map(|row| match row {
+                Row::Host(host) if host.stored => 1,
+                // A collapsed group lists no host rows, only their number.
+                Row::Group {
+                    host_count,
+                    collapsed: true,
+                    ..
+                } => *host_count,
+                _ => 0,
+            })
+            .sum()
     }
 
     /// Largest legal scroll offset for this viewport.
@@ -2422,6 +2432,28 @@ mod tests {
         assert_eq!(hint.title, "No saved hosts yet");
         assert!(hint.body.contains("New Host"), "{}", hint.body);
         assert!(panel(2).empty_hint().is_none());
+    }
+
+    #[test]
+    fn hosts_in_a_collapsed_group_still_count() {
+        // Collapsed groups carry their hosts in `host_count`, not as rows.
+        let mut panel = HostPanel::default();
+        panel.set_rows(vec![
+            Row::Section("Hosts".into()),
+            Row::Group {
+                id: "g1".into(),
+                name: "prod".into(),
+                host_count: 3,
+                session_count: 0,
+                collapsed: true,
+            },
+        ]);
+        assert_eq!(panel.host_count(), 3);
+        assert_eq!(panel.count_label(), "3 hosts");
+        assert!(panel.empty_hint().is_none(), "not 'No saved hosts yet'");
+        // Filtering on the group's name shows the group: not "No matches".
+        panel.filter = "prod".into();
+        assert!(panel.empty_hint().is_none());
     }
 
     #[test]

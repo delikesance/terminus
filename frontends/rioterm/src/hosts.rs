@@ -2837,6 +2837,38 @@ mod tests {
     }
 
     #[test]
+    fn a_collapsed_group_is_not_an_empty_host_list() {
+        let host = |id: &str| HostRow {
+            id: id.to_string(),
+            name: id.to_string(),
+            hostname: format!("{id}.internal"),
+            port: 22,
+            username: "root".to_string(),
+            auth_method: "key".to_string(),
+            identity_id: None,
+            group_id: Some("g1".to_string()),
+            os_id: None,
+            sort_order: 0,
+            updated_at: Utc::now(),
+        };
+        let groups = vec![("g1".to_string(), "prod".to_string(), 0)];
+        let collapsed: HashSet<String> = ["g1".to_string()].into();
+        let rows = sidebar_rows(
+            &PlatformFacts::default(),
+            &[host("a"), host("b")],
+            &groups,
+            &collapsed,
+            &HashSet::new(),
+            &[],
+            &[],
+        );
+        let mut panel = terminus_ui::sidebar::HostPanel::default();
+        panel.set_rows(rows);
+        assert_eq!(panel.host_count(), 2);
+        assert_eq!(panel.empty_hint(), None);
+    }
+
+    #[test]
     fn the_distro_name_is_not_repeated_when_it_is_the_hostname() {
         let platform = PlatformFacts {
             machine: machine("NixOS", "nixos", Some("NixOS")),
