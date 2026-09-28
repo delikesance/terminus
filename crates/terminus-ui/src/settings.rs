@@ -95,6 +95,8 @@ pub struct SshKeyItem {
     pub name: String,
     pub fingerprint: String,
     pub created: String,
+    /// OpenSSH public key line, to paste into a server's authorized_keys.
+    pub public_key: String,
 }
 
 /// Snapshot pushed from the host worker into the SqlSync pane.
@@ -148,6 +150,8 @@ pub struct SettingsModal {
     pub key_draft_passphrase_focused: bool,
     /// Error shown under the generate form (empty label, worker failure, …).
     pub key_draft_error: Option<String>,
+    /// Confirmation under the key list (public key copied, …).
+    pub keys_notice: Option<String>,
     /// Hovered Delete control index on the Keys list (red label).
     pub key_delete_hover: Option<usize>,
     /// Hovered key row index — Delete is only painted for this row.
@@ -180,6 +184,7 @@ impl Default for SettingsModal {
             key_passphrase: TextDraft::default(),
             key_draft_passphrase_focused: false,
             key_draft_error: None,
+            keys_notice: None,
             key_delete_hover: None,
             key_row_hover: None,
         }
@@ -193,6 +198,7 @@ pub enum SettingsHit {
     Tab(SettingsTab),
     NewKey,
     DeleteKey(usize),
+    CopyPublicKey(usize),
     /// Focus the inline generate-key name field.
     FocusKeyDraft,
     /// Focus the optional PEM paste field on the generate form.
@@ -774,6 +780,19 @@ impl SettingsModal {
         Rect::new(row.right() - PAD - W, row.y + (row.height - H) * 0.5, W, H)
     }
 
+    /// "Copy public key" control, left of Delete on a key row.
+    pub fn key_copy_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+        index: usize,
+    ) -> Rect {
+        let delete = self.key_delete_rect(window_width, window_height, index);
+        const W: f32 = 118.0;
+        const GAP: f32 = 8.0;
+        Rect::new(delete.x - GAP - W, delete.y, W, delete.height)
+    }
+
     /// Engine card (read-only display / dropdown trigger).
     pub fn engine_card_rect(&self, window_width: f32, window_height: f32) -> Rect {
         let (x, y, w) = self.sql_content_origin(window_width, window_height);
@@ -1016,6 +1035,13 @@ impl SettingsModal {
                 {
                     return SettingsHit::DeleteKey(i);
                 }
+                if !self.keys[i].public_key.is_empty()
+                    && self
+                        .key_copy_rect(window_width, window_height, i)
+                        .contains(x, y)
+                {
+                    return SettingsHit::CopyPublicKey(i);
+                }
             }
         }
         if self.tab == SettingsTab::SqlSync {
@@ -1110,6 +1136,7 @@ impl SettingsModal {
             | SettingsHit::Tab(_)
             | SettingsHit::NewKey
             | SettingsHit::DeleteKey(_)
+            | SettingsHit::CopyPublicKey(_)
             | SettingsHit::GenerateKey
             | SettingsHit::CancelKeyDraft
             | SettingsHit::ToggleEngineMenu

@@ -697,7 +697,7 @@ enum HostEvent {
     SnippetsLoaded(Vec<terminus_ui::snippets::SnippetItem>),
     Loaded(Vec<HostRow>),
     GroupsLoaded(Vec<(String, String, i64)>),
-    IdentitiesLoaded(Vec<(String, String, String, String)>),
+    IdentitiesLoaded(Vec<IdentityRow>),
     /// Loaded sync URI + status for the Settings pane.
     SyncStatus {
         uri: String,
@@ -734,7 +734,7 @@ pub struct HostRepository {
     hosts: Vec<HostRow>,
     groups: Vec<(String, String, i64)>,
     /// `(id, name, fingerprint)` for Settings + add-host picker.
-    identities: Vec<(String, String, String, String)>,
+    identities: Vec<IdentityRow>,
     platform: PlatformFacts,
     pub snippet_items: Vec<terminus_ui::snippets::SnippetItem>,
     loading: bool,
@@ -805,7 +805,7 @@ impl HostRepository {
         &self.groups
     }
 
-    pub fn identities(&self) -> &[(String, String, String, String)] {
+    pub fn identities(&self) -> &[IdentityRow] {
         &self.identities
     }
 
@@ -2333,20 +2333,36 @@ async fn persist_sync_config(
         .map_err(|e| e.to_string())
 }
 
+/// A managed SSH key as Settings and the add-host picker list it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityRow {
+    pub id: String,
+    pub name: String,
+    pub fingerprint: String,
+    pub created: String,
+    /// OpenSSH public key line (empty when none is stored).
+    pub public_key: String,
+}
+
 fn list_identities(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
     match runtime.block_on(store.list_identities()) {
         Ok(idents) => {
-            let rows: Vec<(String, String, String, String)> = idents
+            let rows: Vec<IdentityRow> = idents
                 .into_iter()
                 .filter(|i| i.deleted_at.is_none())
                 .map(|i| {
-                    let fp = i
+                    let fingerprint = i
                         .public_key
                         .as_deref()
                         .map(terminus_core::fingerprint_from_public_openssh)
                         .unwrap_or_else(|| "no public key".into());
-                    let created = i.created_at.format("%Y-%m-%d").to_string();
-                    (i.id.to_string(), i.name, fp, created)
+                    IdentityRow {
+                        id: i.id.to_string(),
+                        name: i.name,
+                        fingerprint,
+                        created: i.created_at.format("%Y-%m-%d").to_string(),
+                        public_key: i.public_key.unwrap_or_default(),
+                    }
                 })
                 .collect();
             HostEvent::IdentitiesLoaded(rows)
@@ -3326,11 +3342,12 @@ mod tests {
 
         repo.create_ssh_key("Laptop Ed25519");
         assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
-            repo.identities().iter().any(|(id, name, fp, created)| {
-                !id.is_empty()
-                    && name == "Laptop Ed25519"
-                    && fp.starts_with("SHA256:")
-                    && !created.is_empty()
+            repo.identities().iter().any(|key| {
+                !key.id.is_empty()
+                    && key.name == "Laptop Ed25519"
+                    && key.fingerprint.starts_with("SHA256:")
+                    && !key.created.is_empty()
+                    && key.public_key.starts_with("ssh-ed25519 ")
             })
         }));
         assert!(repo
@@ -3344,7 +3361,7 @@ mod tests {
             "managed key stored in plaintext"
         );
 
-        let id = repo.identities()[0].0.clone();
+        let id = repo.identities()[0].id.clone();
         repo.delete_ssh_key(&id);
         assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
             repo.identities().is_empty()
@@ -3355,9 +3372,9 @@ mod tests {
         let pem = generated.private_key.expect("private");
         repo.create_ssh_key_with_pem("Imported", Some(pem));
         assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
-            repo.identities()
-                .iter()
-                .any(|(_, name, fp, _)| name == "Imported" && fp.starts_with("SHA256:"))
+            repo.identities().iter().any(|key| {
+                key.name == "Imported" && key.fingerprint.starts_with("SHA256:")
+            })
         }));
 
         drop(repo);

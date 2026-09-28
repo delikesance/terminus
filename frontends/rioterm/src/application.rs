@@ -1723,6 +1723,14 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::CopyPublicKey(key) => {
+                                        self.router.clipboard.set(
+                                            rio_backend::clipboard::ClipboardType::Clipboard,
+                                            key,
+                                        );
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::DeleteSshKey(id) => {
                                         route
                                             .window
