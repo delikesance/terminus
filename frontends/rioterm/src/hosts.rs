@@ -1219,6 +1219,7 @@ fn worker(
         if let Ok(cfg) = terminus_core::sync::SyncConfig::from_json(&raw) {
             let url = cfg.remote_url.clone();
             sync_engine = terminus_core::SyncEngine::new(cfg);
+            runtime.block_on(sync_engine.attach_local(store.pool().clone()));
             if let Some(uri) = url.filter(|u| !u.trim().is_empty()) {
                 if let Err(err) = runtime.block_on(sync_engine.attach_remote_uri(&uri)) {
                     tracing::warn!(%err, "could not reopen sync remote on startup");
@@ -1260,7 +1261,32 @@ fn worker(
         }
     }
 
-    while let Ok(command) = commands.recv() {
+    runtime.block_on(sync_engine.attach_local(store.pool().clone()));
+    // Pull what other devices changed while this one was closed.
+    background_sync(&runtime, &store, &mut sync_engine, vault.is_some(), &events);
+    wake();
+
+    loop {
+        // Idle ticks drive the periodic sync; commands still land at once.
+        let interval = std::time::Duration::from_secs(
+            sync_engine.config.interval_secs.max(MIN_SYNC_INTERVAL_SECS),
+        );
+        let command = match commands.recv_timeout(interval) {
+            Ok(command) => command,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if background_sync(
+                    &runtime,
+                    &store,
+                    &mut sync_engine,
+                    vault.is_some(),
+                    &events,
+                ) {
+                    wake();
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             Command::Refresh => {
                 let _ = events.send(list(&runtime, &store));
@@ -1356,7 +1382,9 @@ fn worker(
                         let mut all = store.list_snippets().await.unwrap_or_default();
                         if let Some(mut snip) = all.into_iter().find(|s| s.id == id_uuid)
                         {
-                            snip.deleted_at = Some(chrono::Utc::now());
+                            let now = chrono::Utc::now();
+                            snip.deleted_at = Some(now);
+                            snip.updated_at = now;
                             return store.upsert_snippet(&snip).await;
                         }
                     }
@@ -1576,6 +1604,8 @@ fn worker(
                     &uri,
                 ));
                 let _ = events.send(status);
+                // A pull may have changed any list.
+                send_all_lists(&runtime, &store, &events);
             }
             Command::ResolveHostPassword { id, reply } => {
                 let result = resolve_host_password(&runtime, &store, vault.as_ref(), &id);
@@ -2048,6 +2078,51 @@ fn seal_plaintext_identities(
     Ok(sealed)
 }
 
+/// Floor for the automatic sync period, whatever the config says.
+const MIN_SYNC_INTERVAL_SECS: u64 = 15;
+
+/// Re-send every list the panel shows (after a sync pulled rows).
+fn send_all_lists(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    events: &Sender<HostEvent>,
+) {
+    let _ = events.send(list(runtime, store));
+    let _ = events.send(list_groups(runtime, store));
+    let _ = events.send(list_identities(runtime, store));
+    let _ = events.send(list_snippets(runtime, store));
+}
+
+/// Automatic sync (startup + periodic). Does nothing when sync is not set
+/// up. Returns true when it sent events the UI should pick up.
+fn background_sync(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    engine: &mut terminus_core::SyncEngine,
+    vault_unlocked: bool,
+    events: &Sender<HostEvent>,
+) -> bool {
+    if !engine.config.enabled || !runtime.block_on(engine.is_configured()) {
+        return false;
+    }
+    if runtime.block_on(engine.status()) == terminus_core::sync::SyncStatus::Error {
+        // Retry after a failed run: Error → Syncing is a valid transition.
+        runtime.block_on(engine.clear_error());
+    }
+    match runtime.block_on(engine.sync_now()) {
+        Ok(report) => {
+            engine.config.last_sync = report.finished_at;
+            let _ = runtime.block_on(persist_sync_config(store, &engine.config));
+            if report.pulled > 0 {
+                send_all_lists(runtime, store, events);
+            }
+        }
+        Err(err) => tracing::warn!(%err, "background sync failed"),
+    }
+    let _ = events.send(sync_status_event(runtime, engine, vault_unlocked));
+    true
+}
+
 /// Snapshot the SyncEngine into a UI event.
 fn sync_status_event(
     runtime: &tokio::runtime::Runtime,
@@ -2173,13 +2248,15 @@ async fn run_test_sync(
         Ok(report) => {
             engine.config.last_sync = report.finished_at;
             let _ = persist_sync_config(store, &engine.config).await;
-            (
-                format!(
-                    "Sync ok — pushed {}, pulled {}",
-                    report.pushed, report.pulled
-                ),
-                false,
-            )
+            let summary = format!(
+                "Sync ok — pushed {}, pulled {}",
+                report.pushed, report.pulled
+            );
+            if report.errors.is_empty() {
+                (summary, false)
+            } else {
+                (format!("{summary} · {}", report.errors.join("; ")), true)
+            }
         }
         Err(err) => (err.to_string(), true),
     };
@@ -3061,6 +3138,41 @@ mod tests {
         assert!(repo.error().is_some());
 
         let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn worker_test_sync_moves_hosts_between_devices() {
+        let dir = temp_dir("sync-two");
+        let remote = dir.join("remote.db");
+        let uri = format!("sqlite:{}", remote.display());
+
+        let mut a = HostRepository::spawn(dir.join("a"), None);
+        assert!(drain_until(&mut a, Duration::from_secs(10), |r| !r.loading()));
+        a.create(&HostDraft {
+            name: "synced-box".to_string(),
+            hostname: "box.example.com".to_string(),
+            username: "deploy".to_string(),
+            auth_method: "gssapi".to_string(),
+            ..HostDraft::default()
+        })
+        .unwrap();
+        assert!(drain_until(&mut a, Duration::from_secs(10), |r| r.len() == 1));
+        a.test_sync(&uri);
+        assert!(drain_until(&mut a, Duration::from_secs(10), |r| {
+            r.sync_status_line().contains("pushed 1")
+        }));
+
+        let mut b = HostRepository::spawn(dir.join("b"), None);
+        assert!(drain_until(&mut b, Duration::from_secs(10), |r| !r.loading()));
+        b.test_sync(&uri);
+        assert!(drain_until(&mut b, Duration::from_secs(10), |r| {
+            r.hosts().iter().any(|h| h.name == "synced-box")
+        }));
+        assert!(b.sync_status_line().contains("pulled 1"), "{}", b.sync_status_line());
+
+        drop(a);
+        drop(b);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

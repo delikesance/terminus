@@ -31,9 +31,8 @@ fn sample_host(name: &str) -> Host {
 }
 
 /// Settings → Remote SQL Sync → "Test Sync": the UI then shows
-/// "Sync ok — pushed N, pulled M" and "Last synced …". Does data move?
+/// "Sync ok — pushed N, pulled M" and "Last synced …". Data must move.
 #[tokio::test]
-#[ignore = "BUG: SyncEngine push/pull are stubs but report success"]
 async fn sync_now_actually_pushes_hosts_to_remote() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("local")).await.unwrap();
@@ -42,22 +41,173 @@ async fn sync_now_actually_pushes_hosts_to_remote() {
     let remote = dir.path().join("remote.db");
     let uri = format!("sqlite:{}", remote.display());
     let engine = SyncEngine::new(SyncConfig::remote(&uri));
+    engine.attach_local(store.pool().clone()).await;
     engine.attach_remote_uri(&uri).await.unwrap();
     let report = engine.sync_now().await.expect("sync reports success");
     assert!(report.finished_at.is_some());
 
     let pool = open_remote_sqlite_pool(&uri).await.unwrap();
-    let tables: Vec<(String,)> =
-        sqlx::query_as("SELECT name FROM sqlite_master WHERE type='table'")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    let names: Vec<(String,)> = sqlx::query_as("SELECT name FROM hosts")
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
     assert!(
-        report.pushed > 0 && !tables.is_empty(),
-        "sync_now returned Ok (pushed {}, pulled {}) but remote has tables {:?}",
+        report.pushed > 0 && names.iter().any(|(n,)| n == "prod-db"),
+        "sync_now returned Ok (pushed {}, pulled {}) but remote hosts are {:?}",
         report.pushed,
         report.pulled,
-        tables
+        names
+    );
+}
+
+async fn device(dir: &std::path::Path, name: &str, uri: &str) -> (Store, SyncEngine) {
+    let store = Store::open(dir.join(name)).await.unwrap();
+    let engine = SyncEngine::new(SyncConfig::remote(uri));
+    engine.attach_local(store.pool().clone()).await;
+    engine.attach_remote_uri(uri).await.unwrap();
+    (store, engine)
+}
+
+#[tokio::test]
+async fn two_devices_converge_on_add_edit_and_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = format!("sqlite:{}", dir.path().join("remote.db").display());
+    let (a, sync_a) = device(dir.path(), "a", &uri).await;
+    let (b, sync_b) = device(dir.path(), "b", &uri).await;
+
+    let mut h = sample_host("shared");
+    a.upsert_host(&h).await.unwrap();
+    sync_a.sync_now().await.unwrap();
+    let r = sync_b.sync_now().await.unwrap();
+    assert_eq!(r.pulled, 1, "{r:?}");
+    assert!(b.list_hosts().await.unwrap().iter().any(|x| x.id == h.id));
+
+    // Edit on B wins on A (newer updated_at).
+    h.name = "renamed-on-b".into();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    h.updated_at = Utc::now();
+    b.upsert_host(&h).await.unwrap();
+    sync_b.sync_now().await.unwrap();
+    sync_a.sync_now().await.unwrap();
+    let on_a = a.list_hosts().await.unwrap();
+    assert_eq!(
+        on_a.iter().find(|x| x.id == h.id).unwrap().name,
+        "renamed-on-b"
+    );
+
+    // An older edit must not overwrite a newer one.
+    let mut stale = h.clone();
+    stale.name = "stale".into();
+    stale.updated_at = Utc::now() - chrono::Duration::days(1);
+    a.upsert_host(&stale).await.unwrap();
+    sync_a.sync_now().await.unwrap();
+    let on_a = a.list_hosts().await.unwrap();
+    assert_eq!(
+        on_a.iter().find(|x| x.id == h.id).unwrap().name,
+        "renamed-on-b"
+    );
+
+    // Delete on A propagates to B.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    a.delete_host(h.id).await.unwrap();
+    sync_a.sync_now().await.unwrap();
+    sync_b.sync_now().await.unwrap();
+    assert!(!b.list_hosts().await.unwrap().iter().any(|x| x.id == h.id));
+}
+
+#[tokio::test]
+async fn sync_never_pushes_a_plaintext_host_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = format!("sqlite:{}", dir.path().join("remote.db").display());
+    let (a, sync_a) = device(dir.path(), "a", &uri).await;
+    let mut h = sample_host("legacy");
+    h.password = Some("plaintext-secret".into());
+    a.upsert_host(&h).await.unwrap();
+    sync_a.sync_now().await.unwrap();
+    let raw = std::fs::read(dir.path().join("remote.db")).unwrap();
+    let needle = b"plaintext-secret";
+    assert!(!raw.windows(needle.len()).any(|w| w == needle));
+}
+
+#[tokio::test]
+async fn secrets_sync_only_when_enabled_with_the_same_vault() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = format!("sqlite:{}", dir.path().join("remote.db").display());
+    let (a, sync_a) = device(dir.path(), "a", &uri).await;
+    let (b, _) = device(dir.path(), "b", &uri).await;
+    let (header, vault) = terminus_core::create_with_key("passphrase!").unwrap();
+    let header_json = terminus_core::encode_vault_header(&header).unwrap();
+    a.set_setting(terminus_core::VAULT_HEADER_SETTING, &header_json)
+        .await
+        .unwrap();
+    let h = sample_host("pw-host");
+    a.upsert_host(&h).await.unwrap();
+    let cred = terminus_core::seal_host_password(&vault, h.id, "s3cret").unwrap();
+    a.upsert_credential(&cred).await.unwrap();
+
+    // Default config: no secrets leave the device.
+    sync_a.sync_now().await.unwrap();
+    let pool = open_remote_sqlite_pool(&uri).await.unwrap();
+    let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM credentials")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "credentials synced without sync_secrets");
+
+    // Opt in on both devices sharing one vault.
+    let mut cfg = SyncConfig::remote(&uri);
+    cfg.sync_secrets = true;
+    let vault = Arc::new(vault);
+    let sa = SyncEngine::new(cfg.clone()).with_vault(Arc::clone(&vault));
+    sa.attach_local(a.pool().clone()).await;
+    sa.attach_remote_uri(&uri).await.unwrap();
+    sa.sync_now().await.unwrap();
+
+    b.set_setting(terminus_core::VAULT_HEADER_SETTING, &header_json)
+        .await
+        .unwrap();
+    let sb = SyncEngine::new(cfg).with_vault(Arc::clone(&vault));
+    sb.attach_local(b.pool().clone()).await;
+    sb.attach_remote_uri(&uri).await.unwrap();
+    sb.sync_now().await.unwrap();
+    let creds = b
+        .list_credentials_for_owner(terminus_core::OWNER_KIND_HOST, h.id)
+        .await
+        .unwrap();
+    assert_eq!(creds.len(), 1);
+    assert_eq!(
+        terminus_core::open_host_password(&vault, h.id, &creds[0]).unwrap(),
+        "s3cret"
+    );
+
+    // A device with a different vault must not receive envelopes it cannot open.
+    let (c, _) = device(dir.path(), "c", &uri).await;
+    let (other_header, other_vault) =
+        terminus_core::create_with_key("different!").unwrap();
+    c.set_setting(
+        terminus_core::VAULT_HEADER_SETTING,
+        &terminus_core::encode_vault_header(&other_header).unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut cfg = SyncConfig::remote(&uri);
+    cfg.sync_secrets = true;
+    let sc = SyncEngine::new(cfg).with_vault(Arc::new(other_vault));
+    sc.attach_local(c.pool().clone()).await;
+    sc.attach_remote_uri(&uri).await.unwrap();
+    let report = sc.sync_now().await.unwrap();
+    assert!(
+        report.errors.iter().any(|e| e.contains("vault")),
+        "vault mismatch not reported: {report:?}"
+    );
+    assert!(c
+        .list_credentials_for_owner(terminus_core::OWNER_KIND_HOST, h.id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(
+        c.list_hosts().await.unwrap().iter().any(|x| x.id == h.id),
+        "hosts still sync"
     );
 }
 
