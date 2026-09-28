@@ -17,6 +17,17 @@ type Routes = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
 /// Minimal HTTP/1.1 server: GET <path> → 200 body, else 404.
 fn serve(routes: Routes) -> String {
+    serve_with(routes, "HTTP/1.1", "Connection: close\r\n", 0)
+}
+
+/// Like [`serve`], with another status line / headers, holding each
+/// connection `linger_ms` after answering before dropping it.
+fn serve_with(
+    routes: Routes,
+    version: &'static str,
+    extra: &'static str,
+    linger_ms: u64,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -32,7 +43,7 @@ fn serve(routes: Routes) -> String {
                 let resp = match body {
                     Some(body) => {
                         let mut r = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            "{version} 200 OK\r\nContent-Length: {}\r\n{extra}\r\n",
                             body.len()
                         )
                         .into_bytes();
@@ -43,6 +54,7 @@ fn serve(routes: Routes) -> String {
                         .to_vec(),
                 };
                 let _ = stream.write_all(&resp);
+                std::thread::sleep(std::time::Duration::from_millis(linger_ms));
             });
         }
     });
@@ -500,6 +512,49 @@ fn windows_self_updates_from_the_signed_zip() {
 }
 
 #[test]
+fn downloads_report_their_progress() {
+    let f = fixture("v9.9.9");
+    let seen = Arc::new(Mutex::new(Vec::<(u64, u64)>::new()));
+    let sink = Arc::clone(&seen);
+    let client = client(&f).with_progress(Arc::new(move |done, total| {
+        sink.lock().unwrap().push((done, total));
+    }));
+    let release = client.check("0.5.30").unwrap().expect("newer");
+    let dir = tempfile::tempdir().unwrap();
+    client
+        .stage_binary(&release, WINDOWS_ZIP, WINDOWS_BINARY, dir.path())
+        .expect("staged");
+    let size = release.asset(WINDOWS_ZIP).unwrap().size;
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty());
+    assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0), "never goes back");
+    assert_eq!(*seen.last().unwrap(), (size, size));
+}
+
+#[test]
+fn a_connection_the_server_dropped_is_retried() {
+    // An HTTP/1.0 server (Python's http.server) answers, then closes the
+    // socket a moment later: a pooled connection is dead when reused.
+    let f = fixture("v9.9.9");
+    let routes = Arc::clone(&f.routes);
+    let lying = serve_with(Arc::clone(&routes), "HTTP/1.0", "", 200);
+    {
+        let mut r = routes.lock().unwrap();
+        let latest = String::from_utf8(r["/latest"].clone()).unwrap();
+        r.insert(
+            "/latest".into(),
+            latest.replace(&f.base, &lying).into_bytes(),
+        );
+    }
+    let client = Client::new(&format!("{lying}/latest"), Some(&f.public_key)).unwrap();
+    let release = client.check("0.5.30").unwrap().expect("newer");
+    let dir = tempfile::tempdir().unwrap();
+    client
+        .stage_binary(&release, WINDOWS_ZIP, WINDOWS_BINARY, dir.path())
+        .expect("second request on a fresh connection");
+}
+
+#[test]
 fn a_running_exe_is_moved_aside_then_replaced() {
     // Windows cannot overwrite a running .exe but can rename it.
     let dir = tempfile::tempdir().unwrap();
@@ -540,7 +595,8 @@ fn a_quick_check_gives_up_on_a_silent_server() {
         .with_timeout(std::time::Duration::from_millis(500));
     let started = std::time::Instant::now();
     assert!(client.check("0.5.30").is_err());
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    // One timeout, not retried: the launch check stays within its budget.
+    assert!(started.elapsed() < std::time::Duration::from_millis(900));
 }
 
 #[test]
