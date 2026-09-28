@@ -1,0 +1,30 @@
+# Publish this flake to FlakeHub when a SemVer tag is pushed.
+# FlakeHub only accepts publishes from trusted CI (not from a laptop).
+#
+# Tags are created by misc/prepare-release.sh / scripts/release.sh (vX.Y.Z).
+# After the first successful run, consumers can add this flake via FlakeHub.
+
+name: Publish to FlakeHub
+
+on:
+  push:
+    tags:
+      - "v?[0-9]+.[0-9]+.[0-9]+*"
+
+jobs:
+  flakehub-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: DeterminateSystems/determinate-nix-action@main
+
+      - uses: DeterminateSystems/flakehub-push@main
+        with:
+          visibility: public
+          tag: ${{ github.ref_name }}

@@ -25,6 +25,7 @@ pub mod terminus_bridge_impl;
 pub use folder_diff::ConflictAction;
 pub use sftp_worker::{
     ConflictKind, SftpCommand, SftpEvent, SftpListEntry, SftpSide, SftpWorker,
+    REMOTE_HOME,
 };
 pub use ssh_transport::{Command, SshPump, SshTransport, TransportState};
 // pub use terminus_bridge_impl::{SessionHandle, TerminusBridge, TerminusCoreService};

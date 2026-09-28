@@ -191,8 +191,8 @@ find_readline_shell() {
     return 1
 }
 
-app_env=(DISPLAY="$DISP" RIO_LOG_LEVEL="${RIO_LOG_LEVEL:-info}")
-[[ "$USE_CONFIG" == "1" ]] && app_env+=(RIO_CONFIG_HOME="$CONFIG_DIR")
+app_env=(DISPLAY="$DISP" TERMINUS_LOG_LEVEL="${TERMINUS_LOG_LEVEL:-info}")
+[[ "$USE_CONFIG" == "1" ]] && app_env+=(TERMINUS_CONFIG_HOME="$CONFIG_DIR")
 if shell_bin="$(find_readline_shell)"; then
     app_env+=(SHELL="$shell_bin")
 fi

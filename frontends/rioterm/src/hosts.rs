@@ -632,6 +632,8 @@ enum Command {
         name: String,
         /// When set, import this OpenSSH PEM instead of generating.
         pem: Option<String>,
+        /// Passphrase of an encrypted `pem`.
+        passphrase: Option<String>,
     },
     /// Soft-delete a managed SSH key.
     DeleteSshKey {
@@ -700,6 +702,8 @@ enum HostEvent {
     /// Vault unlock/create result for the Settings passphrase field.
     VaultStatus {
         unlocked: bool,
+        /// A vault header exists (unlock), or not yet (the prompt creates one).
+        configured: bool,
         message: Option<String>,
     },
     /// Remote OS classified after connect (sidebar / tab badge).
@@ -726,6 +730,7 @@ pub struct HostRepository {
     error: Option<String>,
     /// Last vault unlock status message (Settings).
     vault_message: Option<String>,
+    vault_configured: bool,
     vault_unlocked: bool,
     /// Last known sync URI from the store.
     sync_uri: String,
@@ -764,6 +769,7 @@ impl HostRepository {
             notice: None,
             error: None,
             vault_message: None,
+            vault_configured: false,
             vault_unlocked: false,
             sync_uri: String::new(),
             sync_connected: false,
@@ -787,6 +793,11 @@ impl HostRepository {
 
     pub fn identities(&self) -> &[(String, String, String, String)] {
         &self.identities
+    }
+
+    /// Whether a vault exists yet (else unlocking creates it).
+    pub fn vault_configured(&self) -> bool {
+        self.vault_configured
     }
 
     pub fn vault_unlocked(&self) -> bool {
@@ -967,9 +978,20 @@ impl HostRepository {
 
     /// Generate, or import `pem` when provided.
     pub fn create_ssh_key_with_pem(&mut self, name: &str, pem: Option<String>) {
+        self.import_ssh_key(name, pem, None);
+    }
+
+    /// Generate, or import `pem` (decrypted with `passphrase`) when provided.
+    pub fn import_ssh_key(
+        &mut self,
+        name: &str,
+        pem: Option<String>,
+        passphrase: Option<String>,
+    ) {
         self.send(Command::CreateSshKey {
             name: name.to_string(),
             pem,
+            passphrase,
         });
     }
 
@@ -1128,9 +1150,14 @@ impl HostRepository {
                     self.snippet_items = snippets;
                 }
                 Ok(HostEvent::SnippetsLoaded(_)) => {}
-                Ok(HostEvent::VaultStatus { unlocked, message }) => {
+                Ok(HostEvent::VaultStatus {
+                    unlocked,
+                    configured,
+                    message,
+                }) => {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.vault_unlocked = unlocked;
+                    self.vault_configured = configured;
                     if let Some(msg) = message {
                         // Surface vault unlock/create results on the SqlSync
                         // status row (not the host-list notice band).
@@ -1206,6 +1233,7 @@ fn worker(
         if let Ok(cfg) = terminus_core::sync::SyncConfig::from_json(&raw) {
             let url = cfg.remote_url.clone();
             sync_engine = terminus_core::SyncEngine::new(cfg);
+            runtime.block_on(sync_engine.attach_local(store.pool().clone()));
             if let Some(uri) = url.filter(|u| !u.trim().is_empty()) {
                 if let Err(err) = runtime.block_on(sync_engine.attach_remote_uri(&uri)) {
                     tracing::warn!(%err, "could not reopen sync remote on startup");
@@ -1227,6 +1255,7 @@ fn worker(
                         vault = Some(shared);
                         let _ = events.send(HostEvent::VaultStatus {
                             unlocked: true,
+                            configured: true,
                             message: None,
                         });
                     }
@@ -1234,6 +1263,7 @@ fn worker(
                         crate::vault_remember::forget_passphrase();
                         let _ = events.send(HostEvent::VaultStatus {
                             unlocked: false,
+                            configured: true,
                             message: None,
                         });
                     }
@@ -1241,13 +1271,46 @@ fn worker(
             } else {
                 let _ = events.send(HostEvent::VaultStatus {
                     unlocked: false,
+                    configured: true,
                     message: None,
                 });
             }
         }
+    } else {
+        // No vault yet: the first prompt creates one (asks twice).
+        let _ = events.send(HostEvent::VaultStatus {
+            unlocked: false,
+            configured: false,
+            message: None,
+        });
     }
 
-    while let Ok(command) = commands.recv() {
+    runtime.block_on(sync_engine.attach_local(store.pool().clone()));
+    // Pull what other devices changed while this one was closed.
+    background_sync(&runtime, &store, &mut sync_engine, vault.is_some(), &events);
+    wake();
+
+    loop {
+        // Idle ticks drive the periodic sync; commands still land at once.
+        let interval = std::time::Duration::from_secs(
+            sync_engine.config.interval_secs.max(MIN_SYNC_INTERVAL_SECS),
+        );
+        let command = match commands.recv_timeout(interval) {
+            Ok(command) => command,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if background_sync(
+                    &runtime,
+                    &store,
+                    &mut sync_engine,
+                    vault.is_some(),
+                    &events,
+                ) {
+                    wake();
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             Command::Refresh => {
                 let _ = events.send(list(&runtime, &store));
@@ -1343,7 +1406,9 @@ fn worker(
                         let mut all = store.list_snippets().await.unwrap_or_default();
                         if let Some(mut snip) = all.into_iter().find(|s| s.id == id_uuid)
                         {
-                            snip.deleted_at = Some(chrono::Utc::now());
+                            let now = chrono::Utc::now();
+                            snip.deleted_at = Some(now);
+                            snip.updated_at = now;
                             return store.upsert_snippet(&snip).await;
                         }
                     }
@@ -1452,6 +1517,10 @@ fn worker(
             } => match unlock_or_create_vault(&runtime, &store, &passphrase) {
                 Ok(unlocked) => {
                     let shared = Arc::new(unlocked);
+                    if let Err(err) = seal_plaintext_identities(&runtime, &store, &shared)
+                    {
+                        tracing::warn!("could not seal stored SSH keys: {err}");
+                    }
                     runtime.block_on(sync_engine.attach_vault(Arc::clone(&shared)));
                     vault = Some(shared);
                     if remember {
@@ -1465,19 +1534,37 @@ fn worker(
                     }
                     let _ = events.send(HostEvent::VaultStatus {
                         unlocked: true,
+                        configured: true,
                         message: Some("Vault unlocked".into()),
                     });
                     let _ = events.send(sync_status_event(&runtime, &sync_engine, true));
                 }
                 Err(message) => {
+                    let configured = runtime
+                        .block_on(store.get_setting(terminus_core::VAULT_HEADER_SETTING))
+                        .ok()
+                        .flatten()
+                        .is_some();
                     let _ = events.send(HostEvent::VaultStatus {
                         unlocked: false,
+                        configured,
                         message: Some(message),
                     });
                 }
             },
-            Command::CreateSshKey { name, pem } => {
-                match create_ssh_key(&runtime, &store, &name, pem.as_deref()) {
+            Command::CreateSshKey {
+                name,
+                pem,
+                passphrase,
+            } => {
+                match create_ssh_key(
+                    &runtime,
+                    &store,
+                    vault.as_deref(),
+                    &name,
+                    pem.as_deref(),
+                    passphrase.as_deref(),
+                ) {
                     Ok(label) => {
                         let _ = events.send(HostEvent::Stored(label));
                         let _ = events.send(list_identities(&runtime, &store));
@@ -1548,13 +1635,15 @@ fn worker(
                     &uri,
                 ));
                 let _ = events.send(status);
+                // A pull may have changed any list.
+                send_all_lists(&runtime, &store, &events);
             }
             Command::ResolveHostPassword { id, reply } => {
                 let result = resolve_host_password(&runtime, &store, vault.as_ref(), &id);
                 let _ = reply.send(result);
             }
             Command::ResolveHostIdentity { id, reply } => {
-                let result = resolve_host_identity(&runtime, &store, &id);
+                let result = resolve_host_identity(&runtime, &store, vault.as_ref(), &id);
                 let _ = reply.send(result);
             }
             Command::DetectOs { id } => {
@@ -1646,12 +1735,7 @@ fn probe_and_persist(
             let id = host
                 .identity_id
                 .ok_or_else(|| "Select a saved SSH key".to_string())?;
-            Some(
-                runtime
-                    .block_on(store.get_identity(id))
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| "Selected SSH key was not found".to_string())?,
-            )
+            Some(load_open_identity(runtime, store, vault.as_ref(), id)?)
         }
         _ => None,
     };
@@ -1767,7 +1851,7 @@ fn probe_and_update(
         let identity = match method {
             HAM::Key => {
                 if let Some(iid) = identity_id {
-                    runtime.block_on(store.get_identity(iid)).ok().flatten()
+                    load_open_identity(runtime, store, vault.as_ref(), iid).ok()
                 } else {
                     None
                 }
@@ -1836,11 +1920,7 @@ fn detect_and_store_os(
             let Some(iid) = host.identity_id else {
                 return Err("No SSH key on host".into());
             };
-            runtime
-                .block_on(store.get_identity(iid))
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "SSH key missing".to_string())
-                .map(Some)?
+            Some(load_open_identity(runtime, store, vault, iid)?)
         }
         _ => None,
     };
@@ -1934,6 +2014,7 @@ fn resolve_host_password(
 fn resolve_host_identity(
     runtime: &tokio::runtime::Runtime,
     store: &Store,
+    vault: Option<&Arc<terminus_core::UnlockedVault>>,
     id: &str,
 ) -> Result<Option<(String, Option<String>)>, String> {
     use terminus_core::HostAuthMethod;
@@ -1957,17 +2038,120 @@ fn resolve_host_identity(
         return Ok(None);
     };
 
-    let identity = runtime
-        .block_on(store.get_identity(identity_id))
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Selected SSH key was not found".to_string())?;
-
+    let identity = load_open_identity(runtime, store, vault, identity_id)?;
     let passphrase = identity.passphrase.filter(|p| !p.is_empty());
     let Some(pem) = identity.private_key.filter(|p| !p.trim().is_empty()) else {
         return Err("Selected SSH key has no private key material".into());
     };
 
     Ok(Some((pem, passphrase)))
+}
+
+/// Load a managed key with its private key and passphrase unsealed.
+///
+/// Sealed keys need the vault; the error names "Unlock the vault" so the UI
+/// opens the unlock modal instead of failing the connection.
+fn load_open_identity(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: Option<&Arc<terminus_core::UnlockedVault>>,
+    identity_id: Uuid,
+) -> Result<terminus_core::Identity, String> {
+    let mut identity = runtime
+        .block_on(store.get_identity(identity_id))
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Selected SSH key was not found".to_string())?;
+    if terminus_core::identity_needs_vault(&identity) && vault.is_none() {
+        return Err(
+            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)"
+                .into(),
+        );
+    }
+    let (pem, passphrase) =
+        terminus_core::open_identity_secrets(vault.map(|v| v.as_ref()), &identity)
+            .map_err(|e| format!("Could not decrypt the SSH key: {e}"))?;
+    identity.private_key = pem;
+    identity.passphrase = passphrase;
+    Ok(identity)
+}
+
+/// Seal every managed key still stored as plaintext (keys saved before the
+/// vault sealed them). Runs on each unlock; already-sealed rows are skipped.
+fn seal_plaintext_identities(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    vault: &terminus_core::UnlockedVault,
+) -> Result<usize, String> {
+    let identities = runtime
+        .block_on(store.list_identities())
+        .map_err(|e| e.to_string())?;
+    let mut sealed = 0;
+    for identity in identities {
+        let plaintext = identity
+            .private_key
+            .as_deref()
+            .is_some_and(|k| !k.is_empty() && !terminus_core::vault::is_sealed(k))
+            || identity
+                .passphrase
+                .as_deref()
+                .is_some_and(|p| !p.is_empty() && !terminus_core::vault::is_sealed(p));
+        if !plaintext {
+            continue;
+        }
+        let mut row =
+            terminus_core::seal_identity(vault, &identity).map_err(|e| e.to_string())?;
+        row.updated_at = Utc::now();
+        runtime
+            .block_on(store.upsert_identity(&row))
+            .map_err(|e| e.to_string())?;
+        sealed += 1;
+    }
+    Ok(sealed)
+}
+
+/// Floor for the automatic sync period, whatever the config says.
+const MIN_SYNC_INTERVAL_SECS: u64 = 15;
+
+/// Re-send every list the panel shows (after a sync pulled rows).
+fn send_all_lists(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    events: &Sender<HostEvent>,
+) {
+    let _ = events.send(list(runtime, store));
+    let _ = events.send(list_groups(runtime, store));
+    let _ = events.send(list_identities(runtime, store));
+    let _ = events.send(list_snippets(runtime, store));
+}
+
+/// Automatic sync (startup + periodic). Does nothing when sync is not set
+/// up. Returns true when it sent events the UI should pick up.
+fn background_sync(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    engine: &mut terminus_core::SyncEngine,
+    vault_unlocked: bool,
+    events: &Sender<HostEvent>,
+) -> bool {
+    if !engine.config.enabled || !runtime.block_on(engine.is_configured()) {
+        return false;
+    }
+    if runtime.block_on(engine.status()) == terminus_core::sync::SyncStatus::Error {
+        // Retry after a failed run: Error → Syncing is a valid transition.
+        runtime.block_on(engine.clear_error());
+    }
+    match runtime.block_on(engine.sync_now()) {
+        Ok(report) => {
+            engine.config.last_sync = report.finished_at;
+            let _ = runtime.block_on(persist_sync_config(store, &engine.config));
+            if report.pulled > 0 {
+                send_all_lists(runtime, store, events);
+            }
+        }
+        Err(err) => tracing::warn!(%err, "background sync failed"),
+    }
+    let _ = events.send(sync_status_event(runtime, engine, vault_unlocked));
+    true
 }
 
 /// Snapshot the SyncEngine into a UI event.
@@ -2095,13 +2279,15 @@ async fn run_test_sync(
         Ok(report) => {
             engine.config.last_sync = report.finished_at;
             let _ = persist_sync_config(store, &engine.config).await;
-            (
-                format!(
-                    "Sync ok — pushed {}, pulled {}",
-                    report.pushed, report.pulled
-                ),
-                false,
-            )
+            let summary = format!(
+                "Sync ok — pushed {}, pulled {}",
+                report.pushed, report.pulled
+            );
+            if report.errors.is_empty() {
+                (summary, false)
+            } else {
+                (format!("{summary} · {}", report.errors.join("; ")), true)
+            }
         }
         Err(err) => (err.to_string(), true),
     };
@@ -2158,11 +2344,21 @@ fn list_identities(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEven
 fn create_ssh_key(
     runtime: &tokio::runtime::Runtime,
     store: &Store,
+    vault: Option<&terminus_core::UnlockedVault>,
     name: &str,
     pem: Option<&str>,
+    passphrase: Option<&str>,
 ) -> Result<String, String> {
+    // Private keys are sealed at rest like host passwords, so saving one
+    // needs the vault.
+    let Some(vault) = vault else {
+        return Err(
+            "Unlock the vault before saving an SSH key (Settings → Remote SQL Sync passphrase)"
+                .into(),
+        );
+    };
     let identity = match pem.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(pem) => terminus_core::import_openssh_identity(name, pem, None)
+        Some(pem) => terminus_core::import_openssh_identity(name, pem, passphrase)
             .map_err(|e| e.to_string())?,
         None => {
             terminus_core::generate_ed25519_identity(name).map_err(|e| e.to_string())?
@@ -2170,8 +2366,10 @@ fn create_ssh_key(
     };
     let label = identity.name.clone();
     let imported = pem.map(str::trim).is_some_and(|p| !p.is_empty());
+    let sealed =
+        terminus_core::seal_identity(vault, &identity).map_err(|e| e.to_string())?;
     runtime
-        .block_on(store.upsert_identity(&identity))
+        .block_on(store.upsert_identity(&sealed))
         .map_err(|e| e.to_string())?;
     Ok(if imported {
         format!("SSH key “{label}” imported")
@@ -2974,6 +3172,45 @@ mod tests {
     }
 
     #[test]
+    fn worker_test_sync_moves_hosts_between_devices() {
+        let dir = temp_dir("sync-two");
+        let remote = dir.join("remote.db");
+        let uri = format!("sqlite:{}", remote.display());
+
+        let mut a = HostRepository::spawn(dir.join("a"), None);
+        assert!(drain_until(&mut a, Duration::from_secs(10), |r| !r.loading()));
+        a.create(&HostDraft {
+            name: "synced-box".to_string(),
+            hostname: "box.example.com".to_string(),
+            username: "deploy".to_string(),
+            auth_method: "gssapi".to_string(),
+            ..HostDraft::default()
+        })
+        .unwrap();
+        assert!(drain_until(&mut a, Duration::from_secs(10), |r| r.len() == 1));
+        a.test_sync(&uri);
+        assert!(drain_until(&mut a, Duration::from_secs(10), |r| {
+            r.sync_status_line().contains("pushed 1")
+        }));
+
+        let mut b = HostRepository::spawn(dir.join("b"), None);
+        assert!(drain_until(&mut b, Duration::from_secs(10), |r| !r.loading()));
+        b.test_sync(&uri);
+        assert!(drain_until(&mut b, Duration::from_secs(10), |r| {
+            r.hosts().iter().any(|h| h.name == "synced-box")
+        }));
+        assert!(
+            b.sync_status_line().contains("pulled 1"),
+            "{}",
+            b.sync_status_line()
+        );
+
+        drop(a);
+        drop(b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn worker_test_sync_opens_sqlite_and_rejects_postgres() {
         let dir = temp_dir("sync");
         let mut repo = HostRepository::spawn(dir.clone(), None);
@@ -3039,6 +3276,18 @@ mod tests {
             !repo.loading()
         }));
 
+        // Keys are sealed at rest, so saving one needs the vault.
+        repo.create_ssh_key("Locked");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.error().is_some_and(|n| n.contains("Unlock the vault"))
+        }));
+        assert!(repo.identities().is_empty());
+        repo.unlock_vault("long-enough-passphrase");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.vault_unlocked()
+        }));
+        let _ = repo.take_notice();
+
         repo.create_ssh_key("Laptop Ed25519");
         assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
             repo.identities().iter().any(|(id, name, fp, created)| {
@@ -3051,6 +3300,13 @@ mod tests {
         assert!(repo
             .take_notice()
             .is_some_and(|n| n.contains("Laptop Ed25519")));
+
+        let raw = std::fs::read(dir.join("terminus.db")).unwrap_or_default();
+        let needle = b"BEGIN OPENSSH PRIVATE KEY";
+        assert!(
+            !raw.windows(needle.len()).any(|w| w == needle),
+            "managed key stored in plaintext"
+        );
 
         let id = repo.identities()[0].0.clone();
         repo.delete_ssh_key(&id);
@@ -3069,6 +3325,35 @@ mod tests {
         }));
 
         drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worker_unlock_seals_legacy_plaintext_keys() {
+        let dir = temp_dir("seal-legacy");
+        {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let store = rt.block_on(Store::open(dir.clone())).unwrap();
+            let ident = terminus_core::generate_ed25519_identity("legacy").unwrap();
+            rt.block_on(store.upsert_identity(&ident)).unwrap();
+        }
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+        repo.unlock_vault("long-enough-passphrase");
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            repo.vault_unlocked()
+        }));
+        drop(repo);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store = rt.block_on(Store::open(dir.clone())).unwrap();
+        let ids = rt.block_on(store.list_identities()).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(
+            terminus_core::identity_needs_vault(&ids[0]),
+            "legacy key not sealed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

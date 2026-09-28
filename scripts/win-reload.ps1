@@ -1,7 +1,7 @@
 # Terminus Windows reload watcher (Windows PowerShell 5.1 compatible).
 #
 # Watches reload.stamp in the deploy directory. On each change: stop the
-# running app, swap rio-dev.exe.new -> rio-dev.exe, restart.
+# running app, swap terminus-dev.exe.new -> terminus-dev.exe, restart.
 # Writes watcher.alive so the WSL side can tell whether this process is up.
 #
 # Usage:
@@ -20,7 +20,7 @@ param(
     [string]$LogLevel = "info",
 
     [Parameter(Mandatory = $false)]
-    [string]$ExeName = "rio-dev.exe",
+    [string]$ExeName = "terminus-dev.exe",
 
     [Parameter(Mandatory = $false)]
     [int]$PollMs = 400
@@ -90,13 +90,13 @@ function StartApp {
         $argList = @(Get-Content -LiteralPath $argsFile | Where-Object { $_ -ne "" })
     }
 
-    $prevConfig = $env:RIO_CONFIG_HOME
-    $prevLog = $env:RIO_LOG_LEVEL
-    $env:RIO_LOG_LEVEL = $LogLevel
+    $prevConfig = $env:TERMINUS_CONFIG_HOME
+    $prevLog = $env:TERMINUS_LOG_LEVEL
+    $env:TERMINUS_LOG_LEVEL = $LogLevel
     if ($ConfigHome -ne "") {
-        $env:RIO_CONFIG_HOME = $ConfigHome
+        $env:TERMINUS_CONFIG_HOME = $ConfigHome
     } else {
-        Remove-Item Env:RIO_CONFIG_HOME -ErrorAction SilentlyContinue
+        Remove-Item Env:TERMINUS_CONFIG_HOME -ErrorAction SilentlyContinue
     }
 
     try {
@@ -114,10 +114,10 @@ function StartApp {
             Add-Content -LiteralPath $runLog -Value ("[{0}] started pid {1}" -f (Get-Date -Format "o"), $proc.Id)
         } catch {}
     } finally {
-        if ($null -ne $prevConfig) { $env:RIO_CONFIG_HOME = $prevConfig }
-        else { Remove-Item Env:RIO_CONFIG_HOME -ErrorAction SilentlyContinue }
-        if ($null -ne $prevLog) { $env:RIO_LOG_LEVEL = $prevLog }
-        else { Remove-Item Env:RIO_LOG_LEVEL -ErrorAction SilentlyContinue }
+        if ($null -ne $prevConfig) { $env:TERMINUS_CONFIG_HOME = $prevConfig }
+        else { Remove-Item Env:TERMINUS_CONFIG_HOME -ErrorAction SilentlyContinue }
+        if ($null -ne $prevLog) { $env:TERMINUS_LOG_LEVEL = $prevLog }
+        else { Remove-Item Env:TERMINUS_LOG_LEVEL -ErrorAction SilentlyContinue }
     }
 }
 

@@ -70,6 +70,12 @@ pub const NEW_GROUP_BUTTON_WIDTH: f32 = 88.0;
 pub const HOSTS_HEADER_ACTION_WIDTH: f32 = NEW_GROUP_BUTTON_WIDTH;
 /// Sticky success notice height at the bottom of the panel.
 pub const NOTICE_HEIGHT: f32 = 40.0;
+/// Extra notice height per wrapped line beyond the first.
+pub const NOTICE_LINE_STEP: f32 = 15.0;
+/// Characters that fit on one notice line (monospace hint text).
+pub const NOTICE_LINE_CHARS: usize = 36;
+/// Longest a notice grows; the painter elides past this.
+pub const NOTICE_MAX_LINES: usize = 3;
 /// Sticky error banner height (two lines of wrapped text).
 pub const ERROR_BANNER_HEIGHT: f32 = 64.0;
 /// Inset of the sticky notice/error card from the panel edges.
@@ -730,10 +736,20 @@ impl HostPanel {
         if self.error.is_some() {
             ERROR_BANNER_HEIGHT + NOTICE_MARGIN
         } else if self.notice.is_some() {
-            NOTICE_HEIGHT + NOTICE_MARGIN
+            self.notice_height() + NOTICE_MARGIN
         } else {
             0.0
         }
+    }
+
+    /// Lines the success notice wraps to (1..=NOTICE_MAX_LINES).
+    pub fn notice_lines(&self) -> usize {
+        let chars = self.notice.as_deref().map_or(0, |n| n.chars().count());
+        chars.div_ceil(NOTICE_LINE_CHARS).clamp(1, NOTICE_MAX_LINES)
+    }
+
+    fn notice_height(&self) -> f32 {
+        NOTICE_HEIGHT + (self.notice_lines() - 1) as f32 * NOTICE_LINE_STEP
     }
 
     /// Sticky notice/error card anchored to the bottom of the panel.
@@ -743,7 +759,7 @@ impl HostPanel {
         let banner_h = if self.error.is_some() {
             ERROR_BANNER_HEIGHT
         } else {
-            NOTICE_HEIGHT
+            self.notice_height()
         };
         // Never climb into the sticky header when the panel is shorter than
         // header + notice (tiny windows / tests).
@@ -2303,6 +2319,28 @@ mod tests {
                 assert!(body.bottom() <= notice.y + 0.01, "height {height}");
             }
         }
+    }
+
+    #[test]
+    fn a_long_notice_grows_to_fit_up_to_three_lines() {
+        let mut panel = panel(3);
+        panel.notice = Some("Added web-01".to_string());
+        assert_eq!(panel.notice_lines(), 1);
+        let short = panel.notice_rect(0.0, 800.0).expect("notice");
+        assert!((short.height - NOTICE_HEIGHT).abs() < 0.01);
+
+        panel.notice = Some("Terminus 9.9.9 is installed. Restart to update".to_string());
+        assert_eq!(panel.notice_lines(), 2);
+        let two = panel.notice_rect(0.0, 800.0).expect("notice");
+        assert!((two.height - (NOTICE_HEIGHT + NOTICE_LINE_STEP)).abs() < 0.01);
+        assert!(
+            (two.bottom() - short.bottom()).abs() < 0.01,
+            "stays anchored"
+        );
+        assert!(panel.body_rect(0.0, 800.0).bottom() <= two.y + 0.01);
+
+        panel.notice = Some("x ".repeat(200));
+        assert_eq!(panel.notice_lines(), 3, "capped");
     }
 
     #[test]

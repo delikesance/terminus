@@ -25,7 +25,7 @@
 
 | Chemin | Techno | Usage |
 | :--- | :--- | :--- |
-| Shell onglet | PTY local + binaire `ssh` (`screen/mod.rs` → `ssh_shell`) | Connexion interactive depuis la sidebar |
+| Shell onglet | PTY local + binaire `ssh` (`screen/shell.rs` → `ssh_shell`) | Connexion interactive depuis la sidebar |
 | SFTP | russh + `sftp_worker` | Navigateur fichiers dual-pane |
 | `SshTransport` | russh ↔ pipes, `EventedPty` | **Prêt, non câblé** — dette 1.4-debt |
 

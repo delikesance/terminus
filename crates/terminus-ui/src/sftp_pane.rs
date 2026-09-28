@@ -162,7 +162,7 @@ impl SftpConflictPrompt {
 
     pub fn message(&self) -> String {
         format!(
-            "“{}” differs from the remote copy. Replace the local version?",
+            "“{}” already exists where it is going. Replace it with the copy being transferred?",
             self.relative_path
         )
     }

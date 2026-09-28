@@ -24,6 +24,7 @@ mod router;
 mod scheduler;
 mod screen;
 mod sftp_ui;
+mod updater;
 mod vault_remember;
 mod watcher;
 
@@ -43,7 +44,7 @@ use windows_sys::Win32::System::Console::{
     AttachConsole, FreeConsole, ATTACH_PARENT_PROCESS,
 };
 
-const LOG_LEVEL_ENV: &str = "RIO_LOG_LEVEL";
+const LOG_LEVEL_ENV: &str = "TERMINUS_LOG_LEVEL";
 
 pub fn setup_environment_variables(config: &rio_backend::config::Config) {
     #[cfg(unix)]
@@ -67,7 +68,7 @@ pub fn setup_environment_variables(config: &rio_backend::config::Config) {
     }
 
     // https://github.com/raphamorim/rio/issues/200
-    std::env::set_var("TERM_PROGRAM", "rio");
+    std::env::set_var("TERM_PROGRAM", "terminus");
     std::env::set_var("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
 
     std::env::set_var("COLORTERM", "truecolor");

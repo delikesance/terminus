@@ -11,6 +11,7 @@
 mod walk_remote;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -354,6 +355,9 @@ async fn emit_listed_local(
     }
 }
 
+/// `ListRemote` path that lists the remote login directory.
+pub const REMOTE_HOME: &str = "~";
+
 async fn emit_listed_remote(
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
@@ -361,6 +365,14 @@ async fn emit_listed_remote(
     conn: &SftpConnection,
     path: &str,
 ) {
+    // `~` (the UI's first listing) means the login directory.
+    let home;
+    let path = if path == REMOTE_HOME {
+        home = conn.home_dir().await.unwrap_or_else(|_| "/".to_string());
+        home.as_str()
+    } else {
+        path
+    };
     match list_remote(conn, path).await {
         Ok((cwd, entries)) => emit(
             events,
@@ -869,6 +881,53 @@ async fn transfer(
         .await;
     }
 
+    // Never silently replace a file on the other side: ask first, like a
+    // folder transfer does for each clashing file.
+    if destination_exists(left, right, to_side, to_cwd, name, to_remote).await {
+        let target = if to_remote {
+            join_remote(to_cwd, name)
+        } else {
+            PathBuf::from(to_cwd)
+                .join(name)
+                .to_string_lossy()
+                .into_owned()
+        };
+        if !from_remote && !to_remote && same_local_file(from_path, &target) {
+            return Err(format!("{name} is already in this folder"));
+        }
+        let (remote_path, local_path) = if to_remote {
+            (target.clone(), from_path.to_string())
+        } else {
+            (from_path.to_string(), target.clone())
+        };
+        let mut policy = ConflictPolicy::default();
+        let mut next_id = SINGLE_FILE_CONFLICT_ID.fetch_add(1, Ordering::Relaxed);
+        let action = ask_conflict(
+            conflicts,
+            events,
+            wake,
+            &mut policy,
+            &mut next_id,
+            ConflictKind::File,
+            name,
+            &remote_path,
+            &local_path,
+        )
+        .await?;
+        if action == ConflictAction::Keep {
+            emit(
+                events,
+                wake,
+                SftpEvent::TransferProgress {
+                    label: format!("Kept existing {name}"),
+                    done: 0,
+                    total: 0,
+                },
+            );
+            return Ok(());
+        }
+    }
+
     transfer_file(
         left,
         right,
@@ -883,6 +942,43 @@ async fn transfer(
         wake,
     )
     .await
+}
+
+/// Conflict ids for single-file transfers: disjoint from the per-folder
+/// counters (which start at 1), so a late reply can never match the wrong
+/// prompt.
+static SINGLE_FILE_CONFLICT_ID: AtomicU64 = AtomicU64::new(1 << 40);
+
+async fn destination_exists(
+    left: &Option<SftpConnection>,
+    right: &Option<SftpConnection>,
+    to_side: SftpSide,
+    to_cwd: &str,
+    name: &str,
+    to_remote: bool,
+) -> bool {
+    if to_remote {
+        match conn_ref(left, right, to_side) {
+            Some(conn) => conn
+                .exists(&join_remote(to_cwd, name))
+                .await
+                .unwrap_or(false),
+            None => false,
+        }
+    } else {
+        tokio::fs::symlink_metadata(PathBuf::from(to_cwd).join(name))
+            .await
+            .is_ok()
+    }
+}
+
+/// Whether two local paths name the same file (copying onto itself would
+/// truncate it).
+fn same_local_file(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 async fn transfer_file(
@@ -2003,10 +2099,6 @@ async fn transfer_upload(
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<(), String> {
-    let data = local_fs::read_local_file(local)
-        .await
-        .map_err(|e| e.to_string())?;
-    let total = data.len() as u64;
     let label = format!(
         "Upload {}",
         local
@@ -2014,26 +2106,22 @@ async fn transfer_upload(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| local.display().to_string())
     );
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label: label.clone(),
-            done: 0,
-            total,
-        },
-    );
-    conn.write(remote, &data).await.map_err(|e| e.to_string())?;
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label,
-            done: total,
-            total,
-        },
-    );
-    Ok(())
+    // Streamed in timed chunks into a temp sibling: a slow link is fine as
+    // long as it keeps moving, and a failure never truncates the target.
+    conn.upload_file(local, remote, |done, total| {
+        emit(
+            events,
+            wake,
+            SftpEvent::TransferProgress {
+                label: label.clone(),
+                done,
+                total,
+            },
+        );
+    })
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 async fn transfer_download(
@@ -2050,39 +2138,20 @@ async fn transfer_download(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| remote.to_string())
     );
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label: label.clone(),
-            done: 0,
-            total: 0,
-        },
-    );
-    let data = conn.read(remote).await.map_err(|e| e.to_string())?;
-    let total = data.len() as u64;
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label: label.clone(),
-            done: total / 2,
-            total,
-        },
-    );
-    local_fs::write_local_file(local, &data)
-        .await
-        .map_err(|e| e.to_string())?;
-    emit(
-        events,
-        wake,
-        SftpEvent::TransferProgress {
-            label,
-            done: total,
-            total,
-        },
-    );
-    Ok(())
+    conn.download_file(remote, local, |done, total| {
+        emit(
+            events,
+            wake,
+            SftpEvent::TransferProgress {
+                label: label.clone(),
+                done,
+                total,
+            },
+        );
+    })
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 // --- Differential folder download (size-first + BLAKE3) ---------------------

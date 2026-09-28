@@ -67,11 +67,13 @@ pub fn paint(
     } else {
         theme.text_muted
     };
+    let footer_room = layout.footer.width - 2.0 * PANE_PAD;
+    let footer_text = fit_text(sugarloaf, footer_text, 12.0, footer_room, Elide::Tail);
     draw_text(
         sugarloaf,
         layout.footer.x + PANE_PAD,
         layout.footer.y + 6.0,
-        footer_text,
+        &footer_text,
         12.0,
         footer_color,
     );
@@ -86,6 +88,20 @@ pub fn paint(
 }
 
 fn paint_conflict(
+    sugarloaf: &mut Sugarloaf,
+    state: &SftpPaneState,
+    layout: &SftpPaneLayout,
+    theme: &ChromeTheme,
+    prompt: &terminus_ui::SftpConflictPrompt,
+) {
+    // Overlay layer: UI text always composites above quads, so without it
+    // the list rows' glyphs (and the right pane) drew over the dialog.
+    sugarloaf.begin_overlay();
+    paint_conflict_card(sugarloaf, state, layout, theme, prompt);
+    sugarloaf.end_overlay();
+}
+
+fn paint_conflict_card(
     sugarloaf: &mut Sugarloaf,
     state: &SftpPaneState,
     layout: &SftpPaneLayout,
@@ -118,14 +134,28 @@ fn paint_conflict(
         14.0,
         theme.text,
     );
-    draw_text(
+    // The message names the file and can be long: wrap it inside the card.
+    let opts = DrawOpts {
+        font_size: 12.0,
+        ..DrawOpts::default()
+    };
+    let lines = crate::renderer::chrome::wrap_lines(
         sugarloaf,
-        card.x + 16.0,
-        card.y + 40.0,
         &prompt.message(),
-        12.0,
-        theme.text_muted,
+        card.width - 32.0,
+        &opts,
+        2,
     );
+    for (i, line) in lines.iter().enumerate() {
+        draw_text(
+            sugarloaf,
+            card.x + 16.0,
+            card.y + 36.0 + i as f32 * 15.0,
+            line,
+            12.0,
+            theme.text_muted,
+        );
+    }
 
     let apply = layout.conflict_apply_all();
     let apply_hover = matches!(state.hover, Some(SftpHit::ConflictApplyAll));
@@ -390,12 +420,17 @@ fn paint_side(
         rgba_u8(theme.text_muted),
         scale,
     );
-    let label = format!("{}  {}", side.title(), side.cwd);
+    // Long paths keep their tail (the folder you are in) and never spill
+    // into the other pane's header.
+    let text_x = crumb_x + 18.0;
+    let title = format!("{}  ", side.title());
+    let path_room = header.right() - PANE_PAD - text_x - measure(sugarloaf, &title, 12.0);
+    let path = fit_text(sugarloaf, &side.cwd, 12.0, path_room, Elide::Head);
     draw_text(
         sugarloaf,
-        crumb_x + 18.0,
+        text_x,
         header.y + 9.0,
-        &label,
+        &format!("{title}{path}"),
         12.0,
         theme.text,
     );
@@ -474,12 +509,14 @@ fn paint_entries(
         } else {
             format!("  {}", format_size(entry.size))
         };
-        let label = format!("{}{size}", entry.name);
+        let label_x = icon_x + ICON_IN_BTN + 8.0;
+        let room = row.right() - PANE_PAD - label_x - measure(sugarloaf, &size, 12.0);
+        let name = fit_text(sugarloaf, &entry.name, 12.0, room, Elide::Tail);
         draw_text(
             sugarloaf,
-            icon_x + ICON_IN_BTN + 8.0,
+            label_x,
             row.y + 7.0,
-            &label,
+            &format!("{name}{size}"),
             12.0,
             theme.text,
         );
@@ -510,6 +547,73 @@ fn rgba_u8(c: [u8; 4]) -> [f32; 4] {
     ]
 }
 
+/// Which end of an overlong label gives way to the ellipsis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Elide {
+    /// `…/deep/path` — for paths, where the tail matters.
+    Head,
+    /// `long-file-na…` — for names and messages.
+    Tail,
+}
+
+fn measure(sugarloaf: &mut Sugarloaf, text: &str, size: f32) -> f32 {
+    let opts = DrawOpts {
+        font_size: size,
+        ..DrawOpts::default()
+    };
+    sugarloaf.text_mut().measure(text, &opts)
+}
+
+/// `text` shortened with an ellipsis so it fits `max_width` (real shaping).
+fn fit_text(
+    sugarloaf: &mut Sugarloaf,
+    text: &str,
+    size: f32,
+    max_width: f32,
+    elide: Elide,
+) -> String {
+    elide_to_fit(text, max_width, elide, |t| measure(sugarloaf, t, size))
+}
+
+/// Shorten `text` until `measure` says it fits `max_width`.
+fn elide_to_fit(
+    text: &str,
+    max_width: f32,
+    elide: Elide,
+    mut measure: impl FnMut(&str) -> f32,
+) -> String {
+    if measure(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // Longest kept slice that fits with the ellipsis (binary search).
+    let (mut lo, mut hi) = (0usize, chars.len());
+    let render = |keep: usize| -> String {
+        match elide {
+            Elide::Head => {
+                let tail: String = chars[chars.len() - keep..].iter().collect();
+                format!("\u{2026}{tail}")
+            }
+            Elide::Tail => {
+                let head: String = chars[..keep].iter().collect();
+                format!("{head}\u{2026}")
+            }
+        }
+    };
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if measure(&render(mid)) <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    render(lo)
+}
+
 fn draw_text(
     sugarloaf: &mut Sugarloaf,
     x: f32,
@@ -524,4 +628,31 @@ fn draw_text(
         ..DrawOpts::default()
     };
     sugarloaf.text_mut().draw_late(x, y, text, &opts);
+}
+
+#[cfg(test)]
+mod elide_tests {
+    use super::{elide_to_fit, Elide};
+
+    fn width(t: &str) -> f32 {
+        t.chars().count() as f32
+    }
+
+    #[test]
+    fn short_text_is_untouched() {
+        assert_eq!(elide_to_fit("abc", 10.0, Elide::Tail, width), "abc");
+    }
+
+    #[test]
+    fn paths_keep_their_tail() {
+        let got = elide_to_fit("/tmp/very/long/path/home", 10.0, Elide::Head, width);
+        assert_eq!(got, "\u{2026}path/home");
+        assert!(width(&got) <= 10.0);
+    }
+
+    #[test]
+    fn names_keep_their_head() {
+        let got = elide_to_fit("container_info.json", 8.0, Elide::Tail, width);
+        assert_eq!(got, "contain\u{2026}");
+    }
 }

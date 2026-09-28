@@ -59,9 +59,10 @@ pub async fn list_local_dir(path: impl AsRef<Path>) -> Result<Vec<LocalEntry>> {
         match reader.next_entry().await {
             Ok(Some(entry)) => {
                 let entry_path = entry.path();
-                // `metadata()` follows symlinks; fall back to the dirent type
-                // when the target is gone.
-                let (is_dir, size, modified) = match entry.metadata().await {
+                // `fs::metadata` follows symlinks (a `DirEntry`'s own
+                // metadata does not); fall back to the dirent type when the
+                // link target is gone.
+                let (is_dir, size, modified) = match fs::metadata(&entry_path).await {
                     Ok(metadata) => (
                         metadata.is_dir(),
                         metadata.len(),
@@ -229,6 +230,21 @@ pub fn default_local_root() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_directory_lists_as_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::fs::write(dir.path().join("real/f"), b"x").unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink("missing", dir.path().join("dangling")).unwrap();
+        let entries = super::list_local_dir(dir.path()).await.unwrap();
+        let link = entries.iter().find(|e| e.name == "link").unwrap();
+        assert!(link.is_dir, "symlink to a directory listed as a file");
+        let dangling = entries.iter().find(|e| e.name == "dangling").unwrap();
+        assert!(!dangling.is_dir);
+    }
+
     use super::*;
 
     /// Unique scratch directory for a test.

@@ -49,10 +49,18 @@ pub fn import_openssh_identity(
         });
     }
 
+    let passphrase = passphrase.filter(|p| !p.is_empty());
     let key = russh::keys::decode_secret_key(&pem, passphrase).map_err(|e| {
-        Error::IdentityKeyInvalid {
-            reason: format!("import openssh key: {e}"),
-        }
+        let reason = match (&e, passphrase) {
+            (russh::keys::Error::KeyIsEncrypted, None) => {
+                "this key is encrypted: enter its passphrase to import it".to_string()
+            }
+            (russh::keys::Error::KeyIsEncrypted, Some(_)) => {
+                "wrong passphrase for this encrypted key".to_string()
+            }
+            _ => format!("import openssh key: {e}"),
+        };
+        Error::IdentityKeyInvalid { reason }
     })?;
 
     // Prefer the PEM the user provided so passphrase-encrypted material stays

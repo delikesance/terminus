@@ -11,6 +11,75 @@ use crate::models::*;
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 
+/// Owner-only permissions for the data directory and database file.
+#[cfg(unix)]
+fn restrict_permissions(dir: &std::path::Path, db: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(db)?;
+    std::fs::set_permissions(db, std::fs::Permissions::from_mode(0o600))?;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sibling = db.with_file_name(format!(
+            "{}{suffix}",
+            db.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("terminus.db")
+        ));
+        if sibling.exists() {
+            std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
+}
+
+/// Windows ACLs on the per-user data directory already scope access.
+#[cfg(not(unix))]
+fn restrict_permissions(_dir: &std::path::Path, _db: &std::path::Path) -> Result<()> {
+    Ok(())
+}
+
+/// Decode a UUID column; `None` (row skipped) when it is missing or malformed.
+fn row_uuid(r: &sqlx::sqlite::SqliteRow, col: &str) -> Option<Uuid> {
+    let raw: String = r.try_get(col).ok()?;
+    match Uuid::parse_str(raw.trim()) {
+        Ok(id) => Some(id),
+        Err(err) => {
+            tracing::warn!(column = col, value = %raw, %err, "skipping row with malformed uuid");
+            None
+        }
+    }
+}
+
+/// Decode a timestamp column. Accepts RFC 3339 (what this store writes) and
+/// SQLite's `datetime()` form (`YYYY-MM-DD HH:MM:SS[.fff]`, UTC), so a row
+/// written by another tool or a sync peer cannot take the whole list down.
+fn row_ts(r: &sqlx::sqlite::SqliteRow, col: &str) -> Option<DateTime<Utc>> {
+    let raw: String = r.try_get(col).ok()?;
+    let parsed = parse_db_timestamp(&raw);
+    if parsed.is_none() {
+        tracing::warn!(column = col, value = %raw, "skipping row with malformed timestamp");
+    }
+    parsed
+}
+
+/// Parse a stored timestamp (RFC 3339 or SQLite `datetime()` format).
+pub fn parse_db_timestamp(raw: &str) -> Option<DateTime<Utc>> {
+    let raw = raw.trim();
+    if let Ok(d) = DateTime::parse_from_rfc3339(raw) {
+        return Some(d.with_timezone(&Utc));
+    }
+    for fmt in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt) {
+            return Some(naive.and_utc());
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -20,6 +89,11 @@ impl Store {
     pub async fn open(data_dir: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&data_dir)?;
         let db_path = data_dir.join("terminus.db");
+        // The database holds managed SSH keys and sealed secrets: keep it (and
+        // the directory SQLite creates its WAL/SHM siblings in) owner-only.
+        // SQLite gives -wal / -shm files the database file's mode, so creating
+        // the file 0600 up front covers them too.
+        restrict_permissions(&data_dir, &db_path)?;
 
         // Options are built directly instead of using a
         // `sqlite://<path>?foreign_keys=on` URL: sqlx 0.7's SQLite URL parser
@@ -41,6 +115,17 @@ impl Store {
         let store = Self { pool };
         store.ensure_default_root_order().await?;
         Ok(store)
+    }
+
+    /// The underlying pool (the sync engine reads and merges through it).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// Create / upgrade the Terminus schema on `pool` (local store or a sync
+    /// remote: both carry the same tables).
+    pub async fn ensure_schema(pool: &SqlitePool) -> Result<()> {
+        Self::migrate(pool).await
     }
 
     async fn migrate(pool: &SqlitePool) -> Result<()> {
@@ -292,49 +377,74 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|r| Host {
-                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
-                name: r.get("name"),
-                hostname: r.get("hostname"),
-                port: r.get::<i64, _>("port") as u16,
-                username: r.get("username"),
-                auth_method: r.get("auth_method"),
-                password: r.get("password"),
-                identity_id: r
-                    .get::<Option<String>, _>("identity_id")
-                    .and_then(|s| Uuid::parse_str(&s).ok()),
-                group_id: r
-                    .get::<Option<String>, _>("group_id")
-                    .and_then(|s| Uuid::parse_str(&s).ok()),
-                tags: serde_json::from_str(&r.get::<String, _>("tags"))
-                    .unwrap_or_default(),
-                notes: r.get("notes"),
-                os_id: r.get("os_id"),
-                sort_order: r.try_get::<i64, _>("sort_order").unwrap_or(0),
-                created_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("created_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("updated_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
-                    DateTime::parse_from_rfc3339(&s)
+            .filter_map(|r| -> Option<Host> {
+                Some(Host {
+                    id: row_uuid(&r, "id")?,
+                    name: r.try_get("name").ok()?,
+                    hostname: r.try_get("hostname").ok()?,
+                    port: r.try_get::<i64, _>("port").ok()? as u16,
+                    username: r.try_get("username").ok()?,
+                    auth_method: r.try_get("auth_method").ok()?,
+                    password: r.try_get("password").ok()?,
+                    identity_id: r
+                        .try_get::<Option<String>, _>("identity_id")
                         .ok()
-                        .map(|d| d.with_timezone(&Utc))
-                }),
+                        .flatten()
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                    group_id: r
+                        .try_get::<Option<String>, _>("group_id")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                    tags: serde_json::from_str(&r.try_get::<String, _>("tags").ok()?)
+                        .unwrap_or_default(),
+                    notes: r.try_get("notes").ok()?,
+                    os_id: r.try_get("os_id").ok()?,
+                    sort_order: r.try_get::<i64, _>("sort_order").unwrap_or(0),
+                    created_at: row_ts(&r, "created_at")?,
+                    updated_at: row_ts(&r, "updated_at")?,
+                    deleted_at: r
+                        .try_get::<Option<String>, _>("deleted_at")
+                        .ok()?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        }),
+                })
             })
             .collect())
     }
 
+    /// Soft-delete a host and the secrets it owns.
+    ///
+    /// The tombstone bumps `updated_at` so last-writer-wins sync orders it
+    /// after every live copy of the row on other devices.
     pub async fn delete_host(&self, id: Uuid) -> Result<()> {
-        sqlx::query("UPDATE hosts SET deleted_at = ? WHERE id = ?")
-            .bind(Utc::now().to_rfc3339())
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        sqlx::query("UPDATE hosts SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        sqlx::query(
+            "UPDATE credentials SET deleted_at = ?, updated_at = ? \
+             WHERE owner_kind = 'host' AND owner_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        tx.commit()
             .await
             .map_err(|e| Error::DatabaseError(e.to_string()))?;
         Ok(())
@@ -399,28 +509,27 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|r| Group {
-                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
-                name: r.get("name"),
-                parent_id: r
-                    .get::<Option<String>, _>("parent_id")
-                    .and_then(|s| Uuid::parse_str(&s).ok()),
-                sort_order: r.try_get::<i64, _>("sort_order").unwrap_or(0),
-                created_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("created_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("updated_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
-                    DateTime::parse_from_rfc3339(&s)
+            .filter_map(|r| -> Option<Group> {
+                Some(Group {
+                    id: row_uuid(&r, "id")?,
+                    name: r.try_get("name").ok()?,
+                    parent_id: r
+                        .try_get::<Option<String>, _>("parent_id")
                         .ok()
-                        .map(|d| d.with_timezone(&Utc))
-                }),
+                        .flatten()
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                    sort_order: r.try_get::<i64, _>("sort_order").unwrap_or(0),
+                    created_at: row_ts(&r, "created_at")?,
+                    updated_at: row_ts(&r, "updated_at")?,
+                    deleted_at: r
+                        .try_get::<Option<String>, _>("deleted_at")
+                        .ok()?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        }),
+                })
             })
             .collect())
     }
@@ -539,14 +648,23 @@ impl Store {
         };
         root.insert(insert_at, moved);
 
+        // Rows whose position changes get a fresh `updated_at` so the new
+        // order wins on other devices after a sync.
+        let now = Utc::now();
         for (i, entry) in root.into_iter().enumerate() {
             match entry {
                 RootEntry::Host(mut h) => {
-                    h.sort_order = i as i64;
+                    if h.sort_order != i as i64 {
+                        h.sort_order = i as i64;
+                        h.updated_at = now;
+                    }
                     self.upsert_host(&h).await?;
                 }
                 RootEntry::Group(mut g) => {
-                    g.sort_order = i as i64;
+                    if g.sort_order != i as i64 {
+                        g.sort_order = i as i64;
+                        g.updated_at = now;
+                    }
                     self.upsert_group(&g).await?;
                 }
             }
@@ -624,27 +742,23 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|r| Identity {
-                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
-                name: r.get("name"),
-                kind: r.get("kind"),
-                public_key: r.get("public_key"),
-                private_key: r.get("private_key"),
-                passphrase: r.get("passphrase"),
-                created_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("created_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("updated_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                deleted_at: r
-                    .get::<Option<String>, _>("deleted_at")
-                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&Utc)),
+            .filter_map(|r| -> Option<Identity> {
+                Some(Identity {
+                    id: row_uuid(&r, "id")?,
+                    name: r.try_get("name").ok()?,
+                    kind: r.try_get("kind").ok()?,
+                    public_key: r.try_get("public_key").ok()?,
+                    private_key: r.try_get("private_key").ok()?,
+                    passphrase: r.try_get("passphrase").ok()?,
+                    created_at: row_ts(&r, "created_at")?,
+                    updated_at: row_ts(&r, "updated_at")?,
+                    deleted_at: r
+                        .try_get::<Option<String>, _>("deleted_at")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                        .map(|d| d.with_timezone(&Utc)),
+                })
             })
             .collect())
     }
@@ -658,8 +772,10 @@ impl Store {
     }
 
     pub async fn delete_identity(&self, id: Uuid) -> Result<()> {
-        sqlx::query("UPDATE identities SET deleted_at = ? WHERE id = ?")
-            .bind(Utc::now().to_rfc3339())
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE identities SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
             .bind(id.to_string())
             .execute(&self.pool)
             .await
@@ -700,28 +816,25 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|r| Snippet {
-                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
-                title: r.get("title"),
-                content: r.get("content"),
-                tags: serde_json::from_str(&r.get::<String, _>("tags"))
-                    .unwrap_or_default(),
-                shortcut: r.get("shortcut"),
-                created_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("created_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("updated_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
-                    DateTime::parse_from_rfc3339(&s)
-                        .ok()
-                        .map(|d| d.with_timezone(&Utc))
-                }),
+            .filter_map(|r| -> Option<Snippet> {
+                Some(Snippet {
+                    id: row_uuid(&r, "id")?,
+                    title: r.try_get("title").ok()?,
+                    content: r.try_get("content").ok()?,
+                    tags: serde_json::from_str(&r.try_get::<String, _>("tags").ok()?)
+                        .unwrap_or_default(),
+                    shortcut: r.try_get("shortcut").ok()?,
+                    created_at: row_ts(&r, "created_at")?,
+                    updated_at: row_ts(&r, "updated_at")?,
+                    deleted_at: r
+                        .try_get::<Option<String>, _>("deleted_at")
+                        .ok()?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        }),
+                })
             })
             .collect())
     }
@@ -757,19 +870,19 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|r| HistoryEntry {
-                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
-                command: r.get("command"),
-                cwd: r.get("cwd"),
-                host_id: r
-                    .get::<Option<String>, _>("host_id")
-                    .and_then(|s| Uuid::parse_str(&s).ok()),
-                session_kind: r.get("session_kind"),
-                created_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("created_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
+            .filter_map(|r| -> Option<HistoryEntry> {
+                Some(HistoryEntry {
+                    id: row_uuid(&r, "id")?,
+                    command: r.try_get("command").ok()?,
+                    cwd: r.try_get("cwd").ok()?,
+                    host_id: r
+                        .try_get::<Option<String>, _>("host_id")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| Uuid::parse_str(&s).ok()),
+                    session_kind: r.try_get("session_kind").ok()?,
+                    created_at: row_ts(&r, "created_at")?,
+                })
             })
             .collect())
     }
@@ -821,30 +934,30 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|r| PortForward {
-                id: Uuid::parse_str(&r.get::<String, _>("id")).unwrap(),
-                host_id: Uuid::parse_str(&r.get::<String, _>("host_id")).unwrap(),
-                kind: r.get("kind"),
-                name: r.get("name"),
-                bind_host: r.get("bind_host"),
-                bind_port: r.get::<i64, _>("bind_port") as u16,
-                dest_host: r.get("dest_host"),
-                dest_port: r.get::<Option<i64>, _>("dest_port").map(|p| p as u16),
-                created_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("created_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                updated_at: DateTime::parse_from_rfc3339(
-                    &r.get::<String, _>("updated_at"),
-                )
-                .unwrap()
-                .with_timezone(&Utc),
-                deleted_at: r.get::<Option<String>, _>("deleted_at").and_then(|s| {
-                    DateTime::parse_from_rfc3339(&s)
-                        .ok()
-                        .map(|d| d.with_timezone(&Utc))
-                }),
+            .filter_map(|r| -> Option<PortForward> {
+                Some(PortForward {
+                    id: row_uuid(&r, "id")?,
+                    host_id: row_uuid(&r, "host_id")?,
+                    kind: r.try_get("kind").ok()?,
+                    name: r.try_get("name").ok()?,
+                    bind_host: r.try_get("bind_host").ok()?,
+                    bind_port: r.try_get::<i64, _>("bind_port").ok()? as u16,
+                    dest_host: r.try_get("dest_host").ok()?,
+                    dest_port: r
+                        .try_get::<Option<i64>, _>("dest_port")
+                        .ok()?
+                        .map(|p| p as u16),
+                    created_at: row_ts(&r, "created_at")?,
+                    updated_at: row_ts(&r, "updated_at")?,
+                    deleted_at: r
+                        .try_get::<Option<String>, _>("deleted_at")
+                        .ok()?
+                        .and_then(|s| {
+                            DateTime::parse_from_rfc3339(&s)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        }),
+                })
             })
             .collect())
     }
@@ -880,6 +993,11 @@ impl Store {
 
     // --- Credentials ---
     pub async fn upsert_credential(&self, cred: &Credential) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
         sqlx::query(
             r#"
             INSERT INTO credentials (id, kind, owner_kind, owner_id, envelope, key_id, created_at, updated_at, deleted_at)
@@ -898,9 +1016,29 @@ impl Store {
         .bind(cred.created_at.to_rfc3339())
         .bind(cred.updated_at.to_rfc3339())
         .bind(cred.deleted_at.map(|d| d.to_rfc3339()))
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        // One live secret per (owner, kind): retire rows written under an
+        // older id scheme so lookups by owner cannot pick a stale envelope.
+        if cred.deleted_at.is_none() {
+            sqlx::query(
+                "UPDATE credentials SET deleted_at = ?, updated_at = ? \
+                 WHERE owner_kind = ? AND owner_id = ? AND kind = ? AND id != ? AND deleted_at IS NULL",
+            )
+            .bind(cred.updated_at.to_rfc3339())
+            .bind(cred.updated_at.to_rfc3339())
+            .bind(&cred.owner_kind)
+            .bind(cred.owner_id.to_string())
+            .bind(&cred.kind)
+            .bind(cred.id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
         Ok(())
     }
 

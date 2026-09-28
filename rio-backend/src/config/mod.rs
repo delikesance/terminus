@@ -86,6 +86,27 @@ pub struct Developer {
     pub enable_log_file: bool,
 }
 
+/// `[updates]`: Terminus self-update.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Updates {
+    /// Look for a new release at startup and once a day.
+    #[serde(default = "default_bool_true")]
+    pub check: bool,
+    /// Install automatically when that needs no prompt (portable installs);
+    /// installer- and package-based installs always ask first.
+    #[serde(default = "default_bool_true", rename = "auto-install")]
+    pub auto_install: bool,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self {
+            check: true,
+            auto_install: true,
+        }
+    }
+}
+
 impl Default for Developer {
     fn default() -> Developer {
         Developer {
@@ -149,6 +170,8 @@ pub struct Config {
     pub force_theme: Option<AppearanceTheme>,
     #[serde(default = "Developer::default")]
     pub developer: Developer,
+    #[serde(default = "Updates::default")]
+    pub updates: Updates,
     #[serde(default = "Bindings::default")]
     pub bindings: bindings::Bindings,
     #[serde(
@@ -203,7 +226,7 @@ pub struct CursorConfig {
 #[cfg(target_os = "macos")]
 #[inline]
 pub fn config_dir_path() -> PathBuf {
-    std::env::var("RIO_CONFIG_HOME")
+    std::env::var("TERMINUS_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or(dirs::home_dir().unwrap().join(".config").join("rio"))
 }
@@ -211,7 +234,7 @@ pub fn config_dir_path() -> PathBuf {
 #[cfg(target_os = "windows")]
 #[inline]
 pub fn config_dir_path() -> PathBuf {
-    std::env::var("RIO_CONFIG_HOME")
+    std::env::var("TERMINUS_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or(
             dirs::home_dir()
@@ -225,7 +248,7 @@ pub fn config_dir_path() -> PathBuf {
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[inline]
 pub fn config_dir_path() -> PathBuf {
-    std::env::var("RIO_CONFIG_HOME")
+    std::env::var("TERMINUS_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or(
             std::env::var("XDG_CONFIG_HOME")
@@ -665,6 +688,7 @@ impl Default for Config {
             keyboard: Keyboard::default(),
             title: Title::default(),
             developer: Developer::default(),
+            updates: Updates::default(),
             env_vars: vec![],
             #[cfg(feature = "renderer")]
             fonts: SugarloafFonts::default(),
@@ -731,6 +755,22 @@ mod tests {
         let file_name = tmp_dir().join(theme).with_extension("toml");
         let mut file = std::fs::File::create(file_name).unwrap();
         writeln!(file, "{toml_str}").unwrap();
+    }
+
+    #[test]
+    fn updates_are_checked_and_installed_by_default() {
+        let config = Config::default();
+        assert!(config.updates.check);
+        assert!(config.updates.auto_install);
+        let config = create_temporary_config(
+            "updates",
+            "[updates]\ncheck = true\nauto-install = false\n",
+        );
+        assert!(config.updates.check);
+        assert!(!config.updates.auto_install);
+        let config = create_temporary_config("updates-off", "[updates]\ncheck = false\n");
+        assert!(!config.updates.check);
+        assert!(config.updates.auto_install, "unset keys keep their default");
     }
 
     #[test]
