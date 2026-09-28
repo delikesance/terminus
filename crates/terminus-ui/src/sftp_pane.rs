@@ -57,6 +57,8 @@ pub struct SftpSideState {
     pub entries: Vec<SftpRow>,
     pub selected: Option<usize>,
     pub scroll: f32,
+    /// Why this pane's host could not be reached; cleared once it lists.
+    pub connect_error: Option<String>,
 }
 
 impl SftpSideState {
@@ -67,6 +69,7 @@ impl SftpSideState {
             entries: Vec::new(),
             selected: None,
             scroll: 0.0,
+            connect_error: None,
         }
     }
 
@@ -80,6 +83,7 @@ impl SftpSideState {
             entries: Vec::new(),
             selected: None,
             scroll: 0.0,
+            connect_error: None,
         }
     }
 
@@ -100,6 +104,7 @@ impl SftpSideState {
     }
 
     pub fn set_listed(&mut self, path: String, entries: Vec<SftpRow>) {
+        self.connect_error = None;
         self.cwd = path;
         self.entries = entries;
         self.selected = None;
@@ -348,6 +353,22 @@ impl SftpPaneState {
             SftpFocus::Left => SftpFocus::Right,
             SftpFocus::Right => SftpFocus::Left,
         }
+    }
+
+    /// The host on `focus` could not be reached.
+    pub fn set_connect_error(&mut self, focus: SftpFocus, message: String) {
+        self.side_mut(focus).connect_error = Some(message);
+        self.loading = false;
+    }
+
+    /// Footer line: the latest error, else a pane that failed to connect,
+    /// else the status.
+    pub fn footer_text(&self) -> &str {
+        self.error
+            .as_deref()
+            .or(self.left.connect_error.as_deref())
+            .or(self.right.connect_error.as_deref())
+            .unwrap_or(self.status.as_str())
     }
 
     pub fn set_listed(&mut self, focus: SftpFocus, path: String, entries: Vec<SftpRow>) {
@@ -854,6 +875,24 @@ pub fn crumb_segments_for_cwd(cwd: &str, is_local: bool) -> Vec<(String, String)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_connection_stays_visible_on_its_own_pane() {
+        let mut state = SftpPaneState::new_local_remote("/home/user", "h1", "demo");
+        state.set_connect_error(SftpFocus::Right, "Nothing answers on that port.".into());
+        // The local listing that lands right after must not hide it.
+        state.set_listed(SftpFocus::Left, "/home/user".into(), Vec::new());
+        assert_eq!(
+            state.right.connect_error.as_deref(),
+            Some("Nothing answers on that port.")
+        );
+        assert!(state.footer_text().contains("Nothing answers"));
+        assert!(!state.loading);
+        // A later listing on that pane (reconnected) clears it.
+        state.set_listed(SftpFocus::Right, "/".into(), Vec::new());
+        assert_eq!(state.right.connect_error, None);
+        assert_eq!(state.footer_text(), state.status);
+    }
 
     fn sample_state() -> SftpPaneState {
         let mut state = SftpPaneState::new_local_remote("/home/user", "h1", "demo");
