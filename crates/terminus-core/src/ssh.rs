@@ -196,7 +196,9 @@ impl KnownHosts {
         let mut found = Vec::new();
         for line in contents.lines() {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
+            // `@revoked` / `@cert-authority` markers are not plain trust
+            // entries; never treat their keys as the host's key.
+            if line.is_empty() || line.starts_with('#') || line.starts_with('@') {
                 continue;
             }
             let mut fields = line.split_whitespace();
@@ -205,7 +207,11 @@ impl KnownHosts {
             else {
                 continue;
             };
-            let matches = hosts.split(',').any(|h| h.trim() == name);
+            let matches = if hosts.starts_with("|1|") {
+                hashed_host_matches(hosts, &name)
+            } else {
+                hosts.split(',').any(|h| h.trim() == name)
+            };
             if matches {
                 found.push(KnownHostEntry {
                     algorithm: algorithm.to_string(),
@@ -257,6 +263,68 @@ impl KnownHosts {
         info!(host = %name, algorithm, "recorded host key in known_hosts");
         Ok(())
     }
+}
+
+/// `|1|<salt>|<hash>` entry (OpenSSH `HashKnownHosts`): the hash is
+/// HMAC-SHA1 of the entry name keyed with the salt, both base64.
+fn hashed_host_matches(field: &str, name: &str) -> bool {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    let mut parts = field.trim_start_matches("|1|").splitn(2, '|');
+    let (Some(salt), Some(hash)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let (Ok(salt), Ok(hash)) = (b64.decode(salt), b64.decode(hash)) else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<sha1::Sha1>::new_from_slice(&salt) else {
+        return false;
+    };
+    mac.update(name.as_bytes());
+    mac.verify_slice(&hash).is_ok()
+}
+
+/// Host-key algorithms to offer, those already recorded for the host first.
+///
+/// OpenSSH does the same: when `known_hosts` holds, say, the server's ECDSA
+/// key, it asks for ECDSA so the server presents the key it can verify.
+/// Offering russh's default order instead makes the server pick ed25519 and
+/// the check reports a *changed* key: a false man-in-the-middle alarm.
+pub fn preferred_host_key_algorithms(
+    known: &[KnownHostEntry],
+) -> Vec<russh::keys::Algorithm> {
+    use std::str::FromStr;
+    let known: Vec<russh::keys::Algorithm> = known
+        .iter()
+        .filter_map(|e| russh::keys::Algorithm::from_str(&e.algorithm).ok())
+        .collect();
+    let is_known = |algo: &russh::keys::Algorithm| {
+        known
+            .iter()
+            .any(|k| k == algo || (is_rsa(k) && is_rsa(algo)))
+    };
+    let mut order = russh::Preferred::DEFAULT.key.to_vec();
+    order.sort_by_key(|algo| !is_known(algo));
+    order
+}
+
+fn is_rsa(algo: &russh::keys::Algorithm) -> bool {
+    matches!(algo, russh::keys::Algorithm::Rsa { .. })
+}
+
+/// russh client config for `opts`, with host-key preference from known_hosts.
+fn client_config(opts: &SshConnectOptions) -> client::Config {
+    let mut config = client::Config::default();
+    config.keepalive_interval = opts.keepalive_interval;
+    config.inactivity_timeout = Some(DEFAULT_INACTIVITY_TIMEOUT);
+    config.channel_buffer_size = 256;
+    let recorded = opts.known_hosts.lookup(&opts.hostname, opts.port);
+    if !recorded.is_empty() {
+        config.preferred.key =
+            std::borrow::Cow::Owned(preferred_host_key_algorithms(&recorded));
+    }
+    config
 }
 
 /// Credentials used to authenticate a session.
@@ -740,10 +808,7 @@ pub async fn connect_sftp(opts: &SshConnectOptions) -> Result<SftpConnection> {
         outcome: Arc::clone(&outcome),
     };
 
-    let mut config = client::Config::default();
-    config.keepalive_interval = opts.keepalive_interval;
-    config.inactivity_timeout = Some(DEFAULT_INACTIVITY_TIMEOUT);
-    config.channel_buffer_size = 256;
+    let config = client_config(opts);
 
     let addrs = (opts.hostname.as_str(), opts.port);
     let connect = client::connect(Arc::new(config), addrs, handler);
@@ -800,10 +865,7 @@ impl SshSession {
             outcome: Arc::clone(&outcome),
         };
 
-        let mut config = client::Config::default();
-        config.keepalive_interval = opts.keepalive_interval;
-        config.inactivity_timeout = Some(DEFAULT_INACTIVITY_TIMEOUT);
-        config.channel_buffer_size = 256;
+        let config = client_config(opts);
 
         let addrs = (opts.hostname.as_str(), opts.port);
         let connect = client::connect(Arc::new(config), addrs, handler);
@@ -1054,7 +1116,19 @@ async fn authenticate_password(
         .authenticate_password(auth.username.clone(), password.clone())
         .await
         .map_err(|e| Error::SshError(format!("password auth failed: {e}")))?;
-    if result.success() {
+    let offers_keyboard_interactive = match &result {
+        russh::client::AuthResult::Success => return Ok(()),
+        russh::client::AuthResult::Failure {
+            remaining_methods, ..
+        } => remaining_methods
+            .iter()
+            .any(|m| <&str>::from(m) == "keyboard-interactive"),
+    };
+    // PAM / 2FA front-ends (and macOS by default) disable the `password`
+    // method and ask for the same password through `keyboard-interactive`.
+    if offers_keyboard_interactive
+        && authenticate_keyboard_interactive(handle, &auth.username, password).await?
+    {
         return Ok(());
     }
     Err(Error::SshError(format!(
@@ -1063,8 +1137,49 @@ async fn authenticate_password(
     )))
 }
 
-/// Turns a russh handshake error into a message that names the host-key
-/// decision when that is what stopped the connection.
+/// Answer `keyboard-interactive` prompts with the password.
+///
+/// Every hidden prompt gets the password; echoed prompts (not secrets) get an
+/// empty answer. A server asking more rounds than any sane password flow
+/// (e.g. a one-time code the user must type) fails rather than loops.
+async fn authenticate_keyboard_interactive(
+    handle: &mut Handle<ClientHandler>,
+    username: &str,
+    password: &str,
+) -> Result<bool> {
+    use russh::client::KeyboardInteractiveAuthResponse as Kbd;
+    let err = |e: russh::Error| {
+        Error::SshError(format!("keyboard-interactive auth failed: {e}"))
+    };
+    let mut reply = handle
+        .authenticate_keyboard_interactive_start(username.to_string(), None)
+        .await
+        .map_err(err)?;
+    for _ in 0..4 {
+        match reply {
+            Kbd::Success => return Ok(true),
+            Kbd::Failure { .. } => return Ok(false),
+            Kbd::InfoRequest { prompts, .. } => {
+                let answers = prompts
+                    .iter()
+                    .map(|p| {
+                        if p.echo {
+                            String::new()
+                        } else {
+                            password.to_string()
+                        }
+                    })
+                    .collect();
+                reply = handle
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await
+                    .map_err(err)?;
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn host_key_aware_error(
     err: Error,
     outcome: &Arc<Mutex<Option<HostKeyOutcome>>>,
@@ -1128,6 +1243,61 @@ mod tests {
         assert!(kh.lookup("example.com", 22).is_empty());
         assert_eq!(kh.lookup("example.com", 2222)[0].key, "KEY2222");
         let _ = std::fs::remove_file(kh.path());
+    }
+
+    #[test]
+    fn lookup_matches_openssh_hashed_entries() {
+        // Written by `ssh-keygen -H` (HashKnownHosts yes, Debian/Ubuntu default).
+        let kh = temp_known_hosts("hashed");
+        std::fs::write(
+            kh.path(),
+            "|1|Bo57nr5sulZwOhqnzRIAeEOVSHc=|XzhJQGRrF4yLCnrFamfaJgAyXlE= ssh-ed25519 AAAAKEY\n\
+             |1|g3yTRG7U8sQLMOZEPY+hx5kEomo=|IOTmpGQKZFzSy7adpBoSIYvg4Fg= ssh-ed25519 KEY2222\n",
+        )
+        .unwrap();
+        assert_eq!(kh.lookup("example.com", 22)[0].key, "AAAAKEY");
+        assert_eq!(kh.lookup("example.com", 2222)[0].key, "KEY2222");
+        assert!(kh.lookup("other.com", 22).is_empty());
+        let _ = std::fs::remove_file(kh.path());
+    }
+
+    #[test]
+    fn lookup_skips_marker_lines() {
+        let kh = temp_known_hosts("markers");
+        std::fs::write(
+            kh.path(),
+            "@revoked example.com ssh-ed25519 REVOKED\n@cert-authority *.example.com ssh-ed25519 CA\n",
+        )
+        .unwrap();
+        assert!(kh.lookup("example.com", 22).is_empty());
+        let _ = std::fs::remove_file(kh.path());
+    }
+
+    #[test]
+    fn preferred_host_key_algorithms_put_known_types_first() {
+        use russh::keys::Algorithm;
+        let known = vec![KnownHostEntry {
+            algorithm: "ecdsa-sha2-nistp256".into(),
+            key: "X".into(),
+        }];
+        let order = preferred_host_key_algorithms(&known);
+        assert_eq!(
+            order[0],
+            Algorithm::Ecdsa {
+                curve: russh::keys::EcdsaCurve::NistP256
+            }
+        );
+        assert_eq!(order.len(), russh::Preferred::DEFAULT.key.len());
+
+        let rsa = vec![KnownHostEntry {
+            algorithm: "ssh-rsa".into(),
+            key: "X".into(),
+        }];
+        assert!(is_rsa(&preferred_host_key_algorithms(&rsa)[0]));
+        assert_eq!(
+            preferred_host_key_algorithms(&[]),
+            russh::Preferred::DEFAULT.key.to_vec()
+        );
     }
 
     #[test]

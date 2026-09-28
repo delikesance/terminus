@@ -127,7 +127,6 @@ fn generated_managed_key_authenticates_once_authorized() {
 }
 
 #[test]
-#[ignore = "BUG: password hosts fail on keyboard-interactive-only servers (russh + OpenSSH CLI flags)"]
 fn keyboard_interactive_only_server_accepts_password() {
     // Many servers (PAM, macOS, 2FA front-ends) disable the `password` method and
     // only offer `keyboard-interactive`. OpenSSH CLI handles both.
@@ -178,7 +177,6 @@ fn tofu_records_then_knows_then_detects_change() {
 }
 
 #[test]
-#[ignore = "BUG: a known_hosts entry for another key type is reported as a changed host key"]
 fn tofu_with_openssh_recorded_other_algorithm_is_not_a_mitm() {
     // A user who already connected with the OpenSSH CLI (which the shell tab
     // uses!) typically has only an ecdsa or rsa line for the host. The server
@@ -200,7 +198,6 @@ fn tofu_with_openssh_recorded_other_algorithm_is_not_a_mitm() {
 }
 
 #[test]
-#[ignore = "BUG: hashed known_hosts entries are not recognised"]
 fn strict_accepts_hashed_known_hosts_entry() {
     // OpenSSH on Debian/Ubuntu writes hashed entries (HashKnownHosts yes).
     let mut o = need!(opts("TERMINUS_E2E_SSHD", "hashed"));
