@@ -233,6 +233,30 @@ impl Screen<'_> {
         shell_execute_open(url);
     }
 
+    /// The launch update screen. Returns what the route must do next.
+    pub(crate) fn render_updating(&mut self) -> crate::updater::StartupPhase {
+        let phase = {
+            let _ = self.updater.pump();
+            self.updater.startup_phase()
+        };
+        if let crate::updater::StartupPhase::Downloading {
+            version,
+            done,
+            total,
+        } = &phase
+        {
+            crate::router::routes::updating::screen(
+                &mut self.sugarloaf,
+                &self.context_manager.current().dimension,
+                version,
+                *done,
+                *total,
+            );
+            self.sugarloaf.render();
+        }
+        phase
+    }
+
     pub(crate) fn render_welcome(&mut self) {
         crate::router::routes::welcome::screen(
             &mut self.sugarloaf,

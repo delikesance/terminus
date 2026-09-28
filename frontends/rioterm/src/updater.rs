@@ -4,8 +4,11 @@
 //! a day (`[updates] check`), and on demand from the command palette. What
 //! happens next depends on how Terminus was installed:
 //!
-//! * portable tarball: downloaded, verified and swapped in automatically
-//!   (`[updates] auto-install`); the user restarts when convenient;
+//! * portable tarball, Windows per-user or portable copy: checked when the
+//!   app starts ([`launch_check`], at most [`LAUNCH_CHECK_TIMEOUT`]); a new
+//!   release is downloaded, verified and swapped in behind an "Updating"
+//!   screen, then the new version starts. Later checks swap it in silently
+//!   and the user restarts when convenient;
 //! * Windows installer: offered; "Install Update" downloads the verified
 //!   installer, starts it and quits so it can replace the executable;
 //! * `.deb` / `.rpm`: offered; "Install Update" downloads the verified package
@@ -16,8 +19,9 @@
 //! blocks rendering.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use terminus_update::{Installer, Release, UpdatePlan};
@@ -26,6 +30,8 @@ use terminus_update::{Installer, Release, UpdatePlan};
 const STARTUP_DELAY: Duration = Duration::from_secs(20);
 /// Between automatic checks.
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Longest the launch-time check may delay the window.
+pub const LAUNCH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 /// The version this binary reports to the release check.
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -155,6 +161,105 @@ pub(crate) fn install_action(state: &UpdateState) -> InstallAction {
     }
 }
 
+/// Whether a release found at launch is installed before the app opens:
+/// only with the user's consent (check + auto-install), a trusted key, and
+/// an install that can replace its own binary (no installer, no admin).
+pub(crate) fn launch_update_wanted(
+    settings: UpdateSettings,
+    can_install: bool,
+    plan: &UpdatePlan,
+) -> bool {
+    settings.check
+        && settings.auto_install
+        && can_install
+        && matches!(plan, UpdatePlan::ReplaceBinary { .. })
+}
+
+/// What the launch screen shows while an update found at start installs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StartupPhase {
+    /// No launch update: the app runs normally.
+    None,
+    Downloading {
+        version: String,
+        done: u64,
+        total: u64,
+    },
+    /// Installed: start the new binary and exit.
+    Relaunch,
+    /// Give up and open this version.
+    Failed(String),
+}
+
+pub(crate) fn startup_phase(
+    startup: bool,
+    state: &UpdateState,
+    (done, total): (u64, u64),
+) -> StartupPhase {
+    if !startup {
+        return StartupPhase::None;
+    }
+    match state {
+        UpdateState::Downloading { version } => StartupPhase::Downloading {
+            version: version.clone(),
+            done,
+            total,
+        },
+        UpdateState::ReadyToRestart { .. } => StartupPhase::Relaunch,
+        UpdateState::Failed(message) => StartupPhase::Failed(message.clone()),
+        other => StartupPhase::Failed(format!("unexpected update state {other:?}")),
+    }
+}
+
+/// A newer release found by [`launch_check`], for the first window.
+struct LaunchUpdate {
+    release: Release,
+    plan: UpdatePlan,
+}
+
+static LAUNCH_UPDATE: Mutex<Option<LaunchUpdate>> = Mutex::new(None);
+
+/// Before the window opens: is there a release to install right now?
+/// Bounded by [`LAUNCH_CHECK_TIMEOUT`]; offline or slow networks just open
+/// the app. Installers and packages are left to the background worker.
+pub fn launch_check(settings: UpdateSettings) -> bool {
+    if !settings.check || !settings.auto_install {
+        return false;
+    }
+    let Some(exe) = std::env::current_exe().ok() else {
+        return false;
+    };
+    let kind = terminus_update::detect_install(
+        &exe,
+        terminus_update::Os::current(),
+        &terminus_update::FsProbe,
+    );
+    let plan = terminus_update::plan(kind);
+    let Ok(client) = terminus_update::Client::official() else {
+        return false;
+    };
+    if !launch_update_wanted(settings, client.can_install(), &plan) {
+        return false;
+    }
+    match client
+        .with_timeout(LAUNCH_CHECK_TIMEOUT)
+        .check(CURRENT_VERSION)
+    {
+        Ok(Some(release)) => {
+            tracing::info!(version = %release.version, "update found at launch");
+            if let Ok(mut slot) = LAUNCH_UPDATE.lock() {
+                *slot = Some(LaunchUpdate { release, plan });
+            }
+            true
+        }
+        Ok(None) => false,
+        Err(err) => {
+            tracing::info!(%err, "launch update check skipped");
+            false
+        }
+    }
+}
+
 /// `[updates]` settings the worker honours.
 #[derive(Debug, Clone, Copy)]
 pub struct UpdateSettings {
@@ -191,6 +296,9 @@ pub struct Updater {
     exe: Option<PathBuf>,
     /// Runs in `run_exit_action` once the user has confirmed the quit.
     on_exit: Option<ExitAction>,
+    /// This window is installing an update found at launch.
+    startup: bool,
+    progress: Arc<[AtomicU64; 2]>,
 }
 
 /// Work left for the moment the process exits, so a declined
@@ -225,29 +333,66 @@ impl Updater {
         let (event_tx, event_rx) = channel();
         let exe = std::env::current_exe().ok();
         let worker_exe = exe.clone();
+        let launch = LAUNCH_UPDATE.lock().ok().and_then(|mut slot| slot.take());
+        let startup_version = launch.as_ref().map(|l| l.release.version.to_string());
+        let progress: Arc<[AtomicU64; 2]> =
+            Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
+        let worker_progress = Arc::clone(&progress);
         let spawned = std::thread::Builder::new()
             .name("terminus-updater".into())
             .spawn(move || {
+                let install_first = launch.is_some();
                 let mut worker = Worker {
                     settings,
                     exe: worker_exe,
                     events: event_tx,
                     wake,
-                    found: None,
+                    found: launch.map(|l| (l.release, l.plan, true)),
+                    install_first,
+                    progress: worker_progress,
                 };
                 worker.run(command_rx);
             });
         if let Err(err) = spawned {
             tracing::warn!(%err, "could not start the update worker");
         }
+        let startup = startup_version.is_some();
         Self {
             commands: command_tx,
             events: event_rx,
-            state: UpdateState::Idle,
+            state: match startup_version {
+                Some(version) => UpdateState::Downloading { version },
+                None => UpdateState::Idle,
+            },
             notice: None,
             exe,
             on_exit: None,
+            startup,
+            progress,
         }
+    }
+
+    /// Where the launch-time update stands ([`StartupPhase::None`] once it
+    /// is over or when there was none).
+    pub(crate) fn startup_phase(&self) -> StartupPhase {
+        let progress = (
+            self.progress[0].load(Ordering::Relaxed),
+            self.progress[1].load(Ordering::Relaxed),
+        );
+        startup_phase(self.startup, &self.state, progress)
+    }
+
+    /// The launch update failed: carry on with this version.
+    pub(crate) fn end_startup(&mut self) {
+        self.startup = false;
+    }
+
+    /// Start the installed binary now (no quit confirmation: nothing has
+    /// run in this window yet).
+    pub(crate) fn relaunch_now(&mut self) -> Result<(), String> {
+        self.arm_exit_action()?;
+        self.run_exit_action();
+        Ok(())
     }
 
     /// Check now (palette "Check for Updates").
@@ -328,6 +473,10 @@ struct Worker {
     events: Sender<(UpdateState, bool)>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     found: Option<(Release, UpdatePlan, bool)>,
+    /// Install `found` right away (an update found at launch).
+    install_first: bool,
+    /// Bytes received / expected by the running download.
+    progress: Arc<[AtomicU64; 2]>,
 }
 
 impl Worker {
@@ -336,6 +485,11 @@ impl Worker {
             terminus_update::cleanup_after_update(exe);
         }
         let mut next_check = self.settings.check.then(|| Instant::now() + STARTUP_DELAY);
+        if self.install_first {
+            self.install_first = false;
+            self.install();
+            next_check = self.settings.check.then(|| Instant::now() + CHECK_INTERVAL);
+        }
         loop {
             let wait = next_check
                 .map(|at| at.saturating_duration_since(Instant::now()))
@@ -363,7 +517,24 @@ impl Worker {
     }
 
     fn client(&self) -> Result<terminus_update::Client, String> {
-        terminus_update::Client::official().map_err(|e| e.to_string())
+        let progress = Arc::clone(&self.progress);
+        let wake = self.wake.clone();
+        let last_percent = Arc::new(AtomicU64::new(u64::MAX));
+        terminus_update::Client::official()
+            .map(|client| {
+                client.with_progress(Arc::new(move |done, total| {
+                    progress[0].store(done, Ordering::Relaxed);
+                    progress[1].store(total, Ordering::Relaxed);
+                    // Repaint once per percent, not per chunk.
+                    let percent = (done * 100).checked_div(total).unwrap_or(0);
+                    if last_percent.swap(percent, Ordering::Relaxed) != percent {
+                        if let Some(wake) = &wake {
+                            wake();
+                        }
+                    }
+                }))
+            })
+            .map_err(|e| e.to_string())
     }
 
     fn check(&mut self, manual: bool) {
@@ -535,6 +706,65 @@ mod tests {
             asset: terminus_update::LINUX_TARBALL.into(),
             entry: terminus_update::LINUX_BINARY.into(),
         }
+    }
+
+    #[test]
+    fn launch_updates_need_consent_a_key_and_a_self_replacing_install() {
+        let on = UpdateSettings {
+            check: true,
+            auto_install: true,
+        };
+        assert!(launch_update_wanted(on, true, &tarball()));
+        assert!(!launch_update_wanted(on, false, &tarball()), "unsigned: no");
+        let off = UpdateSettings {
+            check: true,
+            auto_install: false,
+        };
+        assert!(!launch_update_wanted(off, true, &tarball()));
+        let no_check = UpdateSettings {
+            check: false,
+            auto_install: true,
+        };
+        assert!(!launch_update_wanted(no_check, true, &tarball()));
+        let installer = UpdatePlan::RunInstaller {
+            asset: terminus_update::WINDOWS_MSI.into(),
+            installer: Installer::Msi,
+        };
+        assert!(
+            !launch_update_wanted(on, true, &installer),
+            "needs admin: later"
+        );
+    }
+
+    #[test]
+    fn the_launch_screen_follows_the_worker() {
+        let downloading = UpdateState::Downloading {
+            version: "0.6.1".into(),
+        };
+        assert_eq!(
+            startup_phase(true, &downloading, (5, 10)),
+            StartupPhase::Downloading {
+                version: "0.6.1".into(),
+                done: 5,
+                total: 10
+            }
+        );
+        let ready = UpdateState::ReadyToRestart {
+            version: "0.6.1".into(),
+        };
+        assert_eq!(
+            startup_phase(true, &ready, (10, 10)),
+            StartupPhase::Relaunch
+        );
+        assert_eq!(
+            startup_phase(true, &UpdateState::Failed("offline".into()), (0, 0)),
+            StartupPhase::Failed("offline".into())
+        );
+        // Not a launch update: the app runs normally.
+        assert_eq!(
+            startup_phase(false, &downloading, (5, 10)),
+            StartupPhase::None
+        );
     }
 
     #[test]

@@ -1064,6 +1064,11 @@ impl Router<'_> {
             path: RoutePath::Terminal,
             assistant: Assistant::new(),
         };
+        if route.window.screen.updater.startup_phase()
+            != crate::updater::StartupPhase::None
+        {
+            route.path = RoutePath::Updating;
+        }
 
         if let Some(err) = &self.propagated_report {
             route.report_error(err);

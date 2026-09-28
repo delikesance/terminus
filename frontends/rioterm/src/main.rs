@@ -185,6 +185,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("unable to configure the logger: {e:?}");
         }
 
+        // Updates first: a newer signed release installs before the app is
+        // used (at most a couple of seconds when the network is slow).
+        crate::updater::launch_check(config.updates.into());
+
         if let Some(command) = args.window_options.terminal_options.command() {
             config.shell = command;
             config.use_fork = false;

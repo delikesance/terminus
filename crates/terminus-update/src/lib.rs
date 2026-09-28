@@ -342,7 +342,8 @@ pub struct Release {
 }
 
 impl Release {
-    fn asset(&self, name: &str) -> Result<&Asset> {
+    /// The asset named `name`.
+    pub fn asset(&self, name: &str) -> Result<&Asset> {
         self.assets
             .iter()
             .find(|a| a.name == name)
@@ -374,10 +375,14 @@ pub fn parse_version(raw: &str) -> Option<semver::Version> {
 }
 
 /// Update client: endpoint + trusted key + HTTP agent.
+/// Called with (bytes received, expected size) while a download runs.
+pub type Progress = std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>;
+
 pub struct Client {
     endpoint: String,
     public_key: Option<minisign_verify::PublicKey>,
     agent: ureq::Agent,
+    progress: Option<Progress>,
 }
 
 impl Client {
@@ -397,6 +402,7 @@ impl Client {
             endpoint: endpoint.to_string(),
             public_key,
             agent,
+            progress: None,
         })
     }
 
@@ -404,6 +410,12 @@ impl Client {
     /// must not hold up the app on a slow or silent network).
     pub fn with_timeout(mut self, limit: Duration) -> Self {
         self.agent = build_agent(Some(limit));
+        self
+    }
+
+    /// Report download progress (for a progress bar).
+    pub fn with_progress(mut self, progress: Progress) -> Self {
+        self.progress = Some(progress);
         self
     }
 
@@ -466,7 +478,7 @@ impl Client {
         let asset = release.asset(&name)?;
         let temp = dir.join(format!("{STAGE_PREFIX}{}.download", uuid::Uuid::new_v4()));
         let result = (|| {
-            let actual = self.download_hashed(&asset.url, &temp)?;
+            let actual = self.download_hashed(asset, &temp)?;
             if !actual.eq_ignore_ascii_case(&expected) {
                 return Err(UpdateError::ChecksumMismatch { expected, actual });
             }
@@ -493,7 +505,7 @@ impl Client {
         let archive_path =
             stage_dir.join(format!("{STAGE_PREFIX}{}.download", uuid::Uuid::new_v4()));
         let result = (|| {
-            let actual = self.download_hashed(&asset.url, &archive_path)?;
+            let actual = self.download_hashed(asset, &archive_path)?;
             if !actual.eq_ignore_ascii_case(&expected) {
                 return Err(UpdateError::ChecksumMismatch { expected, actual });
             }
@@ -529,12 +541,22 @@ impl Client {
 
     fn get(&self, url: &str, accept: &str) -> Result<ureq::Body> {
         require_secure(url)?;
-        let response = self
-            .agent
-            .get(url)
-            .header("Accept", accept)
-            .call()
-            .map_err(|e| UpdateError::Http(format!("{url}: {e}")))?;
+        let call = || self.agent.get(url).header("Accept", accept).call();
+        let response = match call() {
+            // A pooled connection the server (or a proxy) already closed
+            // fails at once; these GETs are idempotent, so try a fresh one.
+            Err(err)
+                if !matches!(
+                    err,
+                    ureq::Error::StatusCode(_) | ureq::Error::Timeout(_)
+                ) =>
+            {
+                tracing::debug!(%err, %url, "retrying on a new connection");
+                call()
+            }
+            other => other,
+        }
+        .map_err(|e| UpdateError::Http(format!("{url}: {e}")))?;
         Ok(response.into_body())
     }
 
@@ -552,7 +574,8 @@ impl Client {
     }
 
     /// Stream `url` into `dest`, returning its SHA-256 (hex).
-    fn download_hashed(&self, url: &str, dest: &Path) -> Result<String> {
+    fn download_hashed(&self, asset: &Asset, dest: &Path) -> Result<String> {
+        let url = asset.url.as_str();
         let mut body = self.get(url, "application/octet-stream")?;
         let mut reader = body.as_reader().take(MAX_DOWNLOAD_BYTES + 1);
         let mut file = std::fs::OpenOptions::new()
@@ -575,6 +598,9 @@ impl Client {
             }
             hasher.update(&buf[..n]);
             file.write_all(&buf[..n])?;
+            if let Some(progress) = &self.progress {
+                progress(total, asset.size.max(total));
+            }
         }
         file.sync_all()?;
         Ok(hex::encode(hasher.finalize()))
