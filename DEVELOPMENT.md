@@ -327,7 +327,7 @@ nix run .#release -- --build-only # artifacts only, no publish
 | Debian / Ubuntu | `terminus_*.deb` (via [`misc/nfpm-terminus.yaml`](misc/nfpm-terminus.yaml)) |
 | Fedora / RHEL | `terminus-*.rpm` |
 | NixOS (binary) | `terminus.nix` — `pkgs.callPackage` of the Linux tarball |
-| Windows | `terminus-setup-x86_64.exe` (NSIS), `terminus-x86_64.msi` |
+| Windows | `terminus-setup-x86_64.exe` (NSIS), `terminus-x86_64.msi` (both per-user, no admin), `terminus-windows-x86_64.zip` (portable; what the app updates itself from) |
 | All | `checksums.txt` and its minisign signature `checksums.txt.minisig` |
 
 The tag comes from the `Cargo.toml` version of the checkout you run it in,
@@ -341,8 +341,12 @@ install download the release again.
 
 ### Signed updates
 
-Terminus checks the latest GitHub Release 20 s after start and then daily
-(`crates/terminus-update`, `frontends/rioterm/src/updater.rs`). It installs
+Terminus checks the latest GitHub Release when it starts, before its window
+opens (two seconds at most: offline or slow networks just open the app), and
+then daily (`crates/terminus-update`, `frontends/rioterm/src/updater.rs`).
+When a copy can replace its own binary, a newer release found at launch is
+installed right away: the window shows "Updating Terminus to X" with a
+progress bar, then the new version starts. It installs
 nothing unless `checksums.txt.minisig` verifies against the public key compiled
 into the binary and the downloaded file matches its SHA-256 in `checksums.txt`.
 
@@ -366,14 +370,15 @@ What an installed copy does with a new version:
 
 | Install | Update |
 | --- | --- |
-| Linux tarball (writable folder) | downloaded, verified and swapped in place; palette → **Restart to Update** |
+| Linux tarball (writable folder) | at launch: installed before the app opens; found later: swapped in, palette → **Restart to Update** |
+| Windows setup `.exe` / `.msi` (per-user, since 0.6), portable `terminus-windows-x86_64.zip` | same as the tarball: `terminus.exe` from the signed zip replaces the running one (moved aside, removed on the next start); no installer, no admin prompt |
 | `.deb` / `.rpm` | package downloaded to `~/Downloads` and verified; **Install Update** copies the `sudo apt/dnf install` command |
-| Windows (NSIS / MSI) | **Install Update** downloads the installer, which runs when Terminus quits |
+| Windows installed for all users in Program Files (before 0.6) | **Install Update** downloads the setup, which runs when Terminus quits; it offers to remove the old all-users copy, and from then on the per-user copy updates itself |
 | Nix, dev builds, read-only folders | notice only (**Install Update** opens the release page) |
 
-Settings (`[updates]` in the config): `check = false` stops automatic checks
-(the palette's **Check for Updates** still works) and `auto-install = false`
-asks before swapping the binary. `TERMINUS_NO_UPDATE_CHECK=1` also disables
+Settings (`[updates]` in the config): `check = false` stops automatic checks,
+at launch included (the palette's **Check for Updates** still works), and
+`auto-install = false` asks before swapping the binary. `TERMINUS_NO_UPDATE_CHECK=1` also disables
 automatic checks.
 
 `TERMINUS_UPDATE_URL` points the updater at another `releases/latest`-shaped
