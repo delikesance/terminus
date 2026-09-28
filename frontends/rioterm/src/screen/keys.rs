@@ -841,6 +841,8 @@ impl Screen<'_> {
                         if !self.renderer.command_palette.is_enabled() {
                             let hosts = self.palette_host_items();
                             self.renderer.command_palette.set_hosts(hosts);
+                            let shortcuts = self.palette_shortcuts();
+                            self.renderer.command_palette.set_shortcuts(shortcuts);
                             self.renderer.command_palette.set_enabled(true);
                             self.mark_dirty();
                         }

@@ -1322,6 +1322,56 @@ pub fn platform_key_bindings(
     key_bindings
 }
 
+/// How the first binding for `action` reads (`Ctrl+Shift+T`), for menus
+/// and the command palette. Bindings that only apply in a mode (vi,
+/// search) are not advertised: the shortcut would not work from a menu.
+pub fn shortcut_label(bindings: &[KeyBinding], action: &Action) -> Option<String> {
+    let binding = bindings
+        .iter()
+        .find(|b| &b.action == action && b.mode.is_empty())?;
+    let key = match &binding.trigger {
+        BindingKey::Keycode { key, .. } => match key {
+            Key::Character(c) => c.to_uppercase(),
+            Key::Named(named) => match named {
+                ArrowUp => "Up".to_string(),
+                ArrowDown => "Down".to_string(),
+                ArrowLeft => "Left".to_string(),
+                ArrowRight => "Right".to_string(),
+                other => format!("{other:?}"),
+            },
+            _ => return None,
+        },
+        BindingKey::Scancode(_) => return None,
+    };
+    let super_name = if cfg!(target_os = "macos") {
+        "Cmd"
+    } else if cfg!(windows) {
+        "Win"
+    } else {
+        "Super"
+    };
+    let mut parts = Vec::new();
+    for (flag, name) in [
+        (ModifiersState::CONTROL, "Ctrl"),
+        (
+            ModifiersState::ALT,
+            if cfg!(target_os = "macos") {
+                "Option"
+            } else {
+                "Alt"
+            },
+        ),
+        (ModifiersState::SHIFT, "Shift"),
+        (ModifiersState::SUPER, super_name),
+    ] {
+        if binding.mods.contains(flag) {
+            parts.push(name.to_string());
+        }
+    }
+    parts.push(key);
+    Some(parts.join("+"))
+}
+
 #[cfg(test)]
 pub fn platform_key_bindings(_: bool, _: bool, _: ConfigKeyboard) -> Vec<KeyBinding> {
     vec![]
@@ -1331,7 +1381,7 @@ pub fn platform_key_bindings(_: bool, _: bool, _: ConfigKeyboard) -> Vec<KeyBind
 mod tests {
     use super::*;
 
-    use rio_window::keyboard::ModifiersState;
+    use rio_window::keyboard::{ModifiersState, NamedKey};
 
     type MockBinding = Binding<usize>;
 
@@ -1344,6 +1394,69 @@ mod tests {
                 notmode: BindingMode::empty(),
                 trigger: Default::default(),
             }
+        }
+    }
+
+    fn key_binding(key: Key, mods: ModifiersState, action: Action) -> KeyBinding {
+        KeyBinding {
+            mods,
+            action,
+            mode: BindingMode::empty(),
+            notmode: BindingMode::empty(),
+            trigger: BindingKey::Keycode {
+                key,
+                location: KeyLocation::Standard,
+            },
+        }
+    }
+
+    #[test]
+    fn shortcut_labels_come_from_the_live_bindings() {
+        let ctrl_shift = ModifiersState::CONTROL | ModifiersState::SHIFT;
+        let bindings = vec![
+            key_binding(Key::Character("t".into()), ctrl_shift, Action::TabCreateNew),
+            key_binding(
+                Key::Named(NamedKey::Tab),
+                ModifiersState::CONTROL,
+                Action::SelectNextTab,
+            ),
+        ];
+        assert_eq!(
+            shortcut_label(&bindings, &Action::TabCreateNew).as_deref(),
+            Some("Ctrl+Shift+T")
+        );
+        assert_eq!(
+            shortcut_label(&bindings, &Action::SelectNextTab).as_deref(),
+            Some("Ctrl+Tab")
+        );
+        assert_eq!(shortcut_label(&bindings, &Action::Quit), None);
+    }
+
+    #[test]
+    fn mode_only_bindings_are_not_advertised() {
+        let mut vi_only = key_binding(
+            Key::Character("c".into()),
+            ModifiersState::CONTROL,
+            Action::Copy,
+        );
+        vi_only.mode = BindingMode::VI;
+        assert_eq!(shortcut_label(&[vi_only], &Action::Copy), None);
+    }
+
+    #[test]
+    fn the_super_key_is_named_for_the_platform() {
+        let bindings = vec![key_binding(
+            Key::Character("w".into()),
+            ModifiersState::SUPER,
+            Action::TabCloseCurrent,
+        )];
+        let label = shortcut_label(&bindings, &Action::TabCloseCurrent).unwrap();
+        if cfg!(target_os = "macos") {
+            assert_eq!(label, "Cmd+W");
+        } else if cfg!(windows) {
+            assert_eq!(label, "Win+W");
+        } else {
+            assert_eq!(label, "Super+W");
         }
     }
 
