@@ -64,7 +64,6 @@ async fn sync_now_actually_pushes_hosts_to_remote() {
 /// Soft delete must bump `updated_at`, or last-writer-wins sync can never
 /// order the tombstone after the live copy on another device.
 #[tokio::test]
-#[ignore = "BUG: delete_host does not bump updated_at"]
 async fn delete_host_bumps_updated_at() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().to_path_buf()).await.unwrap();
@@ -95,7 +94,6 @@ async fn delete_host_bumps_updated_at() {
 /// One foreign-format row (another tool, a sync peer, a hand edit) must not
 /// take down the whole host list.
 #[tokio::test]
-#[ignore = "BUG: one malformed row panics list_hosts"]
 async fn list_hosts_survives_one_malformed_row() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().to_path_buf()).await.unwrap();
@@ -126,7 +124,6 @@ async fn list_hosts_survives_one_malformed_row() {
 /// Store file holds managed private keys; it must not be world-readable.
 #[cfg(unix)]
 #[tokio::test]
-#[ignore = "BUG: terminus.db is created world-readable"]
 async fn store_file_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
@@ -176,7 +173,6 @@ fn import_encrypted_pem_without_passphrase_field() {
 
 /// A corrupted/foreign credential envelope must fail cleanly, not panic.
 #[test]
-#[ignore = "BUG: short nonce panics in XNonce::from_slice"]
 fn vault_decrypt_with_bad_nonce_length_does_not_panic() {
     let (_h, vault) = terminus_core::create_with_key("pw").unwrap();
     let id = Uuid::new_v4();
@@ -240,4 +236,44 @@ async fn groups_reorder_and_delete_keep_hosts() {
         .find(|x| x.id == b.id)
         .expect("host survives group delete");
     assert!(hb.group_id.is_none());
+}
+
+#[tokio::test]
+async fn delete_host_retires_its_sealed_password() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().to_path_buf()).await.unwrap();
+    let (_h, vault) = terminus_core::create_with_key("pw").unwrap();
+    let h = sample_host("secret-host");
+    store.upsert_host(&h).await.unwrap();
+    let cred = terminus_core::seal_host_password(&vault, h.id, "s3cret").unwrap();
+    store.upsert_credential(&cred).await.unwrap();
+    store.delete_host(h.id).await.unwrap();
+    let left = store
+        .list_credentials_for_owner(terminus_core::OWNER_KIND_HOST, h.id)
+        .await
+        .unwrap();
+    assert!(left.is_empty(), "sealed password outlived its host");
+}
+
+#[tokio::test]
+async fn upsert_credential_keeps_one_live_row_per_owner_and_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().to_path_buf()).await.unwrap();
+    let (_h, vault) = terminus_core::create_with_key("pw").unwrap();
+    let h = sample_host("h");
+    // A row written under an older id scheme.
+    let mut legacy = terminus_core::seal_host_password(&vault, h.id, "old").unwrap();
+    legacy.id = Uuid::new_v4();
+    store.upsert_credential(&legacy).await.unwrap();
+    let fresh = terminus_core::seal_host_password(&vault, h.id, "new").unwrap();
+    store.upsert_credential(&fresh).await.unwrap();
+    let live = store
+        .list_credentials_for_owner(terminus_core::OWNER_KIND_HOST, h.id)
+        .await
+        .unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(
+        terminus_core::open_host_password(&vault, h.id, &live[0]).unwrap(),
+        "new"
+    );
 }
