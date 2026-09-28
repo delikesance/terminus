@@ -14,6 +14,7 @@ sha2 = "0.10"
 hex = "0.4"
 tar = "0.4"
 flate2 = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 
