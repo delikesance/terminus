@@ -976,20 +976,6 @@ impl AddHostForm {
         }
     }
 
-    /// Leaving the address: show the user and port it carried in their
-    /// own (empty) fields, so what gets saved is what the form shows.
-    fn settle_address(&mut self) {
-        if self.focus != Field::Hostname {
-            return;
-        }
-        let parsed = self.values();
-        for (i, value) in [(1, parsed.hostname), (2, parsed.username), (3, parsed.port)] {
-            if self.values[i] != value {
-                self.carets[i] = value.chars().count();
-                self.values[i] = value;
-            }
-        }
-    }
 
     /// Move focus `delta` fields forward, wrapping across visible rows.
     fn focus_by(&mut self, delta: isize) {
