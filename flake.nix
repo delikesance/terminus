@@ -166,6 +166,20 @@
               exec nix develop "$root#release" --command bash "$root/scripts/release.sh" "$@"
             '');
           };
+          # Single-command pull from main & release: pulls main, builds Linux + Windows,
+          # and publishes to GitHub.
+          publish = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "terminus-publish" ''
+              set -euo pipefail
+              root="$(pwd)"
+              if [[ ! -f "$root/flake.nix" || ! -f "$root/scripts/publish.sh" ]]; then
+                echo "terminus-publish: run from the repository root (where flake.nix lives)" >&2
+                exit 1
+              fi
+              exec bash "$root/scripts/publish.sh" "$@"
+            '');
+          };
         };
       };
     };
