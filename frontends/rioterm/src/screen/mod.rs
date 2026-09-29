@@ -386,7 +386,7 @@ impl Screen<'_> {
             sugarloaf.clear_background_image();
         }
 
-        Ok(Screen {
+        let mut screen = Screen {
             search_state: SearchState::default(),
             hint_state: HintState::new(config.hints.alphabet.clone()),
             hints_config: config
@@ -433,7 +433,9 @@ impl Screen<'_> {
             grid_rasterizer: rio_grid::GridGlyphRasterizer::new(),
             sftp: None,
             sftp_wake,
-        })
+        };
+        screen.sync_update_pane();
+        Ok(screen)
     }
 
     #[inline]

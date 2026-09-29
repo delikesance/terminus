@@ -87,6 +87,39 @@ pub enum SqlSyncFocus {
 pub enum SettingsTab {
     Keys,
     SqlSync,
+    Updates,
+}
+
+/// Height of the version card on the Updates tab.
+pub const UPDATE_CARD_HEIGHT: f32 = 112.0;
+/// Width of the Updates tab's action button.
+pub const UPDATE_BUTTON_WIDTH: f32 = 168.0;
+
+/// What the Updates tab's button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateAction {
+    CheckNow,
+    /// Install the release found (or open its page / copy its command).
+    Install,
+    /// Quit and start the new version.
+    Restart,
+}
+
+/// The Updates tab's one button: its action and its words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateButton {
+    pub action: UpdateAction,
+    pub label: String,
+}
+
+/// What the Updates tab shows, pushed by the app's updater.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpdatePane {
+    pub current_version: String,
+    /// One line: up to date, downloading, ready to restart, failed, …
+    pub status: String,
+    /// `None` while there is nothing to press (a check or download runs).
+    pub button: Option<UpdateButton>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +189,8 @@ pub struct SettingsModal {
     pub key_delete_hover: Option<usize>,
     /// Hovered key row index — Delete is only painted for this row.
     pub key_row_hover: Option<usize>,
+    /// Updates tab content.
+    pub update: UpdatePane,
 }
 
 impl Default for SettingsModal {
@@ -187,6 +222,7 @@ impl Default for SettingsModal {
             keys_notice: None,
             key_delete_hover: None,
             key_row_hover: None,
+            update: UpdatePane::default(),
         }
     }
 }
@@ -222,6 +258,8 @@ pub enum SettingsHit {
     ForgetPassphrase,
     /// Persist URI and run SyncEngine::sync_now.
     TestSync,
+    /// The Updates tab's button.
+    Update(UpdateAction),
     Done,
 }
 
@@ -615,8 +653,36 @@ impl SettingsModal {
             + match tab {
                 SettingsTab::Keys => 0.0,
                 SettingsTab::SqlSync => 40.0,
+                SettingsTab::Updates => 80.0,
             };
         Rect::new(dialog.x + 12.0, y, SIDEBAR_WIDTH - 24.0, 36.0)
+    }
+
+    pub fn set_update_pane(&mut self, pane: UpdatePane) {
+        self.update = pane;
+    }
+
+    /// The Updates tab's card: version, status and the action button.
+    pub fn update_card_rect(&self, window_width: f32, window_height: f32) -> Rect {
+        let (x, y, w) = self.sql_content_origin(window_width, window_height);
+        Rect::new(x, y + 48.0, w, UPDATE_CARD_HEIGHT)
+    }
+
+    /// The action button, bottom-right in the card; `None` when there is
+    /// nothing to press.
+    pub fn update_button_rect(
+        &self,
+        window_width: f32,
+        window_height: f32,
+    ) -> Option<Rect> {
+        self.update.button.as_ref()?;
+        let card = self.update_card_rect(window_width, window_height);
+        Some(Rect::new(
+            card.right() - FIELD_CARD_PAD - UPDATE_BUTTON_WIDTH,
+            card.bottom() - FIELD_CARD_PAD - STATUS_ACTIONS_HEIGHT,
+            UPDATE_BUTTON_WIDTH,
+            STATUS_ACTIONS_HEIGHT,
+        ))
     }
 
     pub fn done_rect(&self, window_width: f32, window_height: f32) -> Rect {
@@ -984,11 +1050,23 @@ impl SettingsModal {
         {
             return SettingsHit::Tab(SettingsTab::Keys);
         }
-        if self
-            .tab_rect(window_width, window_height, SettingsTab::SqlSync)
-            .contains(x, y)
-        {
-            return SettingsHit::Tab(SettingsTab::SqlSync);
+        for tab in [SettingsTab::SqlSync, SettingsTab::Updates] {
+            if self
+                .tab_rect(window_width, window_height, tab)
+                .contains(x, y)
+            {
+                return SettingsHit::Tab(tab);
+            }
+        }
+        if self.tab == SettingsTab::Updates {
+            if let (Some(button), Some(rect)) = (
+                self.update.button.as_ref(),
+                self.update_button_rect(window_width, window_height),
+            ) {
+                if rect.contains(x, y) {
+                    return SettingsHit::Update(button.action);
+                }
+            }
         }
         if self.tab == SettingsTab::Keys {
             if let Some(gen) = self.key_draft_generate_rect(window_width, window_height) {
@@ -1141,7 +1219,8 @@ impl SettingsModal {
             | SettingsHit::TogglePassphrase
             | SettingsHit::UnlockVault
             | SettingsHit::ForgetPassphrase
-            | SettingsHit::TestSync => ChromeCursor::Pointer,
+            | SettingsHit::TestSync
+            | SettingsHit::Update(_) => ChromeCursor::Pointer,
         }
     }
 
@@ -1441,6 +1520,59 @@ mod tests {
         let paint = s.uri_field_paint();
         assert!(!paint.show_caret);
         assert_eq!(paint.selection, None);
+    }
+
+    fn update_pane(action: Option<UpdateAction>) -> UpdatePane {
+        UpdatePane {
+            current_version: "0.6.2".into(),
+            status: "Terminus is up to date".into(),
+            button: action.map(|action| UpdateButton {
+                action,
+                label: "Check for updates".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn the_updates_tab_has_one_action_button() {
+        let mut s = SettingsModal::default();
+        let (w, h) = (1000.0, 800.0);
+        s.open_tab(SettingsTab::Keys);
+        let tab = s.tab_rect(w, h, SettingsTab::Updates);
+        assert!(tab.y >= s.tab_rect(w, h, SettingsTab::SqlSync).bottom());
+        assert_eq!(
+            s.hit_test(w, h, tab.x + 4.0, tab.y + 4.0),
+            SettingsHit::Tab(SettingsTab::Updates)
+        );
+
+        s.open_tab(SettingsTab::Updates);
+        s.set_update_pane(update_pane(Some(UpdateAction::CheckNow)));
+        let button = s.update_button_rect(w, h).expect("button");
+        assert!(s
+            .dialog_rect(w, h)
+            .contains(button.x, button.bottom() - 1.0));
+        assert_eq!(
+            s.hit_test(w, h, button.x + 4.0, button.y + 4.0),
+            SettingsHit::Update(UpdateAction::CheckNow)
+        );
+
+        // Nothing to press while a check or download runs.
+        s.set_update_pane(update_pane(None));
+        assert_eq!(s.update_button_rect(w, h), None);
+    }
+
+    #[test]
+    fn the_update_button_only_answers_on_its_tab() {
+        let mut s = SettingsModal::default();
+        let (w, h) = (1000.0, 800.0);
+        s.open_tab(SettingsTab::Updates);
+        s.set_update_pane(update_pane(Some(UpdateAction::Install)));
+        let button = s.update_button_rect(w, h).expect("button");
+        s.open_tab(SettingsTab::Keys);
+        assert_ne!(
+            s.hit_test(w, h, button.x + 4.0, button.y + 4.0),
+            SettingsHit::Update(UpdateAction::Install)
+        );
     }
 
     #[test]

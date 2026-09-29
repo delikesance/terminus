@@ -57,11 +57,12 @@ pub enum Icon {
     ChevronDown,
     Eye,
     EyeOff,
+    Download,
 }
 
 impl Icon {
     /// Every icon, in the order the generator emits them.
-    pub const ALL: [Icon; 25] = [
+    pub const ALL: [Icon; 26] = [
         Icon::Server,
         Icon::ArrowRightLeft,
         Icon::Folder,
@@ -87,6 +88,7 @@ impl Icon {
         Icon::ChevronDown,
         Icon::Eye,
         Icon::EyeOff,
+        Icon::Download,
     ];
 
     /// The icon's drawing elements: one SVG `d` per shape, verbatim from
@@ -123,6 +125,7 @@ impl Icon {
             Icon::ChevronDown => CHEVRON_DOWN,
             Icon::Eye => EYE,
             Icon::EyeOff => EYE_OFF,
+            Icon::Download => DOWNLOAD,
         }
     }
 
@@ -804,6 +807,13 @@ const CLOUD_UPLOAD: &[&str] = &[
     "M12 13v8",
     "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242",
     "m8 17 4-4 4 4",
+];
+
+/// `download`
+const DOWNLOAD: &[&str] = &[
+    "M12 15V3",
+    "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",
+    "m7 10 5 5 5-5",
 ];
 
 /// `settings`

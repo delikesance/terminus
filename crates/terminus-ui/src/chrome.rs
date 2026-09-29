@@ -85,6 +85,8 @@ pub enum ChromeAction {
     ForgetVaultPassphrase,
     /// Settings: persist remote URI and run SyncEngine::sync_now.
     TestSync,
+    /// Settings → Updates: check, install or restart.
+    Update(crate::settings::UpdateAction),
     /// Settings: generate a new Ed25519 managed SSH key.
     GenerateSshKey,
     /// Settings: soft-delete a managed SSH key by id.
@@ -447,6 +449,18 @@ impl Chrome {
         }
     }
 
+    /// Copy / Paste menu for a right-click on the terminal at `(x, y)`.
+    pub fn open_edit_menu(
+        &mut self,
+        window_width: f32,
+        window_height: f32,
+        x: f32,
+        y: f32,
+    ) {
+        self.context_menu =
+            ContextMenu::for_edit(x, y).map(|m| m.clamped(window_width, window_height));
+    }
+
     pub fn close_context_menu(&mut self) {
         self.context_menu = None;
     }
@@ -605,6 +619,7 @@ impl Chrome {
                     self.settings.close_engine_menu();
                     ChromeAction::TestSync
                 }
+                SettingsHit::Update(action) => ChromeAction::Update(action),
                 SettingsHit::NewKey => {
                     self.settings.open_key_draft();
                     ChromeAction::FocusKeyDraft
@@ -1594,6 +1609,42 @@ mod tests {
         }));
         chrome.set_rows(rows);
         chrome
+    }
+
+    #[test]
+    fn the_settings_update_button_reaches_the_app() {
+        use crate::settings::{SettingsTab, UpdateAction, UpdateButton, UpdatePane};
+        let mut chrome = Chrome::default();
+        chrome.settings.open_tab(SettingsTab::Updates);
+        chrome.settings.set_update_pane(UpdatePane {
+            current_version: "0.6.2".into(),
+            status: "Terminus 0.6.3 is ready".into(),
+            button: Some(UpdateButton {
+                action: UpdateAction::Restart,
+                label: "Restart to update".into(),
+            }),
+        });
+        let button = chrome.settings.update_button_rect(1200.0, 800.0).unwrap();
+        let action = chrome.handle_press(1200.0, 800.0, button.x + 4.0, button.y + 4.0);
+        assert_eq!(action, ChromeAction::Update(UpdateAction::Restart));
+    }
+
+    #[test]
+    fn the_terminal_edit_menu_copies_and_pastes() {
+        for (index, expected) in [
+            (0, ChromeAction::ContextCopy),
+            (1, ChromeAction::ContextPaste),
+        ] {
+            let mut chrome = Chrome::default();
+            // Near the bottom-right corner: the menu is kept on screen.
+            chrome.open_edit_menu(1200.0, 800.0, 1190.0, 790.0);
+            let menu = chrome.context_menu.as_ref().expect("menu open");
+            assert!(menu.rect().right() <= 1200.0 && menu.rect().bottom() <= 800.0);
+            let item = menu.item_rect(index).unwrap();
+            let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
+            assert_eq!(action, expected);
+            assert!(chrome.context_menu.is_none());
+        }
     }
 
     #[test]

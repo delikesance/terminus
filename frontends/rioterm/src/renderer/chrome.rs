@@ -144,6 +144,9 @@ pub fn render(
             device_scale,
             connecting_phase,
         );
+        if let Some(menu) = chrome.context_menu.as_ref() {
+            render_context_menu(sugarloaf, menu, theme, device_scale);
+        }
         return;
     }
 
@@ -1047,6 +1050,82 @@ fn render_snippets(
     );
 }
 
+/// Settings → Updates: version card with the current status and one button.
+fn render_updates_pane(
+    sugarloaf: &mut Sugarloaf,
+    chrome: &Chrome,
+    theme: &ChromeTheme,
+    window_width: f32,
+    window_height: f32,
+) {
+    let settings = &chrome.settings;
+    let pane = &settings.update;
+    let (content_x, content_y, _) =
+        settings.keys_content_origin(window_width, window_height);
+    draw_text(
+        sugarloaf, content_x, content_y, "Updates", TITLE_SIZE, theme.text, true,
+    );
+    draw_text(
+        sugarloaf,
+        content_x,
+        content_y + 18.0,
+        "Signed releases from GitHub, checked at launch and once a day.",
+        HINT_SIZE,
+        theme.text_muted,
+        false,
+    );
+
+    let card = settings.update_card_rect(window_width, window_height);
+    paint_surface(
+        sugarloaf,
+        &card,
+        theme.button_bg,
+        None,
+        12.0,
+        Layer::new(DEPTH_DIALOG + 0.03, ORDER_DIALOG),
+        false,
+    );
+    let pad = terminus_ui::settings::FIELD_CARD_PAD;
+    draw_text(
+        sugarloaf,
+        card.x + pad,
+        card.y + pad,
+        &format!("Terminus {}", pane.current_version),
+        ROW_TITLE_SIZE,
+        theme.text,
+        true,
+    );
+    let button = settings.update_button_rect(window_width, window_height);
+    // Status wraps beside the button, never under it.
+    let status_width =
+        button.map_or(card.width - 2.0 * pad, |b| b.x - card.x - 2.0 * pad);
+    let status_opts = opts(HINT_SIZE, theme.text_muted, false);
+    let mut y = card.y + pad + 26.0;
+    for line in wrap_lines(sugarloaf, &pane.status, status_width, &status_opts, 3) {
+        draw_text(
+            sugarloaf,
+            card.x + pad,
+            y,
+            &line,
+            HINT_SIZE,
+            theme.text_muted,
+            false,
+        );
+        y += HINT_SIZE + 5.0;
+    }
+    if let (Some(rect), Some(spec)) = (button, pane.button.as_ref()) {
+        paint_chrome_button(
+            sugarloaf,
+            theme,
+            terminus_ui::ButtonSpec::primary(rect),
+            &spec.label,
+            ROW_SUB_SIZE,
+            DEPTH_DIALOG + 0.04,
+            ORDER_DIALOG,
+        );
+    }
+}
+
 fn render_settings_modal(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
@@ -1142,7 +1221,7 @@ fn render_settings_modal(
         sugarloaf,
         badge.right() + 12.0,
         dialog.y + 38.0,
-        "Cryptographic identities and remote database synchronization.",
+        "SSH keys, database sync and updates.",
         HINT_SIZE,
         theme.text_muted,
         false,
@@ -1184,6 +1263,7 @@ fn render_settings_modal(
     for tab in [
         terminus_ui::SettingsTab::Keys,
         terminus_ui::SettingsTab::SqlSync,
+        terminus_ui::SettingsTab::Updates,
     ] {
         let rect = chrome.settings.tab_rect(window_width, window_height, tab);
         let selected = chrome.settings.tab == tab;
@@ -1201,6 +1281,7 @@ fn render_settings_modal(
         let (icon, label) = match tab {
             terminus_ui::SettingsTab::Keys => (Icon::KeyRound, "SSH Keys"),
             terminus_ui::SettingsTab::SqlSync => (Icon::Database, "Remote SQL Sync"),
+            terminus_ui::SettingsTab::Updates => (Icon::Download, "Updates"),
         };
         let color = if selected {
             theme.accent
@@ -1245,6 +1326,9 @@ fn render_settings_modal(
         ORDER_DIALOG,
     );
     match chrome.settings.tab {
+        terminus_ui::SettingsTab::Updates => {
+            render_updates_pane(sugarloaf, chrome, theme, window_width, window_height);
+        }
         terminus_ui::SettingsTab::Keys => {
             draw_text(
                 sugarloaf,

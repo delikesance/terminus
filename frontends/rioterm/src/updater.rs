@@ -24,6 +24,7 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use terminus_ui::settings::{UpdateAction, UpdateButton, UpdatePane};
 use terminus_update::{Installer, Release, UpdatePlan};
 
 /// First automatic check, after start-up settles.
@@ -158,6 +159,65 @@ pub(crate) fn install_action(state: &UpdateState) -> InstallAction {
             InstallAction::OpenPage(page_url.clone())
         }
         _ => InstallAction::Install,
+    }
+}
+
+/// Settings → Updates: where things stand and the one next step.
+pub(crate) fn update_pane(state: &UpdateState) -> UpdatePane {
+    let button = |action, label: &str| {
+        Some(UpdateButton {
+            action,
+            label: label.to_string(),
+        })
+    };
+    let (status, button) = match state {
+        UpdateState::Idle => (
+            "Not checked since Terminus started".to_string(),
+            button(UpdateAction::CheckNow, "Check for updates"),
+        ),
+        UpdateState::Checking => ("Checking for updates…".to_string(), None),
+        UpdateState::UpToDate => (
+            "You have the latest version".to_string(),
+            button(UpdateAction::CheckNow, "Check again"),
+        ),
+        UpdateState::Available { version, plan, .. } => {
+            let status = match plan {
+                UpdatePlan::Manual { hint } => {
+                    format!("Terminus {version} is available. {hint}")
+                }
+                _ => format!("Terminus {version} is available"),
+            };
+            let label = match install_action(state) {
+                InstallAction::OpenPage(_) => "Open release page",
+                InstallAction::CopyCommand(_) => "Copy install command",
+                InstallAction::Install => "Install update",
+            };
+            (status, button(UpdateAction::Install, label))
+        }
+        UpdateState::Downloading { version } => {
+            (format!("Downloading Terminus {version}…"), None)
+        }
+        UpdateState::ReadyToRestart { version } => (
+            format!("Terminus {version} is installed. Restart to use it."),
+            button(UpdateAction::Restart, "Restart now"),
+        ),
+        UpdateState::InstallerReady { version, .. } => (
+            format!("Terminus {version} is downloaded. Its installer runs on restart."),
+            button(UpdateAction::Restart, "Restart and install"),
+        ),
+        UpdateState::PackageReady { version, command } => (
+            format!("Terminus {version} is downloaded. Install it with: {command}"),
+            button(UpdateAction::Install, "Copy install command"),
+        ),
+        UpdateState::Failed(message) => (
+            format!("Update failed: {message}"),
+            button(UpdateAction::CheckNow, "Try again"),
+        ),
+    };
+    UpdatePane {
+        current_version: CURRENT_VERSION.to_string(),
+        status,
+        button,
     }
 }
 
@@ -707,6 +767,93 @@ mod tests {
             asset: terminus_update::LINUX_TARBALL.into(),
             entry: terminus_update::LINUX_BINARY.into(),
         }
+    }
+
+    fn button(pane: &UpdatePane) -> Option<(UpdateAction, &str)> {
+        pane.button.as_ref().map(|b| (b.action, b.label.as_str()))
+    }
+
+    #[test]
+    fn the_settings_pane_offers_the_next_step() {
+        let pane = update_pane(&UpdateState::Idle);
+        assert_eq!(pane.current_version, CURRENT_VERSION);
+        assert_eq!(
+            button(&pane),
+            Some((UpdateAction::CheckNow, "Check for updates"))
+        );
+
+        let pane = update_pane(&UpdateState::Checking);
+        assert_eq!(pane.status, "Checking for updates…");
+        assert_eq!(button(&pane), None);
+
+        let pane = update_pane(&UpdateState::UpToDate);
+        assert_eq!(pane.status, "You have the latest version");
+        assert_eq!(button(&pane), Some((UpdateAction::CheckNow, "Check again")));
+
+        let available = |plan, can_install| UpdateState::Available {
+            version: "9.0.0".into(),
+            page_url: "https://example.invalid/r".into(),
+            plan,
+            can_install,
+        };
+        let pane = update_pane(&available(tarball(), true));
+        assert_eq!(pane.status, "Terminus 9.0.0 is available");
+        assert_eq!(
+            button(&pane),
+            Some((UpdateAction::Install, "Install update"))
+        );
+        let pane = update_pane(&available(tarball(), false));
+        assert_eq!(
+            button(&pane),
+            Some((UpdateAction::Install, "Open release page"))
+        );
+        let manual = UpdatePlan::Manual {
+            hint: "Update it with your package manager.".into(),
+        };
+        let pane = update_pane(&available(manual, true));
+        assert_eq!(
+            pane.status,
+            "Terminus 9.0.0 is available. Update it with your package manager."
+        );
+        assert_eq!(
+            button(&pane),
+            Some((UpdateAction::Install, "Open release page"))
+        );
+
+        let pane = update_pane(&UpdateState::Downloading {
+            version: "9.0.0".into(),
+        });
+        assert_eq!(pane.status, "Downloading Terminus 9.0.0…");
+        assert_eq!(button(&pane), None);
+
+        let pane = update_pane(&UpdateState::ReadyToRestart {
+            version: "9.0.0".into(),
+        });
+        assert_eq!(button(&pane), Some((UpdateAction::Restart, "Restart now")));
+
+        let pane = update_pane(&UpdateState::InstallerReady {
+            version: "9.0.0".into(),
+            path: PathBuf::from("setup.msi"),
+            installer: Installer::Msi,
+        });
+        assert_eq!(
+            button(&pane),
+            Some((UpdateAction::Restart, "Restart and install"))
+        );
+
+        let pane = update_pane(&UpdateState::PackageReady {
+            version: "9.0.0".into(),
+            command: "sudo dpkg -i terminus.deb".into(),
+        });
+        assert!(pane.status.ends_with("sudo dpkg -i terminus.deb"));
+        assert_eq!(
+            button(&pane),
+            Some((UpdateAction::Install, "Copy install command"))
+        );
+
+        let pane = update_pane(&UpdateState::Failed("offline".into()));
+        assert_eq!(pane.status, "Update failed: offline");
+        assert_eq!(button(&pane), Some((UpdateAction::CheckNow, "Try again")));
     }
 
     #[test]

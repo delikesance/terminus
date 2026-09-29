@@ -229,6 +229,13 @@ impl Screen<'_> {
         self.pending_vault_continue.take()
     }
 
+    /// Mirror the updater's state into Settings → Updates.
+    pub fn sync_update_pane(&mut self) {
+        self.chrome
+            .settings
+            .set_update_pane(crate::updater::update_pane(self.updater.state()));
+    }
+
     /// Surface update progress on the sidebar notice band, and start a
     /// downloaded installer (it replaces the running executable, so the app
     /// quits right after). Returns whether anything changed.
@@ -236,6 +243,7 @@ impl Screen<'_> {
         if !self.updater.pump() {
             return false;
         }
+        self.sync_update_pane();
         if let Some(notice) = self.updater.take_notice() {
             self.chrome.panel.notice = Some(notice);
         }
@@ -285,6 +293,15 @@ impl Screen<'_> {
 
         self.chrome
             .handle_context_press(width, height, x, y, sftp_open)
+    }
+
+    /// Right-click on the terminal: open Copy / Paste at the mouse.
+    pub fn open_terminal_edit_menu(&mut self) {
+        let (width, height) = self.chrome_viewport();
+        let scale = self.sugarloaf.scale_factor();
+        let (x, y) = (self.mouse.x as f32 / scale, self.mouse.y as f32 / scale);
+        self.chrome.open_edit_menu(width, height, x, y);
+        self.mark_dirty();
     }
 
     /// Right-click inside the SFTP pane: open a file/folder context menu.

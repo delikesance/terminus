@@ -1658,6 +1658,28 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::Update(action) => {
+                                        use crate::renderer::command_palette::PaletteAction;
+                                        use terminus_ui::settings::UpdateAction;
+                                        let palette_action = match action {
+                                            UpdateAction::CheckNow => {
+                                                PaletteAction::CheckForUpdates
+                                            }
+                                            UpdateAction::Install => {
+                                                PaletteAction::InstallUpdate
+                                            }
+                                            UpdateAction::Restart => {
+                                                PaletteAction::RestartToUpdate
+                                            }
+                                        };
+                                        route.window.screen.execute_palette_action(
+                                            palette_action,
+                                            &mut self.router.clipboard,
+                                        );
+                                        route.window.screen.sync_update_pane();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::TestSync => {
                                         let uri = route
                                             .window
@@ -1966,10 +1988,21 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::ContextCopy
-                                    | ChromeAction::ContextPaste => {
-                                        // Terminal/field copy-paste menu items — wired later.
+                                    ChromeAction::ContextCopy => {
+                                        route.window.screen.copy_selection(
+                                            ClipboardType::Clipboard,
+                                            &mut self.router.clipboard,
+                                        );
                                         route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::ContextPaste => {
+                                        let text = self
+                                            .router
+                                            .clipboard
+                                            .get(ClipboardType::Clipboard);
+                                        route.window.screen.paste(&text, true);
+                                        route.request_redraw();
                                         return;
                                     }
                                     ChromeAction::FocusSqlUri
@@ -2138,6 +2171,27 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     route.request_redraw();
                                     return;
                                 }
+                            }
+                        }
+
+                        // A plain right-click opens Copy / Paste, unless the
+                        // program asked for mouse reports (Shift overrides,
+                        // as for selection). Ctrl+right-click still extends
+                        // the selection through the bindings.
+                        if button == MouseButton::Right {
+                            let mods = route.window.screen.modifiers.state();
+                            let plain = !(mods.control_key()
+                                || mods.alt_key()
+                                || mods.super_key());
+                            if plain
+                                && (mods.shift_key() || !route.window.screen.mouse_mode())
+                            {
+                                // Focus the split under the cursor first, so
+                                // Copy / Paste act on the one clicked.
+                                route.window.screen.select_current_based_on_mouse();
+                                route.window.screen.open_terminal_edit_menu();
+                                route.request_redraw();
+                                return;
                             }
                         }
 
