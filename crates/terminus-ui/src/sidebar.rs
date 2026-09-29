@@ -18,6 +18,16 @@ use crate::os_icons::HostStatus;
 
 /// Panel width, in logical pixels (`w-72` = 288).
 pub const WIDTH: f32 = 288.0;
+/// Title band font size.
+pub const TITLE_FONT_SIZE: f32 = 12.0;
+/// Row title font size.
+pub const ROW_TITLE_FONT_SIZE: f32 = 13.0;
+/// Secondary labels / endpoints font size.
+pub const ROW_SUB_FONT_SIZE: f32 = 11.0;
+/// Section labels font size.
+pub const SECTION_LABEL_FONT_SIZE: f32 = 10.0;
+/// Add-host label font size.
+pub const ADD_LABEL_FONT_SIZE: f32 = 12.0;
 /// Title band ("SERVERS & HOSTS") — mock `p-4` (~16px) with text-xs.
 pub const TITLE_HEIGHT: f32 = 44.0;
 /// Search field band under the title — mock `p-3` band.
@@ -32,6 +42,25 @@ pub const CARD_GAP: f32 = 10.0;
 pub const SECTION_GAP: f32 = 10.0;
 /// Height of a section label row ("Local" / "Hosts").
 pub const SECTION_HEIGHT: f32 = 22.0;
+
+pub fn section_label_y(row_rect: Rect) -> f32 {
+    row_rect.y + (SECTION_HEIGHT - SECTION_LABEL_FONT_SIZE) * 0.5
+}
+
+/// Painted separator line Y position below a host card.
+pub fn host_item_separator_y(card_rect: Rect) -> f32 {
+    card_rect.y + ITEM_HEIGHT - 1.0
+}
+
+/// Host badge rect.
+pub fn host_badge_rect(card_rect: Rect) -> Rect {
+    Rect::new(
+        card_rect.x + CARD_PAD,
+        card_rect.y + (ITEM_HEIGHT - HOST_BADGE_TILE) / 2.0,
+        HOST_BADGE_TILE,
+        HOST_BADGE_TILE,
+    )
+}
 /// Compact open-terminal row under a host.
 pub const SESSION_HEIGHT: f32 = 28.0;
 /// Gap between sibling session rows under the same host.
@@ -2029,6 +2058,19 @@ impl HostPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn section_label_and_geometry_helpers_are_consistent() {
+        let (oy, _) = tall();
+        let rect = Rect::new(0.0, 100.0, 100.0, SECTION_HEIGHT);
+        assert_eq!(section_label_y(rect), 100.0 + (22.0 - 10.0) * 0.5);
+        
+        let card = Rect::new(0.0, 100.0, 100.0, ITEM_HEIGHT);
+        assert_eq!(host_item_separator_y(card), 100.0 + 56.0 - 1.0);
+        
+        let badge = host_badge_rect(card);
+        assert_eq!(badge.y, 100.0 + (56.0 - 28.0) / 2.0);
+    }
 
     fn items(n: usize) -> Vec<HostItem> {
         (0..n)
