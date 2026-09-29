@@ -20,6 +20,10 @@ impl Screen<'_> {
     pub fn pump_chrome(&mut self) -> bool {
         let update_changed = self.pump_updater();
         let store_changed = self.host_store.drain() || update_changed;
+        // Apply the initial collapsed-groups seed from the DB exactly once.
+        if let Some(seed) = self.host_store.take_collapsed_groups_seed() {
+            self.chrome.panel.collapsed_groups = seed;
+        }
         let sftp_changed = self.sftp.as_mut().is_some_and(|s| s.pump());
         let store_changed = store_changed || sftp_changed;
 

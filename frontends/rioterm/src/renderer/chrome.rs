@@ -349,7 +349,7 @@ fn render_panel(
             title.x + sidebar::PAD_X,
             title.y + 14.0,
             &chrome.panel_title().to_ascii_uppercase(),
-            SECTION_LABEL_SIZE,
+            sidebar::SECTION_LABEL_FONT_SIZE,
             [0xcb, 0xd5, 0xe1, 255], // slate-300
             true,
         );
@@ -2073,9 +2073,9 @@ fn render_host_rows(
                 draw_text(
                     sugarloaf,
                     row.x,
-                    row.y + (sidebar::SECTION_HEIGHT - SECTION_LABEL_SIZE) * 0.5,
+                    sidebar::section_label_y(row),
                     &label.to_uppercase(),
-                    SECTION_LABEL_SIZE,
+                    sidebar::SECTION_LABEL_FONT_SIZE,
                     theme.text_faint,
                     true,
                 );
@@ -2166,7 +2166,7 @@ fn render_host_rows(
 
             // Hairline under the folder header.
             if !collapsed {
-                let sep_y = card.y + sidebar::ITEM_HEIGHT - 1.0;
+                let sep_y = sidebar::host_item_separator_y(card);
                 if sep_y >= top && sep_y <= bottom {
                     paint_hairline_h(
                         sugarloaf,
@@ -3876,6 +3876,49 @@ fn render_add_host(
         true,
     );
 
+    let pill_radius = 6.0;
+    for &step in &terminus_ui::STEPS {
+        let pill = layout.step_pill_rect(step);
+        let is_active = form.step() == step;
+        let is_past = step.index() < form.step().index();
+        let bg_color = if is_active {
+            theme.accent_soft
+        } else {
+            theme.button_bg
+        };
+        let border_color = if is_active {
+            Some(theme.accent)
+        } else {
+            Some(theme.field_border)
+        };
+        paint_surface(
+            sugarloaf,
+            &pill,
+            bg_color,
+            border_color,
+            pill_radius,
+            DEPTH_DIALOG_BG + 0.015,
+            ORDER_DIALOG,
+            false,
+        );
+        let text_color = if is_active {
+            color_from_f32(theme.accent)
+        } else if is_past {
+            theme.text
+        } else {
+            theme.text_muted
+        };
+        draw_text(
+            sugarloaf,
+            pill.x + 8.0,
+            pill.y + 5.0,
+            step.label(),
+            ROW_SUB_SIZE,
+            text_color,
+            is_active,
+        );
+    }
+
     let input_radius = terminus_ui::add_host::INPUT_RADIUS;
     for field in form.visible_fields() {
         let Some(input) = layout.input_rect(form, field) else {
@@ -4153,13 +4196,7 @@ fn render_add_host(
         }
     }
 
-    // Cancel + Connect footer — shared ButtonSpec paint path.
-    // Skip button *labels* while a dropdown covers them: sugarloaf's
-    // UI text pass always composites after every quad, so Cancel/Connect
-    // glyphs would otherwise float on top of the opaque popover (same
-    // pattern as URI text under the SQL engine dropdown).
-    let cancel = layout.cancel_button_rect(form.height());
-    let connect = layout.connect_button_rect(form.height());
+    // Multi-step footer buttons (Cancel/Back + Next/Connect)
     let auth_menu = form
         .auth_menu_open()
         .then(|| layout.auth_menu_rect(form))
@@ -4172,34 +4209,106 @@ fn render_add_host(
         auth_menu.is_some_and(|m| terminus_ui::rects_overlap(m, btn))
             || identity_menu.is_some_and(|m| terminus_ui::rects_overlap(m, btn))
     };
-    let cancel_label = if menu_covers(cancel) { "" } else { "Cancel" };
-    let connect_label = if menu_covers(connect) {
-        ""
-    } else if form.is_editing() {
-        "Save"
-    } else {
-        "Connect"
-    };
-    paint_chrome_button(
-        sugarloaf,
-        theme,
-        terminus_ui::ButtonSpec::secondary(cancel)
-            .with_radius(input_radius)
-            .muted(),
-        cancel_label,
-        HINT_SIZE,
-        DEPTH_DIALOG_BG + 0.025,
-        ORDER_DIALOG,
-    );
-    paint_chrome_button(
-        sugarloaf,
-        theme,
-        terminus_ui::ButtonSpec::primary(connect).with_radius(input_radius),
-        connect_label,
-        HINT_SIZE,
-        DEPTH_DIALOG_BG + 0.025,
-        ORDER_DIALOG,
-    );
+
+    match form.step() {
+        terminus_ui::AddHostStep::Target => {
+            let cancel = layout.cancel_button_rect(form.height());
+            let next = layout.next_button_rect(form.height());
+            let cancel_label = if menu_covers(cancel) { "" } else { "Cancel" };
+            let next_label = if menu_covers(next) { "" } else { "Next →" };
+            paint_chrome_button(
+                sugarloaf,
+                theme,
+                terminus_ui::ButtonSpec::secondary(cancel)
+                    .with_radius(input_radius)
+                    .muted(),
+                cancel_label,
+                HINT_SIZE,
+                DEPTH_DIALOG_BG + 0.025,
+                ORDER_DIALOG,
+            );
+            paint_chrome_button(
+                sugarloaf,
+                theme,
+                terminus_ui::ButtonSpec::primary(next).with_radius(input_radius),
+                next_label,
+                HINT_SIZE,
+                DEPTH_DIALOG_BG + 0.025,
+                ORDER_DIALOG,
+            );
+            if form.is_editing() {
+                let connect = layout.connect_button_rect(form.height());
+                let connect_label = if menu_covers(connect) { "" } else { "Save" };
+                paint_chrome_button(
+                    sugarloaf,
+                    theme,
+                    terminus_ui::ButtonSpec::primary(connect).with_radius(input_radius),
+                    connect_label,
+                    HINT_SIZE,
+                    DEPTH_DIALOG_BG + 0.025,
+                    ORDER_DIALOG,
+                );
+            }
+        }
+        terminus_ui::AddHostStep::Auth => {
+            let back = layout.back_button_rect(form.height());
+            let next = layout.next_button_rect(form.height());
+            let back_label = if menu_covers(back) { "" } else { "← Back" };
+            let next_label = if menu_covers(next) { "" } else { "Next →" };
+            paint_chrome_button(
+                sugarloaf,
+                theme,
+                terminus_ui::ButtonSpec::secondary(back)
+                    .with_radius(input_radius)
+                    .muted(),
+                back_label,
+                HINT_SIZE,
+                DEPTH_DIALOG_BG + 0.025,
+                ORDER_DIALOG,
+            );
+            paint_chrome_button(
+                sugarloaf,
+                theme,
+                terminus_ui::ButtonSpec::primary(next).with_radius(input_radius),
+                next_label,
+                HINT_SIZE,
+                DEPTH_DIALOG_BG + 0.025,
+                ORDER_DIALOG,
+            );
+        }
+        terminus_ui::AddHostStep::Details => {
+            let back = layout.back_button_rect(form.height());
+            let connect = layout.connect_button_rect(form.height());
+            let back_label = if menu_covers(back) { "" } else { "← Back" };
+            let connect_label = if menu_covers(connect) {
+                ""
+            } else if form.is_editing() {
+                "Save"
+            } else {
+                "Connect"
+            };
+            paint_chrome_button(
+                sugarloaf,
+                theme,
+                terminus_ui::ButtonSpec::secondary(back)
+                    .with_radius(input_radius)
+                    .muted(),
+                back_label,
+                HINT_SIZE,
+                DEPTH_DIALOG_BG + 0.025,
+                ORDER_DIALOG,
+            );
+            paint_chrome_button(
+                sugarloaf,
+                theme,
+                terminus_ui::ButtonSpec::primary(connect).with_radius(input_radius),
+                connect_label,
+                HINT_SIZE,
+                DEPTH_DIALOG_BG + 0.025,
+                ORDER_DIALOG,
+            );
+        }
+    }
 
     // Auth Method dropdown: higher paint order than dialog field text.
     if form.auth_menu_open() {

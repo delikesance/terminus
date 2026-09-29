@@ -18,6 +18,16 @@ use crate::os_icons::HostStatus;
 
 /// Panel width, in logical pixels (`w-72` = 288).
 pub const WIDTH: f32 = 288.0;
+/// Title band font size.
+pub const TITLE_FONT_SIZE: f32 = 12.0;
+/// Row title font size.
+pub const ROW_TITLE_FONT_SIZE: f32 = 13.0;
+/// Secondary labels / endpoints font size.
+pub const ROW_SUB_FONT_SIZE: f32 = 11.0;
+/// Section labels font size.
+pub const SECTION_LABEL_FONT_SIZE: f32 = 10.0;
+/// Add-host label font size.
+pub const ADD_LABEL_FONT_SIZE: f32 = 12.0;
 /// Title band ("SERVERS & HOSTS") — mock `p-4` (~16px) with text-xs.
 pub const TITLE_HEIGHT: f32 = 44.0;
 /// Search field band under the title — mock `p-3` band.
@@ -32,6 +42,25 @@ pub const CARD_GAP: f32 = 10.0;
 pub const SECTION_GAP: f32 = 10.0;
 /// Height of a section label row ("Local" / "Hosts").
 pub const SECTION_HEIGHT: f32 = 22.0;
+
+pub fn section_label_y(row_rect: Rect) -> f32 {
+    row_rect.y + (SECTION_HEIGHT - SECTION_LABEL_FONT_SIZE) * 0.5
+}
+
+/// Painted separator line Y position below a host card.
+pub fn host_item_separator_y(card_rect: Rect) -> f32 {
+    card_rect.y + ITEM_HEIGHT - 1.0
+}
+
+/// Host badge rect.
+pub fn host_badge_rect(card_rect: Rect) -> Rect {
+    Rect::new(
+        card_rect.x + CARD_PAD,
+        card_rect.y + (ITEM_HEIGHT - HOST_BADGE_TILE) / 2.0,
+        HOST_BADGE_TILE,
+        HOST_BADGE_TILE,
+    )
+}
 /// Compact open-terminal row under a host.
 pub const SESSION_HEIGHT: f32 = 28.0;
 /// Gap between sibling session rows under the same host.
@@ -138,6 +167,47 @@ impl Badge {
             Badge::Local => Icon::Monitor,
             Badge::Wsl => Icon::SquareTerminal,
             Badge::Ssh => Icon::Server,
+        }
+    }
+}
+
+/// Renderer-neutral intent produced by sidebar interactions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidebarIntent {
+    /// Single click on a host row: highlight it, do not open a session.
+    /// A separate explicit action (double-click, Enter) emits OpenHostSession.
+    SelectHost { host_id: String },
+    /// Open or switch to a terminal session for the host.
+    /// Distinct from SelectHost: a product decision, not an accident.
+    OpenHostSession { host_id: String },
+    /// Toggle the named group's child-host membership (collapse/expand).
+    ToggleGroup { group_id: String },
+    /// Toggle the session list shown under a host row (collapse/expand).
+    ToggleHostExpansion { host_id: String },
+}
+
+impl HostPanel {
+    /// Map a resolved [`PanelHit`] to a typed domain intent.
+    ///
+    /// Every arm resolves the positional index to a stable string id. No
+    /// [`SidebarIntent`] variant contains a row index.
+    pub fn resolve_intent(&self, hit: PanelHit) -> Option<SidebarIntent> {
+        match hit {
+            PanelHit::Item(index) => {
+                let host = self.rows.get(index)?.host()?;
+                Some(SidebarIntent::SelectHost { host_id: host.id.clone() })
+            }
+            PanelHit::ToggleHost(index) => {
+                let host = self.rows.get(index)?.host()?;
+                Some(SidebarIntent::ToggleHostExpansion { host_id: host.id.clone() })
+            }
+            PanelHit::Group(index) => {
+                match self.rows.get(index)? {
+                    Row::Group { id, .. } => Some(SidebarIntent::ToggleGroup { group_id: id.clone() }),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -2030,6 +2100,19 @@ impl HostPanel {
 mod tests {
     use super::*;
 
+    #[test]
+    fn section_label_and_geometry_helpers_are_consistent() {
+        let (oy, _) = tall();
+        let rect = Rect::new(0.0, 100.0, 100.0, SECTION_HEIGHT);
+        assert_eq!(section_label_y(rect), 100.0 + (22.0 - 10.0) * 0.5);
+        
+        let card = Rect::new(0.0, 100.0, 100.0, ITEM_HEIGHT);
+        assert_eq!(host_item_separator_y(card), 100.0 + 56.0 - 1.0);
+        
+        let badge = host_badge_rect(card);
+        assert_eq!(badge.y, 100.0 + (56.0 - 28.0) / 2.0);
+    }
+
     fn items(n: usize) -> Vec<HostItem> {
         (0..n)
             .map(|i| HostItem {
@@ -2918,5 +3001,208 @@ mod tests {
         draft.move_end(RenameMoveKind::Collapse);
         assert!(draft.backspace(true));
         assert_eq!(draft.name, "foo ");
+    }
+
+    // ---- intent slice --------------------------------------------------
+
+    fn panel_with_sessions() -> HostPanel {
+        let mut p = HostPanel::default();
+        p.set_rows(vec![
+            Row::Host(HostItem {
+                id: "host-a".into(),
+                name: "Host A".into(),
+                endpoint: "a@host-a".into(),
+                badge: Badge::Ssh,
+                stored: true,
+                os_id: None,
+                status: HostStatus::Active,
+                nested: false,
+                session_count: 2,
+            }),
+            Row::Session(SessionItem {
+                tab_index: 0,
+                host_id: "host-a".into(),
+                title: "shell".into(),
+                active: true,
+                closable: false,
+            }),
+            Row::Session(SessionItem {
+                tab_index: 1,
+                host_id: "host-a".into(),
+                title: "vim".into(),
+                active: false,
+                closable: true,
+            }),
+        ]);
+        p
+    }
+
+    fn panel_with_group() -> HostPanel {
+        let mut p = HostPanel::default();
+        p.set_rows(vec![
+            Row::Group {
+                id: "grp-1".into(),
+                name: "Production".into(),
+                host_count: 1,
+                session_count: 0,
+                collapsed: false,
+            },
+            Row::Host(HostItem {
+                id: "nested-host".into(),
+                name: "web-01".into(),
+                endpoint: "deploy@web-01".into(),
+                badge: Badge::Ssh,
+                stored: true,
+                os_id: None,
+                status: HostStatus::Idle,
+                nested: true,
+                session_count: 0,
+            }),
+        ]);
+        p
+    }
+
+    #[test]
+    fn item_hit_emits_select_host_intent() {
+        let panel = panel(3);
+        let (oy, h) = tall();
+        for index in 0..3 {
+            let rect = panel.item_rect(oy, index);
+            let hit = panel.hit_test(oy, h, rect.x + 10.0, rect.y + rect.height / 2.0);
+            assert_eq!(hit, Some(PanelHit::Item(index)));
+            let intent = panel.resolve_intent(hit.unwrap()).unwrap();
+            assert_eq!(
+                intent,
+                SidebarIntent::SelectHost { host_id: format!("id-{index}") },
+                "row {index} should emit SelectHost"
+            );
+            // Must not conflate selection with opening a session.
+            assert!(
+                !matches!(intent, SidebarIntent::OpenHostSession { .. }),
+                "single click must not emit OpenHostSession"
+            );
+        }
+    }
+
+    #[test]
+    fn toggle_host_hit_emits_host_expansion_intent() {
+        let panel = panel_with_sessions();
+        let (oy, h) = tall();
+        // The chevron is only present when session_count > 0 (host-a has 2).
+        let chevron = panel.host_chevron_rect(oy, 0).expect("chevron");
+        let hit = panel.hit_test(oy, h, chevron.x + 2.0, chevron.y + 2.0);
+        assert_eq!(hit, Some(PanelHit::ToggleHost(0)));
+        let intent = panel.resolve_intent(hit.unwrap()).unwrap();
+        assert_eq!(
+            intent,
+            SidebarIntent::ToggleHostExpansion { host_id: "host-a".into() },
+            "chevron on host must emit ToggleHostExpansion, not ToggleGroup"
+        );
+        assert!(
+            !matches!(intent, SidebarIntent::ToggleGroup { .. }),
+            "host-session chevron must not emit ToggleGroup"
+        );
+    }
+
+    #[test]
+    fn group_hit_emits_toggle_group_intent() {
+        let panel = panel_with_group();
+        let (oy, h) = tall();
+        let rect = panel.card_rect(oy, 0);
+        let hit = panel.hit_test(oy, h, rect.x + 10.0, rect.y + rect.height / 2.0);
+        assert_eq!(hit, Some(PanelHit::Group(0)));
+        assert_eq!(
+            panel.resolve_intent(hit.unwrap()),
+            Some(SidebarIntent::ToggleGroup { group_id: "grp-1".into() })
+        );
+    }
+
+    #[test]
+    fn intent_ids_are_stable_host_ids_not_indices() {
+        // Build a 5-host panel. Resolve Item hits for each row and verify the
+        // intent carries the host's string id, not its numeric row position.
+        let panel = panel(5);
+        let (oy, h) = tall();
+        for index in 0..5 {
+            let rect = panel.item_rect(oy, index);
+            let hit = panel.hit_test(oy, h, rect.x + 10.0, rect.y + rect.height / 2.0);
+            if let Some(SidebarIntent::SelectHost { host_id }) =
+                panel.resolve_intent(hit.unwrap())
+            {
+                assert_eq!(
+                    host_id,
+                    format!("id-{index}"),
+                    "intent must carry the host's id string, not index {index}"
+                );
+                // Confirm it is a string id, not a stringified integer alone.
+                assert!(
+                    host_id.starts_with("id-"),
+                    "id should come from HostItem.id, not from the row index"
+                );
+            } else {
+                panic!("expected SelectHost intent for row {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_hit_kinds_emit_no_intent() {
+        let panel = panel(2);
+        for hit in [
+            PanelHit::AddHost,
+            PanelHit::Background,
+            PanelHit::Search,
+            PanelHit::NewGroup,
+            PanelHit::NewGroupCreate,
+            PanelHit::NewGroupCancel,
+            PanelHit::NewGroupField,
+        ] {
+            assert_eq!(
+                panel.resolve_intent(hit.clone()),
+                None,
+                "{hit:?} should produce no intent"
+            );
+        }
+    }
+
+    #[test]
+    fn toggle_host_expansion_toggles_collapsed_hosts() {
+        let mut panel = panel_with_sessions();
+        assert!(!panel.collapsed_hosts.contains("host-a"));
+        assert_eq!(panel.visible_row_indices(), vec![0, 1, 2]);
+
+        // First toggle: collapses session rows.
+        panel.toggle_host_collapsed("host-a");
+        assert!(panel.collapsed_hosts.contains("host-a"));
+        assert_eq!(panel.visible_row_indices(), vec![0], "sessions hidden");
+
+        // Second toggle: expands them back.
+        panel.toggle_host_collapsed("host-a");
+        assert!(!panel.collapsed_hosts.contains("host-a"));
+        assert_eq!(panel.visible_row_indices(), vec![0, 1, 2], "sessions restored");
+    }
+
+    #[test]
+    fn toggle_group_collapses_and_expands() {
+        let mut panel = panel_with_group();
+        // Group visible with its nested child: indices 0 (group) and 1 (nested host).
+        assert_eq!(panel.visible_row_indices(), vec![0, 1]);
+
+        // Collapse: nested host disappears.
+        panel.collapsed_groups.insert("grp-1".into());
+        assert_eq!(panel.visible_row_indices(), vec![0], "nested host hidden");
+
+        // Expand: nested host is back.
+        panel.collapsed_groups.remove("grp-1");
+        assert_eq!(panel.visible_row_indices(), vec![0, 1], "nested host restored");
+
+        // Verify the group hit still maps to ToggleGroup (not ToggleHostExpansion).
+        let (oy, h) = tall();
+        let rect = panel.card_rect(oy, 0);
+        let hit = panel.hit_test(oy, h, rect.x + 10.0, rect.y + rect.height / 2.0);
+        assert_eq!(
+            panel.resolve_intent(hit.unwrap()),
+            Some(SidebarIntent::ToggleGroup { group_id: "grp-1".into() })
+        );
     }
 }

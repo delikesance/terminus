@@ -36,3 +36,4 @@ sugarloaf/src/**/*.spv
 
 # Local dev-loop state (generated): config playground, logs, pid, watch stamps
 .dev/
+Terminus/
