@@ -194,6 +194,12 @@ test:
 	make lint
 	RUST_BACKTRACE=full cargo test --release
 
+publish:
+	./scripts/publish.sh $(ARGS)
+
+publish-build-only:
+	./scripts/publish.sh --build-only $(ARGS)
+
 publish-crates: build
 	# Note: cargo publish is only supported from >=1.90
 	cargo publish --workspace
