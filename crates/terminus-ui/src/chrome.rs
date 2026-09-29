@@ -729,6 +729,20 @@ impl Chrome {
                     self.form.focus_field(field);
                     ChromeAction::Consumed
                 }
+                AddHostHit::StepPill(step) => {
+                    if step.index() < self.form.step().index() {
+                        self.form.set_step(step);
+                    } else if step.index() > self.form.step().index() {
+                        let mut curr = self.form.step();
+                        while curr.index() < step.index() {
+                            if !self.form.next_step() {
+                                break;
+                            }
+                            curr = self.form.step();
+                        }
+                    }
+                    ChromeAction::Consumed
+                }
                 AddHostHit::ToggleAuthMenu => {
                     self.form.toggle_auth_menu();
                     ChromeAction::Consumed
@@ -747,6 +761,14 @@ impl Chrome {
                 }
                 AddHostHit::TogglePasswordVisible => {
                     self.form.toggle_password_visible();
+                    ChromeAction::Consumed
+                }
+                AddHostHit::Back => {
+                    self.form.prev_step();
+                    ChromeAction::Consumed
+                }
+                AddHostHit::Next => {
+                    self.form.next_step();
                     ChromeAction::Consumed
                 }
                 AddHostHit::Cancel => {
@@ -1173,7 +1195,10 @@ impl Chrome {
             }
             return match layout.hit_test(&self.form, x, y) {
                 AddHostHit::Field(_) => ChromeCursor::Text,
-                AddHostHit::ToggleAuthMenu
+                AddHostHit::StepPill(_)
+                | AddHostHit::Back
+                | AddHostHit::Next
+                | AddHostHit::ToggleAuthMenu
                 | AddHostHit::SelectAuth(_)
                 | AddHostHit::ToggleIdentityMenu
                 | AddHostHit::SelectIdentity(_)
@@ -1808,7 +1833,17 @@ mod tests {
         assert!(!chrome.add_host_is_open());
 
         chrome.open_add_host();
-        let connect = layout.connect_button_rect(chrome.form.height());
+        chrome.form.insert("srv.local");
+        let next_btn = layout.next_button_rect(chrome.form.height());
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, next_btn.x + 4.0, next_btn.y + 4.0),
+            ChromeAction::Consumed
+        );
+        assert_eq!(chrome.form.step(), crate::add_host::AddHostStep::Auth);
+
+        chrome.form.set_step(crate::add_host::AddHostStep::Details);
+        let layout_details = chrome.dialog_layout(1200.0, 800.0);
+        let connect = layout_details.connect_button_rect(chrome.form.height());
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, connect.x + 4.0, connect.y + 4.0),
             ChromeAction::SubmitHostForm
@@ -1862,8 +1897,26 @@ mod tests {
             chrome.handle_form_input(FormInput::Text, "w"),
             Some(FormOutcome::Consumed)
         );
-        assert_eq!(chrome.form.value(Field::Name), "w");
+        assert_eq!(chrome.form.value(Field::Hostname), "w");
 
+        // Step 1 (Target) Enter advances to Auth
+        assert_eq!(
+            chrome.handle_form_input(FormInput::Enter, ""),
+            Some(FormOutcome::Consumed)
+        );
+        assert_eq!(chrome.form.step(), crate::add_host::AddHostStep::Auth);
+
+        // Configure valid auth for Auth step
+        chrome.form.select_auth_method(2);
+
+        // Step 2 (Auth) Enter advances to Details
+        assert_eq!(
+            chrome.handle_form_input(FormInput::Enter, ""),
+            Some(FormOutcome::Consumed)
+        );
+        assert_eq!(chrome.form.step(), crate::add_host::AddHostStep::Details);
+
+        // Step 3 (Details) Enter submits
         assert_eq!(
             chrome.handle_form_input(FormInput::Enter, ""),
             Some(FormOutcome::Submit)
@@ -1871,6 +1924,19 @@ mod tests {
         // Enter is a request to save, not a dismissal: the caller closes
         // the form only once the repository accepted the host.
         assert!(chrome.add_host_is_open());
+
+        // Escape on Details goes back to Auth, then Target, then dismisses
+        assert_eq!(
+            chrome.handle_form_input(FormInput::Escape, ""),
+            Some(FormOutcome::Consumed)
+        );
+        assert_eq!(chrome.form.step(), crate::add_host::AddHostStep::Auth);
+
+        assert_eq!(
+            chrome.handle_form_input(FormInput::Escape, ""),
+            Some(FormOutcome::Consumed)
+        );
+        assert_eq!(chrome.form.step(), crate::add_host::AddHostStep::Target);
 
         assert_eq!(
             chrome.handle_form_input(FormInput::Escape, ""),

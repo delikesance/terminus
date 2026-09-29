@@ -41,8 +41,8 @@ pub use activity_bar::{
     ActivityBarState, RailAction, RailHit, Section, SECTIONS, TOP_SECTIONS,
 };
 pub use add_host::{
-    auth_method_label, AddHostForm, AddHostHit, AddHostLayout, Field, FormInput,
-    FormOutcome, HostFormValues, AUTH_METHODS, BASE_FIELDS,
+    auth_method_label, AddHostForm, AddHostHit, AddHostLayout, AddHostStep, Field,
+    FormInput, FormOutcome, HostFormValues, AUTH_METHODS, BASE_FIELDS, STEPS,
 };
 pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
 pub use button::{centered_label_origin, dashed_cta_badge, ButtonKind, ButtonSpec};

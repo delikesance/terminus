@@ -3,7 +3,7 @@
 !include "WinMessages.nsh"
 
 !ifndef VERSION
-  !define VERSION "0.5.30"
+  !define VERSION "0.6.3"
 !endif
 
 !define PRODUCT_NAME "Terminus"
