@@ -349,7 +349,7 @@ fn render_panel(
             title.x + sidebar::PAD_X,
             title.y + 14.0,
             &chrome.panel_title().to_ascii_uppercase(),
-            SECTION_LABEL_SIZE,
+            sidebar::SECTION_LABEL_FONT_SIZE,
             [0xcb, 0xd5, 0xe1, 255], // slate-300
             true,
         );
@@ -2073,9 +2073,9 @@ fn render_host_rows(
                 draw_text(
                     sugarloaf,
                     row.x,
-                    row.y + (sidebar::SECTION_HEIGHT - SECTION_LABEL_SIZE) * 0.5,
+                    sidebar::section_label_y(row),
                     &label.to_uppercase(),
-                    SECTION_LABEL_SIZE,
+                    sidebar::SECTION_LABEL_FONT_SIZE,
                     theme.text_faint,
                     true,
                 );
@@ -2166,7 +2166,7 @@ fn render_host_rows(
 
             // Hairline under the folder header.
             if !collapsed {
-                let sep_y = card.y + sidebar::ITEM_HEIGHT - 1.0;
+                let sep_y = sidebar::host_item_separator_y(card);
                 if sep_y >= top && sep_y <= bottom {
                     paint_hairline_h(
                         sugarloaf,
