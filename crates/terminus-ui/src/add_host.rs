@@ -86,6 +86,55 @@ pub fn split_address(input: &str) -> AddressParts {
     }
 }
 
+/// The step of the add/edit host wizard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddHostStep {
+    #[default]
+    Target,
+    Auth,
+    Details,
+}
+
+pub const STEPS: [AddHostStep; 3] = [
+    AddHostStep::Target,
+    AddHostStep::Auth,
+    AddHostStep::Details,
+];
+
+impl AddHostStep {
+    pub const fn label(self) -> &'static str {
+        match self {
+            AddHostStep::Target => "1. Target",
+            AddHostStep::Auth => "2. Auth",
+            AddHostStep::Details => "3. Details",
+        }
+    }
+
+    pub const fn sublabel(self) -> &'static str {
+        match self {
+            AddHostStep::Target => "Enter server address & port",
+            AddHostStep::Auth => "Select user & credentials",
+            AddHostStep::Details => "Display name & review",
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            AddHostStep::Target => 0,
+            AddHostStep::Auth => 1,
+            AddHostStep::Details => 2,
+        }
+    }
+
+    pub const fn from_index(index: usize) -> Self {
+        match index {
+            0 => AddHostStep::Target,
+            1 => AddHostStep::Auth,
+            _ => AddHostStep::Details,
+        }
+    }
+}
+
 /// The fields, in tab order when all are visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
@@ -108,7 +157,7 @@ pub const FIELDS: [Field; 4] = BASE_FIELDS;
 impl Field {
     pub const fn label(self) -> &'static str {
         match self {
-            Field::Name => "Name (optional)",
+            Field::Name => "Host Name / Label (optional)",
             Field::Hostname => "IP Address or Hostname",
             Field::Username => "Username",
             Field::Port => "Port",
@@ -121,12 +170,22 @@ impl Field {
     pub const fn placeholder(self) -> &'static str {
         match self {
             Field::Name => "e.g. AWS Production Cluster",
-            Field::Hostname => "192.168.1.50",
+            Field::Hostname => "e.g. 192.168.1.50 or user@host:port",
             Field::Username => "root",
             Field::Port => "22",
             Field::AuthMethod => "",
             Field::Identity => "No SSH keys saved",
             Field::Password => "Enter secure password",
+        }
+    }
+
+    pub const fn step(self) -> AddHostStep {
+        match self {
+            Field::Hostname | Field::Port => AddHostStep::Target,
+            Field::Username | Field::AuthMethod | Field::Identity | Field::Password => {
+                AddHostStep::Auth
+            }
+            Field::Name => AddHostStep::Details,
         }
     }
 
@@ -179,15 +238,19 @@ pub const INPUT_HEIGHT: f32 = 32.0;
 pub const FIELD_GAP: f32 = 12.0;
 pub const PAD: f32 = 24.0;
 pub const TITLE_HEIGHT: f32 = 28.0;
+pub const STEPPER_HEIGHT: f32 = 26.0;
+pub const STEPPER_GAP: f32 = 12.0;
 pub const HINT_HEIGHT: f32 = 44.0;
 /// Corner radius (`rounded-2xl`).
 pub const DIALOG_RADIUS: f32 = 16.0;
 /// Input corner radius (`rounded-xl`).
 pub const INPUT_RADIUS: f32 = 12.0;
-/// Footer Cancel / Connect button height.
+/// Footer Cancel / Connect / Next / Back button height.
 pub const BUTTON_HEIGHT: f32 = 32.0;
 pub const CONNECT_BUTTON_WIDTH: f32 = 84.0;
 pub const CANCEL_BUTTON_WIDTH: f32 = 72.0;
+pub const BACK_BUTTON_WIDTH: f32 = 72.0;
+pub const NEXT_BUTTON_WIDTH: f32 = 76.0;
 pub const BUTTON_GAP: f32 = 8.0;
 
 /// What a mouse press on the open add-host dialog hit.
@@ -195,6 +258,8 @@ pub const BUTTON_GAP: f32 = 8.0;
 pub enum AddHostHit {
     /// An input box — focus that field.
     Field(Field),
+    /// Clicked a stepper pill to switch step.
+    StepPill(AddHostStep),
     /// Open / close the Authentication Method dropdown.
     ToggleAuthMenu,
     /// Pick an auth method from the open dropdown.
@@ -207,6 +272,10 @@ pub enum AddHostHit {
     TogglePasswordVisible,
     /// Dismiss without saving.
     Cancel,
+    /// Go back to previous step.
+    Back,
+    /// Advance to next step.
+    Next,
     /// Persist the draft (same as Enter).
     Connect,
     /// Dialog chrome / padding — swallow, keep open.
@@ -273,6 +342,8 @@ pub enum FormOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddHostForm {
     open: bool,
+    /// Current wizard step.
+    step: AddHostStep,
     /// When set, the dialog updates this host instead of creating one.
     editing_id: Option<String>,
     values: [String; 4],
@@ -301,6 +372,7 @@ impl Default for AddHostForm {
     fn default() -> Self {
         Self {
             open: false,
+            step: AddHostStep::Target,
             editing_id: None,
             values: Default::default(),
             carets: [0; 4],
@@ -310,7 +382,7 @@ impl Default for AddHostForm {
             password: String::new(),
             password_caret: 0,
             password_visible: false,
-            focus: Field::Name,
+            focus: Field::Hostname,
             error: None,
             auth_menu_open: false,
             auth_menu_hover: None,
@@ -321,34 +393,115 @@ impl Default for AddHostForm {
 }
 
 impl AddHostForm {
-    /// Fields currently in the tab order / paint order.
+    /// Fields currently in the tab order / paint order for the active step.
     pub fn visible_fields(&self) -> Vec<Field> {
-        let mut fields = Vec::with_capacity(6);
-        fields.extend_from_slice(&BASE_FIELDS);
-        fields.push(Field::AuthMethod);
-        match self.auth_method.as_str() {
-            "password" => fields.push(Field::Password),
-            "gssapi" => {}
-            _ => fields.push(Field::Identity),
+        match self.step {
+            AddHostStep::Target => vec![Field::Hostname, Field::Port],
+            AddHostStep::Auth => {
+                let mut fields = Vec::with_capacity(3);
+                fields.push(Field::Username);
+                fields.push(Field::AuthMethod);
+                match self.auth_method.as_str() {
+                    "password" => fields.push(Field::Password),
+                    "gssapi" => {}
+                    _ => fields.push(Field::Identity),
+                }
+                fields
+            }
+            AddHostStep::Details => vec![Field::Name],
         }
-        fields
     }
 
     pub fn shows_identity(&self) -> bool {
-        self.auth_method != "password" && self.auth_method != "gssapi"
+        self.step == AddHostStep::Auth
+            && self.auth_method != "password"
+            && self.auth_method != "gssapi"
     }
 
     pub fn shows_password(&self) -> bool {
-        self.auth_method == "password"
+        self.step == AddHostStep::Auth && self.auth_method == "password"
     }
 
-    /// Total dialog height, including a hint/error line.
+    /// Current wizard step.
+    pub fn step(&self) -> AddHostStep {
+        self.step
+    }
+
+    /// Set step directly (e.g. from clicking a step pill).
+    pub fn set_step(&mut self, step: AddHostStep) {
+        self.step = step;
+        self.close_auth_menu();
+        self.close_identity_menu();
+        self.clamp_focus_to_visible();
+    }
+
+    /// Can we advance from the current step?
+    pub fn can_advance(&self) -> bool {
+        match self.step {
+            AddHostStep::Target => {
+                let address = split_address(&self.values[Field::Hostname.index()]);
+                !address.host.trim().is_empty()
+            }
+            AddHostStep::Auth => self.auth_validation_error().is_none(),
+            AddHostStep::Details => true,
+        }
+    }
+
+    /// Advance to the next wizard step. Returns true if step changed.
+    pub fn next_step(&mut self) -> bool {
+        match self.step {
+            AddHostStep::Target => {
+                self.settle_address();
+                let address = split_address(&self.values[Field::Hostname.index()]);
+                if address.host.trim().is_empty() {
+                    self.set_error("Enter a hostname or IP");
+                    return false;
+                }
+                self.set_step(AddHostStep::Auth);
+                self.focus = Field::Username;
+                self.error = None;
+                true
+            }
+            AddHostStep::Auth => {
+                if let Some(err) = self.auth_validation_error() {
+                    self.set_error(err);
+                    return false;
+                }
+                self.set_step(AddHostStep::Details);
+                self.focus = Field::Name;
+                self.error = None;
+                true
+            }
+            AddHostStep::Details => false,
+        }
+    }
+
+    /// Return to previous wizard step. Returns true if step changed.
+    pub fn prev_step(&mut self) -> bool {
+        match self.step {
+            AddHostStep::Target => false,
+            AddHostStep::Auth => {
+                self.set_step(AddHostStep::Target);
+                self.focus = Field::Hostname;
+                self.error = None;
+                true
+            }
+            AddHostStep::Details => {
+                self.set_step(AddHostStep::Auth);
+                self.focus = Field::Username;
+                self.error = None;
+                true
+            }
+        }
+    }
+
+    /// Total dialog height, including stepper and a hint/error line.
     pub fn height(&self) -> f32 {
         let n = self.visible_fields().len() as f32;
-        PAD + TITLE_HEIGHT + n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP + PAD + HINT_HEIGHT
+        PAD + TITLE_HEIGHT + STEPPER_HEIGHT + STEPPER_GAP + n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP + PAD + HINT_HEIGHT
     }
 
-    /// Show the form, empty, focused on the first field.
+    /// Show the form, empty, focused on the first field (Hostname).
     ///
     /// Always a fresh form: a half-typed host from a previous attempt
     /// reappearing unasked is worse than retyping two fields.
@@ -367,7 +520,8 @@ impl AddHostForm {
         self.password_visible = false;
         self.identity_id = self.identities.first().map(|(id, _)| id.clone());
         self.editing_id = None;
-        self.focus = Field::Name;
+        self.step = AddHostStep::Target;
+        self.focus = Field::Hostname;
         self.error = None;
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
@@ -405,7 +559,8 @@ impl AddHostForm {
             self.identity_id = self.identities.first().map(|(id, _)| id.clone());
         }
         self.editing_id = Some(host_id);
-        self.focus = Field::Name;
+        self.step = AddHostStep::Target;
+        self.focus = Field::Hostname;
         self.error = None;
         self.auth_menu_open = false;
         self.auth_menu_hover = None;
@@ -853,6 +1008,29 @@ impl AddHostForm {
         self.error = None;
     }
 
+    /// If the hostname field has `user@host:port` or similar, unpack it into
+    /// the host, user and port fields now.
+    pub fn settle_address(&mut self) {
+        let address = split_address(&self.values[Field::Hostname.index()]);
+        if address.host != self.values[Field::Hostname.index()] {
+            self.values[Field::Hostname.index()] = address.host;
+            self.carets[Field::Hostname.index()] =
+                self.values[Field::Hostname.index()].chars().count();
+        }
+        if let Some(user) = address.user {
+            if self.values[Field::Username.index()].trim().is_empty() {
+                self.carets[Field::Username.index()] = user.chars().count();
+                self.values[Field::Username.index()] = user;
+            }
+        }
+        if let Some(port) = address.port {
+            if self.values[Field::Port.index()].trim().is_empty() {
+                self.carets[Field::Port.index()] = port.chars().count();
+                self.values[Field::Port.index()] = port;
+            }
+        }
+    }
+
     /// Focus a specific field (mouse click into an input).
     pub fn focus_field(&mut self, field: Field) {
         if field != Field::Hostname {
@@ -930,13 +1108,25 @@ impl AddHostForm {
                 self.cursor_end();
                 Consumed
             }
-            FormInput::Enter => Submit,
+            FormInput::Enter => match self.step {
+                AddHostStep::Target => {
+                    let _ = self.next_step();
+                    Consumed
+                }
+                AddHostStep::Auth => {
+                    let _ = self.next_step();
+                    Consumed
+                }
+                AddHostStep::Details => Submit,
+            },
             FormInput::Escape => {
                 if self.auth_menu_open {
                     self.close_auth_menu();
                     Consumed
                 } else if self.identity_menu_open {
                     self.close_identity_menu();
+                    Consumed
+                } else if self.prev_step() {
                     Consumed
                 } else {
                     Cancel
@@ -980,8 +1170,32 @@ impl AddHostLayout {
         Rect::new(self.x + PAD, self.y + PAD, WIDTH - 2.0 * PAD, TITLE_HEIGHT)
     }
 
+    /// The stepper progress bar under the title.
+    pub fn stepper_rect(&self) -> Rect {
+        Rect::new(
+            self.x + PAD,
+            self.y + PAD + TITLE_HEIGHT + 4.0,
+            WIDTH - 2.0 * PAD,
+            STEPPER_HEIGHT,
+        )
+    }
+
+    /// Rect for an individual step pill in the progress bar.
+    pub fn step_pill_rect(&self, step: AddHostStep) -> Rect {
+        let total_w = WIDTH - 2.0 * PAD;
+        let pill_gap = 6.0;
+        let pill_w = (total_w - 2.0 * pill_gap) / 3.0;
+        let x = self.x + PAD + step.index() as f32 * (pill_w + pill_gap);
+        Rect::new(
+            x,
+            self.y + PAD + TITLE_HEIGHT + 4.0,
+            pill_w,
+            STEPPER_HEIGHT,
+        )
+    }
+
     fn row_top(&self, row: usize) -> f32 {
-        self.y + PAD + TITLE_HEIGHT + row as f32 * (FIELD_HEIGHT + FIELD_GAP)
+        self.y + PAD + TITLE_HEIGHT + STEPPER_HEIGHT + STEPPER_GAP + row as f32 * (FIELD_HEIGHT + FIELD_GAP)
     }
 
     /// The field row for `field`, or `None` when that auth detail is hidden.
@@ -1039,9 +1253,39 @@ impl AddHostLayout {
         )
     }
 
-    /// Y of the Cancel / Connect row (shared by paint + hit-test).
+    /// Y of the footer actions row (shared by paint + hit-test).
     pub fn button_y(&self, dialog_height: f32) -> f32 {
         self.hint_rect(dialog_height).y + 6.0
+    }
+
+    pub fn back_button_rect(&self, dialog_height: f32) -> Rect {
+        let dialog = self.rect(dialog_height);
+        Rect::new(
+            dialog.x + PAD,
+            self.button_y(dialog_height),
+            BACK_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+        )
+    }
+
+    pub fn cancel_button_rect(&self, dialog_height: f32) -> Rect {
+        let dialog = self.rect(dialog_height);
+        Rect::new(
+            dialog.x + PAD,
+            self.button_y(dialog_height),
+            CANCEL_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+        )
+    }
+
+    pub fn next_button_rect(&self, dialog_height: f32) -> Rect {
+        let dialog = self.rect(dialog_height);
+        Rect::new(
+            dialog.right() - PAD - NEXT_BUTTON_WIDTH,
+            self.button_y(dialog_height),
+            NEXT_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+        )
     }
 
     pub fn connect_button_rect(&self, dialog_height: f32) -> Rect {
@@ -1050,16 +1294,6 @@ impl AddHostLayout {
             dialog.right() - PAD - CONNECT_BUTTON_WIDTH,
             self.button_y(dialog_height),
             CONNECT_BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        )
-    }
-
-    pub fn cancel_button_rect(&self, dialog_height: f32) -> Rect {
-        let connect = self.connect_button_rect(dialog_height);
-        Rect::new(
-            connect.x - BUTTON_GAP - CANCEL_BUTTON_WIDTH,
-            connect.y,
-            CANCEL_BUTTON_WIDTH,
             BUTTON_HEIGHT,
         )
     }
@@ -1152,12 +1386,48 @@ impl AddHostLayout {
         if !dialog.contains(x, y) {
             return AddHostHit::Consume;
         }
-        if self.connect_button_rect(dialog_height).contains(x, y) {
-            return AddHostHit::Connect;
+
+        // Stepper pills
+        for &step in &STEPS {
+            if self.step_pill_rect(step).contains(x, y) {
+                return AddHostHit::StepPill(step);
+            }
         }
-        if self.cancel_button_rect(dialog_height).contains(x, y) {
-            return AddHostHit::Cancel;
+
+        // Action buttons per step
+        match form.step() {
+            AddHostStep::Target => {
+                if self.cancel_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Cancel;
+                }
+                if self.next_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Next;
+                }
+                if form.is_editing() && self.connect_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Connect;
+                }
+            }
+            AddHostStep::Auth => {
+                if self.back_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Back;
+                }
+                if self.next_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Next;
+                }
+                if form.is_editing() && self.connect_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Connect;
+                }
+            }
+            AddHostStep::Details => {
+                if self.back_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Back;
+                }
+                if self.connect_button_rect(dialog_height).contains(x, y) {
+                    return AddHostHit::Connect;
+                }
+            }
         }
+
         for field in form.visible_fields() {
             if field == Field::Password {
                 if let Some(eye) = self.password_toggle_rect(form) {
@@ -1280,35 +1550,101 @@ mod tests {
     #[test]
     fn typing_lands_in_the_focused_field() {
         let mut form = open_form();
-        type_into(&mut form, "web-01");
-        assert_eq!(form.value(Field::Name), "web-01");
-        assert_eq!(form.value(Field::Hostname), "");
-        assert_eq!(form.cursor(Field::Name), 6);
+        assert_eq!(form.step(), AddHostStep::Target);
+        assert_eq!(form.focused_field(), Field::Hostname);
+        type_into(&mut form, "example.com");
+        assert_eq!(form.value(Field::Hostname), "example.com");
+        assert_eq!(form.cursor(Field::Hostname), 11);
 
         form.handle_input(FormInput::Next, "");
-        type_into(&mut form, "example.com");
-        assert_eq!(form.focused_field(), Field::Hostname);
-        assert_eq!(form.value(Field::Hostname), "example.com");
-        assert_eq!(form.value(Field::Name), "web-01");
+        assert_eq!(form.focused_field(), Field::Port);
+        type_into(&mut form, "2222");
+        assert_eq!(form.value(Field::Port), "2222");
+    }
+
+    #[test]
+    fn multi_step_advances_and_recedes() {
+        let mut form = open_form();
+        form.set_identities(vec![("k1".into(), "Key".into())]);
+        assert_eq!(form.step(), AddHostStep::Target);
+        assert_eq!(form.visible_fields(), vec![Field::Hostname, Field::Port]);
+
+        // Validation error if hostname is empty
+        assert!(!form.next_step());
+        assert_eq!(form.error(), Some("Enter a hostname or IP"));
+
+        type_into(&mut form, "myhost.com");
+        assert!(form.next_step());
+        assert_eq!(form.step(), AddHostStep::Auth);
+        assert_eq!(form.focused_field(), Field::Username);
+        assert!(form.visible_fields().contains(&Field::Username));
+        assert!(form.visible_fields().contains(&Field::AuthMethod));
+
+        // Advance to details
+        assert!(form.next_step());
+        assert_eq!(form.step(), AddHostStep::Details);
+        assert_eq!(form.focused_field(), Field::Name);
+        assert_eq!(form.visible_fields(), vec![Field::Name]);
+
+        // Recede back
+        assert!(form.prev_step());
+        assert_eq!(form.step(), AddHostStep::Auth);
+        assert!(form.prev_step());
+        assert_eq!(form.step(), AddHostStep::Target);
+        assert!(!form.prev_step());
+    }
+
+    #[test]
+    fn keyboard_enter_advances_steps_and_submits_at_end() {
+        let mut form = open_form();
+        form.set_identities(vec![("k1".into(), "Key".into())]);
+        type_into(&mut form, "vps.example.com");
+        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Consumed);
+        assert_eq!(form.step(), AddHostStep::Auth);
+
+        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Consumed);
+        assert_eq!(form.step(), AddHostStep::Details);
+
+        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Submit);
+    }
+
+    #[test]
+    fn keyboard_escape_recedes_step_or_cancels() {
+        let mut form = open_form();
+        form.set_identities(vec![("k1".into(), "Key".into())]);
+        type_into(&mut form, "vps.example.com");
+        form.next_step(); // Auth
+        form.next_step(); // Details
+        assert_eq!(form.step(), AddHostStep::Details);
+
+        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Consumed);
+        assert_eq!(form.step(), AddHostStep::Auth);
+
+        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Consumed);
+        assert_eq!(form.step(), AddHostStep::Target);
+
+        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Cancel);
     }
 
     #[test]
     fn tab_wraps_around_the_visible_fields() {
         let mut form = open_form();
-        let n = form.visible_fields().len();
-        for _ in 0..n {
-            form.handle_input(FormInput::Next, "");
-        }
-        assert_eq!(form.focused_field(), Field::Name);
+        assert_eq!(form.focused_field(), Field::Hostname);
+        form.handle_input(FormInput::Next, "");
+        assert_eq!(form.focused_field(), Field::Port);
+        form.handle_input(FormInput::Next, "");
+        assert_eq!(form.focused_field(), Field::Hostname);
 
         form.handle_input(FormInput::Previous, "");
-        assert_eq!(form.focused_field(), Field::Identity);
+        assert_eq!(form.focused_field(), Field::Port);
     }
 
     #[test]
     fn tab_order_includes_auth_and_conditional_detail() {
         let mut form = open_form();
-        form.focus_field(Field::Port);
+        type_into(&mut form, "test.local");
+        form.next_step(); // Auth step
+        assert_eq!(form.focused_field(), Field::Username);
         form.handle_input(FormInput::Next, "");
         assert_eq!(form.focused_field(), Field::AuthMethod);
         form.handle_input(FormInput::Next, "");
@@ -1335,8 +1671,8 @@ mod tests {
         form.handle_input(FormInput::Left, "");
         // Caret now sits after "web", so backspace eats the '-'.
         assert!(form.backspace());
-        assert_eq!(form.value(Field::Name), "web99");
-        assert_eq!(form.cursor(Field::Name), 3);
+        assert_eq!(form.value(Field::Hostname), "web99");
+        assert_eq!(form.cursor(Field::Hostname), 3);
     }
 
     #[test]
@@ -1345,7 +1681,7 @@ mod tests {
         type_into(&mut form, "abc");
         form.handle_input(FormInput::Home, "");
         assert!(!form.backspace());
-        assert_eq!(form.value(Field::Name), "abc");
+        assert_eq!(form.value(Field::Hostname), "abc");
     }
 
     #[test]
@@ -1354,8 +1690,8 @@ mod tests {
         type_into(&mut form, "abc");
         form.handle_input(FormInput::Home, "");
         assert!(form.delete());
-        assert_eq!(form.value(Field::Name), "bc");
-        assert_eq!(form.cursor(Field::Name), 0);
+        assert_eq!(form.value(Field::Hostname), "bc");
+        assert_eq!(form.cursor(Field::Hostname), 0);
         // Caret already at the end: nothing left to delete.
         form.cursor_end();
         assert!(!form.delete());
@@ -1368,8 +1704,8 @@ mod tests {
         form.handle_input(FormInput::Left, "");
         form.handle_input(FormInput::Left, "");
         assert!(form.insert("-"));
-        assert_eq!(form.value(Field::Name), "web-01");
-        assert_eq!(form.cursor(Field::Name), 4);
+        assert_eq!(form.value(Field::Hostname), "web-01");
+        assert_eq!(form.cursor(Field::Hostname), 4);
     }
 
     #[test]
@@ -1377,13 +1713,13 @@ mod tests {
         let mut form = open_form();
         // Multi-byte characters must not split a code point.
         type_into(&mut form, "café");
-        assert_eq!(form.value(Field::Name), "café");
+        assert_eq!(form.value(Field::Hostname), "café");
         assert!(form.backspace());
-        assert_eq!(form.value(Field::Name), "caf");
+        assert_eq!(form.value(Field::Hostname), "caf");
         form.handle_input(FormInput::Home, "");
-        assert_eq!(form.cursor_byte(Field::Name), 0);
+        assert_eq!(form.cursor_byte(Field::Hostname), 0);
         assert!(form.insert("é"));
-        assert_eq!(form.value(Field::Name), "écaf");
+        assert_eq!(form.value(Field::Hostname), "écaf");
     }
 
     #[test]
@@ -1400,21 +1736,11 @@ mod tests {
         assert!(!form.insert(""));
         assert!(!form.insert("\u{1b}"));
         assert!(!form.insert("a\nb"));
-        assert_eq!(form.value(Field::Name), "");
+        assert_eq!(form.value(Field::Hostname), "");
         // But the sink still swallows the keystroke.
         assert_eq!(
             form.handle_input(FormInput::Text, "\u{7f}"),
             FormOutcome::Consumed
-        );
-    }
-
-    #[test]
-    fn enter_submits_and_escape_cancels() {
-        let mut form = open_form();
-        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Submit);
-        assert_eq!(
-            form.handle_input(FormInput::Escape, ""),
-            FormOutcome::Cancel
         );
     }
 
@@ -1424,7 +1750,7 @@ mod tests {
         type_into(&mut form, "web-01");
         form.set_error("'abc' is not a valid port");
         assert!(form.is_open());
-        assert_eq!(form.value(Field::Name), "web-01");
+        assert_eq!(form.value(Field::Hostname), "web-01");
         assert_eq!(form.error(), Some("'abc' is not a valid port"));
 
         // Editing clears the stale message.
@@ -1439,13 +1765,9 @@ mod tests {
         form.set_error("boom");
         form.cycle_auth_method(1);
         form.open();
-        // No saved keys: the fresh form starts on password.
-        let fresh = HostFormValues {
-            auth_method: "password".to_string(),
-            ..HostFormValues::default()
-        };
-        assert_eq!(form.values(), fresh);
-        assert_eq!(form.focused_field(), Field::Name);
+        assert_eq!(form.values(), HostFormValues::default());
+        assert_eq!(form.focused_field(), Field::Hostname);
+        assert_eq!(form.step(), AddHostStep::Target);
         assert_eq!(form.error(), None);
         assert_eq!(form.auth_method(), "password");
     }
@@ -1486,6 +1808,8 @@ mod tests {
         assert_eq!(form.values().port, "2222");
         assert_eq!(form.identity_id(), Some("k1"));
         assert_eq!(form.auth_validation_error(), None);
+
+        form.set_step(AddHostStep::Auth);
         form.select_auth_method(
             AUTH_METHODS
                 .iter()
@@ -1509,16 +1833,21 @@ mod tests {
     fn values_round_trip_every_field() {
         let mut form = open_form();
         form.set_identities(vec![("k1".into(), "Prod".into())]);
-        type_into(&mut form, "web-01");
-        form.focus_by(1);
+        // Step 1: Target
         type_into(&mut form, "web-01.example.com");
         form.focus_by(1);
-        type_into(&mut form, "deploy");
-        form.focus_by(1);
         type_into(&mut form, "2222");
+        assert!(form.next_step());
+
+        // Step 2: Auth
+        type_into(&mut form, "deploy");
         form.cycle_auth_method(1);
         form.focus_field(Field::Password);
         type_into(&mut form, "s3cret");
+        assert!(form.next_step());
+
+        // Step 3: Details
+        type_into(&mut form, "web-01");
 
         assert_eq!(
             form.values(),
@@ -1538,6 +1867,7 @@ mod tests {
     fn left_right_cycle_auth_and_identity() {
         let mut form = open_form();
         form.set_identities(vec![("a".into(), "A".into()), ("b".into(), "B".into())]);
+        form.set_step(AddHostStep::Auth);
         form.focus_field(Field::AuthMethod);
         form.handle_input(FormInput::Right, "");
         assert_eq!(form.auth_method(), "password");
@@ -1556,6 +1886,7 @@ mod tests {
     #[test]
     fn auth_validation_helpers() {
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         assert_eq!(form.auth_validation_error(), Some("Select an SSH key"));
         form.set_identities(vec![("k".into(), "Key".into())]);
         assert_eq!(form.auth_validation_error(), None);
@@ -1574,6 +1905,7 @@ mod tests {
     #[test]
     fn height_changes_per_auth_method() {
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         let key_h = form.height();
         form.cycle_auth_method(1);
         let password_h = form.height();
@@ -1634,6 +1966,7 @@ mod tests {
     #[test]
     fn auth_dropdown_toggle_and_select() {
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
         let auth = layout.input_rect(&form, Field::AuthMethod).unwrap();
         assert_eq!(
@@ -1660,6 +1993,7 @@ mod tests {
             ("k1".into(), "Prod".into()),
             ("k2".into(), "Staging".into()),
         ]);
+        form.set_step(AddHostStep::Auth);
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
         let identity = layout.input_rect(&form, Field::Identity).unwrap();
         assert_eq!(
@@ -1682,25 +2016,14 @@ mod tests {
 
     #[test]
     fn hit_test_finds_fields_and_footer_buttons() {
-        let form = open_form();
+        let mut form = open_form();
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
 
-        let name = layout.input_rect(&form, Field::Name).unwrap();
+        // Step 1: Target
+        let host = layout.input_rect(&form, Field::Hostname).unwrap();
         assert_eq!(
-            layout.hit_test(&form, name.x + 2.0, name.y + 2.0),
-            AddHostHit::Field(Field::Name)
-        );
-
-        let auth = layout.input_rect(&form, Field::AuthMethod).unwrap();
-        assert_eq!(
-            layout.hit_test(&form, auth.x + 2.0, auth.y + 2.0),
-            AddHostHit::ToggleAuthMenu
-        );
-
-        let identity = layout.input_rect(&form, Field::Identity).unwrap();
-        assert_eq!(
-            layout.hit_test(&form, identity.x + 2.0, identity.y + 2.0),
-            AddHostHit::ToggleIdentityMenu
+            layout.hit_test(&form, host.x + 2.0, host.y + 2.0),
+            AddHostHit::Field(Field::Hostname)
         );
 
         let h = form.height();
@@ -1710,15 +2033,40 @@ mod tests {
             AddHostHit::Cancel
         );
 
-        let connect = layout.connect_button_rect(h);
+        let next = layout.next_button_rect(h);
         assert_eq!(
-            layout.hit_test(&form, connect.x + 2.0, connect.y + 2.0),
+            layout.hit_test(&form, next.x + 2.0, next.y + 2.0),
+            AddHostHit::Next
+        );
+
+        // Stepper pill hit test
+        let pill_auth = layout.step_pill_rect(AddHostStep::Auth);
+        assert_eq!(
+            layout.hit_test(&form, pill_auth.x + 2.0, pill_auth.y + 2.0),
+            AddHostHit::StepPill(AddHostStep::Auth)
+        );
+
+        // Step 2: Auth
+        form.set_step(AddHostStep::Auth);
+        let layout_auth = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let back = layout_auth.back_button_rect(form.height());
+        assert_eq!(
+            layout_auth.hit_test(&form, back.x + 2.0, back.y + 2.0),
+            AddHostHit::Back
+        );
+
+        // Step 3: Details
+        form.set_step(AddHostStep::Details);
+        let layout_details = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let connect = layout_details.connect_button_rect(form.height());
+        assert_eq!(
+            layout_details.hit_test(&form, connect.x + 2.0, connect.y + 2.0),
             AddHostHit::Connect
         );
 
-        let title = layout.title_rect();
+        let title = layout_details.title_rect();
         assert_eq!(
-            layout.hit_test(&form, title.x + 2.0, title.y + 2.0),
+            layout_details.hit_test(&form, title.x + 2.0, title.y + 2.0),
             AddHostHit::Consume
         );
     }
@@ -1726,6 +2074,7 @@ mod tests {
     #[test]
     fn hit_test_finds_password_when_selected() {
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         form.cycle_auth_method(1);
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
         let password = layout.input_rect(&form, Field::Password).unwrap();
@@ -1739,6 +2088,7 @@ mod tests {
     #[test]
     fn hit_test_password_eye_toggles_visibility() {
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         form.cycle_auth_method(1); // password
         let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
         let eye = layout.password_toggle_rect(&form).expect("eye slot");
@@ -1758,6 +2108,8 @@ mod tests {
         assert_eq!(form.focused_field(), Field::Port);
         form.focus_field(Field::Hostname);
         assert_eq!(form.focused_field(), Field::Hostname);
+
+        form.set_step(AddHostStep::Auth);
         form.focus_field(Field::AuthMethod);
         assert_eq!(form.focused_field(), Field::AuthMethod);
     }
@@ -1765,6 +2117,7 @@ mod tests {
     #[test]
     fn password_field_accepts_pasted_secret() {
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         form.cycle_auth_method(1); // password
         form.focus_field(Field::Password);
         assert!(form.shows_password());
@@ -1781,6 +2134,7 @@ mod tests {
         let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
         assert_eq!(cleaned, "p@ssw0rd");
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         form.cycle_auth_method(1);
         form.focus_field(Field::Password);
         assert!(form.insert(&cleaned));
