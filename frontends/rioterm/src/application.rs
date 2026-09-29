@@ -42,6 +42,15 @@ pub struct Application<'a> {
     /// when it hides so focus returns where the user was.
     #[cfg(target_os = "macos")]
     quake_previous_app: Option<i32>,
+    /// Application-owned persistence handle for group-collapse state.
+    /// Initialized lazily from the first route's worker; stable thereafter.
+    /// All persistence commands go through this handle — never through an
+    /// arbitrary route selection at dispatch time.
+    host_persistence: Option<crate::hosts::HostPersistHandle>,
+    /// Group-collapse toggle deferred from `ChromeAction::ToggleGroup`.
+    /// Processed in `about_to_wait` (where `self.router.routes` is freely
+    /// accessible without an active route borrow). Holds `(group_id, target_collapsed)`.
+    pending_group_toggle: Option<(String, bool)>,
 }
 
 impl Application<'_> {
@@ -84,6 +93,8 @@ impl Application<'_> {
             global_hotkey: None,
             #[cfg(target_os = "macos")]
             quake_previous_app: None,
+            host_persistence: None,
+            pending_group_toggle: None,
         }
     }
 
@@ -173,6 +184,136 @@ impl Application<'_> {
             self.event_proxy.clone(),
             &self.config.bindings.keys,
         );
+    }
+
+    fn dispatch_sidebar_intent(&mut self, intent: terminus_ui::sidebar::SidebarIntent) {
+        use terminus_ui::sidebar::SidebarIntent;
+        match intent {
+            SidebarIntent::SelectHost { host_id } => {
+                // Highlight only — does not open a session.
+                for route in self.router.routes.values_mut() {
+                    route.window.screen.chrome.panel.select_id(&host_id);
+                }
+            }
+            SidebarIntent::OpenHostSession { host_id } => {
+                for route in self.router.routes.values_mut() {
+                    let _ = route.window.screen.open_host_session(
+                        &host_id,
+                        &mut self.router.clipboard,
+                    );
+                }
+            }
+            SidebarIntent::ToggleGroup { group_id } => {
+                // Determine the authoritative final state from the first window's panel,
+                // then apply the exact result to ALL windows and persist it.
+                self.ensure_persist_handle();
+                let target = !self
+                    .router
+                    .routes
+                    .values()
+                    .next()
+                    .map(|r| {
+                        r.window
+                            .screen
+                            .chrome
+                            .panel
+                            .collapsed_groups
+                            .contains(&group_id)
+                    })
+                    .unwrap_or(false);
+                self.apply_group_collapse_to_all_windows(&group_id, target);
+            }
+            SidebarIntent::ToggleHostExpansion { host_id } => {
+                for route in self.router.routes.values_mut() {
+                    route.window.screen.chrome.panel.toggle_host_collapsed(&host_id);
+                }
+            }
+        }
+    }
+
+    /// Lazily initialise `host_persistence` from the first route's worker.
+    ///
+    /// Called once; subsequent calls are no-ops. The handle is stable after
+    /// the first window is created and never re-derived.
+    fn ensure_persist_handle(&mut self) {
+        if self.host_persistence.is_none() {
+            if let Some(route) = self.router.routes.values().next() {
+                self.host_persistence =
+                    Some(route.window.screen.host_store.persist_handle());
+            }
+        }
+    }
+
+    /// Apply the explicit `collapsed` state for `group_id` to every open window,
+    /// rebuild each window's sidebar rows, request redraws, and submit the state
+    /// to the application's persistence handle.
+    ///
+    /// This is the single authoritative write path for group-collapse state.
+    /// All windows receive the identical final state — no window is treated as
+    /// the "primary" source of truth at dispatch time.
+    fn apply_group_collapse_to_all_windows(&mut self, group_id: &str, collapsed: bool) {
+        for route in self.router.routes.values_mut() {
+            if collapsed {
+                route
+                    .window
+                    .screen
+                    .chrome
+                    .panel
+                    .collapsed_groups
+                    .insert(group_id.to_string());
+            } else {
+                route
+                    .window
+                    .screen
+                    .chrome
+                    .panel
+                    .collapsed_groups
+                    .remove(group_id);
+            }
+            let _ = route.window.screen.pump_chrome();
+            route.request_overlay_redraw();
+        }
+        if let Some(handle) = &self.host_persistence {
+            handle.set_group_collapsed(group_id, collapsed);
+        }
+    }
+
+    /// Poll the persistence handle for a group-collapse outcome.
+    ///
+    /// On success: no action needed (local state is already correct).
+    /// On failure: revert every window to the prior state and show the error
+    /// on each window's sidebar panel.
+    fn poll_group_collapse_outcome(&mut self) {
+        let outcome = match self.host_persistence.as_ref().and_then(|h| h.poll_outcome()) {
+            Some(o) => o,
+            None => return,
+        };
+        if let Some(error) = outcome.error {
+            // Prior state is the inverse of what we tried to set.
+            let prior = !outcome.collapsed;
+            for route in self.router.routes.values_mut() {
+                if prior {
+                    route
+                        .window
+                        .screen
+                        .chrome
+                        .panel
+                        .collapsed_groups
+                        .insert(outcome.group_id.clone());
+                } else {
+                    route
+                        .window
+                        .screen
+                        .chrome
+                        .panel
+                        .collapsed_groups
+                        .remove(&outcome.group_id);
+                }
+                route.window.screen.chrome.panel.error = Some(error.clone());
+                let _ = route.window.screen.pump_chrome();
+                route.request_overlay_redraw();
+            }
+        }
     }
 
     /// The monitor the quake window should drop down on: the one
@@ -1509,13 +1650,27 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::ToggleGroup(id) => {
+                                        // Apply to the current window immediately for
+                                        // responsiveness. Determine the target state after
+                                        // the toggle so we know what to persist.
                                         route
                                             .window
                                             .screen
                                             .chrome
                                             .toggle_group_collapsed(&id);
+                                        let target = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .panel
+                                            .collapsed_groups
+                                            .contains(&id);
                                         let _ = route.window.screen.pump_chrome();
                                         route.request_overlay_redraw();
+                                        // Defer cross-window sync and persistence to
+                                        // `about_to_wait`. At that point `self.router.routes`
+                                        // is freely accessible (no active route borrow).
+                                        self.pending_group_toggle = Some((id, target));
                                         return;
                                     }
                                     ChromeAction::FocusSearch => {
@@ -3289,6 +3444,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Apply any deferred group-collapse toggle to all windows and persist.
+        // This runs after the current event batch, before the event loop sleeps,
+        // so all windows are updated before their scheduled redraws fire.
+        if let Some((group_id, target)) = self.pending_group_toggle.take() {
+            self.ensure_persist_handle();
+            self.apply_group_collapse_to_all_windows(&group_id, target);
+        }
+
+        // Check for persistence outcomes: revert all windows and show an error
+        // if the last SetGroupCollapsed command failed.
+        self.poll_group_collapse_outcome();
+
         let control_flow = match self.scheduler.update() {
             Some(instant) => ControlFlow::WaitUntil(instant),
             None => ControlFlow::Wait,

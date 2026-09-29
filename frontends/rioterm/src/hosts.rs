@@ -55,6 +55,12 @@ pub const DEFAULT_PORT: u16 = 22;
 /// Settings key for the persisted [`terminus_core::sync::SyncConfig`] JSON.
 const SYNC_CONFIG_SETTING: &str = "sync_config";
 
+/// Settings key for the persisted set of collapsed sidebar group IDs.
+///
+/// Stored as a sorted newline-delimited list of group-id strings.
+/// Versioned in the key so a format change can migrate cleanly.
+const COLLAPSED_GROUPS_SETTING: &str = "sidebar_collapsed_groups_v1";
+
 /// Directory holding `terminus.db`.
 ///
 /// `TERMINUS_DATA_DIR` overrides the platform default (mirrors rio's
@@ -618,6 +624,62 @@ fn host_from_draft(draft: &HostDraft) -> Host {
     }
 }
 
+/// Outcome of a [`Command::SetGroupCollapsed`] persistence operation.
+///
+/// Delivered to the [`HostPersistHandle`] that sent the command.
+/// `error: None` means success; `Some(msg)` means the write failed and the
+/// caller should revert local visual state and surface `msg` to the user.
+#[derive(Debug)]
+pub struct GroupCollapseOutcome {
+    pub group_id: String,
+    /// The state we attempted to persist (`true` = collapsed, `false` = expanded).
+    pub collapsed: bool,
+    pub error: Option<String>,
+}
+
+/// Application-owned persistence handle for group-collapse state.
+///
+/// Created once via [`HostRepository::persist_handle`] and held by the
+/// `Application`. All group-collapse persistence commands flow through this
+/// handle so the Application is the explicit owner, not an arbitrary route.
+///
+/// The worker that receives these commands is the same one owned by the
+/// `HostRepository` from which this handle was created. All `Sender<Command>`
+/// clones reach the same worker thread.
+pub struct HostPersistHandle {
+    commands: Sender<Command>,
+    outcomes_tx: Sender<GroupCollapseOutcome>,
+    outcomes_rx: Receiver<GroupCollapseOutcome>,
+}
+
+impl HostPersistHandle {
+    fn new(commands: Sender<Command>) -> Self {
+        let (outcomes_tx, outcomes_rx) = channel();
+        Self { commands, outcomes_tx, outcomes_rx }
+    }
+
+    /// Persist `group_id` as explicitly collapsed (`true`) or expanded (`false`).
+    ///
+    /// Idempotent: sending the same value twice produces the same stored state.
+    pub fn set_group_collapsed(&self, group_id: &str, collapsed: bool) {
+        let _ = self.commands.send(Command::SetGroupCollapsed {
+            group_id: group_id.to_string(),
+            collapsed,
+            reply: self.outcomes_tx.clone(),
+        });
+    }
+
+    /// Non-blocking poll for the outcome of the most recent operation.
+    ///
+    /// Returns `None` if no outcome has arrived yet. The caller should
+    /// poll this in its event loop (e.g. `about_to_wait`) and on `Some`:
+    /// - `outcome.error == None` → success, retain local state
+    /// - `outcome.error == Some(msg)` → failure, revert local state, show `msg`
+    pub fn poll_outcome(&self) -> Option<GroupCollapseOutcome> {
+        self.outcomes_rx.try_recv().ok()
+    }
+}
+
 enum Command {
     Refresh,
     CreateSnippet(terminus_ui::snippets::SnippetItem),
@@ -703,6 +765,17 @@ enum Command {
     DetectOs {
         id: String,
     },
+    /// Set the persisted collapsed state for a sidebar group to an explicit value.
+    ///
+    /// Unlike a toggle, this command is idempotent: sending the same
+    /// `{ group_id, collapsed }` twice produces the same final stored state.
+    /// The reply channel receives the outcome; on error the caller reverts
+    /// local visual state and surfaces the error.
+    SetGroupCollapsed {
+        group_id: String,
+        collapsed: bool,
+        reply: Sender<GroupCollapseOutcome>,
+    },
 }
 
 /// Answers coming back from the worker.
@@ -739,11 +812,15 @@ enum HostEvent {
         id: String,
         os_id: String,
     },
+    /// Collapsed group IDs loaded from settings on startup (or any Refresh).
+    /// Only the first emission is applied; subsequent ones are ignored because
+    /// local visual state is authoritative after the initial seed.
+    CollapsedGroupsLoaded(HashSet<String>),
 }
 
 /// UI-side handle to the host database.
 pub struct HostRepository {
-    commands: Sender<Command>,
+    pub(crate) commands: Sender<Command>,
     events: Receiver<HostEvent>,
     hosts: Vec<HostRow>,
     groups: Vec<(String, String, i64)>,
@@ -765,6 +842,11 @@ pub struct HostRepository {
     sync_connected: bool,
     sync_status_line: String,
     sync_status_is_error: bool,
+    /// One-shot seed: set when `CollapsedGroupsLoaded` first arrives; taken by
+    /// `pump_chrome` to initialize `HostPanel::collapsed_groups`.
+    collapsed_groups_seed: Option<HashSet<String>>,
+    /// True after the first `CollapsedGroupsLoaded` has been applied.
+    pub(crate) collapsed_groups_seeded: bool,
 }
 
 impl HostRepository {
@@ -803,6 +885,8 @@ impl HostRepository {
             sync_connected: false,
             sync_status_line: "Not configured".into(),
             sync_status_is_error: false,
+            collapsed_groups_seed: None,
+            collapsed_groups_seeded: false,
         }
     }
 
@@ -862,6 +946,23 @@ impl HostRepository {
 
     pub fn sync_status_is_error(&self) -> bool {
         self.sync_status_is_error
+    }
+
+    /// Create an [`HostPersistHandle`] backed by this repository's worker.
+    ///
+    /// The Application calls this once to obtain the canonical persistence
+    /// handle. All group-collapse commands must flow through this handle, not
+    /// through an arbitrary route's repository.
+    pub fn persist_handle(&self) -> HostPersistHandle {
+        HostPersistHandle::new(self.commands.clone())
+    }
+
+    /// Returns the collapsed-groups set loaded from settings on startup, once.
+    ///
+    /// `pump_chrome` calls this to seed `HostPanel::collapsed_groups` after the
+    /// first `Refresh`. After the first call, always returns `None`.
+    pub fn take_collapsed_groups_seed(&mut self) -> Option<HashSet<String>> {
+        self.collapsed_groups_seed.take()
     }
 
     /// Persist URI and run a sync test against SyncEngine.
@@ -1201,6 +1302,14 @@ impl HostRepository {
                         changed = true;
                     }
                 }
+                Ok(HostEvent::CollapsedGroupsLoaded(set)) => {
+                    // Accept only the first load; local state is authoritative after seed.
+                    if !self.collapsed_groups_seeded {
+                        self.collapsed_groups_seed = Some(set);
+                        self.collapsed_groups_seeded = true;
+                        changed = true;
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.in_flight = 0;
@@ -1351,6 +1460,9 @@ fn worker(
                     vault.is_some(),
                 ));
                 let _ = events.send(HostEvent::Platform(discover_platform()));
+                let _ = events.send(HostEvent::CollapsedGroupsLoaded(
+                    load_collapsed_groups(&runtime, &store),
+                ));
             }
             Command::Create(draft) => {
                 // Test / skip-probe path: no SSH round-trip.
@@ -1694,6 +1806,15 @@ fn worker(
                         });
                     }
                 }
+            }
+            Command::SetGroupCollapsed { group_id, collapsed, reply } => {
+                let result =
+                    set_collapsed_group_setting(&runtime, &store, &group_id, collapsed);
+                let _ = reply.send(GroupCollapseOutcome {
+                    group_id,
+                    collapsed,
+                    error: result.err(),
+                });
             }
         }
         wake();
@@ -3537,6 +3658,191 @@ mod tests {
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Poll a `HostPersistHandle` for its outcome until `timeout` elapses.
+    fn wait_for_outcome(
+        handle: &HostPersistHandle,
+        timeout: Duration,
+    ) -> Option<GroupCollapseOutcome> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(outcome) = handle.poll_outcome() {
+                return Some(outcome);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn set_collapsed_true_persists_group_id() {
+        let dir = temp_dir("set-true");
+        let repo = HostRepository::spawn(dir.clone(), None);
+        let handle = repo.persist_handle();
+
+        handle.set_group_collapsed("g1", true);
+        let outcome = wait_for_outcome(&handle, Duration::from_secs(10))
+            .expect("outcome must arrive");
+        assert_eq!(outcome.group_id, "g1");
+        assert!(outcome.collapsed);
+        assert!(outcome.error.is_none(), "unexpected error: {:?}", outcome.error);
+
+        // Reopen: the group must be in the restored set.
+        drop(repo);
+        let mut reopened = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(
+            &mut reopened,
+            Duration::from_secs(10),
+            |r| r.collapsed_groups_seeded
+        ));
+        let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
+        assert!(
+            restored.contains("g1"),
+            "g1 should be in the restored set; got {restored:?}"
+        );
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_collapsed_false_removes_group_id() {
+        let dir = temp_dir("set-false");
+        let repo = HostRepository::spawn(dir.clone(), None);
+        let handle = repo.persist_handle();
+
+        // Collapse first.
+        handle.set_group_collapsed("g2", true);
+        wait_for_outcome(&handle, Duration::from_secs(10)).expect("first outcome");
+
+        // Expand.
+        handle.set_group_collapsed("g2", false);
+        let outcome = wait_for_outcome(&handle, Duration::from_secs(10))
+            .expect("second outcome must arrive");
+        assert_eq!(outcome.group_id, "g2");
+        assert!(!outcome.collapsed);
+        assert!(outcome.error.is_none(), "unexpected error: {:?}", outcome.error);
+
+        // Reopen: the group must be absent.
+        drop(repo);
+        let mut reopened = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(
+            &mut reopened,
+            Duration::from_secs(10),
+            |r| r.collapsed_groups_seeded
+        ));
+        let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
+        assert!(
+            !restored.contains("g2"),
+            "g2 should be absent (expanded); got {restored:?}"
+        );
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_collapsed_same_value_twice_is_idempotent() {
+        let dir = temp_dir("idempotent");
+        let repo = HostRepository::spawn(dir.clone(), None);
+        let handle = repo.persist_handle();
+
+        // Collapse twice — must not double-insert or produce an error.
+        handle.set_group_collapsed("g3", true);
+        wait_for_outcome(&handle, Duration::from_secs(10)).expect("first outcome");
+        handle.set_group_collapsed("g3", true);
+        wait_for_outcome(&handle, Duration::from_secs(10)).expect("second outcome");
+
+        // Reopen: exactly one entry for g3.
+        drop(repo);
+        let mut reopened = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(
+            &mut reopened,
+            Duration::from_secs(10),
+            |r| r.collapsed_groups_seeded
+        ));
+        let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
+        assert!(
+            restored.contains("g3"),
+            "g3 should be collapsed after idempotent set; got {restored:?}"
+        );
+        // A `HashSet` cannot contain duplicates, so this also verifies no double-entry.
+        assert_eq!(
+            restored.iter().filter(|id| *id == "g3").count(),
+            1,
+            "g3 must appear exactly once in the set"
+        );
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_restores_persisted_collapsed_groups() {
+        let dir = temp_dir("startup-restore");
+        let repo = HostRepository::spawn(dir.clone(), None);
+        let handle = repo.persist_handle();
+
+        handle.set_group_collapsed("persistent-group", true);
+        wait_for_outcome(&handle, Duration::from_secs(10)).expect("outcome");
+
+        drop(repo);
+
+        let mut reopened = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(
+            &mut reopened,
+            Duration::from_secs(10),
+            |r| r.collapsed_groups_seeded
+        ));
+        let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
+        assert!(
+            restored.contains("persistent-group"),
+            "persistent-group must survive a restart; got {restored:?}"
+        );
+        // Second take is always None — seed is one-shot.
+        assert!(
+            reopened.take_collapsed_groups_seed().is_none(),
+            "seed must be consumed after first take"
+        );
+
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_after_local_change_does_not_overwrite_seed() {
+        // After the first seed is delivered, subsequent Refresh commands must
+        // not clobber it — collapsed_groups_seeded acts as a one-shot gate.
+        let dir = temp_dir("no-overwrite");
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+
+        // Wait for the first load (and CollapsedGroupsLoaded emission).
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |r| {
+            r.collapsed_groups_seeded
+        }));
+        let first_seed = repo.take_collapsed_groups_seed();
+        // Seed is consumed; future drains must not re-populate it.
+        assert!(
+            first_seed.is_some(),
+            "seed must arrive on initial Refresh"
+        );
+
+        // Trigger a second Refresh (simulates host-list reload after a create).
+        let _ = repo.commands.send(Command::Refresh);
+        // Allow time for the second CollapsedGroupsLoaded to arrive.
+        std::thread::sleep(Duration::from_millis(300));
+        repo.drain();
+
+        assert!(
+            repo.take_collapsed_groups_seed().is_none(),
+            "second Refresh must not deliver a new seed — local state is authoritative"
+        );
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
@@ -3552,4 +3858,60 @@ fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent 
         }
     }
     HostEvent::SnippetsLoaded(mapped)
+}
+
+fn load_collapsed_groups(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+) -> HashSet<String> {
+    match runtime.block_on(store.get_setting(COLLAPSED_GROUPS_SETTING)) {
+        Ok(Some(raw)) => decode_collapsed_groups(&raw),
+        _ => HashSet::new(),
+    }
+}
+
+/// Set `group_id` in the persisted collapsed-groups set to an explicit state.
+///
+/// Idempotent: inserting an already-present id or removing an absent id is a
+/// no-op on the set, so the final stored state matches `collapsed` exactly.
+/// Returns `Err(message)` if the write fails; the caller should revert local
+/// visual state and surface the message.
+fn set_collapsed_group_setting(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    group_id: &str,
+    collapsed: bool,
+) -> Result<(), String> {
+    let mut groups = load_collapsed_groups(runtime, store);
+    if collapsed {
+        groups.insert(group_id.to_string());
+    } else {
+        groups.remove(group_id);
+    }
+    let encoded = encode_collapsed_groups(&groups);
+    runtime
+        .block_on(store.set_setting(COLLAPSED_GROUPS_SETTING, &encoded))
+        .map_err(|err| {
+            tracing::warn!(
+                group_id = %group_id,
+                collapsed = %collapsed,
+                error = %err,
+                "could not persist group collapse state"
+            );
+            err.to_string()
+        })
+}
+
+fn encode_collapsed_groups(groups: &HashSet<String>) -> String {
+    let mut ids: Vec<&str> = groups.iter().map(String::as_str).collect();
+    ids.sort_unstable();
+    ids.join("\n")
+}
+
+fn decode_collapsed_groups(raw: &str) -> HashSet<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
