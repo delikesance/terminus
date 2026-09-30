@@ -3882,7 +3882,9 @@ fn render_add_host(
         let is_active = form.step() == step;
         let is_past = step.index() < form.step().index();
         let bg_color = if is_active {
-            theme.accent_soft
+            // An opaque wash keeps the accent border shell from filling
+            // the pill and obscuring the accent-colored label.
+            opaque_over(theme.dialog_bg, theme.accent_soft)
         } else {
             theme.button_bg
         };
@@ -4031,7 +4033,7 @@ fn render_add_host(
                     .password_text_rect(form)
                     .map(|r| (r.width - 16.0).max(0.0))
                     .unwrap_or(input.width - 16.0);
-                if shown.is_empty() && !focused {
+                if shown.is_empty() {
                     let placeholder = if form.is_editing() {
                         "Leave blank to keep current"
                     } else {
@@ -4046,7 +4048,8 @@ fn render_add_host(
                         theme.text_placeholder,
                         false,
                     );
-                } else {
+                }
+                if !shown.is_empty() || focused {
                     let caret = form.cursor(Field::Password);
                     let before: String = if form.password_visible() {
                         form.password().chars().take(caret).collect()
@@ -4107,7 +4110,7 @@ fn render_add_host(
                 }
             }
             _ => {
-                if form.value(field).is_empty() && !focused {
+                if form.value(field).is_empty() {
                     draw_text(
                         sugarloaf,
                         text_x,
@@ -4117,7 +4120,9 @@ fn render_add_host(
                         theme.text_placeholder,
                         false,
                     );
-                    continue;
+                    if !focused {
+                        continue;
+                    }
                 }
 
                 let (before, after) = if focused {
@@ -4169,12 +4174,11 @@ fn render_add_host(
     );
 
     if let Some(error) = form.error() {
-        // Two wrapped lines beside the buttons: a one-line elide hid the
-        // part of the message that says what went wrong.
+        // The full-width error row is separate from the footer buttons.
         let lines = wrap_lines(
             sugarloaf,
             error,
-            hint.width - 180.0,
+            hint.width,
             &opts(HINT_SIZE, theme.danger, false),
             2,
         );
@@ -4236,19 +4240,6 @@ fn render_add_host(
                 DEPTH_DIALOG_BG + 0.025,
                 ORDER_DIALOG,
             );
-            if form.is_editing() {
-                let connect = layout.connect_button_rect(form.height());
-                let connect_label = if menu_covers(connect) { "" } else { "Save" };
-                paint_chrome_button(
-                    sugarloaf,
-                    theme,
-                    terminus_ui::ButtonSpec::primary(connect).with_radius(input_radius),
-                    connect_label,
-                    HINT_SIZE,
-                    DEPTH_DIALOG_BG + 0.025,
-                    ORDER_DIALOG,
-                );
-            }
         }
         terminus_ui::AddHostStep::Auth => {
             let back = layout.back_button_rect(form.height());

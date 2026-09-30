@@ -241,6 +241,8 @@ pub const TITLE_HEIGHT: f32 = 28.0;
 pub const STEPPER_HEIGHT: f32 = 26.0;
 pub const STEPPER_GAP: f32 = 12.0;
 pub const HINT_HEIGHT: f32 = 44.0;
+pub const HINT_GAP: f32 = 12.0;
+pub const ACTION_GAP: f32 = 8.0;
 /// Corner radius (`rounded-2xl`).
 pub const DIALOG_RADIUS: f32 = 16.0;
 /// Input corner radius (`rounded-xl`).
@@ -498,7 +500,9 @@ impl AddHostForm {
     /// Total dialog height, including stepper and a hint/error line.
     pub fn height(&self) -> f32 {
         let n = self.visible_fields().len() as f32;
-        PAD + TITLE_HEIGHT + STEPPER_HEIGHT + STEPPER_GAP + n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP + PAD + HINT_HEIGHT
+        PAD + TITLE_HEIGHT + STEPPER_HEIGHT + STEPPER_GAP
+            + n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP
+            + HINT_GAP + HINT_HEIGHT + ACTION_GAP + BUTTON_HEIGHT + PAD
     }
 
     /// Show the form, empty, focused on the first field (Hostname).
@@ -978,7 +982,7 @@ impl AddHostForm {
 
     /// Leaving the address: show the user and port it carried in their
     /// own (empty) fields, so what gets saved is what the form shows.
-    fn settle_address(&mut self) {
+    pub fn settle_address(&mut self) {
         if self.focus != Field::Hostname {
             return;
         }
@@ -1006,29 +1010,6 @@ impl AddHostForm {
             self.close_identity_menu();
         }
         self.error = None;
-    }
-
-    /// If the hostname field has `user@host:port` or similar, unpack it into
-    /// the host, user and port fields now.
-    pub fn settle_address(&mut self) {
-        let address = split_address(&self.values[Field::Hostname.index()]);
-        if address.host != self.values[Field::Hostname.index()] {
-            self.values[Field::Hostname.index()] = address.host;
-            self.carets[Field::Hostname.index()] =
-                self.values[Field::Hostname.index()].chars().count();
-        }
-        if let Some(user) = address.user {
-            if self.values[Field::Username.index()].trim().is_empty() {
-                self.carets[Field::Username.index()] = user.chars().count();
-                self.values[Field::Username.index()] = user;
-            }
-        }
-        if let Some(port) = address.port {
-            if self.values[Field::Port.index()].trim().is_empty() {
-                self.carets[Field::Port.index()] = port.chars().count();
-                self.values[Field::Port.index()] = port;
-            }
-        }
     }
 
     /// Focus a specific field (mouse click into an input).
@@ -1247,7 +1228,7 @@ impl AddHostLayout {
     pub fn hint_rect(&self, dialog_height: f32) -> Rect {
         Rect::new(
             self.x + PAD,
-            self.y + dialog_height - PAD - HINT_HEIGHT,
+            self.y + dialog_height - PAD - BUTTON_HEIGHT - ACTION_GAP - HINT_HEIGHT,
             WIDTH - 2.0 * PAD,
             HINT_HEIGHT,
         )
@@ -1255,7 +1236,7 @@ impl AddHostLayout {
 
     /// Y of the footer actions row (shared by paint + hit-test).
     pub fn button_y(&self, dialog_height: f32) -> f32 {
-        self.hint_rect(dialog_height).y + 6.0
+        self.hint_rect(dialog_height).bottom() + ACTION_GAP
     }
 
     pub fn back_button_rect(&self, dialog_height: f32) -> Rect {
@@ -1403,9 +1384,6 @@ impl AddHostLayout {
                 if self.next_button_rect(dialog_height).contains(x, y) {
                     return AddHostHit::Next;
                 }
-                if form.is_editing() && self.connect_button_rect(dialog_height).contains(x, y) {
-                    return AddHostHit::Connect;
-                }
             }
             AddHostStep::Auth => {
                 if self.back_button_rect(dialog_height).contains(x, y) {
@@ -1413,9 +1391,6 @@ impl AddHostLayout {
                 }
                 if self.next_button_rect(dialog_height).contains(x, y) {
                     return AddHostHit::Next;
-                }
-                if form.is_editing() && self.connect_button_rect(dialog_height).contains(x, y) {
-                    return AddHostHit::Connect;
                 }
             }
             AddHostStep::Details => {
@@ -1509,20 +1484,21 @@ mod tests {
     #[test]
     fn leaving_the_address_fills_empty_user_and_port() {
         let mut form = open_form();
-        form.handle_input(FormInput::Next, "");
         type_into(&mut form, "tuser@127.0.0.1:2222");
         form.handle_input(FormInput::Next, "");
         assert_eq!(form.value(Field::Hostname), "127.0.0.1");
         assert_eq!(form.value(Field::Username), "tuser");
         assert_eq!(form.value(Field::Port), "2222");
-        assert_eq!(form.focused_field(), Field::Username);
+        assert_eq!(form.focused_field(), Field::Port);
     }
 
     #[test]
     fn typed_user_and_port_win_over_the_address() {
         let mut form = open_form();
+        form.set_step(AddHostStep::Auth);
         form.focus_field(Field::Username);
         type_into(&mut form, "admin");
+        form.set_step(AddHostStep::Target);
         form.focus_field(Field::Hostname);
         type_into(&mut form, "bob@box:2200");
         let values = form.values();
@@ -1765,7 +1741,13 @@ mod tests {
         form.set_error("boom");
         form.cycle_auth_method(1);
         form.open();
-        assert_eq!(form.values(), HostFormValues::default());
+        assert_eq!(
+            form.values(),
+            HostFormValues {
+                auth_method: "password".into(),
+                ..HostFormValues::default()
+            }
+        );
         assert_eq!(form.focused_field(), Field::Hostname);
         assert_eq!(form.step(), AddHostStep::Target);
         assert_eq!(form.error(), None);
@@ -1919,6 +1901,48 @@ mod tests {
             FIELD_HEIGHT + FIELD_GAP,
             "one field row difference"
         );
+    }
+
+    #[test]
+    fn wizard_errors_and_actions_have_separate_rows() {
+        let mut form = open_form();
+        for editing in [false, true] {
+            form.editing_id = editing.then(|| "edit-fixture".into());
+            for method in AUTH_METHODS {
+                form.auth_method = method.to_string();
+                for step in STEPS {
+                    form.set_step(step);
+                    form.set_error("A validation message that needs two lines");
+                    let height = form.height();
+                    let layout = AddHostLayout::centered(1200.0, 800.0, height);
+                    let hint = layout.hint_rect(height);
+                    let last = *form.visible_fields().last().unwrap();
+                    assert!(hint.y >= layout.field_rect(&form, last).unwrap().bottom());
+                    for button in [
+                        layout.cancel_button_rect(height),
+                        layout.back_button_rect(height),
+                        layout.next_button_rect(height),
+                        layout.connect_button_rect(height),
+                    ] {
+                        assert!(
+                            button.y >= hint.bottom() + 8.0,
+                            "{step:?}/{method}: error overlaps actions"
+                        );
+                        assert!(button.bottom() <= layout.rect(height).bottom() - PAD);
+                    }
+                    let next = layout.next_button_rect(height);
+                    let expected = if step == AddHostStep::Details {
+                        AddHostHit::Connect
+                    } else {
+                        AddHostHit::Next
+                    };
+                    assert_eq!(
+                        layout.hit_test(&form, next.x + 4.0, next.y + 4.0),
+                        expected
+                    );
+                }
+            }
+        }
     }
 
     #[test]
