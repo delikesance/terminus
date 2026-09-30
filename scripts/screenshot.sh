@@ -115,7 +115,12 @@ fi
 # --------------------------------------------------------------- toolchain ----
 # Xvfb/xwd/imagemagick/xdotool are not installed system-wide here; resolve them
 # from nixpkgs once and cache the paths.
-if [[ ! -s "$TOOLS_ENV" ]]; then
+[[ -s "$TOOLS_ENV" ]] && . "$TOOLS_ENV"
+if [[ ! -x "${TERMINUS_TOOL_xvfb:-}/bin/Xvfb" ||
+      ! -x "${TERMINUS_TOOL_xorg_xwd:-}/bin/xwd" ||
+      ! -x "${TERMINUS_TOOL_xorg_xwininfo:-}/bin/xwininfo" ||
+      ! -x "${TERMINUS_TOOL_xdotool:-}/bin/xdotool" ||
+      ! -x "${TERMINUS_TOOL_imagemagick:-}/bin/magick" ]]; then
     echo "screenshot.sh: resolving capture toolchain from nixpkgs (first run)…" >&2
     {
         for pkg in xvfb xorg.xwd xorg.xwininfo xdotool imagemagick; do
@@ -136,7 +141,7 @@ mkdir -p "$SHOT_DIR" "$CONFIG_DIR"
 # shellcheck disable=SC1091
 [[ -s "$DEV_DIR/gpu-env.sh" ]] && . "$DEV_DIR/gpu-env.sh"
 
-BIN="$ROOT/target/debug/rio"
+BIN="$ROOT/target/debug/terminus"
 if [[ ! -x "$BIN" ]]; then
     echo "screenshot.sh: $BIN missing — run scripts/dev.sh --once first" >&2
     exit 1
@@ -148,7 +153,7 @@ fi
 
 pick_window() {
     xwininfo -root -tree 2>/dev/null \
-        | grep -E '"Rio"|"rio"' | grep -oE '0x[0-9a-f]+' | head -1
+        | grep -Ei '"(Rio|Terminus)"' | grep -oE '0x[0-9a-f]+' | head -1
 }
 
 capture() { # capture <path> — grab the app window, fall back to the whole root
