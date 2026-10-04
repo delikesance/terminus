@@ -189,6 +189,9 @@ pub fn lookup_for_font_match(
             Some(FontEntry::Owned(d)) => d,
             Some(FontEntry::Alias(_)) | None => continue,
         };
+        if library.is_ui_font(font_id) {
+            continue;
+        }
         let is_emoji = font.is_emoji;
         let font_synth = font.synth;
 
@@ -221,6 +224,15 @@ pub struct FontLibrary {
 }
 
 impl FontLibrary {
+    /// Ids of the bundled Terminus UI faces, registering them on first
+    /// use. Idempotent and cheap after the first call.
+    pub fn ui_fonts(&self) -> UiFonts {
+        if let Some(ids) = self.inner.read().ui_fonts {
+            return ids;
+        }
+        self.inner.write().ensure_ui_fonts()
+    }
+
     pub fn new(spec: SugarloafFonts) -> (Self, Option<SugarloafErrors>) {
         let mut font_library = FontLibraryData::default();
 
@@ -593,6 +605,33 @@ pub struct FontLibraryData {
     /// that have never seen a Glyph Protocol APC, so most callers
     /// pay nothing.
     glyph_registries: FxHashMap<usize, glyph_registry::GlyphRegistry>,
+    /// Bundled UI faces (Sora / Martian Mono), registered lazily by
+    /// [`FontLibrary::ui_fonts`]. Never used as terminal fallbacks.
+    ui_fonts: Option<UiFonts>,
+}
+
+/// Font ids of the bundled Terminus UI faces. Each id is the same
+/// variable font with a different baked `wght` axis value; pass it as
+/// `DrawOpts::font_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiFonts {
+    pub sora_regular: usize,
+    pub sora_medium: usize,
+    pub sora_semibold: usize,
+    pub mono_regular: usize,
+    pub mono_medium: usize,
+}
+
+impl UiFonts {
+    fn ids(&self) -> [usize; 5] {
+        [
+            self.sora_regular,
+            self.sora_medium,
+            self.sora_semibold,
+            self.mono_regular,
+            self.mono_medium,
+        ]
+    }
 }
 
 impl Default for FontLibraryData {
@@ -605,11 +644,40 @@ impl Default for FontLibraryData {
             primary_metrics_cache: FxHashMap::default(),
             postscript_to_id: FxHashMap::default(),
             glyph_registries: FxHashMap::default(),
+            ui_fonts: None,
         }
     }
 }
 
 impl FontLibraryData {
+    /// Register the bundled UI faces once and return their ids.
+    pub fn ensure_ui_fonts(&mut self) -> UiFonts {
+        if let Some(ids) = self.ui_fonts {
+            return ids;
+        }
+        use constants::{FONT_MARTIAN_MONO, FONT_SORA};
+        let mut add = |data: &'static [u8], wght: f32| {
+            let id = self.inner.len();
+            let font = FontData::from_static_slice_with_wght(data, Some(wght))
+                .expect("bundled UI font must parse");
+            self.insert(font);
+            id
+        };
+        let ids = UiFonts {
+            sora_regular: add(FONT_SORA, 400.0),
+            sora_medium: add(FONT_SORA, 500.0),
+            sora_semibold: add(FONT_SORA, 600.0),
+            mono_regular: add(FONT_MARTIAN_MONO, 400.0),
+            mono_medium: add(FONT_MARTIAN_MONO, 500.0),
+        };
+        self.ui_fonts = Some(ids);
+        ids
+    }
+
+    fn is_ui_font(&self, font_id: usize) -> bool {
+        self.ui_fonts.is_some_and(|u| u.ids().contains(&font_id))
+    }
+
     #[inline]
     pub fn find_best_font_match(
         &self,
@@ -2724,5 +2792,23 @@ mod glyph_registry_install_tests {
 
         assert!(library.glyph_registry_for(1).unwrap().ptr_eq(&a));
         assert!(library.glyph_registry_for(2).unwrap().ptr_eq(&b));
+    }
+
+    #[test]
+    fn ui_fonts_register_once_with_distinct_weights() {
+        let (lib, _) = FontLibrary::new(SugarloafFonts::default());
+        let before = lib.inner.read().len();
+        let a = lib.ui_fonts();
+        let b = lib.ui_fonts();
+        assert_eq!(a, b, "registration must be idempotent");
+        assert_eq!(lib.inner.read().len(), before + 5);
+        let data = lib.inner.read();
+        assert_eq!(data.get(&a.sora_regular).wght_variation, Some(400.0));
+        assert_eq!(data.get(&a.sora_medium).wght_variation, Some(500.0));
+        assert_eq!(data.get(&a.sora_semibold).wght_variation, Some(600.0));
+        assert_eq!(data.get(&a.mono_regular).wght_variation, Some(400.0));
+        assert_eq!(data.get(&a.mono_medium).wght_variation, Some(500.0));
+        assert!(data.is_ui_font(a.sora_medium));
+        assert!(!data.is_ui_font(0));
     }
 }
