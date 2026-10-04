@@ -310,6 +310,31 @@ Four things to know:
   to judge layout and logic, not animation or GPU performance. For how it really
   looks on hardware, run `make dev-hot-win` (cross-build + Windows watcher).
 
+## Component gallery
+
+Chrome components are developed against a full-window gallery instead of the
+live app. Set `TERMINUS_COMPONENT_GALLERY` to a section name (`button`,
+`input`, `selection`, `navigation`, `list`, `feedback`, `overlay`, `identity`),
+a comma-separated list, or `all`: the window then paints only that gallery on
+the `frame` background (no chrome, no terminal). Each section lives in
+`frontends/rioterm/src/renderer/components/<name>.rs` as
+`paint_gallery(sugarloaf, theme, origin, width) -> height_used`.
+
+```bash
+TERMINUS_COMPONENT_GALLERY=button scripts/screenshot.sh --out /tmp/button.png
+```
+
+`scripts/screenshot.sh` inherits the variable, disables the self-updater
+(`TERMINUS_NO_UPDATE_CHECK=1`, otherwise the capture can show the released
+build), and honours `TERMINUS_BIN` / `CARGO_TARGET_DIR` to pick the binary.
+Use your own `TERMINUS_SCREENSHOT_DISPLAY` (for example `:93`) when several
+captures may run at once.
+
+UI text uses Sora and Martian Mono (bundled in `sugarloaf`, OFL licences next
+to the fonts): `draw_ui_text` / `draw_mono_text` / `measure_ui_text` in
+`frontends/rioterm/src/renderer/ui_text.rs`. Colours and metrics come from
+`terminus_ui::theme::ChromeTheme` and `terminus_ui::tokens`.
+
 ## Releases
 
 Tag a version (`vX.Y.Z`) after `misc/prepare-release.sh X.Y.Z`, then publish:

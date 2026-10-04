@@ -21,6 +21,7 @@ pub mod add_snippet;
 pub mod anim;
 pub mod button;
 pub mod chrome;
+pub mod components;
 pub mod connection;
 pub mod context_menu;
 pub mod dialog_form;
@@ -35,6 +36,7 @@ pub mod sidebar;
 pub mod snippets;
 pub mod text_field;
 pub mod theme;
+pub mod tokens;
 pub mod vault_unlock;
 
 pub use activity_bar::{

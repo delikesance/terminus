@@ -95,6 +95,9 @@ pub fn render(
     device_scale: f32,
     connecting_phase: Option<f32>,
 ) {
+    // Register Sora / Martian Mono (once per library) so every `opts()`
+    // below resolves to the UI faces.
+    super::ui_text::sync_ui_fonts(sugarloaf);
     if chrome.activity.collapsed {
         // Rail collapsed: still paint overlay dialogs (they are not part of
         // the panel). Same stacked overlay rules as the expanded path.
@@ -3314,18 +3317,9 @@ pub(crate) fn paint_line(
 
 /// Apple HIG title-bar strip + bottom hairline (island / context bar).
 pub(crate) fn paint_title_strip(sugarloaf: &mut Sugarloaf, logical_w: f32, height: f32) {
-    let strip = [
-        0x11 as f32 / 255.0,
-        0x11 as f32 / 255.0,
-        0x13 as f32 / 255.0,
-        1.0,
-    ];
-    let strip_border = [
-        0x2f as f32 / 255.0,
-        0x2f as f32 / 255.0,
-        0x35 as f32 / 255.0,
-        1.0,
-    ];
+    let theme = ChromeTheme::default();
+    let strip = theme.frame;
+    let strip_border = theme.divider;
     paint_flat(
         sugarloaf,
         &Rect::new(0.0, 0.0, logical_w, height),
@@ -4485,10 +4479,7 @@ fn render_vault_unlock(
     // Wrapped to the dialog width (two lines at most) so it never runs
     // past the dialog edge.
     let subtitle = layout.subtitle_rect();
-    let subtitle_opts = DrawOpts {
-        font_size: HINT_SIZE,
-        ..DrawOpts::default()
-    };
+    let subtitle_opts = opts(HINT_SIZE, [255; 4], false);
     let lines = wrap_lines(
         sugarloaf,
         &prompt.subtitle(),
@@ -4667,13 +4658,16 @@ fn render_vault_unlock(
 
 // ---- primitives ------------------------------------------------------
 
+/// Chrome text options: Sora (semibold when `bold`, else regular).
+/// Weight comes from the face, never from synthetic bold.
 fn opts(size: f32, color: [u8; 4], bold: bool) -> DrawOpts {
-    DrawOpts {
-        font_size: size,
-        color,
-        bold,
-        ..DrawOpts::default()
-    }
+    use super::ui_text::{ui_opts, UiFamily, UiWeight};
+    let weight = if bold {
+        UiWeight::SemiBold
+    } else {
+        UiWeight::Regular
+    };
+    ui_opts(UiFamily::Sans, size, color, weight)
 }
 
 fn draw_text(

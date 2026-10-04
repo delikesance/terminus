@@ -21,6 +21,7 @@ pub(crate) fn rgb_u8(color: [f32; 4]) -> [u8; 3] {
 
 pub mod assistant;
 pub mod chrome;
+pub mod components;
 pub mod command_palette;
 pub mod confirm_quit;
 pub mod custom_cursor;
@@ -30,6 +31,7 @@ pub mod scrollbar;
 pub mod search;
 pub mod sftp_pane;
 pub mod trail_cursor;
+pub mod ui_text;
 pub mod utils;
 #[cfg(target_os = "windows")]
 pub mod window_controls;
@@ -369,7 +371,7 @@ impl Renderer {
                 decay_slow: config.effects.trail_cursor_decay[1] as f32 / 1000.0,
                 start_threshold: config.effects.trail_cursor_start_threshold as f32,
             }),
-            chrome_theme: terminus_ui::theme::ChromeTheme::apple_hig(),
+            chrome_theme: terminus_ui::theme::ChromeTheme::default(),
         }
     }
 
