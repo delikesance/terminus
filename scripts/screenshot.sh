@@ -43,7 +43,10 @@
 # window.
 #
 # Env: TERMINUS_SCREENSHOT_DISPLAY (default :99), TERMINUS_DEV_NO_NIX=1 to skip
-# the devshell re-exec.
+# the devshell re-exec, CARGO_TARGET_DIR / TERMINUS_BIN to pick the binary
+# (default $CARGO_TARGET_DIR|target/debug/terminus), and
+# TERMINUS_COMPONENT_GALLERY=<all|button|...> to capture the component
+# gallery instead of the normal UI (inherited by the app).
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -141,7 +144,10 @@ mkdir -p "$SHOT_DIR" "$CONFIG_DIR"
 # shellcheck disable=SC1091
 [[ -s "$DEV_DIR/gpu-env.sh" ]] && . "$DEV_DIR/gpu-env.sh"
 
-BIN="$ROOT/target/debug/terminus"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+BIN="${TERMINUS_BIN:-$TARGET_DIR/debug/terminus}"
+[[ -x "$BIN" ]] || BIN="$TARGET_DIR/debug/rio"
+echo "screenshot.sh: using $BIN" >&2
 if [[ ! -x "$BIN" ]]; then
     echo "screenshot.sh: $BIN missing — run scripts/dev.sh --once first" >&2
     exit 1
@@ -173,7 +179,13 @@ capture() { # capture <path> — grab the app window, fall back to the whole roo
 rm -f "/tmp/.X${DISP#:}-lock"
 Xvfb "$DISP" -screen 0 "${SIZE}x24" -nolisten tcp >"$DEV_DIR/logs/xvfb.log" 2>&1 &
 XVFB_PID=$!
-sleep 2
+# Wait for the X socket instead of a fixed sleep: under load Xvfb needs more
+# than 2s, and the app dies with XOpenDisplayFailed if it starts first.
+for _ in $(seq 1 100); do
+    [[ -S "/tmp/.X11-unix/X${DISP#:}" ]] && break
+    sleep 0.2
+done
+sleep 1
 
 # xwininfo/xwd/xdotool all need the display. Export it for this shell too, not
 # just for the app: without it every window lookup silently finds nothing.
@@ -196,7 +208,9 @@ find_readline_shell() {
     return 1
 }
 
-app_env=(DISPLAY="$DISP" TERMINUS_LOG_LEVEL="${TERMINUS_LOG_LEVEL:-info}")
+# Never self-update during a capture: the updater swaps in the released build
+# and the screenshot would show that instead of the working tree.
+app_env=(DISPLAY="$DISP" TERMINUS_LOG_LEVEL="${TERMINUS_LOG_LEVEL:-info}" TERMINUS_NO_UPDATE_CHECK=1)
 [[ "$USE_CONFIG" == "1" ]] && app_env+=(TERMINUS_CONFIG_HOME="$CONFIG_DIR")
 if shell_bin="$(find_readline_shell)"; then
     app_env+=(SHELL="$shell_bin")

@@ -56,6 +56,18 @@ impl Screen<'_> {
             }
         }
 
+        // Component gallery mode (TERMINUS_COMPONENT_GALLERY): paint the
+        // gallery full-window instead of the chrome + terminal.
+        if let Some(selector) = crate::renderer::components::gallery_selector() {
+            crate::renderer::components::paint_gallery_frame(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+                selector,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
+
         self.tick_session_connecting();
         let host_drag_action = self.tick_host_drag_animation();
         if let Some(action) = host_drag_action {
