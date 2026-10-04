@@ -23,3 +23,10 @@ pub const WGHT_REGULAR: f32 = 400.0;
 /// `wght` axis value used when a slot wants bold weight (matches the
 /// Cascadia Code variable font's bold instance).
 pub const WGHT_BOLD: f32 = 700.0;
+
+/// Sora variable font (wght 100-800), OFL. Terminus UI chrome face.
+pub const FONT_SORA: &[u8] = include_bytes!("resources/UiFonts/Sora-Variable.ttf");
+
+/// Martian Mono variable font (wdth, wght), OFL. Terminus UI mono face.
+pub const FONT_MARTIAN_MONO: &[u8] =
+    include_bytes!("resources/UiFonts/MartianMono-Variable.ttf");
