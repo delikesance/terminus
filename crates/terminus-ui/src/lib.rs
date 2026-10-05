@@ -72,7 +72,7 @@ pub use settings::{
 };
 pub use sftp_pane::{
     hit_is_clickable, hit_is_text, join_remote, parent_path, SftpBackend,
-    SftpClickResult, SftpConflictKind, SftpConflictPrompt, SftpDrag, SftpFocus, SftpHit,
+    SftpClickResult, SftpConflictKey, SftpConflictKind, SftpConflictPrompt, SftpDrag, SftpFocus, SftpHit,
     SftpNameEdit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState,
     BTN_GAP, BTN_SIZE, FOOTER_HEIGHT, HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT,
     SFTP_DRAG_THRESHOLD, TOOLBAR_HEIGHT,

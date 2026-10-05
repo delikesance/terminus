@@ -26,6 +26,7 @@
 #   --text TEXT         type TEXT without pressing Return, for filling form
 #                       fields one Tab at a time
 #   --click X,Y         move the pointer to X,Y (window-relative) and click
+#   --rclick X,Y        same, with the right button (context menus)
 #   --move X,Y          move the pointer without clicking, to capture a
 #                       hover state
 #
@@ -77,6 +78,7 @@ while [[ $# -gt 0 ]]; do
         --type) INPUT+=(type "$2"); shift 2 ;;
         --text) INPUT+=(text "$2"); shift 2 ;;
         --click) INPUT+=(click "$2"); shift 2 ;;
+        --rclick) INPUT+=(rclick "$2"); shift 2 ;;
         --move) INPUT+=(move "$2"); shift 2 ;;
         --no-resize) RESIZE=0; shift ;;
         --hot-config) HOT_CONFIG="$2"; shift 2 ;;
@@ -286,6 +288,13 @@ if [[ ${#INPUT[@]} -gt 0 ]]; then
                     sleep 0.3
                     xdotool click 1 2>/dev/null || true
                     echo "  clicked: $value"
+                    sleep 1.5
+                    ;;
+                rclick)
+                    xdotool mousemove --window "$win" "${value%,*}" "${value#*,}" 2>/dev/null || true
+                    sleep 0.3
+                    xdotool click 3 2>/dev/null || true
+                    echo "  right-clicked: $value"
                     sleep 1.5
                     ;;
                 move)
