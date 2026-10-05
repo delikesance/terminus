@@ -19,6 +19,8 @@ mod mouse;
 #[cfg(windows)]
 mod panic;
 mod platform;
+#[cfg(target_os = "linux")]
+mod power;
 mod renderer;
 mod router;
 mod scheduler;

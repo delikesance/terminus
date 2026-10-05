@@ -76,6 +76,8 @@ impl Application<'_> {
             rio_backend::config::config_dir_path(),
             event_proxy.clone(),
         );
+        #[cfg(target_os = "linux")]
+        crate::power::start_resume_monitor(event_proxy.clone());
         let scheduler = Scheduler::new(proxy);
         event_loop.listen_device_events(DeviceEvents::Never);
 
@@ -184,6 +186,16 @@ impl Application<'_> {
             self.event_proxy.clone(),
             &self.config.bindings.keys,
         );
+    }
+
+    /// GPU textures may be blank after sleep/hibernate while the glyph
+    /// caches still point at them: drop the caches and repaint. No-op at
+    /// startup, when no route exists yet.
+    fn rebuild_gpu_caches(&mut self) {
+        for route in self.router.routes.values_mut() {
+            route.window.screen.on_system_resume();
+            route.request_overlay_redraw();
+        }
     }
 
     fn dispatch_sidebar_intent(&mut self, intent: terminus_ui::sidebar::SidebarIntent) {
@@ -419,12 +431,9 @@ impl Application<'_> {
 
 impl ApplicationHandler<EventPayload> for Application<'_> {
     fn resumed(&mut self, _active_event_loop: &ActiveEventLoop) {
-        // Also fired on Windows after sleep/hibernate: GPU textures may be
-        // blank, so rebuild the glyph atlases (no routes yet at startup).
-        for route in self.router.routes.values_mut() {
-            route.window.screen.on_system_resume();
-            route.request_overlay_redraw();
-        }
+        // Also fired on Windows after sleep/hibernate (Linux sends
+        // `RioEvent::SystemResumed` instead).
+        self.rebuild_gpu_caches();
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -504,6 +513,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: EventPayload) {
         let window_id = event.window_id;
         match event.payload {
+            RioEventType::Rio(RioEvent::SystemResumed) => self.rebuild_gpu_caches(),
             RioEventType::Rio(RioEvent::Render) => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
                     // Skip rendering for unfocused windows if configured
