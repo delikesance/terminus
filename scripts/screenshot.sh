@@ -34,7 +34,8 @@
 # write them, so a --click that opens a dialog can precede the --text that
 # fills it.
 #   --no-resize         keep the window at its configured size
-#   --hot-config TEXT   add TEXT to .dev/config/config.toml, wait, capture again
+#   --hot-config TEXT   add TEXT to the run's copy of .dev/config/config.toml,
+#                       wait, capture again
 #   --keep              leave Xvfb + the app running after the capture
 #   -- <args>           pass the rest through to rio
 #
@@ -84,7 +85,7 @@ while [[ $# -gt 0 ]]; do
         --hot-config) HOT_CONFIG="$2"; shift 2 ;;
         --keep) KEEP=1; shift ;;
         --) shift; APP_ARGS=("$@"); break ;;
-        -h|--help) sed -n '2,52p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,53p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "screenshot.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
@@ -157,6 +158,28 @@ fi
 
 if [[ ! -f "$CONFIG_FILE" && "$USE_CONFIG" == "1" && -f "$ROOT/dev/config/config.toml" ]]; then
     cp "$ROOT/dev/config/config.toml" "$CONFIG_FILE"
+fi
+
+# Open the window at the capture size instead of resizing it once the shell
+# is up. A resize that unwraps a coloured prompt the shell already printed
+# leaves bash's readline with stale prompt bookkeeping (its invisible-char
+# count is computed for the old wrap), so the first command line is redrawn
+# shifted and the History row read from it is wrong. Every terminal shows
+# that after a live resize; a capture must not start from it. The app gets
+# a per-run copy of the config with [window] width/height set; --hot-config
+# edits that copy, so .dev/config/config.toml itself is never changed.
+if [[ "$USE_CONFIG" == "1" && "$RESIZE" == "1" && -f "$CONFIG_FILE" ]]; then
+    RUN_CONFIG_DIR="$DEV_DIR/run-config/${DISP#:}"
+    mkdir -p "$RUN_CONFIG_DIR"
+    awk -v w="${SIZE%x*}" -v h="${SIZE#*x}" '
+        /^[[:space:]]*\[/ { in_window = ($0 ~ /^[[:space:]]*\[window\][[:space:]]*$/) }
+        in_window && /^[[:space:]]*(width|height)[[:space:]]*=/ { next }
+        { print }
+        /^[[:space:]]*\[window\][[:space:]]*$/ { print "width = " w; print "height = " h; seen = 1 }
+        END { if (!seen) { print ""; print "[window]"; print "width = " w; print "height = " h } }
+    ' "$CONFIG_FILE" >"$RUN_CONFIG_DIR/config.toml"
+    CONFIG_DIR="$RUN_CONFIG_DIR"
+    CONFIG_FILE="$RUN_CONFIG_DIR/config.toml"
 fi
 
 pick_window() {
