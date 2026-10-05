@@ -792,15 +792,10 @@ impl Chrome {
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let dialog = layout.rect(self.form.height());
-            let on_auth_menu = self.form.auth_menu_open()
-                && layout
-                    .auth_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            let on_identity_menu = self.form.identity_menu_open()
-                && layout
-                    .identity_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            if !dialog.contains(x, y) && !on_auth_menu && !on_identity_menu {
+            let on_menu = layout
+                .menu_rect(&self.form)
+                .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_menu {
                 self.form.close();
                 return ChromeAction::Consumed;
             }
@@ -823,10 +818,6 @@ impl Chrome {
                     }
                     ChromeAction::Consumed
                 }
-                AddHostHit::ToggleAuthMenu => {
-                    self.form.toggle_auth_menu();
-                    ChromeAction::Consumed
-                }
                 AddHostHit::SelectAuth(index) => {
                     self.form.select_auth_method(index);
                     ChromeAction::Consumed
@@ -838,6 +829,21 @@ impl Chrome {
                 AddHostHit::SelectIdentity(index) => {
                     self.form.select_identity(index);
                     ChromeAction::Consumed
+                }
+                AddHostHit::ToggleGroupMenu => {
+                    self.form.toggle_group_menu();
+                    ChromeAction::Consumed
+                }
+                AddHostHit::SelectGroup(index) => {
+                    self.form.select_group(index);
+                    ChromeAction::Consumed
+                }
+                AddHostHit::GenerateKey => {
+                    // The key draft opens over the wizard; a new key shows
+                    // up in the select as soon as the store reports it.
+                    self.open_settings(SettingsTab::Keys);
+                    self.settings.open_key_draft();
+                    ChromeAction::FocusKeyDraft
                 }
                 AddHostHit::TogglePasswordVisible => {
                     self.form.toggle_password_visible();
@@ -851,18 +857,13 @@ impl Chrome {
                     self.form.next_step();
                     ChromeAction::Consumed
                 }
-                AddHostHit::Cancel => {
+                AddHostHit::Cancel | AddHostHit::Close => {
                     self.form.close();
                     ChromeAction::Consumed
                 }
                 AddHostHit::Connect => ChromeAction::SubmitHostForm,
                 AddHostHit::Consume => {
-                    if self.form.auth_menu_open() {
-                        self.form.close_auth_menu();
-                    }
-                    if self.form.identity_menu_open() {
-                        self.form.close_identity_menu();
-                    }
+                    self.form.close_menu();
                     ChromeAction::Consumed
                 }
             };
@@ -1113,34 +1114,21 @@ impl Chrome {
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let mut changed = false;
-            if self.form.auth_menu_open() {
-                let mut hover = None;
-                for i in 0..crate::add_host::AUTH_METHODS.len() {
-                    if let Some(opt) = layout.auth_option_rect(&self.form, i) {
-                        if opt.contains(x, y) {
-                            hover = Some(i);
-                            break;
-                        }
-                    }
-                }
-                changed |= self.form.set_auth_menu_hover(hover);
+            if self.form.menu().is_some() {
+                let hover = (0..self.form.menu_len()).find(|&i| {
+                    layout
+                        .menu_option_rect(&self.form, i)
+                        .is_some_and(|opt| opt.contains(x, y))
+                });
+                changed |= self.form.set_menu_hover(hover);
             } else {
-                changed |= self.form.set_auth_menu_hover(None);
+                changed |= self.form.set_menu_hover(None);
             }
-            if self.form.identity_menu_open() {
-                let mut hover = None;
-                for i in 0..self.form.identities().len() {
-                    if let Some(opt) = layout.identity_option_rect(&self.form, i) {
-                        if opt.contains(x, y) {
-                            hover = Some(i);
-                            break;
-                        }
-                    }
-                }
-                changed |= self.form.set_identity_menu_hover(hover);
-            } else {
-                changed |= self.form.set_identity_menu_hover(None);
-            }
+            let target = match layout.hit_test(&self.form, x, y) {
+                AddHostHit::Consume | AddHostHit::Field(_) => None,
+                other => Some(other),
+            };
+            changed |= self.form.set_hover(target);
             return changed;
         }
         let origin_y = self.origin_y();
@@ -1275,15 +1263,10 @@ impl Chrome {
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let dialog = layout.rect(self.form.height());
-            let on_auth_menu = self.form.auth_menu_open()
-                && layout
-                    .auth_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            let on_identity_menu = self.form.identity_menu_open()
-                && layout
-                    .identity_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            if !dialog.contains(x, y) && !on_auth_menu && !on_identity_menu {
+            let on_menu = layout
+                .menu_rect(&self.form)
+                .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_menu {
                 return ChromeCursor::Pointer; // scrim dismiss
             }
             return match layout.hit_test(&self.form, x, y) {
@@ -1291,11 +1274,14 @@ impl Chrome {
                 AddHostHit::StepPill(_)
                 | AddHostHit::Back
                 | AddHostHit::Next
-                | AddHostHit::ToggleAuthMenu
                 | AddHostHit::SelectAuth(_)
                 | AddHostHit::ToggleIdentityMenu
                 | AddHostHit::SelectIdentity(_)
+                | AddHostHit::ToggleGroupMenu
+                | AddHostHit::SelectGroup(_)
                 | AddHostHit::TogglePasswordVisible
+                | AddHostHit::GenerateKey
+                | AddHostHit::Close
                 | AddHostHit::Connect
                 | AddHostHit::Cancel => ChromeCursor::Pointer,
                 AddHostHit::Consume => ChromeCursor::Default,
@@ -1587,7 +1573,7 @@ impl Chrome {
         crate::add_host::AddHostLayout::centered(
             window_width,
             window_height,
-            self.form.height(),
+            self.form.anchor_height(),
         )
     }
 }
@@ -1972,7 +1958,7 @@ mod tests {
         assert!(chrome.add_host_is_open());
         assert_eq!(chrome.form.focused_field(), Field::Hostname);
 
-        let cancel = layout.cancel_button_rect(chrome.form.height());
+        let cancel = layout.secondary_button_rect(&chrome.form);
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, cancel.x + 4.0, cancel.y + 4.0),
             ChromeAction::Consumed
@@ -1981,7 +1967,7 @@ mod tests {
 
         chrome.open_add_host();
         chrome.form.insert("srv.local");
-        let next_btn = layout.next_button_rect(chrome.form.height());
+        let next_btn = layout.primary_button_rect(&chrome.form);
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, next_btn.x + 4.0, next_btn.y + 4.0),
             ChromeAction::Consumed
@@ -1990,7 +1976,7 @@ mod tests {
 
         chrome.form.set_step(crate::add_host::AddHostStep::Details);
         let layout_details = chrome.dialog_layout(1200.0, 800.0);
-        let connect = layout_details.connect_button_rect(chrome.form.height());
+        let connect = layout_details.primary_button_rect(&chrome.form);
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, connect.x + 4.0, connect.y + 4.0),
             ChromeAction::SubmitHostForm
@@ -2180,6 +2166,7 @@ mod tests {
                 auth_method: "password".into(),
                 password: String::new(),
                 identity_id: None,
+                ..crate::add_host::HostFormValues::default()
             },
             "id-0".into(),
         );
