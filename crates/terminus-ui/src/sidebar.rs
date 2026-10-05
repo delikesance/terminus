@@ -1617,11 +1617,8 @@ impl HostPanel {
                     let mut j = i + 1;
                     while j < self.rows.len() {
                         match &self.rows[j] {
-                            Row::Section(_) => break,
-                            Row::Group { .. } => {
-                                any = true;
-                                break;
-                            }
+                            // A group header starts its own section.
+                            Row::Section(_) | Row::Group { .. } => break,
                             Row::Host(host) => {
                                 if host_visible(host) {
                                     any = true;
@@ -3322,5 +3319,14 @@ mod tests {
         panel.set_rows(rows);
         assert!(panel.host_add_session_rect(0.0, 5).is_none());
         assert!(panel.host_chevron_rect(0.0, 5).is_none());
+    }
+
+    #[test]
+    fn filtering_hides_a_section_whose_own_rows_do_not_match() {
+        let mut panel = HostPanel::default();
+        panel.set_rows(shell_rows());
+        panel.filter = "prod".into();
+        // "This computer" (local only) is hidden; the group with prod stays.
+        assert_eq!(panel.visible_row_indices(), vec![2, 3]);
     }
 }

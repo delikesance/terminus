@@ -562,6 +562,8 @@ mod tests {
             auth_method: auth_method.into(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),

@@ -80,14 +80,7 @@ pub(super) fn paint(
             continue;
         };
         let label = elide(sugarloaf, &pill.label, *lw);
-        let mut state = pill.state(hovered == Some(i));
-        // Pinned sessions never show a close ×; draw them as their
-        // close-less look when hovered.
-        if !pill.closable
-            && state == terminus_ui::components::navigation::PillState::Hover
-        {
-            state = terminus_ui::components::navigation::PillState::Default;
-        }
+        let state = pill.state(hovered == Some(i));
         // The component fills with `radius::PILL` (999), which sugarloaf
         // does not clamp to half the height and so drops; lay the capsule
         // here first.
@@ -95,10 +88,14 @@ pub(super) fn paint(
             fill(sugarloaf, rect, bg, rect.height * 0.5);
         }
         if !pill.closable
-            && state == terminus_ui::components::navigation::PillState::Active
+            && matches!(
+                state,
+                terminus_ui::components::navigation::PillState::Active
+                    | terminus_ui::components::navigation::PillState::Hover
+            )
         {
-            // The component's Active look always carries a ×; a pinned
-            // session has none, so its label is drawn here.
+            // The component's Active / Hover looks always carry a ×; a
+            // pinned session has none, so its label is drawn here.
             crate::renderer::ui_text::draw_ui_text(
                 sugarloaf,
                 session_pill::text_x(rect, false),

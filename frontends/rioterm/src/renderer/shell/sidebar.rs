@@ -23,12 +23,13 @@ use crate::renderer::ui_text::{
     draw_mono_text, draw_ui_text, measure_mono_text, measure_ui_text, UiWeight,
 };
 
-/// Shortcut hint on the command bar.
+/// Shortcut hint on the command bar: the palette's real binding
+/// (Ctrl+Shift+P). The mock's "Ctrl K" would steal readline's kill-line.
 fn palette_hint() -> &'static str {
     if cfg!(target_os = "macos") {
-        "⌘ K"
+        "⌘⇧P"
     } else {
-        "Ctrl K"
+        "Ctrl⇧P"
     }
 }
 

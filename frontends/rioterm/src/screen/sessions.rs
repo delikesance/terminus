@@ -189,6 +189,9 @@ impl Screen<'_> {
         id: &str,
         clipboard: &mut Clipboard,
     ) -> Result<(), String> {
+        // Picking a machine brings its terminal forward (design: a sidebar
+        // row always lands on Terminal).
+        self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
         // If this host already has open sessions, focus the last one (else first).
         {
             let len = self.context_manager.len();
