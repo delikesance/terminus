@@ -3256,6 +3256,21 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         }
                     }
                     MouseScrollDelta::PixelDelta(mut lpos) => {
+                        // Touchpads: the host list owns the wheel over
+                        // the sidebar, in pixels.
+                        {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            if route.window.screen.chrome_wheel_pixels(
+                                mx,
+                                my,
+                                lpos.y as f32 / scale,
+                            ) {
+                                route.request_overlay_redraw();
+                                return;
+                            }
+                        }
                         match phase {
                             TouchPhase::Started => {
                                 // Reset offset to zero.
