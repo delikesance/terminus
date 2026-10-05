@@ -6,59 +6,102 @@ use crate::renderer::views::files::{self as files_view, FilesAction};
 use rio_window::window::CursorIcon;
 use terminus_ui::views::files::FilesHit;
 
-/// SFTP credentials for a host: `(password, (private key PEM, passphrase))`.
-pub(super) type SftpAuth = (Option<String>, Option<(String, Option<String>)>);
+use crate::hosts::SftpAuth;
 
 impl Screen<'_> {
-    /// Resolve password / identity for an SSH host used by SFTP.
-    pub(super) fn resolve_sftp_auth(
-        &self,
-        host: &hosts::HostRow,
-    ) -> Result<SftpAuth, String> {
-        let password = if host.auth_method == "password" {
-            match self.host_store.resolve_host_password(&host.id)? {
-                Some(pw) => Some(pw),
-                None => {
-                    return Err(crate::hosts::msg::NO_PASSWORD.into());
-                }
-            }
-        } else {
-            None
-        };
-
-        let identity = if host.auth_method == "password" || host.auth_method == "gssapi" {
-            None
-        } else {
-            match self.host_store.resolve_host_identity(&host.id)? {
-                Some(pair) => Some(pair),
-                None => {
-                    return Err(crate::hosts::msg::NO_SSH_KEY.into());
-                }
-            }
-        };
-
-        Ok((password, identity))
+    /// Sidebar id of the selected machine (the current tab's).
+    fn selected_machine_id(&self) -> String {
+        self.chrome
+            .shell
+            .machine
+            .as_ref()
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| hosts::LOCAL_ID.to_string())
     }
 
-    /// Open the dual-pane SFTP browser for `host_id` on the current leaf pane.
-    /// Resolve SFTP credentials; a locked vault opens the unlock modal and
-    /// retries once unlocked (`Ok(None)`), like opening a shell does.
-    fn resolve_sftp_auth_or_unlock(
-        &mut self,
-        host: &crate::hosts::HostRow,
-        other_pane: bool,
-    ) -> Result<Option<SftpAuth>, String> {
-        match self.resolve_sftp_auth(host) {
-            Ok(auth) => Ok(Some(auth)),
-            Err(err) if err.contains("Unlock the vault") => {
-                self.open_vault_unlock_for(terminus_ui::PendingVaultAction::OpenSftp {
-                    host_id: host.id.clone(),
-                    other_pane,
-                });
-                Ok(None)
-            }
-            Err(err) => Err(err),
+    /// Whether `host_id` already has a browser (shown or parked).
+    fn has_sftp_browser(&self, host_id: &str) -> bool {
+        self.sftp.as_ref().is_some_and(|s| s.machine_id == host_id)
+            || self.sftp_parked.contains(host_id)
+    }
+
+    /// Ask the host-store worker for `host`'s SFTP credentials without
+    /// waiting (a slow sync or probe may hold it): the browser opens in
+    /// [`Self::settle_sftp_auth`] when they arrive. Meanwhile Files shows
+    /// "Connecting to …".
+    fn request_sftp_auth(&mut self, host: &hosts::HostRow, other_pane: bool) {
+        let selected = self.selected_machine_id();
+        if !self
+            .sftp_pending
+            .iter()
+            .any(|(id, other, _)| *id == host.id && *other == other_pane)
+        {
+            self.sftp_pending.push((host.id.clone(), other_pane, selected));
+            self.host_store
+                .request_sftp_auth(&host.id, &host.auth_method);
         }
+        if !other_pane {
+            self.chrome.screens.files.begin_connecting(&host.id);
+        }
+        self.mark_dirty();
+    }
+
+    /// Open the browsers whose credentials arrived (after a store drain).
+    /// A locked vault opens the unlock prompt and retries once unlocked;
+    /// other failures go to the Files view (with Retry) or the sidebar.
+    pub(super) fn settle_sftp_auth(&mut self) -> bool {
+        let replies = self.host_store.take_sftp_auth_replies();
+        let any = !replies.is_empty();
+        for (id, result) in replies {
+            let waiting: Vec<(bool, String)> = self
+                .sftp_pending
+                .iter()
+                .filter(|(pid, _, _)| *pid == id)
+                .map(|(_, other, selected)| (*other, selected.clone()))
+                .collect();
+            self.sftp_pending.retain(|(pid, _, _)| *pid != id);
+            for (other_pane, selected_then) in waiting {
+                // The user moved to another machine while the key was
+                // read: open the browser parked, don't pull them back.
+                let focus = self.selected_machine_id() == selected_then;
+                if !other_pane {
+                    self.chrome.screens.files.end_connecting(&id);
+                }
+                let opened = match result.clone() {
+                    Ok(auth) => self.sftp_host_row(&id).and_then(|host| {
+                        if other_pane && self.sftp.is_some() {
+                            let (password, identity) = auth;
+                            let session = self.sftp.as_mut().expect("checked");
+                            session.open_other_host(&host, password, identity)
+                        } else {
+                            self.show_sftp_browser(&host, Some(auth), focus)
+                        }
+                    }),
+                    Err(err) if err.contains("Unlock the vault") => {
+                        self.open_vault_unlock_for(
+                            terminus_ui::PendingVaultAction::OpenSftp {
+                                host_id: id.clone(),
+                                other_pane,
+                            },
+                        );
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                };
+                if let Err(err) = opened {
+                    let files = &mut self.chrome.screens.files;
+                    if !other_pane && files.machine_id == id {
+                        files.fail(err);
+                    } else {
+                        self.chrome.panel.error = Some(err);
+                    }
+                }
+            }
+        }
+        if any {
+            self.mark_dirty();
+        }
+        any
     }
 
     pub(super) fn sftp_host_row(&self, host_id: &str) -> Result<hosts::HostRow, String> {
@@ -73,13 +116,28 @@ impl Screen<'_> {
             .ok_or_else(|| format!("No stored host {host_id}"))
     }
 
+    /// Open (or bring back) the SFTP browser of `host_id`. A machine
+    /// that has one gets it back at once; otherwise its credentials are
+    /// requested and the browser opens when they arrive — the UI thread
+    /// never waits on the host store.
     pub fn open_sftp_pane(&mut self, host_id: &str) -> Result<(), String> {
         let host = self.sftp_host_row(host_id)?;
-        let Some((password, identity)) =
-            self.resolve_sftp_auth_or_unlock(&host, false)?
-        else {
-            return Ok(());
-        };
+        if self.has_sftp_browser(host_id) {
+            return self.show_sftp_browser(&host, None, true);
+        }
+        self.request_sftp_auth(&host, false);
+        Ok(())
+    }
+
+    /// Show `host`'s browser: its existing one, or a new one started with
+    /// `auth`.
+    fn show_sftp_browser(
+        &mut self,
+        host: &hosts::HostRow,
+        auth: Option<SftpAuth>,
+        focus: bool,
+    ) -> Result<(), String> {
+        let host_id = host.id.as_str();
         let wake = self.sftp_wake.clone();
         let owner = crate::sftp_ui::ActiveSftp::owner;
 
@@ -88,15 +146,20 @@ impl Screen<'_> {
         // browser gets it back instead of a new connection.
         self.sftp_parked.follow(&mut self.sftp, owner, host_id);
         if self.sftp.is_none() {
+            let Some((password, identity)) = auth else {
+                return Err("SFTP credentials are missing".into());
+            };
             let session =
-                crate::sftp_ui::ActiveSftp::start(&host, password, identity, wake)?;
+                crate::sftp_ui::ActiveSftp::start(host, password, identity, wake)?;
             self.sftp = Some(session);
         }
 
         // The browser lives in the Files view of its machine: bring that
         // machine forward when it has a tab; otherwise the browser waits,
         // parked, until the machine is selected.
-        if !self.focus_machine_tab(host_id) {
+        let shown = (focus && self.focus_machine_tab(host_id))
+            || self.selected_machine_id() == host_id;
+        if !shown {
             if let Some(session) = self.sftp.take() {
                 if let Some(old) = self.sftp_parked.park(session, owner) {
                     old.close();
@@ -148,13 +211,7 @@ impl Screen<'_> {
             return self.open_sftp_pane(host_id);
         }
         let host = self.sftp_host_row(host_id)?;
-        let Some((password, identity)) = self.resolve_sftp_auth_or_unlock(&host, true)?
-        else {
-            return Ok(());
-        };
-        let session = self.sftp.as_mut().expect("checked above");
-        session.open_other_host(&host, password, identity)?;
-        self.mark_dirty();
+        self.request_sftp_auth(&host, true);
         Ok(())
     }
 
