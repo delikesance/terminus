@@ -9,6 +9,7 @@ use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::{text_color, ChromeTheme};
 use terminus_ui::tokens::{font_size, space};
 
+use super::Layer;
 use crate::renderer::chrome::draw_icon;
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
@@ -57,6 +58,25 @@ pub fn paint_button(
     label: &str,
     icon: Option<Icon>,
 ) {
+    let layer = Layer {
+        order: ORDER,
+        depth: DEPTH,
+        backdrop: theme.canvas,
+    };
+    paint_button_on(sugarloaf, theme, spec, state, label, icon, layer);
+}
+
+/// [`paint_button`] on an explicit [`Layer`] (inside a dialog, a menu...).
+pub fn paint_button_on(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    spec: &ButtonSpec,
+    state: ButtonState,
+    label: &str,
+    icon: Option<Icon>,
+    layer: Layer,
+) {
+    let (order, depth) = (layer.order, layer.depth);
     let opacity = state.opacity();
     let c = colors(theme, spec.kind, state);
     let rect = spec.rect();
@@ -69,9 +89,9 @@ pub fn paint_button(
             ring.width,
             ring.height,
             theme.accent,
-            DEPTH,
+            depth,
             spec.focus_ring_radius(),
-            ORDER,
+            order,
         );
         let gap = spec.focus_gap_rect();
         sugarloaf.rounded_rect(
@@ -80,10 +100,10 @@ pub fn paint_button(
             gap.y,
             gap.width,
             gap.height,
-            theme.canvas,
-            DEPTH + 0.001,
+            layer.backdrop,
+            depth + 0.001,
             spec.focus_gap_radius(),
-            ORDER,
+            order,
         );
     }
     if let Some(fill) = c.fill {
@@ -94,9 +114,9 @@ pub fn paint_button(
             rect.width,
             rect.height,
             with_alpha(fill, opacity),
-            DEPTH + 0.002,
+            depth + 0.002,
             spec.radius(),
-            ORDER,
+            order,
         );
     }
     let fg = with_alpha(c.fg, opacity);
@@ -118,7 +138,7 @@ pub fn paint_button(
 }
 
 /// Resolve and paint with the pointer / keyboard flags a screen tracks.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn paint_button_live(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -335,10 +355,9 @@ pub fn paint_gallery(
     y += well.rect.height + space::XL;
 
     // ---- Icon buttons ----
-    // The icon set has no split / trash glyph yet: stand-ins below.
     let rows: [(&str, ButtonKind, ButtonSize, &str, Icon); 3] = [
-        ("Quiet · 36", ButtonKind::Quiet, ButtonSize::Medium, "Split right", Icon::LayoutGrid),
-        ("Secondary · 36", ButtonKind::Secondary, ButtonSize::Medium, "Delete key", Icon::Minus),
+        ("Quiet · 36", ButtonKind::Quiet, ButtonSize::Medium, "Split right", Icon::Columns2),
+        ("Secondary · 36", ButtonKind::Secondary, ButtonSize::Medium, "Delete key", Icon::Trash2),
         ("Quiet · 30", ButtonKind::Quiet, ButtonSize::Small, "Close", Icon::X),
     ];
     let h = well_height(rows.len(), ButtonSize::Medium.height(), true);
