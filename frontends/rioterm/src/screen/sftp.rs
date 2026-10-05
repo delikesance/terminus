@@ -19,10 +19,7 @@ impl Screen<'_> {
             match self.host_store.resolve_host_password(&host.id)? {
                 Some(pw) => Some(pw),
                 None => {
-                    return Err(
-                        "No saved password — edit the host and save one (vault unlocked)"
-                            .into(),
-                    );
+                    return Err(crate::hosts::msg::NO_PASSWORD.into());
                 }
             }
         } else {
@@ -35,10 +32,7 @@ impl Screen<'_> {
             match self.host_store.resolve_host_identity(&host.id)? {
                 Some(pair) => Some(pair),
                 None => {
-                    return Err(
-                        "No saved SSH key — edit the host and select one (Settings → Managed SSH Keys)"
-                            .into(),
-                    );
+                    return Err(crate::hosts::msg::NO_SSH_KEY.into());
                 }
             }
         };
