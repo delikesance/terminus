@@ -284,7 +284,7 @@ fn paint_form_field(
     let font = kind.value_font();
 
     let value_hidden = covered(menu, &fl.text);
-    let mut shown = String::new();
+    let mut shown: String;
     let mut caret_w = None;
     let mut placeholder = field.placeholder();
     match field {
