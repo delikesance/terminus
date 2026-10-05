@@ -22,6 +22,8 @@ pub enum HomeAction {
     Search,
     /// Open the add-server flow.
     AddServer,
+    /// Text typed on Home: open the server list filtered by it.
+    SearchText(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +99,12 @@ impl HomeState {
                     ViewOutcome::Consumed
                 }
             }
+            ViewInput::Key {
+                key: super::ViewKey::Text(ref t),
+                mods,
+            } if !mods.ctrl && !mods.alt && !mods.logo => {
+                ViewOutcome::Action(ViewAction::Home(HomeAction::SearchText(t.clone())))
+            }
             _ => ViewOutcome::Ignored,
         }
     }
@@ -108,6 +116,30 @@ mod tests {
 
     fn content() -> Rect {
         Rect::new(260.0, 104.0, 1172.0, 788.0)
+    }
+
+    #[test]
+    fn typing_on_home_searches_the_servers() {
+        use crate::screens::{ViewKey, ViewMods};
+        let mut s = HomeState::default();
+        let typed = |s: &mut HomeState, t: &str, ctrl: bool| {
+            s.handle(
+                content(),
+                &ViewInput::Key {
+                    key: ViewKey::Text(t.into()),
+                    mods: ViewMods {
+                        ctrl,
+                        ..Default::default()
+                    },
+                },
+            )
+        };
+        assert_eq!(
+            typed(&mut s, "j", false),
+            ViewOutcome::Action(ViewAction::Home(HomeAction::SearchText("j".into())))
+        );
+        // Shortcuts are not a search.
+        assert_eq!(typed(&mut s, "k", true), ViewOutcome::Ignored);
     }
 
     #[test]
