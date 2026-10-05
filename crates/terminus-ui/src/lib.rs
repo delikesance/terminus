@@ -39,6 +39,7 @@ pub mod text_field;
 pub mod theme;
 pub mod tokens;
 pub mod vault_unlock;
+pub mod views;
 
 pub use add_host::{
     auth_method_label, AddHostForm, AddHostHit, AddHostLayout, AddHostStep, Field,
