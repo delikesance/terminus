@@ -284,6 +284,16 @@ impl Sugarloaf<'_> {
         }
     }
 
+    /// Drop every GPU-resident glyph/image cache without touching fonts.
+    /// For when the GPU may have lost texture contents (sleep/hibernate):
+    /// the CPU-side bookkeeping would otherwise keep pointing at slots
+    /// that no longer hold the pixels.
+    #[inline]
+    pub fn invalidate_gpu_caches(&mut self) {
+        self.renderer.clear_atlas();
+        self.cpu_cache.clear();
+    }
+
     #[inline]
     pub fn update_font(&mut self, font_library: &FontLibrary) {
         tracing::info!("requested a font change");
