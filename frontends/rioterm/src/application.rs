@@ -1960,6 +1960,14 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::CopyText(text) => {
+                                        self.router.clipboard.set(
+                                            rio_backend::clipboard::ClipboardType::Clipboard,
+                                            text,
+                                        );
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::CopyPublicKey(key) => {
                                         self.router.clipboard.set(
                                             rio_backend::clipboard::ClipboardType::Clipboard,
