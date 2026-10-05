@@ -827,6 +827,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         .sugarloaf
                         .font_library()
                         .remove_glyph_registry(route_id);
+                    // A host session that dies while connecting reports why.
+                    route.window.screen.note_session_exit(route_id);
 
                     if route
                         .window
