@@ -319,6 +319,11 @@ nix run .#release                 # Linux + Windows → GitHub Release
 nix run .#release -- --build-only # artifacts only, no publish
 ```
 
+Linux compilation requires a running Docker daemon accessible to the user. It
+uses Ubuntu libraries in an isolated build, then validates the loader, library
+paths and ABI before packaging. See [Linux release builds](docs/linux-release.md)
+for requirements and regression checks.
+
 [`scripts/release.sh`](scripts/release.sh) (via `nix develop .#release`) produces:
 
 | Target | Artifact |

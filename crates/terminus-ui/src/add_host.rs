@@ -95,11 +95,8 @@ pub enum AddHostStep {
     Details,
 }
 
-pub const STEPS: [AddHostStep; 3] = [
-    AddHostStep::Target,
-    AddHostStep::Auth,
-    AddHostStep::Details,
-];
+pub const STEPS: [AddHostStep; 3] =
+    [AddHostStep::Target, AddHostStep::Auth, AddHostStep::Details];
 
 impl AddHostStep {
     pub const fn label(self) -> &'static str {
@@ -230,9 +227,12 @@ impl Field {
 /// Dialog metrics, in logical pixels (`max-w-md` ≈ 448).
 pub const WIDTH: f32 = 448.0;
 /// Height of one field row: a caption plus its input box.
-pub const FIELD_HEIGHT: f32 = 52.0;
-/// Top of the input box inside a field row.
-pub const INPUT_TOP: f32 = 18.0;
+pub const FIELD_HEIGHT: f32 = CAPTION_HEIGHT + CAPTION_GAP + INPUT_HEIGHT;
+/// Intrinsic size of the caption component and its gap to the input.
+pub const CAPTION_HEIGHT: f32 = 14.0;
+pub const CAPTION_GAP: f32 = 6.0;
+/// Top of the input box inside its composed field component.
+pub const INPUT_TOP: f32 = CAPTION_HEIGHT + CAPTION_GAP;
 /// Height of the input box itself.
 pub const INPUT_HEIGHT: f32 = 32.0;
 pub const FIELD_GAP: f32 = 12.0;
@@ -240,8 +240,9 @@ pub const PAD: f32 = 24.0;
 pub const TITLE_HEIGHT: f32 = 28.0;
 pub const STEPPER_HEIGHT: f32 = 26.0;
 pub const STEPPER_GAP: f32 = 12.0;
-pub const HINT_HEIGHT: f32 = 44.0;
-pub const HINT_GAP: f32 = 12.0;
+pub const NOTICE_FONT_SIZE: f32 = 11.0;
+pub const NOTICE_LINE_GAP: f32 = 3.0;
+pub const NOTICE_PAD: f32 = 4.0;
 pub const ACTION_GAP: f32 = 8.0;
 /// Corner radius (`rounded-2xl`).
 pub const DIALOG_RADIUS: f32 = 16.0;
@@ -360,6 +361,8 @@ pub struct AddHostForm {
     password_visible: bool,
     focus: Field,
     error: Option<String>,
+    /// Text measurement refreshed by the painter every frame; geometry is rebuilt.
+    notice_measurement: Option<(String, u32, crate::layout::TextBlock)>,
     /// Authentication Method dropdown is expanded.
     auth_menu_open: bool,
     /// Hovered option in the auth dropdown (`None` = none).
@@ -386,6 +389,7 @@ impl Default for AddHostForm {
             password_visible: false,
             focus: Field::Hostname,
             error: None,
+            notice_measurement: None,
             auth_menu_open: false,
             auth_menu_hover: None,
             identity_menu_open: false,
@@ -497,12 +501,40 @@ impl AddHostForm {
         }
     }
 
-    /// Total dialog height, including stepper and a hint/error line.
+    /// Content height at the default dialog width (no reserved empty notice).
     pub fn height(&self) -> f32 {
-        let n = self.visible_fields().len() as f32;
-        PAD + TITLE_HEIGHT + STEPPER_HEIGHT + STEPPER_GAP
-            + n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP
-            + HINT_GAP + HINT_HEIGHT + ACTION_GAP + BUTTON_HEIGHT + PAD
+        AddHostLayout::compute(self, WIDTH, 0.0).rect().height
+    }
+
+    /// Measure the notice with the actual UI font before this frame's layout.
+    /// Paint and pointer handling consume the same measured text component.
+    pub fn measure_notice(
+        &mut self,
+        window_width: f32,
+        measure: impl FnMut(&str) -> f32,
+    ) {
+        let width = AddHostLayout::width_for(window_width) - 2.0 * PAD;
+        self.notice_measurement = self.error().map(|error| {
+            (
+                error.to_string(),
+                width.to_bits(),
+                crate::layout::TextBlock::measure(error, width, measure),
+            )
+        });
+    }
+
+    fn notice(&self, width: f32) -> Option<crate::layout::TextBlock> {
+        let error = self.error().filter(|s| !s.is_empty())?;
+        if let Some((source, measured_width, block)) = &self.notice_measurement {
+            if source == error && *measured_width == width.to_bits() {
+                return Some(block.clone());
+            }
+        }
+        // Geometry before the first paint remains usable without GPU dependencies.
+        // The real font measurement replaces this conservative estimate each frame.
+        Some(crate::layout::TextBlock::measure(error, width, |s| {
+            s.chars().count() as f32 * NOTICE_FONT_SIZE
+        }))
     }
 
     /// Show the form, empty, focused on the first field (Hostname).
@@ -1126,74 +1158,139 @@ fn char_byte_offset(value: &str, chars: usize) -> usize {
         .unwrap_or(value.len())
 }
 
-/// Screen geometry of the dialog.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Named components in the wizard's block tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostComponent {
+    Title,
+    Step(AddHostStep),
+    Field(Field),
+    Caption(Field),
+    Input(Field),
+    Notice,
+    SecondaryAction,
+    PrimaryAction,
+    Spacer,
+}
+
+/// Geometry measured and composed from the current wizard state.
+#[derive(Debug, Clone, PartialEq)]
 pub struct AddHostLayout {
-    /// Top-left of the whole dialog.
+    /// Top-left of the whole dialog, in logical pixels.
     pub x: f32,
     pub y: f32,
+    dialog: Rect,
+    components: Vec<(HostComponent, Rect)>,
+    pub notice: Option<crate::layout::TextBlock>,
 }
 
 impl AddHostLayout {
-    /// Center the dialog in a `width` x `height` window, in logical pixels.
-    pub fn centered(width: f32, height: f32, dialog_height: f32) -> Self {
+    fn width_for(window_width: f32) -> f32 {
+        // Preserve a usable form on tiny windows while adapting normal narrow views.
+        window_width.clamp(280.0, WIDTH)
+    }
+
+    /// Compose, measure and place the current components for this frame.
+    pub fn compute(form: &AddHostForm, window_width: f32, window_height: f32) -> Self {
+        use crate::layout::Block;
+        use HostComponent::*;
+        let width = Self::width_for(window_width);
+        let notice = form.notice(width - 2.0 * PAD);
+        let fields = Block::column(
+            FIELD_GAP,
+            form.visible_fields()
+                .into_iter()
+                .map(|field| {
+                    Block::column(
+                        CAPTION_GAP,
+                        vec![
+                            Block::component(Caption(field), CAPTION_HEIGHT),
+                            Block::component(Input(field), INPUT_HEIGHT),
+                        ],
+                    )
+                    .named(Field(field))
+                })
+                .collect(),
+        );
+        let steps = Block::row(
+            6.0,
+            STEPS
+                .iter()
+                .map(|&step| Block::component(Step(step), STEPPER_HEIGHT))
+                .collect(),
+        );
+        let header =
+            Block::column(4.0, vec![Block::component(Title, TITLE_HEIGHT), steps]);
+        let mut body = vec![header, fields];
+        if let Some(text) = &notice {
+            body.push(Block::component(
+                Notice,
+                text.height(NOTICE_FONT_SIZE, NOTICE_LINE_GAP) + 2.0 * NOTICE_PAD,
+            ));
+        }
+        let primary_width = if form.step() == AddHostStep::Details {
+            CONNECT_BUTTON_WIDTH
+        } else {
+            NEXT_BUTTON_WIDTH
+        };
+        let secondary_width = if form.step() == AddHostStep::Target {
+            CANCEL_BUTTON_WIDTH
+        } else {
+            BACK_BUTTON_WIDTH
+        };
+        let actions = Block::row(
+            BUTTON_GAP,
+            vec![
+                Block::fixed(SecondaryAction, secondary_width, BUTTON_HEIGHT),
+                Block::component(Spacer, 0.0),
+                Block::fixed(PrimaryAction, primary_width, BUTTON_HEIGHT),
+            ],
+        );
+        let tree =
+            Block::column(ACTION_GAP, vec![Block::column(STEPPER_GAP, body), actions])
+                .padded(PAD);
+        let dialog = Rect::new(
+            ((window_width - width) * 0.5).max(0.0),
+            ((window_height - tree.height()) * 0.5).max(0.0),
+            width,
+            tree.height(),
+        );
+        let components = tree.layout(dialog);
         Self {
-            x: ((width - WIDTH) / 2.0).max(0.0),
-            y: ((height - dialog_height) / 2.0).max(0.0),
+            x: dialog.x,
+            y: dialog.y,
+            dialog,
+            components,
+            notice,
         }
     }
 
-    pub fn rect(&self, dialog_height: f32) -> Rect {
-        Rect::new(self.x, self.y, WIDTH, dialog_height)
+    /// Geometry for a named component; absent components have no space or hitbox.
+    pub fn component_rect(&self, key: HostComponent) -> Option<Rect> {
+        self.components
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, rect)| *rect)
+    }
+
+    pub fn rect(&self) -> Rect {
+        self.dialog
     }
 
     pub fn title_rect(&self) -> Rect {
-        Rect::new(self.x + PAD, self.y + PAD, WIDTH - 2.0 * PAD, TITLE_HEIGHT)
+        self.component_rect(HostComponent::Title).unwrap()
     }
 
-    /// The stepper progress bar under the title.
-    pub fn stepper_rect(&self) -> Rect {
-        Rect::new(
-            self.x + PAD,
-            self.y + PAD + TITLE_HEIGHT + 4.0,
-            WIDTH - 2.0 * PAD,
-            STEPPER_HEIGHT,
-        )
-    }
-
-    /// Rect for an individual step pill in the progress bar.
     pub fn step_pill_rect(&self, step: AddHostStep) -> Rect {
-        let total_w = WIDTH - 2.0 * PAD;
-        let pill_gap = 6.0;
-        let pill_w = (total_w - 2.0 * pill_gap) / 3.0;
-        let x = self.x + PAD + step.index() as f32 * (pill_w + pill_gap);
-        Rect::new(
-            x,
-            self.y + PAD + TITLE_HEIGHT + 4.0,
-            pill_w,
-            STEPPER_HEIGHT,
-        )
+        self.component_rect(HostComponent::Step(step)).unwrap()
     }
 
-    fn row_top(&self, row: usize) -> f32 {
-        self.y + PAD + TITLE_HEIGHT + STEPPER_HEIGHT + STEPPER_GAP + row as f32 * (FIELD_HEIGHT + FIELD_GAP)
+    /// Field component composed from its caption and input.
+    pub fn field_rect(&self, _form: &AddHostForm, field: Field) -> Option<Rect> {
+        self.component_rect(HostComponent::Field(field))
     }
 
-    /// The field row for `field`, or `None` when that auth detail is hidden.
-    pub fn field_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
-        let row = form.visible_fields().iter().position(|&f| f == field)?;
-        Some(Rect::new(
-            self.x + PAD,
-            self.row_top(row),
-            WIDTH - 2.0 * PAD,
-            FIELD_HEIGHT,
-        ))
-    }
-
-    /// The bordered input box inside a field row, below its caption.
-    pub fn input_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
-        let row = self.field_rect(form, field)?;
-        Some(Rect::new(row.x, row.y + INPUT_TOP, row.width, INPUT_HEIGHT))
+    pub fn input_rect(&self, _form: &AddHostForm, field: Field) -> Option<Rect> {
+        self.component_rect(HostComponent::Input(field))
     }
 
     /// Editable text region of the password input (excludes the eye slot).
@@ -1219,64 +1316,28 @@ impl AddHostLayout {
     }
 
     /// The caption line above a field's input box.
-    pub fn caption_rect(&self, form: &AddHostForm, field: Field) -> Option<Rect> {
-        let row = self.field_rect(form, field)?;
-        Some(Rect::new(row.x + 2.0, row.y, row.width - 4.0, INPUT_TOP))
+    pub fn caption_rect(&self, _form: &AddHostForm, field: Field) -> Option<Rect> {
+        self.component_rect(HostComponent::Caption(field))
     }
 
-    /// The hint / error line under the fields.
-    pub fn hint_rect(&self, dialog_height: f32) -> Rect {
-        Rect::new(
-            self.x + PAD,
-            self.y + dialog_height - PAD - BUTTON_HEIGHT - ACTION_GAP - HINT_HEIGHT,
-            WIDTH - 2.0 * PAD,
-            HINT_HEIGHT,
-        )
+    pub fn hint_rect(&self) -> Option<Rect> {
+        self.component_rect(HostComponent::Notice)
     }
 
-    /// Y of the footer actions row (shared by paint + hit-test).
-    pub fn button_y(&self, dialog_height: f32) -> f32 {
-        self.hint_rect(dialog_height).bottom() + ACTION_GAP
+    pub fn back_button_rect(&self) -> Rect {
+        self.component_rect(HostComponent::SecondaryAction).unwrap()
     }
 
-    pub fn back_button_rect(&self, dialog_height: f32) -> Rect {
-        let dialog = self.rect(dialog_height);
-        Rect::new(
-            dialog.x + PAD,
-            self.button_y(dialog_height),
-            BACK_BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        )
+    pub fn cancel_button_rect(&self) -> Rect {
+        self.back_button_rect()
     }
 
-    pub fn cancel_button_rect(&self, dialog_height: f32) -> Rect {
-        let dialog = self.rect(dialog_height);
-        Rect::new(
-            dialog.x + PAD,
-            self.button_y(dialog_height),
-            CANCEL_BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        )
+    pub fn next_button_rect(&self) -> Rect {
+        self.component_rect(HostComponent::PrimaryAction).unwrap()
     }
 
-    pub fn next_button_rect(&self, dialog_height: f32) -> Rect {
-        let dialog = self.rect(dialog_height);
-        Rect::new(
-            dialog.right() - PAD - NEXT_BUTTON_WIDTH,
-            self.button_y(dialog_height),
-            NEXT_BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        )
-    }
-
-    pub fn connect_button_rect(&self, dialog_height: f32) -> Rect {
-        let dialog = self.rect(dialog_height);
-        Rect::new(
-            dialog.right() - PAD - CONNECT_BUTTON_WIDTH,
-            self.button_y(dialog_height),
-            CONNECT_BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        )
+    pub fn connect_button_rect(&self) -> Rect {
+        self.next_button_rect()
     }
 
     /// Floating dropdown panel under the Authentication Method input.
@@ -1332,8 +1393,7 @@ impl AddHostLayout {
 
     /// Hit-test inside an open dialog. Coordinates are logical pixels.
     pub fn hit_test(&self, form: &AddHostForm, x: f32, y: f32) -> AddHostHit {
-        let dialog_height = form.height();
-        let dialog = self.rect(dialog_height);
+        let dialog = self.rect();
         // Auth / identity dropdowns may extend past the dialog bottom; still
         // accept option hits so the popover stays clickable.
         if form.auth_menu_open() {
@@ -1378,26 +1438,26 @@ impl AddHostLayout {
         // Action buttons per step
         match form.step() {
             AddHostStep::Target => {
-                if self.cancel_button_rect(dialog_height).contains(x, y) {
+                if self.cancel_button_rect().contains(x, y) {
                     return AddHostHit::Cancel;
                 }
-                if self.next_button_rect(dialog_height).contains(x, y) {
+                if self.next_button_rect().contains(x, y) {
                     return AddHostHit::Next;
                 }
             }
             AddHostStep::Auth => {
-                if self.back_button_rect(dialog_height).contains(x, y) {
+                if self.back_button_rect().contains(x, y) {
                     return AddHostHit::Back;
                 }
-                if self.next_button_rect(dialog_height).contains(x, y) {
+                if self.next_button_rect().contains(x, y) {
                     return AddHostHit::Next;
                 }
             }
             AddHostStep::Details => {
-                if self.back_button_rect(dialog_height).contains(x, y) {
+                if self.back_button_rect().contains(x, y) {
                     return AddHostHit::Back;
                 }
-                if self.connect_button_rect(dialog_height).contains(x, y) {
+                if self.connect_button_rect().contains(x, y) {
                     return AddHostHit::Connect;
                 }
             }
@@ -1575,10 +1635,16 @@ mod tests {
         let mut form = open_form();
         form.set_identities(vec![("k1".into(), "Key".into())]);
         type_into(&mut form, "vps.example.com");
-        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Enter, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Auth);
 
-        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Enter, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Details);
 
         assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Submit);
@@ -1593,13 +1659,22 @@ mod tests {
         form.next_step(); // Details
         assert_eq!(form.step(), AddHostStep::Details);
 
-        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Escape, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Auth);
 
-        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Escape, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Target);
 
-        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Cancel);
+        assert_eq!(
+            form.handle_input(FormInput::Escape, ""),
+            FormOutcome::Cancel
+        );
     }
 
     #[test]
@@ -1885,6 +1960,96 @@ mod tests {
     }
 
     #[test]
+    fn notice_space_tracks_its_content_and_disappears_when_cleared() {
+        let mut form = open_form();
+        let empty = form.height();
+        form.set_error("Enter a hostname or IP");
+        let single = form.height();
+        form.set_error("Invalid port.\nEnter a number from 1 to 65535.");
+        let wrapped = form.height();
+        assert!(
+            single > empty,
+            "an absent notice must not reserve a fixed block"
+        );
+        assert!(
+            wrapped > single,
+            "a second line must enlarge the notice block"
+        );
+        form.error = None;
+        assert_eq!(form.height(), empty);
+    }
+
+    #[test]
+    fn consecutive_frames_reflow_notice_fields_and_hitboxes() {
+        let mut form = open_form();
+        form.set_error("Invalid port. Please enter a number from 1 to 65535.");
+        let mut heights = Vec::new();
+        for width in [1000.0, 320.0, 1000.0] {
+            form.measure_notice(width, |s| s.chars().count() as f32 * 7.0);
+            let layout = AddHostLayout::compute(&form, width, 800.0);
+            let dialog = layout.rect();
+            let notice = layout.hint_rect().unwrap();
+            let next = layout.next_button_rect();
+            assert!(notice.bottom() + ACTION_GAP <= next.y);
+            assert_eq!(next.right(), dialog.right() - PAD);
+            assert_eq!(
+                layout.hit_test(&form, next.x + 8.0, next.y + 8.0),
+                AddHostHit::Next
+            );
+            assert!(
+                layout.step_pill_rect(AddHostStep::Target).bottom() + STEPPER_GAP
+                    <= layout.field_rect(&form, Field::Hostname).unwrap().y
+            );
+            heights.push(dialog.height);
+        }
+        assert!(
+            heights[1] > heights[0],
+            "narrow viewport requires more notice lines"
+        );
+        assert_eq!(
+            heights[0], heights[2],
+            "widening restores the original layout"
+        );
+
+        // The next frame can have completely different components.
+        form.error = None;
+        form.set_step(AddHostStep::Auth);
+        form.auth_method = "gssapi".into();
+        let layout = AddHostLayout::compute(&form, 320.0, 800.0);
+        assert!(layout.input_rect(&form, Field::Hostname).is_none());
+        assert!(layout.input_rect(&form, Field::Password).is_none());
+        assert!(layout.hint_rect().is_none());
+        let username = layout.input_rect(&form, Field::Username).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, username.x + 8.0, username.y + 8.0),
+            AddHostHit::Field(Field::Username)
+        );
+    }
+
+    #[test]
+    fn notice_measurements_are_invalidated_by_text_width_and_font_changes() {
+        let mut form = open_form();
+        form.set_error("A validation message whose measured size changes with the font.");
+        form.measure_notice(1000.0, |s| s.chars().count() as f32 * 5.0);
+        let small = form.height();
+        form.measure_notice(1000.0, |s| s.chars().count() as f32 * 12.0);
+        assert!(form.height() > small);
+        form.set_error("Short error");
+        assert_eq!(
+            AddHostLayout::compute(&form, 1000.0, 800.0)
+                .notice
+                .unwrap()
+                .lines,
+            ["Short error"],
+            "stale measurement must not paint an old error"
+        );
+        form.error = None;
+        assert!(AddHostLayout::compute(&form, 1000.0, 800.0)
+            .notice
+            .is_none());
+    }
+
+    #[test]
     fn height_changes_per_auth_method() {
         let mut form = open_form();
         form.set_step(AddHostStep::Auth);
@@ -1913,24 +2078,23 @@ mod tests {
                 for step in STEPS {
                     form.set_step(step);
                     form.set_error("A validation message that needs two lines");
-                    let height = form.height();
-                    let layout = AddHostLayout::centered(1200.0, 800.0, height);
-                    let hint = layout.hint_rect(height);
+                    let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
+                    let hint = layout.hint_rect().unwrap();
                     let last = *form.visible_fields().last().unwrap();
                     assert!(hint.y >= layout.field_rect(&form, last).unwrap().bottom());
                     for button in [
-                        layout.cancel_button_rect(height),
-                        layout.back_button_rect(height),
-                        layout.next_button_rect(height),
-                        layout.connect_button_rect(height),
+                        layout.cancel_button_rect(),
+                        layout.back_button_rect(),
+                        layout.next_button_rect(),
+                        layout.connect_button_rect(),
                     ] {
                         assert!(
                             button.y >= hint.bottom() + 8.0,
                             "{step:?}/{method}: error overlaps actions"
                         );
-                        assert!(button.bottom() <= layout.rect(height).bottom() - PAD);
+                        assert!(button.bottom() <= layout.rect().bottom() - PAD);
                     }
-                    let next = layout.next_button_rect(height);
+                    let next = layout.next_button_rect();
                     let expected = if step == AddHostStep::Details {
                         AddHostHit::Connect
                     } else {
@@ -1948,8 +2112,8 @@ mod tests {
     #[test]
     fn fields_are_laid_out_inside_the_dialog_and_do_not_overlap() {
         let form = open_form();
-        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
-        let dialog = layout.rect(form.height());
+        let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
+        let dialog = layout.rect();
         let visible = form.visible_fields();
 
         for &field in &visible {
@@ -1965,16 +2129,18 @@ mod tests {
         }
 
         let last = *visible.last().unwrap();
-        let hint = layout.hint_rect(form.height());
-        assert!(hint.y >= layout.field_rect(&form, last).unwrap().bottom());
-        assert!(hint.bottom() <= dialog.bottom());
+        assert!(layout.hint_rect().is_none());
+        assert!(
+            layout.next_button_rect().y
+                >= layout.field_rect(&form, last).unwrap().bottom() + ACTION_GAP
+        );
     }
 
     #[test]
     fn the_dialog_is_centered() {
         let form = open_form();
-        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
-        let dialog = layout.rect(form.height());
+        let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
+        let dialog = layout.rect();
         assert!((dialog.x - (1200.0 - WIDTH) / 2.0).abs() < f32::EPSILON);
         assert!((dialog.y - (800.0 - form.height()) / 2.0).abs() < f32::EPSILON);
     }
@@ -1982,7 +2148,7 @@ mod tests {
     #[test]
     fn a_window_smaller_than_the_dialog_does_not_go_negative() {
         let form = open_form();
-        let layout = AddHostLayout::centered(100.0, 60.0, form.height());
+        let layout = AddHostLayout::compute(&form, 100.0, 60.0);
         assert_eq!(layout.x, 0.0);
         assert_eq!(layout.y, 0.0);
     }
@@ -1991,7 +2157,7 @@ mod tests {
     fn auth_dropdown_toggle_and_select() {
         let mut form = open_form();
         form.set_step(AddHostStep::Auth);
-        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
         let auth = layout.input_rect(&form, Field::AuthMethod).unwrap();
         assert_eq!(
             layout.hit_test(&form, auth.x + 2.0, auth.y + 2.0),
@@ -2018,7 +2184,7 @@ mod tests {
             ("k2".into(), "Staging".into()),
         ]);
         form.set_step(AddHostStep::Auth);
-        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
         let identity = layout.input_rect(&form, Field::Identity).unwrap();
         assert_eq!(
             layout.hit_test(&form, identity.x + 2.0, identity.y + 2.0),
@@ -2041,7 +2207,7 @@ mod tests {
     #[test]
     fn hit_test_finds_fields_and_footer_buttons() {
         let mut form = open_form();
-        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
 
         // Step 1: Target
         let host = layout.input_rect(&form, Field::Hostname).unwrap();
@@ -2050,14 +2216,13 @@ mod tests {
             AddHostHit::Field(Field::Hostname)
         );
 
-        let h = form.height();
-        let cancel = layout.cancel_button_rect(h);
+        let cancel = layout.cancel_button_rect();
         assert_eq!(
             layout.hit_test(&form, cancel.x + 2.0, cancel.y + 2.0),
             AddHostHit::Cancel
         );
 
-        let next = layout.next_button_rect(h);
+        let next = layout.next_button_rect();
         assert_eq!(
             layout.hit_test(&form, next.x + 2.0, next.y + 2.0),
             AddHostHit::Next
@@ -2072,8 +2237,8 @@ mod tests {
 
         // Step 2: Auth
         form.set_step(AddHostStep::Auth);
-        let layout_auth = AddHostLayout::centered(1200.0, 800.0, form.height());
-        let back = layout_auth.back_button_rect(form.height());
+        let layout_auth = AddHostLayout::compute(&form, 1200.0, 800.0);
+        let back = layout_auth.back_button_rect();
         assert_eq!(
             layout_auth.hit_test(&form, back.x + 2.0, back.y + 2.0),
             AddHostHit::Back
@@ -2081,8 +2246,8 @@ mod tests {
 
         // Step 3: Details
         form.set_step(AddHostStep::Details);
-        let layout_details = AddHostLayout::centered(1200.0, 800.0, form.height());
-        let connect = layout_details.connect_button_rect(form.height());
+        let layout_details = AddHostLayout::compute(&form, 1200.0, 800.0);
+        let connect = layout_details.connect_button_rect();
         assert_eq!(
             layout_details.hit_test(&form, connect.x + 2.0, connect.y + 2.0),
             AddHostHit::Connect
@@ -2100,7 +2265,7 @@ mod tests {
         let mut form = open_form();
         form.set_step(AddHostStep::Auth);
         form.cycle_auth_method(1);
-        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
         let password = layout.input_rect(&form, Field::Password).unwrap();
         assert_eq!(
             layout.hit_test(&form, password.x + 2.0, password.y + 2.0),
@@ -2114,7 +2279,7 @@ mod tests {
         let mut form = open_form();
         form.set_step(AddHostStep::Auth);
         form.cycle_auth_method(1); // password
-        let layout = AddHostLayout::centered(1200.0, 800.0, form.height());
+        let layout = AddHostLayout::compute(&form, 1200.0, 800.0);
         let eye = layout.password_toggle_rect(&form).expect("eye slot");
         assert_eq!(
             layout.hit_test(&form, eye.x + 2.0, eye.y + 2.0),

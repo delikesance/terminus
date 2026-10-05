@@ -711,7 +711,7 @@ impl Chrome {
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
-            let dialog = layout.rect(self.form.height());
+            let dialog = layout.rect();
             let on_auth_menu = self.form.auth_menu_open()
                 && layout
                     .auth_menu_rect(&self.form)
@@ -1181,7 +1181,7 @@ impl Chrome {
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
-            let dialog = layout.rect(self.form.height());
+            let dialog = layout.rect();
             let on_auth_menu = self.form.auth_menu_open()
                 && layout
                     .auth_menu_rect(&self.form)
@@ -1491,11 +1491,7 @@ impl Chrome {
         window_width: f32,
         window_height: f32,
     ) -> crate::add_host::AddHostLayout {
-        crate::add_host::AddHostLayout::centered(
-            window_width,
-            window_height,
-            self.form.height(),
-        )
+        crate::add_host::AddHostLayout::compute(&self.form, window_width, window_height)
     }
 }
 
@@ -1825,7 +1821,7 @@ mod tests {
         assert!(chrome.add_host_is_open());
         assert_eq!(chrome.form.focused_field(), Field::Hostname);
 
-        let cancel = layout.cancel_button_rect(chrome.form.height());
+        let cancel = layout.cancel_button_rect();
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, cancel.x + 4.0, cancel.y + 4.0),
             ChromeAction::Consumed
@@ -1834,7 +1830,7 @@ mod tests {
 
         chrome.open_add_host();
         chrome.form.insert("srv.local");
-        let next_btn = layout.next_button_rect(chrome.form.height());
+        let next_btn = layout.next_button_rect();
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, next_btn.x + 4.0, next_btn.y + 4.0),
             ChromeAction::Consumed
@@ -1843,7 +1839,7 @@ mod tests {
 
         chrome.form.set_step(crate::add_host::AddHostStep::Details);
         let layout_details = chrome.dialog_layout(1200.0, 800.0);
-        let connect = layout_details.connect_button_rect(chrome.form.height());
+        let connect = layout_details.connect_button_rect();
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, connect.x + 4.0, connect.y + 4.0),
             ChromeAction::SubmitHostForm

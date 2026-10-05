@@ -2007,7 +2007,7 @@ fn add_host_label_cover(
         return None;
     }
     let layout = chrome.dialog_layout(window_width, window_height);
-    let mut cover = layout.rect(chrome.form.height());
+    let mut cover = layout.rect();
     if chrome.form.auth_menu_open() {
         if let Some(menu) = layout.auth_menu_rect(&chrome.form) {
             cover = rect_union(cover, menu);
@@ -3817,7 +3817,7 @@ fn render_add_host(
 ) {
     let form = &chrome.form;
     let layout = chrome.dialog_layout(window_width, window_height);
-    let dialog = layout.rect(form.height());
+    let dialog = layout.rect();
 
     let radius = terminus_ui::add_host::DIALOG_RADIUS;
     paint_dialog_shell(
@@ -4161,39 +4161,29 @@ fn render_add_host(
         }
     }
 
-    let hint = layout.hint_rect(form.height());
-    // Hairline above the footer actions.
+    // The measured text component defines both the block height and painted lines.
+    let footer = layout.next_button_rect();
     paint_hairline_h(
         sugarloaf,
         dialog.x + terminus_ui::add_host::PAD,
-        hint.y - 8.0,
+        footer.y - 4.0,
         dialog.width - 2.0 * terminus_ui::add_host::PAD,
         theme.panel_border,
         DEPTH_DIALOG_BG + 0.02,
         ORDER_DIALOG,
     );
-
-    if let Some(error) = form.error() {
-        // The full-width error row is separate from the footer buttons.
-        let lines = wrap_lines(
-            sugarloaf,
-            error,
-            hint.width,
-            &opts(HINT_SIZE, theme.danger, false),
-            2,
-        );
-        let top = if lines.len() > 1 {
-            hint.y + 4.0
-        } else {
-            hint.y + 12.0
-        };
-        for (i, line) in lines.iter().enumerate() {
+    if let (Some(hint), Some(text)) = (layout.hint_rect(), &layout.notice) {
+        for (i, line) in text.lines.iter().enumerate() {
             draw_text(
                 sugarloaf,
                 hint.x,
-                top + i as f32 * (HINT_SIZE + 3.0),
+                hint.y
+                    + terminus_ui::add_host::NOTICE_PAD
+                    + i as f32
+                        * (terminus_ui::add_host::NOTICE_FONT_SIZE
+                            + terminus_ui::add_host::NOTICE_LINE_GAP),
                 line,
-                HINT_SIZE,
+                terminus_ui::add_host::NOTICE_FONT_SIZE,
                 theme.danger,
                 false,
             );
@@ -4216,8 +4206,8 @@ fn render_add_host(
 
     match form.step() {
         terminus_ui::AddHostStep::Target => {
-            let cancel = layout.cancel_button_rect(form.height());
-            let next = layout.next_button_rect(form.height());
+            let cancel = layout.cancel_button_rect();
+            let next = layout.next_button_rect();
             let cancel_label = if menu_covers(cancel) { "" } else { "Cancel" };
             let next_label = if menu_covers(next) { "" } else { "Next →" };
             paint_chrome_button(
@@ -4242,8 +4232,8 @@ fn render_add_host(
             );
         }
         terminus_ui::AddHostStep::Auth => {
-            let back = layout.back_button_rect(form.height());
-            let next = layout.next_button_rect(form.height());
+            let back = layout.back_button_rect();
+            let next = layout.next_button_rect();
             let back_label = if menu_covers(back) { "" } else { "← Back" };
             let next_label = if menu_covers(next) { "" } else { "Next →" };
             paint_chrome_button(
@@ -4268,8 +4258,8 @@ fn render_add_host(
             );
         }
         terminus_ui::AddHostStep::Details => {
-            let back = layout.back_button_rect(form.height());
-            let connect = layout.connect_button_rect(form.height());
+            let back = layout.back_button_rect();
+            let connect = layout.connect_button_rect();
             let back_label = if menu_covers(back) { "" } else { "← Back" };
             let connect_label = if menu_covers(connect) {
                 ""

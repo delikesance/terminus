@@ -70,7 +70,7 @@ impl Screen<'_> {
         let (window_update, any_panel_dirty) = self.renderer.run(
             &mut self.sugarloaf,
             &mut self.context_manager,
-            &self.chrome,
+            &mut self.chrome,
             connecting_phase,
             self.window_maximized,
             sftp_paint,

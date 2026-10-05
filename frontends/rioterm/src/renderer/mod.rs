@@ -533,7 +533,7 @@ impl Renderer {
         &mut self,
         sugarloaf: &mut Sugarloaf,
         context_manager: &mut ContextManager<EventProxy>,
-        chrome: &terminus_ui::chrome::Chrome,
+        chrome: &mut terminus_ui::chrome::Chrome,
         connecting_phase: Option<f32>,
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         window_maximized: bool,
@@ -990,6 +990,19 @@ impl Renderer {
         // and the panel chrome, below the command palette.
         // Overlay dialogs (Edit Host / Settings / …) use Sugarloaf
         // begin_overlay so they composite after underlay UI text.
+        // Measure this frame's content using the actual UI font. Block geometry is
+        // then rebuilt from these lines by both painting and pointer hit-testing.
+        chrome
+            .form
+            .measure_notice(window_size.width / scale_factor, |text| {
+                sugarloaf.text_mut().measure(
+                    text,
+                    &DrawOpts {
+                        font_size: terminus_ui::add_host::NOTICE_FONT_SIZE,
+                        ..Default::default()
+                    },
+                )
+            });
         chrome::render(
             sugarloaf,
             chrome,
