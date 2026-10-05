@@ -23,6 +23,8 @@ use crate::hosts::HostRow;
 
 /// Live dual-pane SFTP session (either side local or remote).
 pub struct ActiveSftp {
+    /// Sidebar id of the machine this browser belongs to (its right pane).
+    pub machine_id: String,
     pub state: SftpPaneState,
     pub worker: SftpWorker,
     last_click: Option<(SftpHit, std::time::Instant)>,
@@ -31,6 +33,11 @@ pub struct ActiveSftp {
 }
 
 impl ActiveSftp {
+    /// Key of [`terminus_ui::screens::files::MachineSessions`].
+    pub fn owner(&self) -> &str {
+        &self.machine_id
+    }
+
     /// Left = local, right = `host`. Connects right and lists both sides.
     pub fn start(
         host: &HostRow,
@@ -60,6 +67,7 @@ impl ActiveSftp {
         });
 
         Ok(Self {
+            machine_id: host.id.clone(),
             state,
             worker,
             last_click: None,
@@ -89,6 +97,7 @@ impl ActiveSftp {
             path: right,
         });
         Self {
+            machine_id: crate::hosts::LOCAL_ID.to_string(),
             state,
             worker,
             last_click: None,
