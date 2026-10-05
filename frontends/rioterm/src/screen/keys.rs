@@ -446,7 +446,7 @@ impl Screen<'_> {
                 && binding.action == Act::PasteSelection
             {
                 let content = clipboard.get(ClipboardType::Selection);
-                self.paste(&content, true);
+                self.paste_from_clipboard(&content);
             }
         }
     }
@@ -509,14 +509,14 @@ impl Screen<'_> {
                     }
                     Act::Paste => {
                         let content = clipboard.get(ClipboardType::Clipboard);
-                        self.paste(&content, true);
+                        self.paste_from_clipboard(&content);
                     }
                     Act::ClearSelection => {
                         self.clear_selection();
                     }
                     Act::PasteSelection => {
                         let content = clipboard.get(ClipboardType::Selection);
-                        self.paste(&content, true);
+                        self.paste_from_clipboard(&content);
                     }
                     Act::Copy => {
                         self.copy_selection(ClipboardType::Clipboard, clipboard);
