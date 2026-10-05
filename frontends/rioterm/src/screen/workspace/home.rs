@@ -13,6 +13,11 @@ impl Screen<'_> {
         match action {
             HomeAction::Search => self.open_palette_hosts(),
             HomeAction::AddServer => self.chrome.open_add_host(),
+            // "Where to?": typing filters the server list right away.
+            HomeAction::SearchText(text) => {
+                self.open_palette_hosts();
+                self.renderer.command_palette.append_query(&text);
+            }
         }
     }
 }
