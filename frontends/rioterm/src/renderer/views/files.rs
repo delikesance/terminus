@@ -884,7 +884,7 @@ pub fn context_menu(sftp: &mut ActiveSftp, content: Rect, x: f32, y: f32) -> Fil
     }
 }
 
-/// Key while the conflict dialog is open (Esc cancels the transfer, Enter
+/// Key while the conflict dialog is open (Esc keeps the existing file, Enter
 /// activates the focused button, Tab swaps). Returns `None` when no conflict
 /// is pending, so the caller routes the key to `ActiveSftp::handle_key`.
 pub fn conflict_key(
@@ -898,7 +898,9 @@ pub fn conflict_key(
         key,
         terminus_ui::components::overlay::dialog_key(key, focus),
     ) {
-        (DialogKey::Escape, _) => sftp.cancel_transfer(),
+        // Esc keeps the existing file (the dialogs' semantics), like
+        // "Keep existing"; the transfer goes on with the next item.
+        (DialogKey::Escape, _) => sftp.answer_conflict(false),
         (_, DialogOutcome::Confirm) => sftp.answer_conflict(true),
         (_, DialogOutcome::Cancel) => sftp.answer_conflict(false),
         (_, DialogOutcome::Focus(f)) => {

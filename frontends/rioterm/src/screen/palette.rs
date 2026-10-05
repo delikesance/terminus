@@ -37,7 +37,12 @@ impl Screen<'_> {
                 true
             }
             Ok(None) => {
-                // Clicked inside palette but not on a result (e.g. input area)
+                // "Add server …" on the empty result: hand the query to the wizard.
+                if self.renderer.command_palette.add_server_hit(mouse_x, mouse_y) {
+                    self.palette_add_server();
+                    self.mark_dirty();
+                }
+                // Otherwise: inside the palette but not on a result.
                 true
             }
             Err(()) => {
@@ -47,6 +52,16 @@ impl Screen<'_> {
                 true
             }
         }
+    }
+
+    /// Close the palette and open the add-server wizard with the typed query.
+    fn palette_add_server(&mut self) {
+        let Some(query) = self.renderer.command_palette.add_server_query() else {
+            return;
+        };
+        self.renderer.command_palette.set_enabled(false);
+        self.chrome.open_add_host();
+        self.chrome_commit_text(&query);
     }
 
     /// Snapshot stored SSH hosts for the command palette.
@@ -70,6 +85,11 @@ impl Screen<'_> {
     /// and one-shot actions — shared by keyboard and mouse so they cannot drift.
     pub fn confirm_palette_selection(&mut self, clipboard: &mut Clipboard) {
         use crate::renderer::command_palette::PaletteAction;
+
+        if self.renderer.command_palette.add_server_query().is_some() {
+            self.palette_add_server();
+            return;
+        }
 
         if let Some(host_id) = self.renderer.command_palette.get_selected_host_id() {
             use crate::renderer::command_palette::HostPick;
@@ -248,6 +268,7 @@ impl Screen<'_> {
             crate::router::routes::updating::screen(
                 &mut self.sugarloaf,
                 &self.context_manager.current().dimension,
+                &self.renderer.chrome_theme,
                 version,
                 *done,
                 *total,

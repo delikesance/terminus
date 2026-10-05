@@ -5,6 +5,8 @@
 //!
 //! Either side may be local FS or a remote host (`SftpBackend`).
 
+use crate::components::overlay::{DialogFocus, DialogKey, DialogKind};
+use crate::confirm::{ConfirmLayout, ConfirmSpec};
 use crate::geom::Rect;
 use crate::settings::{field_input_in_card, FIELD_CARD_HEIGHT};
 use crate::text_field::{FieldPaint, TextDraft};
@@ -155,21 +157,68 @@ pub struct SftpConflictPrompt {
     pub kind: SftpConflictKind,
     pub relative_path: String,
     pub apply_to_all: bool,
+    /// Button the keyboard acts on (Replace by default).
+    pub focus: DialogFocus,
+}
+
+/// What a key on the conflict dialog asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SftpConflictKey {
+    /// Focus moved: repaint.
+    Changed,
+    Overwrite,
+    Keep,
 }
 
 impl SftpConflictPrompt {
-    pub fn title(&self) -> &'static str {
-        match self.kind {
-            SftpConflictKind::File => "File already exists",
-            SftpConflictKind::Directory => "Folder already exists",
-        }
+    /// File or folder name, without its parent path.
+    pub fn name(&self) -> &str {
+        self.relative_path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.relative_path)
+    }
+
+    pub fn title(&self) -> String {
+        crate::confirm::elide_title(&format!("{} already exists", self.name()))
     }
 
     pub fn message(&self) -> String {
+        let what = match self.kind {
+            SftpConflictKind::File => "file",
+            SftpConflictKind::Directory => "folder",
+        };
         format!(
-            "“{}” already exists where it is going. Replace it with the copy being transferred?",
+            "There is already a {what} with this name at \u{201c}{}\u{201d}. Replace it with the copy being transferred?",
             self.relative_path
         )
+    }
+
+    /// The With-option dialog: Replace / Keep existing + apply to all.
+    pub fn spec(&self) -> ConfirmSpec {
+        let mut spec = ConfirmSpec::new(
+            DialogKind::WithOption,
+            &format!("{} already exists", self.name()),
+            self.message(),
+            "Keep existing",
+            "Replace",
+        );
+        spec.option = Some("Do this for every conflict".to_string());
+        spec
+    }
+
+    /// Esc keeps the existing file; Enter runs the focused button.
+    pub fn key(&mut self, key: DialogKey) -> SftpConflictKey {
+        use crate::components::overlay::{dialog_key, DialogOutcome};
+        match dialog_key(key, self.focus) {
+            DialogOutcome::Cancel => SftpConflictKey::Keep,
+            DialogOutcome::Confirm => SftpConflictKey::Overwrite,
+            DialogOutcome::Focus(f) => {
+                self.focus = f;
+                SftpConflictKey::Changed
+            }
+        }
     }
 }
 
@@ -542,6 +591,7 @@ impl SftpPaneState {
             kind,
             relative_path: relative_path.into(),
             apply_to_all: false,
+            focus: DialogFocus::Confirm,
         });
         self.status = "Resolve the conflict to continue…".into();
         self.error = None;
@@ -717,25 +767,15 @@ impl SftpPaneLayout {
         if !self.bounds.contains(x, y) {
             return SftpHit::Miss;
         }
-        if state.conflict.is_some() {
-            let card = self.conflict_card();
-            if self.conflict_overwrite().contains(x, y) {
-                return SftpHit::ConflictOverwrite;
-            }
-            if self.conflict_keep().contains(x, y) {
-                return SftpHit::ConflictKeep;
-            }
-            if self.conflict_apply_all().contains(x, y) {
-                return SftpHit::ConflictApplyAll;
-            }
-            if self.conflict_cancel().contains(x, y) {
-                return SftpHit::ConflictCancel;
-            }
-            if card.contains(x, y) {
-                return SftpHit::Consume;
-            }
-            // Scrim: swallow clicks outside the card while a conflict is open.
-            return SftpHit::Consume;
+        if let Some(prompt) = state.conflict.as_ref() {
+            use crate::components::overlay::DialogHit;
+            // Scrim and dialog body swallow clicks while a conflict is open.
+            return match self.conflict_layout(prompt).hit_test(x, y) {
+                DialogHit::Confirm => SftpHit::ConflictOverwrite,
+                DialogHit::Cancel => SftpHit::ConflictKeep,
+                DialogHit::Option => SftpHit::ConflictApplyAll,
+                DialogHit::Inside | DialogHit::Scrim => SftpHit::Consume,
+            };
         }
         if state.name_edit.is_some() {
             if self.name_confirm.contains(x, y) {
@@ -794,36 +834,9 @@ impl SftpPaneLayout {
         SftpHit::Consume
     }
 
-    /// Centered conflict dialog card.
-    pub fn conflict_card(&self) -> Rect {
-        const W: f32 = 420.0;
-        const H: f32 = 160.0;
-        Rect::new(
-            self.bounds.x + (self.bounds.width - W).max(0.0) * 0.5,
-            self.bounds.y + (self.bounds.height - H).max(0.0) * 0.5,
-            W.min(self.bounds.width),
-            H.min(self.bounds.height),
-        )
-    }
-
-    pub fn conflict_overwrite(&self) -> Rect {
-        let card = self.conflict_card();
-        Rect::new(card.x + 16.0, card.bottom() - 44.0, 100.0, 28.0)
-    }
-
-    pub fn conflict_keep(&self) -> Rect {
-        let o = self.conflict_overwrite();
-        Rect::new(o.right() + 8.0, o.y, 100.0, 28.0)
-    }
-
-    pub fn conflict_apply_all(&self) -> Rect {
-        let card = self.conflict_card();
-        Rect::new(card.x + 16.0, card.bottom() - 78.0, 180.0, 22.0)
-    }
-
-    pub fn conflict_cancel(&self) -> Rect {
-        let card = self.conflict_card();
-        Rect::new(card.right() - 16.0 - 80.0, card.bottom() - 44.0, 80.0, 28.0)
+    /// The conflict dialog, centred in the pane and scrimming only it.
+    pub fn conflict_layout(&self, prompt: &SftpConflictPrompt) -> ConfirmLayout {
+        prompt.spec().layout_in(self.bounds)
     }
 
     /// Which list (if any) contains `(x, y)` — used for drag-drop targets.
@@ -1146,9 +1159,9 @@ mod tests {
         let mut state = sample_state();
         state.begin_conflict(7, SftpConflictKind::File, "readme.txt");
         let layout = SftpPaneLayout::from_bounds(Rect::new(0.0, 0.0, 640.0, 400.0));
-        let ow = layout.conflict_overwrite();
-        let keep = layout.conflict_keep();
-        let apply = layout.conflict_apply_all();
+        let prompt = state.conflict.clone().unwrap();
+        let d = layout.conflict_layout(&prompt).dialog;
+        let (ow, keep, apply) = (d.confirm, d.cancel, d.option.unwrap());
         assert_eq!(
             layout.hit_test(&state, ow.x + 4.0, ow.y + 4.0),
             SftpHit::ConflictOverwrite
@@ -1161,8 +1174,43 @@ mod tests {
             layout.hit_test(&state, apply.x + 4.0, apply.y + 4.0),
             SftpHit::ConflictApplyAll
         );
+        // Everywhere else in the pane (scrim, dialog body) is swallowed.
+        assert_eq!(layout.hit_test(&state, 5.0, 5.0), SftpHit::Consume);
+        assert_eq!(
+            layout.hit_test(&state, d.title.x + 2.0, d.title.y + 2.0),
+            SftpHit::Consume
+        );
         assert!(state.toggle_conflict_apply_all());
         assert!(state.conflict.as_ref().unwrap().apply_to_all);
+    }
+
+    #[test]
+    fn conflict_dialog_copy_names_the_file_and_offers_replace_or_keep() {
+        let mut state = sample_state();
+        state.begin_conflict(1, SftpConflictKind::File, "app/build.tar.gz");
+        let spec = state.conflict.as_ref().unwrap().spec();
+        assert_eq!(spec.title, "build.tar.gz already exists");
+        assert_eq!(spec.confirm, "Replace");
+        assert_eq!(spec.cancel, "Keep existing");
+        assert_eq!(spec.option.as_deref(), Some("Do this for every conflict"));
+        state.begin_conflict(2, SftpConflictKind::Directory, "photos");
+        assert_eq!(
+            state.conflict.as_ref().unwrap().spec().title,
+            "photos already exists"
+        );
+    }
+
+    #[test]
+    fn conflict_keys_follow_the_dialog_rules() {
+        use crate::components::overlay::DialogKey;
+        let mut state = sample_state();
+        state.begin_conflict(1, SftpConflictKind::File, "a.txt");
+        let c = state.conflict.as_mut().unwrap();
+        assert_eq!(c.key(DialogKey::Tab), SftpConflictKey::Changed);
+        assert_eq!(c.key(DialogKey::Enter), SftpConflictKey::Keep);
+        assert_eq!(c.key(DialogKey::Tab), SftpConflictKey::Changed);
+        assert_eq!(c.key(DialogKey::Enter), SftpConflictKey::Overwrite);
+        assert_eq!(c.key(DialogKey::Escape), SftpConflictKey::Keep);
     }
 
     #[test]

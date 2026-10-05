@@ -42,6 +42,8 @@ pub enum Modal {
     CommandPalette,
     /// The quit confirmation dialog.
     ConfirmQuit,
+    /// The chrome's destructive confirmation (delete host / group).
+    ChromeConfirm,
     /// The error assistant; `report_error` can activate it WITHOUT
     /// leaving `RoutePath::Terminal`.
     Assistant,
@@ -160,7 +162,57 @@ impl Route<'_> {
 
     #[inline]
     pub fn confirm_quit(&mut self) {
-        self.window.screen.renderer.confirm_quit.set_active(true);
+        let screen = &mut self.window.screen;
+        let sessions = (0..screen.context_manager.len())
+            .filter(|&i| !screen.context_manager.is_pinned(i))
+            .count();
+        screen.renderer.confirm_quit.set_sessions(sessions);
+        screen.renderer.confirm_quit.set_active(true);
+        self.request_overlay_redraw();
+    }
+
+    /// Act on a quit-dialog outcome (key or click). True when the app is
+    /// quitting and the caller must stop touching the window.
+    pub fn apply_quit_outcome(
+        &mut self,
+        outcome: terminus_ui::confirm::ConfirmOutcome,
+    ) -> bool {
+        use terminus_ui::confirm::ConfirmOutcome;
+        match outcome {
+            ConfirmOutcome::Confirm => {
+                self.quit();
+                true
+            }
+            ConfirmOutcome::Cancel => {
+                self.window.screen.renderer.confirm_quit.set_active(false);
+                self.window.screen.updater.disarm_exit_action();
+                self.request_overlay_redraw();
+                false
+            }
+            ConfirmOutcome::Changed | ConfirmOutcome::Idle => {
+                self.request_overlay_redraw();
+                false
+            }
+        }
+    }
+
+    /// Run the side effect of a confirmed chrome dialog (delete host / group).
+    pub fn run_confirmed_action(
+        &mut self,
+        action: terminus_ui::ChromeAction,
+        clipboard: &mut Clipboard,
+    ) {
+        use terminus_ui::ChromeAction;
+        match action {
+            ChromeAction::DeleteHost(id) => self
+                .window
+                .screen
+                .delete_host_closing_sessions(&id, clipboard),
+            ChromeAction::DeleteGroup(id) => {
+                self.window.screen.host_store.delete_group(&id)
+            }
+            _ => {}
+        }
         self.request_overlay_redraw();
     }
 
@@ -187,6 +239,9 @@ impl Route<'_> {
         }
         if self.window.screen.renderer.confirm_quit.is_active() {
             return Some(Modal::ConfirmQuit);
+        }
+        if self.window.screen.chrome.confirm_is_open() {
+            return Some(Modal::ChromeConfirm);
         }
         // Only hard errors are modal: a warning toast (font not
         // found on live reload, say) renders over a WORKING terminal
@@ -471,25 +526,59 @@ impl Route<'_> {
             }
 
             Modal::ConfirmQuit => {
+                use terminus_ui::components::overlay::DialogKey;
+                use terminus_ui::confirm::ConfirmOutcome;
                 if key_event.state == rio_window::event::ElementState::Pressed {
-                    match &key_event.logical_key {
+                    let outcome = match &key_event.logical_key {
                         Key::Character(c) if c.as_str() == "n" || c.as_str() == "N" => {
-                            self.window.screen.renderer.confirm_quit.set_active(false);
-                            self.window.screen.updater.disarm_exit_action();
-                            self.request_overlay_redraw();
-                        }
-                        Key::Named(NamedKey::Escape) => {
-                            self.window.screen.renderer.confirm_quit.set_active(false);
-                            self.window.screen.updater.disarm_exit_action();
-                            self.request_overlay_redraw();
+                            ConfirmOutcome::Cancel
                         }
                         Key::Character(c) if c.as_str() == "y" || c.as_str() == "Y" => {
-                            self.quit();
-                            return true;
+                            ConfirmOutcome::Confirm
                         }
-                        _ => {}
+                        Key::Named(NamedKey::Escape) => ConfirmOutcome::Cancel,
+                        Key::Named(NamedKey::Enter) => self
+                            .window
+                            .screen
+                            .renderer
+                            .confirm_quit
+                            .key(DialogKey::Enter),
+                        Key::Named(NamedKey::Tab)
+                        | Key::Named(NamedKey::ArrowLeft)
+                        | Key::Named(NamedKey::ArrowRight) => self
+                            .window
+                            .screen
+                            .renderer
+                            .confirm_quit
+                            .key(DialogKey::Tab),
+                        _ => ConfirmOutcome::Idle,
+                    };
+                    if self.apply_quit_outcome(outcome) {
+                        return true;
                     }
                 }
+                self.request_overlay_redraw();
+                true
+            }
+
+            Modal::ChromeConfirm => {
+                use terminus_ui::components::overlay::DialogKey;
+                if key_event.state == rio_window::event::ElementState::Pressed {
+                    let key = match &key_event.logical_key {
+                        Key::Named(NamedKey::Escape) => Some(DialogKey::Escape),
+                        Key::Named(NamedKey::Enter) => Some(DialogKey::Enter),
+                        Key::Named(NamedKey::Tab)
+                        | Key::Named(NamedKey::ArrowLeft)
+                        | Key::Named(NamedKey::ArrowRight) => Some(DialogKey::Tab),
+                        _ => None,
+                    };
+                    if let Some(action) =
+                        key.and_then(|k| self.window.screen.chrome.handle_confirm_key(k))
+                    {
+                        self.run_confirmed_action(action, clipboard);
+                    }
+                }
+                self.request_overlay_redraw();
                 true
             }
 

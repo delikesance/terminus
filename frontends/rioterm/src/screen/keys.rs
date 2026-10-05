@@ -115,7 +115,9 @@ impl Screen<'_> {
                 let dk = match key.logical_key.as_ref() {
                     WKey::Named(NamedKey::Escape) => Some(DialogKey::Escape),
                     WKey::Named(NamedKey::Enter) => Some(DialogKey::Enter),
-                    WKey::Named(NamedKey::Tab) => Some(DialogKey::Tab),
+                    WKey::Named(NamedKey::Tab)
+                    | WKey::Named(NamedKey::ArrowLeft)
+                    | WKey::Named(NamedKey::ArrowRight) => Some(DialogKey::Tab),
                     _ => None,
                 };
                 if let Some(dk) = dk {
