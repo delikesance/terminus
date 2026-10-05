@@ -962,22 +962,37 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
 
         let index_to_remove = self.current_index;
-        let mut should_set_current = false;
-        if index_to_remove > 1 {
-            self.set_current(self.current_index - 1);
-        } else {
-            should_set_current = true;
-        }
+        let next_index = self.index_after_close(index_to_remove);
 
         // Remove all rich text from the grid before removing the context
         self.contexts[index_to_remove].remove_from_sugarloaf(sugarloaf);
         self.contexts.remove(index_to_remove);
-
-        if should_set_current {
-            self.set_current(0);
-        }
+        self.set_current(next_index);
 
         self.keep_only_active_context_visible(sugarloaf);
+    }
+
+    /// Which tab comes to the front once the tab at `index` is closed,
+    /// expressed as an index into the list *after* the removal.
+    ///
+    /// Another tab of the same host wins (the nearest one before, else the
+    /// nearest after): tabs of different hosts interleave in the strip, and
+    /// falling back on the plain neighbour would switch the sidebar to
+    /// another host under the user's feet.
+    pub fn index_after_close(&self, index: usize) -> usize {
+        let host_of = |i: usize| self.contexts[i].current().host_id.as_deref();
+        if let Some(host) = host_of(index) {
+            let before = (0..index).rev().find(|&i| host_of(i) == Some(host));
+            if let Some(i) = before {
+                return i;
+            }
+            let after =
+                (index + 1..self.contexts.len()).find(|&i| host_of(i) == Some(host));
+            if let Some(i) = after {
+                return i - 1;
+            }
+        }
+        index.saturating_sub(1)
     }
 
     /// Whether the tab at `index` is the pinned home "This computer" tab.
@@ -1782,6 +1797,32 @@ pub mod test {
         assert!(cm.is_pinned(0));
         assert!(!cm.is_pinned(1));
         assert!(!cm.is_pinned(2));
+    }
+
+    #[test]
+    fn closing_a_host_tab_stays_on_a_sibling_tab_of_the_same_host() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(6, VoidListener {}, window_id).unwrap();
+        for _ in 0..4 {
+            cm.add_context(false, 0);
+        }
+        // [home, A, B, A, B]
+        let hosts = [crate::hosts::LOCAL_ID, "a", "b", "a", "b"];
+        for (index, host) in hosts.iter().enumerate() {
+            cm.contexts[index].current_mut().host_id = Some(host.to_string());
+        }
+
+        // Previous tab is another host: jump back over it to the earlier A.
+        assert_eq!(cm.index_after_close(3), 1);
+        // Previous tab is home: go forward to the next A (index 3 → 2 once
+        // index 1 is gone).
+        assert_eq!(cm.index_after_close(1), 2);
+        assert_eq!(cm.index_after_close(4), 2);
+        // Last tab of its host: fall back to the neighbour.
+        cm.contexts[3].current_mut().host_id = Some("c".to_string());
+        assert_eq!(cm.index_after_close(3), 2);
+        assert_eq!(cm.index_after_close(1), 0);
     }
 
     #[test]
