@@ -44,6 +44,22 @@ pub struct ChromeTheme {
     pub danger_hover: [f32; 4],
     /// Destructive text on dark surfaces (`#FF8E80`).
     pub danger_text: [u8; 4],
+    /// Text / icon colour on a danger fill (`#1A0B08`).
+    pub on_danger: [f32; 4],
+    /// Danger fill while pressed (`#D2503F`).
+    pub danger_press: [f32; 4],
+    /// Hovered input / choice-card border (`#463C5E`).
+    pub hover_border: [f32; 4],
+    /// Selected choice-card background (`#251E3A`).
+    pub choice_selected_bg: [f32; 4],
+    /// Subtitle / meta text on a selected row or card (`#CFC4E6`).
+    pub selected_subtle_text: [u8; 4],
+    /// Hollow "idle" status ring (`#776E8C`).
+    pub idle_ring: [f32; 4],
+    /// Completed connection-step node fill (`#213A33`).
+    pub step_done_bg: [f32; 4],
+    /// Failed connection-step node fill (`#3A1C22`).
+    pub step_failed_bg: [f32; 4],
     pub info: [f32; 4],
     pub warning: [f32; 4],
     // ---- legacy names (kept so existing painters compile) ----
@@ -156,6 +172,14 @@ impl ChromeTheme {
             danger_fill: rgba([0xe8, 0x60, 0x4f], 1.0),
             danger_hover: rgba([0xf0, 0x75, 0x63], 1.0),
             danger_text,
+            on_danger: rgba([0x1a, 0x0b, 0x08], 1.0),
+            danger_press: rgba([0xd2, 0x50, 0x3f], 1.0),
+            hover_border: rgba([0x46, 0x3c, 0x5e], 1.0),
+            choice_selected_bg: rgba([0x25, 0x1e, 0x3a], 1.0),
+            selected_subtle_text: [0xcf, 0xc4, 0xe6, 255],
+            idle_ring: rgba([0x77, 0x6e, 0x8c], 1.0),
+            step_done_bg: rgba([0x21, 0x3a, 0x33], 1.0),
+            step_failed_bg: rgba([0x3a, 0x1c, 0x22], 1.0),
             info: rgba([0x8d, 0xbb, 0xf5], 1.0),
             warning: rgba([0xf2, 0xc4, 0x6d], 1.0),
             // legacy mapping
@@ -207,6 +231,11 @@ pub fn text_color(c: [f32; 4]) -> [u8; 4] {
     [b(c[0]), b(c[1]), b(c[2]), b(c[3])]
 }
 
+/// Convert a byte colour (`text`, `text_muted`, ...) to unit floats.
+pub fn unit_color(c: [u8; 4]) -> [f32; 4] {
+    c.map(|v| v as f32 / 255.0)
+}
+
 fn rgba(rgb: [u8; 3], alpha: f32) -> [f32; 4] {
     [
         rgb[0] as f32 / 255.0,
@@ -244,7 +273,10 @@ mod tests {
 
     fn hex(c: [f32; 4], hex: [u8; 3]) {
         for i in 0..3 {
-            assert!((c[i] - hex[i] as f32 / 255.0).abs() < 0.002, "{c:?} vs {hex:?}");
+            assert!(
+                (c[i] - hex[i] as f32 / 255.0).abs() < 0.002,
+                "{c:?} vs {hex:?}"
+            );
         }
         assert!((c[3] - 1.0).abs() < 0.002);
     }
@@ -269,6 +301,14 @@ mod tests {
         hex(t.success, [0x9e, 0xd9, 0xb5]);
         hex(t.danger_fill, [0xe8, 0x60, 0x4f]);
         hex(t.danger_hover, [0xf0, 0x75, 0x63]);
+        hex(t.on_danger, [0x1a, 0x0b, 0x08]);
+        hex(t.danger_press, [0xd2, 0x50, 0x3f]);
+        hex(t.hover_border, [0x46, 0x3c, 0x5e]);
+        hex(t.choice_selected_bg, [0x25, 0x1e, 0x3a]);
+        hex(t.idle_ring, [0x77, 0x6e, 0x8c]);
+        hex(t.step_done_bg, [0x21, 0x3a, 0x33]);
+        hex(t.step_failed_bg, [0x3a, 0x1c, 0x22]);
+        assert_eq!(t.selected_subtle_text, [0xcf, 0xc4, 0xe6, 255]);
         hex(t.info, [0x8d, 0xbb, 0xf5]);
         hex(t.warning, [0xf2, 0xc4, 0x6d]);
         assert_eq!(t.text, [0xee, 0xea, 0xf6, 255]);
@@ -304,6 +344,11 @@ mod tests {
     #[test]
     fn text_color_converts_unit_floats_to_bytes() {
         assert_eq!(text_color([1.0, 0.0, 0.5, 1.0]), [255, 0, 128, 255]);
+    }
+
+    #[test]
+    fn unit_color_converts_bytes_to_unit_floats() {
+        assert_eq!(unit_color([255, 0, 51, 255]), [1.0, 0.0, 0.2, 1.0]);
     }
 
     #[test]
