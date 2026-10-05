@@ -142,7 +142,7 @@ pub enum ViewOutcome {
 pub struct Screens {
     pub files: files::FilesState,
     pub tunnels: tunnels::TunnelsState,
-    pub snippets: snippets::SnippetsState,
+    pub snippets: snippets::SnippetsView,
     pub history: history::HistoryState,
     pub settings: settings::SettingsState,
     pub home: home::HomeState,
@@ -161,7 +161,9 @@ impl Screens {
             WorkspaceView::Terminal => ViewOutcome::Ignored,
             WorkspaceView::Files => self.files.handle(content, input),
             WorkspaceView::Tunnels => self.tunnels.handle(content, input),
-            WorkspaceView::Snippets => self.snippets.handle(content, input),
+            WorkspaceView::Snippets => {
+                snippets::handle(&mut self.snippets, content, input)
+            }
             WorkspaceView::History => self.history.handle(content, input),
             WorkspaceView::Settings(page) => self.settings.handle(page, content, input),
             WorkspaceView::Home => self.home.handle(content, input),
@@ -180,7 +182,9 @@ impl Screens {
             WorkspaceView::Terminal => false,
             WorkspaceView::Files => self.files.is_clickable(content, x, y),
             WorkspaceView::Tunnels => self.tunnels.is_clickable(content, x, y),
-            WorkspaceView::Snippets => self.snippets.is_clickable(content, x, y),
+            WorkspaceView::Snippets => {
+                snippets::is_clickable(&self.snippets, content, x, y)
+            }
             WorkspaceView::History => self.history.is_clickable(content, x, y),
             WorkspaceView::Settings(page) => {
                 self.settings.is_clickable(page, content, x, y)

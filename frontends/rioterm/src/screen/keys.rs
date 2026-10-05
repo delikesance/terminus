@@ -104,6 +104,25 @@ impl Screen<'_> {
             use crate::sftp_ui::SftpKey;
             use rio_window::keyboard::Key as WKey;
             use rio_window::keyboard::NamedKey;
+            use terminus_ui::components::overlay::DialogKey;
+
+            // A pending name conflict owns the keyboard (Esc / Enter / Tab).
+            if self
+                .sftp
+                .as_ref()
+                .is_some_and(|s| s.state.conflict.is_some())
+            {
+                let dk = match key.logical_key.as_ref() {
+                    WKey::Named(NamedKey::Escape) => Some(DialogKey::Escape),
+                    WKey::Named(NamedKey::Enter) => Some(DialogKey::Enter),
+                    WKey::Named(NamedKey::Tab) => Some(DialogKey::Tab),
+                    _ => None,
+                };
+                if let Some(dk) = dk {
+                    self.sftp_conflict_key(dk);
+                }
+                return;
+            }
 
             // Inline name editor captures typing first.
             if self
