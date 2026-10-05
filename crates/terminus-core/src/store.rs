@@ -444,6 +444,16 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        sqlx::query(
+            "UPDATE port_forwards SET deleted_at = ?, updated_at = ? \
+             WHERE host_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
         tx.commit()
             .await
             .map_err(|e| Error::DatabaseError(e.to_string()))?;
@@ -914,6 +924,20 @@ impl Store {
         .execute(&self.pool)
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Tombstone a forward (soft delete; the bumped `updated_at` lets sync
+    /// order the deletion after every live copy).
+    pub async fn delete_forward(&self, id: Uuid) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE port_forwards SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
         Ok(())
     }
 
