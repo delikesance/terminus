@@ -16,7 +16,7 @@ use super::Screen;
 use crate::hosts;
 use rio_backend::clipboard::Clipboard;
 use terminus_ui::screens::{ViewAction, ViewInput, ViewOutcome};
-use terminus_ui::shell::pills::session_label;
+use terminus_ui::shell::pills::{remote_session_label, session_label};
 use terminus_ui::shell::{MachineInfo, SessionPill, WorkspaceView};
 
 impl Screen<'_> {
@@ -63,12 +63,28 @@ impl Screen<'_> {
                 && self.context_manager.contexts_mut().get(i).is_some_and(|g| {
                     g.current().terminal.lock().peek_damage_event().is_some()
                 });
-            let label = session_label(
-                self.context_manager.custom_title(i),
-                self.context_manager.title(i).map(|t| t.content.as_str()),
-                &machine.name,
-                pills.len(),
-            );
+            let label = if machine_id == hosts::LOCAL_ID {
+                session_label(
+                    self.context_manager.custom_title(i),
+                    self.context_manager.title(i).map(|t| t.content.as_str()),
+                    &machine.name,
+                    pills.len(),
+                )
+            } else {
+                // Remote: only the title the remote shell set counts; the
+                // tab's template title describes the local `ssh` process.
+                let osc_title = self
+                    .context_manager
+                    .contexts_mut()
+                    .get(i)
+                    .map(|g| g.current().terminal.lock().title.clone());
+                remote_session_label(
+                    self.context_manager.custom_title(i),
+                    osc_title.as_deref(),
+                    &machine.name,
+                    pills.len(),
+                )
+            };
             pills.push(SessionPill {
                 tab_index: i,
                 label,
@@ -85,14 +101,20 @@ impl Screen<'_> {
         shell.machine = Some(machine.clone());
 
         let s = &mut self.chrome.screens;
-        s.files.machine_name = machine.name.clone();
-        s.files.can_browse = can_browse;
+        s.files.set_machine(&machine.id, &machine.name, can_browse);
         s.files.session_open = self.sftp.is_some();
         if s.snippets.items != self.host_store.snippet_items {
             s.snippets.items = self.host_store.snippet_items.clone();
             s.snippets.hover = None;
             let content = self.chrome.shell.content_rect();
             s.snippets.scroll = s.snippets.scroll.min(s.snippets.max_scroll(content));
+        }
+
+        // Files on an SSH host opens the browser directly (mock); the
+        // empty state stays for machines without SFTP and failures.
+        let files_shown = self.chrome.shell.view() == WorkspaceView::Files;
+        if self.chrome.screens.files.take_auto_open(files_shown) {
+            self.open_files_browser();
         }
 
         self.sync_settings_view();

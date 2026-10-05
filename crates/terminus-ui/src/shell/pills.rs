@@ -161,6 +161,27 @@ pub fn session_label(
     format!("Session {}", position + 1)
 }
 
+/// Label of a pill whose session runs on another machine (SSH, WSL).
+/// `osc_title` is only what the remote shell set (OSC 0/2): until it
+/// does, the tab's template title describes the local `ssh` process
+/// (its cwd, its program), so the pill names the machine instead.
+pub fn remote_session_label(
+    custom: Option<&str>,
+    osc_title: Option<&str>,
+    machine_name: &str,
+    position: usize,
+) -> String {
+    let has_custom = custom
+        .map(str::trim)
+        .is_some_and(|c| !c.is_empty() && c != machine_name);
+    let has_title = osc_title.is_some_and(|t| !t.trim().is_empty());
+    if has_custom || has_title {
+        session_label(custom, osc_title, machine_name, position)
+    } else {
+        machine_name.to_string()
+    }
+}
+
 /// Rough label width when the painter has not measured it yet.
 pub fn estimate_label(label: &str) -> f32 {
     label.chars().count() as f32 * 7.5
@@ -319,6 +340,30 @@ mod tests {
         assert_eq!(session_label(None, Some("a: b"), "prod", 0), "a: b");
         assert_eq!(session_label(None, Some("  "), "prod", 2), "Session 3");
         assert_eq!(session_label(Some("prod"), None, "prod", 0), "Session 1");
+    }
+
+    #[test]
+    fn a_remote_tab_shows_the_machine_until_its_shell_sets_a_title() {
+        // Still connecting: only the local `ssh` process is known, so its
+        // local cwd/program title must not leak into the pill.
+        assert_eq!(
+            remote_session_label(None, None, "jerem prod", 0),
+            "jerem prod"
+        );
+        assert_eq!(
+            remote_session_label(Some("jerem prod"), Some(""), "jerem prod", 1),
+            "jerem prod"
+        );
+        // The remote shell titled the tab: same rules as a local one.
+        assert_eq!(
+            remote_session_label(None, Some("ubuntu@prod: ~/app"), "jerem prod", 0),
+            "~/app"
+        );
+        // A name the user gave still wins.
+        assert_eq!(
+            remote_session_label(Some("db"), None, "jerem prod", 0),
+            "db"
+        );
     }
 
     #[test]

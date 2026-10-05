@@ -62,27 +62,55 @@ pub(super) fn paint(
         device_scale,
     );
     let cy = bar.y + bar.height * 0.5;
-    draw_ui_text(
-        sugarloaf,
-        icon.right() + geo::COMMAND_GAP,
-        text_top(cy, geo::COMMAND_SIZE),
-        "Search or run…",
-        geo::COMMAND_SIZE,
-        theme.text_muted,
-        UiWeight::Regular,
-    );
-    let hint = terminus_ui::shell::sidebar::palette_hint(
+    // Hint first: the label is elided to the room it leaves.
+    let hint = geo::palette_hint(
         chrome.shell.view().shows_terminal(),
         cfg!(target_os = "macos"),
     );
-    let hw =
-        measure_mono_text(sugarloaf, hint, geo::COMMAND_HINT_SIZE, UiWeight::Regular);
-    draw_mono_text(
+    let widths: Vec<f32> = hint
+        .iter()
+        .map(|t| match t {
+            geo::HintToken::Text(s) => {
+                measure_mono_text(sugarloaf, s, geo::COMMAND_HINT_SIZE, UiWeight::Regular)
+            }
+            geo::HintToken::Glyph(_) => geo::HINT_ICON,
+        })
+        .collect();
+    let layout = geo::hint_layout(&bar, &widths);
+    for (token, x) in hint.iter().zip(&layout.xs) {
+        match *token {
+            geo::HintToken::Text(s) => {
+                draw_mono_text(
+                    sugarloaf,
+                    *x,
+                    text_top(cy, geo::COMMAND_HINT_SIZE),
+                    s,
+                    geo::COMMAND_HINT_SIZE,
+                    theme.text_muted,
+                    UiWeight::Regular,
+                );
+            }
+            geo::HintToken::Glyph(glyph) => draw_icon(
+                sugarloaf,
+                glyph,
+                IconPlacement::new(*x, cy - geo::HINT_ICON * 0.5, geo::HINT_ICON),
+                u8_to_f32(theme.text_muted),
+                device_scale,
+            ),
+        }
+    }
+    let label = elide_ui(
         sugarloaf,
-        bar.right() - geo::COMMAND_PAD_X - hw,
-        text_top(cy, geo::COMMAND_HINT_SIZE),
-        hint,
-        geo::COMMAND_HINT_SIZE,
+        "Search or run…",
+        geo::COMMAND_SIZE,
+        geo::command_label_max_width(&bar, layout.left),
+    );
+    draw_ui_text(
+        sugarloaf,
+        geo::command_label_x(&bar),
+        text_top(cy, geo::COMMAND_SIZE),
+        &label,
+        geo::COMMAND_SIZE,
         theme.text_muted,
         UiWeight::Regular,
     );
@@ -382,4 +410,20 @@ fn paint_rename(
     );
     let ty = field.y + (field.height - sidebar::ROW_TITLE_FONT_SIZE) * 0.5;
     crate::renderer::chrome::paint_rename_text(sugarloaf, draft, text_x, ty, theme);
+}
+
+/// `text` in Sora Regular `size`, cut with an ellipsis to fit `max_w`.
+fn elide_ui(sugarloaf: &mut Sugarloaf, text: &str, size: f32, max_w: f32) -> String {
+    if measure_ui_text(sugarloaf, text, size, UiWeight::Regular) <= max_w + 0.5 {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.trim_end_matches('…').chars().collect();
+    for n in (0..chars.len()).rev() {
+        let s: String =
+            chars[..n].iter().collect::<String>().trim_end().to_string() + "…";
+        if measure_ui_text(sugarloaf, &s, size, UiWeight::Regular) <= max_w {
+            return s;
+        }
+    }
+    String::new()
 }

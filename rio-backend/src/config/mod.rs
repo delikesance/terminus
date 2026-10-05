@@ -1319,6 +1319,37 @@ mod tests {
     }
 
     #[test]
+    fn test_window_default_size_fits_the_terminus_chrome() {
+        // The sidebar (260) plus a workable terminal needs more than the
+        // old 800x490 window.
+        let result = create_temporary_config(
+            "window-default-size",
+            r#"
+            [window]
+            opacity = 1.0
+        "#,
+        );
+        assert_eq!((result.window.width, result.window.height), (1200, 760));
+        assert_eq!(
+            (Config::default().window.width, Config::default().window.height),
+            (1200, 760)
+        );
+    }
+
+    #[test]
+    fn test_window_explicit_size_is_kept() {
+        let result = create_temporary_config(
+            "window-explicit-size",
+            r#"
+            [window]
+            width = 800
+            height = 490
+        "#,
+        );
+        assert_eq!((result.window.width, result.window.height), (800, 490));
+    }
+
+    #[test]
     fn test_scrollback_history_limit_default() {
         let result = create_temporary_config(
             "scrollback-default",

@@ -18,6 +18,8 @@ pub const PROMPT_END: &str = r"\e]133;B\a";
 pub const COMMAND_SUBMITTED: &str = r"\e]133;C\a";
 pub const COMMAND_FINISHED: &str = r"\e]133;D;%s\a";
 pub const CURRENT_DIR: &str = r"\e]7;file://%s%s\a";
+/// The command line itself (VS Code's OSC 633;E), escaped by the snippet.
+pub const COMMAND_LINE: &str = r"\e]633;E;%s\a";
 
 /// Env var set in local sessions to the directory holding the snippets.
 pub const ENV_DIR: &str = "TERMINUS_SHELL_INTEGRATION";
@@ -109,6 +111,22 @@ mod tests {
     }
 
     #[test]
+    fn every_shell_sends_the_command_line_escaped() {
+        for (name, body) in [("bash", BASH), ("zsh", ZSH), ("fish", FISH)] {
+            assert!(body.contains(COMMAND_LINE), "{name} OSC 633;E");
+            assert!(body.contains("__terminus_escape"), "{name} escapes it");
+            assert!(body.contains(r"x3b"), "{name} escapes ;");
+        }
+        // E must reach the terminal before C (bash: PS0 runs it first).
+        assert!(BASH.contains(r"PS0='$(__terminus_cmdline)\e]133;C\a'"));
+    }
+
+    #[test]
+    fn zsh_never_assigns_its_read_only_status() {
+        assert!(!ZSH.contains("local status"));
+    }
+
+    #[test]
     fn local_env_bootstraps_bash_and_zsh() {
         let env = local_env(Path::new("/d/shell-integration"), Some("/home/u/.zsh"));
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
@@ -149,6 +167,8 @@ mod tests {
             .args(["-c", "exec bash --noprofile --norc -i 2>&1"])
             .envs(local_env(&dir, None))
             .env("PS1", "$ ")
+            .env("HISTCONTROL", "ignorespace")
+            .env("HISTFILE", "/dev/null")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -160,7 +180,7 @@ mod tests {
             .stdin
             .take()
             .unwrap()
-            .write_all(b"echo hi\nfalse\nexit\n")
+            .write_all(b"echo hi\nfalse\necho \"a;b\\\\c\"\n echo secret\nexit\n")
             .unwrap();
         let out = child.wait_with_output().unwrap();
         // Without a tty bash does not strip the `\[ \]` readline markers.
@@ -172,12 +192,71 @@ mod tests {
         let b = "\x1b]133;B\x07";
         let c = "\x1b]133;C\x07";
         assert!(text.contains(&format!("{a}bash")), "{text:?}");
-        assert!(text.contains(&format!("$ {b}{c}hi")), "{text:?}");
+        assert!(
+            text.contains(&format!("$ {b}\x1b]633;E;echo hi\x07{c}hi")),
+            "{text:?}"
+        );
         assert!(text.contains(&format!("{c}hi")), "{text:?}");
         assert!(text.contains("\x1b]133;D;0\x07"), "{text:?}");
         assert!(text.contains("\x1b]133;D;1\x07"), "{text:?}");
         assert!(text.contains("\x1b]7;file://"), "{text:?}");
         // The bootstrap must not linger in PROMPT_COMMAND.
-        assert_eq!(text.matches("\x1b]133;A\x07").count(), 3, "{text:?}");
+        assert_eq!(text.matches("\x1b]133;A\x07").count(), 5, "{text:?}");
+        // The command line goes out explicitly, escaped, right before C,
+        // from the very first command on.
+        let e = |cmd: &str| format!("\x1b]633;E;{cmd}\x07{c}");
+        assert!(text.contains(&e("echo hi")), "{text:?}");
+        assert!(text.contains(&e("false")), "{text:?}");
+        assert!(text.contains(&e(r#"echo "a\x3bb\\\\c""#)), "{text:?}");
+        // A command bash keeps out of its history is not sent.
+        assert!(!text.contains("secret\x07"), "{text:?}");
+        assert_eq!(text.matches("\x1b]633;E;").count(), 4, "{text:?}");
+    }
+
+    /// Same with a real zsh, when one is installed.
+    #[cfg(unix)]
+    #[test]
+    fn zsh_session_sends_the_command_line() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let base =
+            std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
+        let dir = install(&base).unwrap();
+        let Ok(mut child) = Command::new("zsh")
+            .args(["-f", "-i", "-s"])
+            .env("HOME", &base)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        else {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        };
+        let script = format!(
+            "source '{}'\necho \"a;b\"\nfalse\nexit\n",
+            dir.join("terminus.zsh").display()
+        );
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned()
+            + &String::from_utf8_lossy(&out.stderr);
+        let _ = std::fs::remove_dir_all(&base);
+        let c = "\x1b]133;C\x07";
+        assert!(
+            text.contains(&format!("\x1b]633;E;echo \"a\\x3bb\"\x07{c}")),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!("\x1b]633;E;false\x07{c}")),
+            "{text:?}"
+        );
+        assert!(text.contains("\x1b]133;D;1\x07"), "{text:?}");
+        assert!(!text.contains("read-only"), "{text:?}");
     }
 }
