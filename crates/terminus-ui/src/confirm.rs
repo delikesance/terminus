@@ -14,7 +14,7 @@ use crate::geom::Rect;
 
 /// Average advance of the UI face as a fraction of the font size. Slightly
 /// generous so an estimated line never overruns what the painter draws.
-pub const AVG_ADVANCE: f32 = 0.58;
+pub const AVG_ADVANCE: f32 = 0.55;
 pub const BODY_FONT: f32 = 14.0;
 pub const BUTTON_FONT: f32 = 14.0;
 /// Longest title (chars) before it is elided to keep one line at 22px.
@@ -23,6 +23,10 @@ pub const TITLE_MAX_CHARS: usize = 30;
 pub fn estimate_text_width(text: &str, size: f32) -> f32 {
     text.chars().count() as f32 * size * AVG_ADVANCE
 }
+
+/// Button labels are Medium/SemiBold and short: a tighter estimate keeps the
+/// label (left-aligned by the Button painter) near the middle.
+pub const BUTTON_ADVANCE: f32 = 0.54;
 
 /// Content of one confirmation dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +90,8 @@ impl ConfirmSpec {
     pub fn layout_in(&self, area: Rect) -> ConfirmLayout {
         let inner = DIALOG_WIDTH - 2.0 * DIALOG_PAD;
         let lines = wrap_text(&self.body, inner, |s| estimate_text_width(s, BODY_FONT));
-        let cancel_w = action_width(estimate_text_width(&self.cancel, BUTTON_FONT));
-        let confirm_w = action_width(estimate_text_width(&self.confirm, BUTTON_FONT));
+        let cancel_w = action_width(self.cancel.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE);
+        let confirm_w = action_width(self.confirm.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE);
         // Height first (position does not change it), then centre.
         let probe = dialog_layout_at(
             0.0,

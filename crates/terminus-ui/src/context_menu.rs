@@ -9,11 +9,13 @@
 
 use crate::geom::Rect;
 
-pub const ITEM_HEIGHT: f32 = 32.0;
-pub const MENU_PAD_Y: f32 = 4.0;
-pub const MENU_PAD_X: f32 = 4.0;
-pub const MENU_MIN_WIDTH: f32 = 160.0;
-pub const MENU_RADIUS: f32 = 10.0;
+pub const ITEM_HEIGHT: f32 = 36.0;
+pub const MENU_PAD_Y: f32 = 6.0;
+pub const MENU_PAD_X: f32 = 6.0;
+pub const MENU_MIN_WIDTH: f32 = 236.0;
+pub const MENU_RADIUS: f32 = 12.0;
+/// Divider row (1px line with 5px margins) before a flagged item.
+pub const SEPARATOR_HEIGHT: f32 = 11.0;
 /// Approximate label advance used before the painter measures glyphs.
 const LABEL_ESTIMATE: f32 = 7.0;
 
@@ -65,6 +67,8 @@ pub struct ContextItem {
     pub action: ContextAction,
     /// Destructive styling (e.g. Delete).
     pub danger: bool,
+    /// A divider is drawn above this row.
+    pub separator_before: bool,
 }
 
 impl ContextItem {
@@ -73,7 +77,13 @@ impl ContextItem {
             label: label.into(),
             action,
             danger: false,
+            separator_before: false,
         }
+    }
+
+    pub fn sep(mut self) -> Self {
+        self.separator_before = true;
+        self
     }
 
     pub fn danger(mut self) -> Self {
@@ -150,10 +160,9 @@ impl ContextMenu {
             "Copy SSH command",
             ContextAction::CopySshCommand(id.clone()),
         ));
-        items.push(ContextItem::new(
-            "Edit host",
-            ContextAction::EditHost(id.clone()),
-        ));
+        items.push(
+            ContextItem::new("Edit host", ContextAction::EditHost(id.clone())).sep(),
+        );
         items.push(ContextItem::new(
             "Rename",
             ContextAction::RenameHost(id.clone()),
@@ -199,7 +208,11 @@ impl ContextMenu {
         }
         items.push(ContextItem::new("Rename", ContextAction::SftpRename));
         items.push(ContextItem::new("New folder", ContextAction::SftpNewFolder));
-        items.push(ContextItem::new("Delete", ContextAction::SftpDelete).danger());
+        items.push(
+            ContextItem::new("Delete", ContextAction::SftpDelete)
+                .sep()
+                .danger(),
+        );
         items.push(ContextItem::new("Refresh", ContextAction::SftpRefresh));
         Self::open(x, y, items)
     }
@@ -212,7 +225,9 @@ impl ContextMenu {
             y,
             vec![
                 ContextItem::new("Rename", ContextAction::RenameGroup(id.clone())),
-                ContextItem::new("Delete group", ContextAction::DeleteGroup(id)).danger(),
+                ContextItem::new("Delete group", ContextAction::DeleteGroup(id))
+                    .sep()
+                    .danger(),
             ],
         )
     }
@@ -235,7 +250,8 @@ impl ContextMenu {
 
     /// Dynamic shell height: vertical pad + one row per item.
     pub fn height(&self) -> f32 {
-        Self::height_for(self.items.len())
+        let seps = self.items.iter().filter(|i| i.separator_before).count();
+        Self::height_for(self.items.len()) + seps as f32 * SEPARATOR_HEIGHT
     }
 
     /// Height for `n` items (same formula as [`Self::height`]).
@@ -262,16 +278,38 @@ impl ContextMenu {
         Rect::new(self.x, self.y, self.width, self.height())
     }
 
+    /// Top of row `index` (after any dividers above it).
+    fn row_top(&self, index: usize) -> f32 {
+        let seps = self.items[..=index]
+            .iter()
+            .filter(|i| i.separator_before)
+            .count();
+        self.y + MENU_PAD_Y + index as f32 * ITEM_HEIGHT + seps as f32 * SEPARATOR_HEIGHT
+    }
+
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.items.len() {
             return None;
         }
         Some(Rect::new(
             self.x + MENU_PAD_X,
-            self.y + MENU_PAD_Y + index as f32 * ITEM_HEIGHT,
+            self.row_top(index),
             self.width - 2.0 * MENU_PAD_X,
             ITEM_HEIGHT,
         ))
+    }
+
+    /// The divider above row `index`, if it has one.
+    pub fn separator_rect(&self, index: usize) -> Option<Rect> {
+        let item = self.items.get(index)?;
+        item.separator_before.then(|| {
+            Rect::new(
+                self.x + MENU_PAD_X,
+                self.row_top(index) - SEPARATOR_HEIGHT,
+                self.width - 2.0 * MENU_PAD_X,
+                SEPARATOR_HEIGHT,
+            )
+        })
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> ContextMenuHit {
@@ -335,24 +373,52 @@ mod tests {
     }
 
     #[test]
-    fn height_scales_with_item_count() {
+    fn matches_the_design_menu_metrics() {
+        assert_eq!(MENU_PAD_Y, 6.0);
+        assert_eq!(ITEM_HEIGHT, 36.0);
+        assert_eq!(MENU_MIN_WIDTH, 236.0);
+        assert_eq!(MENU_RADIUS, 12.0);
+        assert_eq!(SEPARATOR_HEIGHT, 11.0);
+    }
+
+    #[test]
+    fn height_scales_with_items_and_separators() {
         assert_eq!(ContextMenu::height_for(0), MENU_PAD_Y * 2.0);
         assert_eq!(
             ContextMenu::height_for(2),
             MENU_PAD_Y * 2.0 + 2.0 * ITEM_HEIGHT
         );
-        assert_eq!(
-            ContextMenu::height_for(3),
-            MENU_PAD_Y * 2.0 + 3.0 * ITEM_HEIGHT
-        );
         let group = ContextMenu::for_group(10.0, 10.0, "g1").unwrap();
         let host = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
         assert_eq!(group.items.len(), 2);
         assert_eq!(host.items.len(), 6);
-        assert_eq!(group.height(), ContextMenu::height_for(2));
-        assert_eq!(host.height(), ContextMenu::height_for(6));
+        let seps =
+            |m: &ContextMenu| m.items.iter().filter(|i| i.separator_before).count();
+        assert!(seps(&host) >= 1 && seps(&group) == 1);
+        assert_eq!(
+            host.height(),
+            ContextMenu::height_for(6) + seps(&host) as f32 * SEPARATOR_HEIGHT
+        );
         assert!(group.height() < host.height());
         assert_eq!(group.rect().height, group.height());
+        // The last row ends exactly one pad above the bottom edge.
+        let last = host.item_rect(5).unwrap();
+        assert!((last.bottom() + MENU_PAD_Y - host.rect().bottom()).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_separator_pushes_later_rows_down_and_is_not_clickable() {
+        let menu = ContextMenu::for_group(0.0, 0.0, "g").unwrap();
+        let rename = menu.item_rect(0).unwrap();
+        let delete = menu.item_rect(1).unwrap();
+        assert_eq!(delete.y - rename.bottom(), SEPARATOR_HEIGHT);
+        let mid = rename.bottom() + SEPARATOR_HEIGHT / 2.0;
+        assert_eq!(menu.hit_test(rename.x + 4.0, mid), ContextMenuHit::Consume);
+        assert_eq!(
+            menu.separator_rect(1).map(|r| r.height),
+            Some(SEPARATOR_HEIGHT)
+        );
+        assert_eq!(menu.separator_rect(0), None);
     }
 
     #[test]
