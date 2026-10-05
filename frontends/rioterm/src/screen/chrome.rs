@@ -20,11 +20,19 @@ impl Screen<'_> {
     pub fn pump_chrome(&mut self) -> bool {
         let update_changed = self.pump_updater();
         let store_changed = self.host_store.drain() || update_changed;
+        let store_changed = self.settle_sftp_auth() || store_changed;
         // Apply the initial collapsed-groups seed from the DB exactly once.
         if let Some(seed) = self.host_store.take_collapsed_groups_seed() {
             self.chrome.panel.collapsed_groups = seed;
         }
         let sftp_changed = self.sftp.as_mut().is_some_and(|s| s.pump());
+        // Parked browsers (other machines) keep draining their workers.
+        for parked in self.sftp_parked.iter_mut() {
+            parked.pump();
+        }
+        if sftp_changed {
+            self.settle_failed_files_browser();
+        }
         let store_changed = store_changed || sftp_changed;
 
         let open_host_ids: Vec<String> = self
@@ -33,6 +41,7 @@ impl Screen<'_> {
             .iter()
             .filter_map(|tab| tab.current().host_id.clone())
             .collect();
+        let store_changed = self.retire_sftp_browsers(&open_host_ids) || store_changed;
         let current = self.context_manager.current_index();
         let len = self.context_manager.len();
         let sessions: Vec<hosts::OpenSession> = (0..len)
@@ -136,14 +145,22 @@ impl Screen<'_> {
                 })
                 .collect();
             self.chrome.settings.set_keys(key_items.clone());
-            self.chrome.activity.cloud_sync_active = self.host_store.sync_connected();
+            self.chrome.shell.sync_ok = self.host_store.sync_connected();
             self.chrome
                 .form
                 .set_identities(key_items.into_iter().map(|k| (k.id, k.name)).collect());
+            self.chrome.form.set_groups(
+                self.host_store
+                    .groups()
+                    .iter()
+                    .map(|(id, name, _)| (id.clone(), name.clone()))
+                    .collect(),
+            );
 
             if let Some(notice) = self.host_store.take_notice() {
                 if notice.starts_with("SSH key") {
                     self.chrome.settings.close_key_draft();
+                    self.settings_view.keys.close_draft();
                 }
                 self.chrome.panel.notice = Some(notice);
                 self.chrome.panel.error = None;
@@ -172,6 +189,17 @@ impl Screen<'_> {
                 }
             }
             if let Some(message) = self.host_store.error().map(str::to_string) {
+                if self.settings_view.keys.draft.is_some() {
+                    if message.contains("Unlock the vault")
+                        && !self.chrome.vault_unlock_is_open()
+                    {
+                        self.open_vault_unlock_for(
+                            terminus_ui::PendingVaultAction::SaveSshKey,
+                        );
+                    } else {
+                        self.settings_view.keys.set_draft_error(message.clone());
+                    }
+                }
                 if self.chrome.settings.key_drafting {
                     if message.contains("Unlock the vault")
                         && !self.chrome.vault_unlock_is_open()
@@ -293,30 +321,23 @@ impl Screen<'_> {
         action
     }
 
-    /// Right-click inside the SFTP pane: open a file/folder context menu.
+    /// Right-click inside the Files view: open a file/folder context menu.
     pub fn handle_sftp_context_press(&mut self, x: f32, y: f32) -> bool {
-        let Some(bounds) = self.sftp_bounds() else {
+        let Some(content) = self.sftp_bounds() else {
             return false;
         };
         let (width, height) = self.chrome_viewport();
         let Some(session) = self.sftp.as_mut() else {
             return false;
         };
-        let layout = terminus_ui::SftpPaneLayout::from_state(bounds, &session.state);
-        let hit = layout.hit_test(&session.state, x, y);
-        if matches!(hit, terminus_ui::SftpHit::Miss) {
-            return false;
+        match crate::renderer::views::files::context_menu(session, content, x, y) {
+            crate::renderer::views::files::FilesAction::ContextMenu(menu) => {
+                self.chrome.context_menu = Some(menu.clamped(width, height));
+            }
+            _ => self.chrome.close_context_menu(),
         }
-
-        let menu = session.context_menu_for_hit(&layout, hit, x, y);
-        if let Some(menu) = menu {
-            self.chrome.context_menu = Some(menu.clamped(width, height));
-            self.mark_dirty();
-            true
-        } else {
-            self.chrome.close_context_menu();
-            true // consume right-click over SFTP chrome even without a menu
-        }
+        self.mark_dirty();
+        true // consume right-clicks over the view even without a menu
     }
 
     /// Update host→group drag while the left button is held.
@@ -342,11 +363,15 @@ impl Screen<'_> {
     pub fn reapply_chrome_inset(&mut self) {
         let scale = self.sugarloaf.scale_factor();
         let left = (self.renderer.margin.left + self.chrome.reserved_width()) * scale;
+        let right = crate::renderer::utils::padding_right_from_config(
+            &self.renderer.navigation,
+            self.renderer.margin.right,
+        ) * scale;
         for context_grid in self.context_manager.contexts_mut() {
             let margin = context_grid.scaled_margin;
             context_grid.update_scaled_margin(Margin::new(
                 margin.top,
-                margin.right,
+                right,
                 margin.bottom,
                 left,
             ));
@@ -368,15 +393,61 @@ impl Screen<'_> {
         self.chrome.handle_wheel(height, x, y, lines)
     }
 
+    /// Close the SFTP browsers that must go: their host was deleted or
+    /// its connection changed (address, port, user, key), or their
+    /// machine lost its last tab — once its transfer, if any, ended.
+    /// Returns whether one was closed.
+    fn retire_sftp_browsers(&mut self, open_host_ids: &[String]) -> bool {
+        let owner = crate::sftp_ui::ActiveSftp::owner;
+        let before = std::mem::replace(&mut self.sftp_tab_hosts, open_host_ids.to_vec());
+        self.sftp_parked.tabs_changed(&before, open_host_ids);
+        let mut closed =
+            self.sftp_parked
+                .reap(&mut self.sftp, owner, crate::sftp_ui::ActiveSftp::busy);
+        if !self.host_store.loading() {
+            let hosts = self.host_store.hosts();
+            closed.extend(self.sftp_parked.retire_where(&mut self.sftp, owner, |s| {
+                s.machine_id != hosts::LOCAL_ID
+                    && !s.machine_id.starts_with(hosts::WSL_PREFIX)
+                    && hosts::sftp_connection_stale(
+                        hosts,
+                        &s.machine_id,
+                        &s.connection_key,
+                    )
+            }));
+        }
+        let any = !closed.is_empty();
+        for session in closed {
+            tracing::info!("closing the SFTP browser of {}", session.machine_id);
+            session.close();
+        }
+        if any {
+            // The Files view of the selected machine may have lost its
+            // browser: show its empty state ("Browse files") again.
+            self.chrome.screens.files.session_open = self.sftp.is_some();
+            self.mark_dirty();
+        }
+        any
+    }
+
+    /// Route a pixel wheel delta (touchpad). Returns whether the chrome
+    /// consumed it.
+    pub fn chrome_wheel_pixels(&mut self, x: f32, y: f32, dy: f32) -> bool {
+        let (_, height) = self.chrome_viewport();
+        self.chrome.handle_wheel_pixels(height, x, y, dy)
+    }
+
     /// Chrome-aware cursor under logical `(x, y)`. `None` means the
     /// pointer is over the terminal grid and [`Self::mouse_cursor_icon`]
     /// should decide.
     pub fn chrome_cursor_at(&self, x: f32, y: f32) -> Option<CursorIcon> {
         let (width, height) = self.chrome_viewport();
         let over_modal = self.chrome_overlay_dialog_open();
-        let over_rail =
-            !self.chrome.activity.collapsed && x < self.chrome.reserved_width();
-        if !over_modal && !over_rail {
+        let shell = &self.chrome.shell;
+        let over_shell = shell.layout().sidebar.contains(x, y)
+            || shell.hit_test(x, y).is_some()
+            || self.view_owns(x, y);
+        if !over_modal && !over_shell {
             return None;
         }
         Some(match self.chrome.cursor_at(width, height, x, y) {
@@ -416,6 +487,45 @@ impl Screen<'_> {
         });
         if self.allow_manual_dragging {
             self.start_window_drag(window);
+        }
+    }
+
+    /// Press on the empty header: window drag, double-click maximizes.
+    pub fn on_header_press(
+        &mut self,
+        window: &rio_window::window::Window,
+        prev: Option<ChromePress>,
+    ) {
+        self.on_chrome_press(window, prev);
+    }
+
+    /// Header min / max / close (painted where the app draws its own
+    /// caption buttons).
+    pub fn apply_header_control(
+        &mut self,
+        window: &rio_window::window::Window,
+        button: terminus_ui::shell::WindowButton,
+    ) {
+        use terminus_ui::shell::WindowButton;
+        #[cfg(target_os = "windows")]
+        {
+            use crate::renderer::window_controls::WindowControl;
+            let control = match button {
+                WindowButton::Minimize => WindowControl::Minimize,
+                WindowButton::Maximize => WindowControl::Maximize,
+                WindowButton::Close => WindowControl::Close,
+            };
+            self.apply_window_control(window, control);
+        }
+        #[cfg(not(target_os = "windows"))]
+        match button {
+            WindowButton::Minimize => window.set_minimized(true),
+            WindowButton::Maximize => {
+                let next = !window.is_maximized();
+                window.set_maximized(next);
+                self.window_maximized = next;
+            }
+            WindowButton::Close => self.context_manager.quit(),
         }
     }
 

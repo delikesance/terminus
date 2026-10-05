@@ -307,8 +307,78 @@ impl Colorspace {
     }
 }
 
+/// Largest share of the monitor the built-in default window may take.
+/// winit has no work-area API, so the margin stands in for a taskbar/dock.
+pub const DEFAULT_SIZE_MONITOR_SHARE: f64 = 0.9;
+
 impl Window {
     pub fn is_fullscreen(&self) -> bool {
         self.mode == WindowMode::Fullscreen
+    }
+
+    /// Logical inner size to open with, given the monitor's logical size
+    /// (`None` when unknown). The built-in default (1200x760) shrinks to
+    /// at most [`DEFAULT_SIZE_MONITOR_SHARE`] of the monitor, never below
+    /// `min`; a size the user set is used as is. (A user who writes the
+    /// default size itself is indistinguishable from the default.)
+    pub fn initial_size(
+        &self,
+        monitor: Option<(f64, f64)>,
+        min: (f64, f64),
+    ) -> (f64, f64) {
+        let size = (self.width as f64, self.height as f64);
+        let is_default = self.width == default_window_width()
+            && self.height == default_window_height();
+        let Some((mw, mh)) = monitor.filter(|_| is_default) else {
+            return size;
+        };
+        let fit = |want: f64, room: f64, floor: f64| {
+            if room > 0.0 {
+                want.min(room * DEFAULT_SIZE_MONITOR_SHARE).max(floor)
+            } else {
+                want
+            }
+        };
+        (fit(size.0, mw, min.0), fit(size.1, mh, min.1))
+    }
+}
+
+#[cfg(test)]
+mod initial_size_tests {
+    use super::*;
+
+    const MIN: (f64, f64) = (300.0, 200.0);
+
+    #[test]
+    fn the_default_size_fits_a_small_monitor() {
+        let w = Window::default();
+        // 1024x700 screen: at most 90% of it.
+        let (width, height) = w.initial_size(Some((1024.0, 700.0)), MIN);
+        assert!((width - 921.6).abs() < 0.01, "{width}");
+        assert!((height - 630.0).abs() < 0.01, "{height}");
+    }
+
+    #[test]
+    fn the_default_size_is_kept_when_it_fits() {
+        let w = Window::default();
+        assert_eq!(w.initial_size(Some((1920.0, 1080.0)), MIN), (1200.0, 760.0));
+        // Unknown monitor: nothing to clamp to.
+        assert_eq!(w.initial_size(None, MIN), (1200.0, 760.0));
+    }
+
+    #[test]
+    fn an_explicit_size_is_untouched() {
+        let w = Window {
+            width: 2000,
+            height: 1400,
+            ..Window::default()
+        };
+        assert_eq!(w.initial_size(Some((1024.0, 700.0)), MIN), (2000.0, 1400.0));
+    }
+
+    #[test]
+    fn a_tiny_monitor_never_goes_below_the_minimum() {
+        let w = Window::default();
+        assert_eq!(w.initial_size(Some((200.0, 100.0)), MIN), MIN);
     }
 }

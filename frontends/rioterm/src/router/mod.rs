@@ -42,6 +42,8 @@ pub enum Modal {
     CommandPalette,
     /// The quit confirmation dialog.
     ConfirmQuit,
+    /// The chrome's destructive confirmation (delete host / group).
+    ChromeConfirm,
     /// The error assistant; `report_error` can activate it WITHOUT
     /// leaving `RoutePath::Terminal`.
     Assistant,
@@ -160,7 +162,57 @@ impl Route<'_> {
 
     #[inline]
     pub fn confirm_quit(&mut self) {
-        self.window.screen.renderer.confirm_quit.set_active(true);
+        let screen = &mut self.window.screen;
+        let sessions = (0..screen.context_manager.len())
+            .filter(|&i| !screen.context_manager.is_pinned(i))
+            .count();
+        screen.renderer.confirm_quit.set_sessions(sessions);
+        screen.renderer.confirm_quit.set_active(true);
+        self.request_overlay_redraw();
+    }
+
+    /// Act on a quit-dialog outcome (key or click). True when the app is
+    /// quitting and the caller must stop touching the window.
+    pub fn apply_quit_outcome(
+        &mut self,
+        outcome: terminus_ui::confirm::ConfirmOutcome,
+    ) -> bool {
+        use terminus_ui::confirm::ConfirmOutcome;
+        match outcome {
+            ConfirmOutcome::Confirm => {
+                self.quit();
+                true
+            }
+            ConfirmOutcome::Cancel => {
+                self.window.screen.renderer.confirm_quit.set_active(false);
+                self.window.screen.updater.disarm_exit_action();
+                self.request_overlay_redraw();
+                false
+            }
+            ConfirmOutcome::Changed | ConfirmOutcome::Idle => {
+                self.request_overlay_redraw();
+                false
+            }
+        }
+    }
+
+    /// Run the side effect of a confirmed chrome dialog (delete host / group).
+    pub fn run_confirmed_action(
+        &mut self,
+        action: terminus_ui::ChromeAction,
+        clipboard: &mut Clipboard,
+    ) {
+        use terminus_ui::ChromeAction;
+        match action {
+            ChromeAction::DeleteHost(id) => self
+                .window
+                .screen
+                .delete_host_closing_sessions(&id, clipboard),
+            ChromeAction::DeleteGroup(id) => {
+                self.window.screen.host_store.delete_group(&id)
+            }
+            _ => {}
+        }
         self.request_overlay_redraw();
     }
 
@@ -187,6 +239,9 @@ impl Route<'_> {
         }
         if self.window.screen.renderer.confirm_quit.is_active() {
             return Some(Modal::ConfirmQuit);
+        }
+        if self.window.screen.chrome.confirm_is_open() {
+            return Some(Modal::ChromeConfirm);
         }
         // Only hard errors are modal: a warning toast (font not
         // found on live reload, say) renders over a WORKING terminal
@@ -319,6 +374,14 @@ impl Route<'_> {
                 }
                 true
             }
+            // A view covering the terminal takes committed text (IME,
+            // dead keys) instead of the PTY.
+            _ if self.window.screen.view_takes_keys() => {
+                if self.window.screen.view_text(text) {
+                    self.request_overlay_redraw();
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -335,6 +398,10 @@ impl Route<'_> {
 
     #[inline]
     pub fn quit(&mut self) {
+        // process::exit skips Drop: stop the tunnels' ssh processes first.
+        if let Some(tunnels) = self.window.screen.tunnels.as_mut() {
+            tunnels.shutdown();
+        }
         self.window.screen.updater.run_exit_action();
         std::process::exit(0);
     }
@@ -359,6 +426,15 @@ impl Route<'_> {
                 || rename_active)
             && !self.window.screen.chrome.add_host_is_open()
         {
+            let _ = self.window.screen.chrome_key_input(key_event);
+            self.request_overlay_redraw();
+            return true;
+        }
+
+        // An open context menu (sidebar row, Files entry) is a popup over
+        // everything: Escape closes it, other keys never reach the view or
+        // the PTY behind it.
+        if self.window.screen.chrome.context_menu.is_some() {
             let _ = self.window.screen.chrome_key_input(key_event);
             self.request_overlay_redraw();
             return true;
@@ -454,25 +530,59 @@ impl Route<'_> {
             }
 
             Modal::ConfirmQuit => {
+                use terminus_ui::components::overlay::DialogKey;
+                use terminus_ui::confirm::ConfirmOutcome;
                 if key_event.state == rio_window::event::ElementState::Pressed {
-                    match &key_event.logical_key {
+                    let outcome = match &key_event.logical_key {
                         Key::Character(c) if c.as_str() == "n" || c.as_str() == "N" => {
-                            self.window.screen.renderer.confirm_quit.set_active(false);
-                            self.window.screen.updater.disarm_exit_action();
-                            self.request_overlay_redraw();
-                        }
-                        Key::Named(NamedKey::Escape) => {
-                            self.window.screen.renderer.confirm_quit.set_active(false);
-                            self.window.screen.updater.disarm_exit_action();
-                            self.request_overlay_redraw();
+                            ConfirmOutcome::Cancel
                         }
                         Key::Character(c) if c.as_str() == "y" || c.as_str() == "Y" => {
-                            self.quit();
-                            return true;
+                            ConfirmOutcome::Confirm
                         }
-                        _ => {}
+                        Key::Named(NamedKey::Escape) => ConfirmOutcome::Cancel,
+                        Key::Named(NamedKey::Enter) => self
+                            .window
+                            .screen
+                            .renderer
+                            .confirm_quit
+                            .key(DialogKey::Enter),
+                        Key::Named(NamedKey::Tab)
+                        | Key::Named(NamedKey::ArrowLeft)
+                        | Key::Named(NamedKey::ArrowRight) => self
+                            .window
+                            .screen
+                            .renderer
+                            .confirm_quit
+                            .key(DialogKey::Tab),
+                        _ => ConfirmOutcome::Idle,
+                    };
+                    if self.apply_quit_outcome(outcome) {
+                        return true;
                     }
                 }
+                self.request_overlay_redraw();
+                true
+            }
+
+            Modal::ChromeConfirm => {
+                use terminus_ui::components::overlay::DialogKey;
+                if key_event.state == rio_window::event::ElementState::Pressed {
+                    let key = match &key_event.logical_key {
+                        Key::Named(NamedKey::Escape) => Some(DialogKey::Escape),
+                        Key::Named(NamedKey::Enter) => Some(DialogKey::Enter),
+                        Key::Named(NamedKey::Tab)
+                        | Key::Named(NamedKey::ArrowLeft)
+                        | Key::Named(NamedKey::ArrowRight) => Some(DialogKey::Tab),
+                        _ => None,
+                    };
+                    if let Some(action) =
+                        key.and_then(|k| self.window.screen.chrome.handle_confirm_key(k))
+                    {
+                        self.run_confirmed_action(action, clipboard);
+                    }
+                }
+                self.request_overlay_redraw();
                 true
             }
 
@@ -1259,6 +1369,33 @@ impl<'a> RouteWindow<'a> {
         // every toggle, not just at creation).
         if quake {
             window_builder = window_builder.with_visible(false);
+        }
+
+        // The built-in default size must fit the screen it opens on (a
+        // 1200x760 window overflows a small laptop or VM display); a size
+        // the user set is kept. The window isn't placed yet, so the
+        // primary monitor stands in for "current".
+        if !quake
+            && config.window.mode == rio_backend::config::window::WindowMode::Windowed
+            && config.window.columns.is_none()
+            && config.window.rows.is_none()
+        {
+            let monitor = event_loop
+                .primary_monitor()
+                .or_else(|| event_loop.available_monitors().next())
+                .map(|m| {
+                    let size = m.size().to_logical::<f64>(m.scale_factor());
+                    (size.width, size.height)
+                });
+            let (width, height) = config.window.initial_size(
+                monitor,
+                (
+                    DEFAULT_MINIMUM_WINDOW_WIDTH as f64,
+                    DEFAULT_MINIMUM_WINDOW_HEIGHT as f64,
+                ),
+            );
+            window_builder = window_builder
+                .with_inner_size(rio_window::dpi::LogicalSize { width, height });
         }
 
         #[cfg(not(any(target_os = "macos", windows)))]

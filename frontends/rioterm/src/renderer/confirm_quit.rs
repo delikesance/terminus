@@ -3,78 +3,87 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use rio_backend::sugarloaf::text::DrawOpts;
-use rio_backend::sugarloaf::Sugarloaf;
+//! "Quit Terminus?" dialog (Linux; macOS/Windows use the native confirm).
 
-const HEADING: &str = "want to quit?";
-const CONFIRM: &str = "yes (y)";
-const DISMISS: &str = "no (n)";
+use rio_backend::sugarloaf::Sugarloaf;
+use terminus_ui::components::overlay::DialogKey;
+use terminus_ui::confirm::{ConfirmOutcome, ConfirmPrompt};
+use terminus_ui::theme::ChromeTheme;
+
+use crate::renderer::dialogs::confirm::{paint_confirm, ConfirmView};
 
 #[derive(Default)]
 pub struct ConfirmQuit {
-    active: bool,
+    prompt: Option<ConfirmPrompt>,
+    sessions: usize,
 }
 
 impl ConfirmQuit {
     #[inline]
     pub fn is_active(&self) -> bool {
-        self.active
+        self.prompt.is_some()
     }
 
-    #[inline]
+    /// Open (fresh focus and hover) or close the dialog.
     pub fn set_active(&mut self, active: bool) {
-        self.active = active;
+        self.prompt = active.then(|| ConfirmPrompt::quit(self.sessions));
+    }
+
+    /// Open sessions to mention in the body (set before activating).
+    pub fn set_sessions(&mut self, sessions: usize) {
+        self.sessions = sessions;
+    }
+
+    pub fn key(&mut self, key: DialogKey) -> ConfirmOutcome {
+        self.prompt
+            .as_mut()
+            .map_or(ConfirmOutcome::Idle, |p| p.key(key))
+    }
+
+    /// Left press at logical `(x, y)` in a window of `window` logical px.
+    pub fn press(&mut self, window: (f32, f32), x: f32, y: f32) -> ConfirmOutcome {
+        self.prompt
+            .as_mut()
+            .map_or(ConfirmOutcome::Idle, |p| p.press(window, x, y))
+    }
+
+    pub fn hover_at(&mut self, window: (f32, f32), x: f32, y: f32) -> bool {
+        self.prompt
+            .as_mut()
+            .is_some_and(|p| p.hover_at(window, x, y))
+    }
+
+    /// Whether `(x, y)` is over one of the two buttons (pointer cursor).
+    pub fn over_button(&self, window: (f32, f32), x: f32, y: f32) -> bool {
+        use terminus_ui::components::overlay::DialogHit;
+        self.prompt.as_ref().is_some_and(|p| {
+            matches!(
+                p.layout(window).hit_test(x, y),
+                DialogHit::Confirm | DialogHit::Cancel
+            )
+        })
     }
 
     /// `dimensions` is `(window_width, window_height, scale_factor)`,
     /// matching the other overlays' `render` signature.
-    pub fn render(&self, sugarloaf: &mut Sugarloaf, dimensions: (f32, f32, f32)) {
-        if !self.active {
+    pub fn render(
+        &self,
+        sugarloaf: &mut Sugarloaf,
+        theme: &ChromeTheme,
+        dimensions: (f32, f32, f32),
+    ) {
+        let Some(prompt) = self.prompt.as_ref() else {
             return;
-        }
-
+        };
         let (width, height, scale) = dimensions;
-        let win_w = width / scale;
-        let win_h = height / scale;
-
-        let full_text = format!("{}  {}  /  {}", HEADING, CONFIRM, DISMISS);
-        let padding_x = 12.0;
-        let padding_y = 6.0;
-        let text_h = 16.0;
-        let box_w = full_text.len() as f32 * 7.5 + padding_x * 2.0;
-        let box_h = text_h + padding_y * 2.0;
-        let box_x = (win_w - box_w) / 2.0;
-        let box_y = (win_h - box_h) / 2.0;
-
-        crate::renderer::chrome::paint_flat(
-            sugarloaf,
-            &terminus_ui::Rect::new(box_x, box_y, box_w, box_h),
-            [0.0, 0.0, 0.0, 1.0],
-            0.0,
-            20,
-        );
-
-        let heading_opts = DrawOpts {
-            font_size: 13.0,
-            color: [255, 255, 255, 255],
-            ..DrawOpts::default()
+        let layout = prompt.layout((width / scale, height / scale));
+        let view = ConfirmView {
+            focus: Some(prompt.focus),
+            hover: prompt.hover,
+            option_checked: false,
         };
-        let gray_opts = DrawOpts {
-            font_size: 13.0,
-            color: [166, 166, 166, 255],
-            ..DrawOpts::default()
-        };
-
-        let text_x = box_x + padding_x;
-        let text_y = box_y + padding_y + 2.0;
-
-        let ui = sugarloaf.text_mut();
-        let heading_w = ui.draw(text_x, text_y, HEADING, &heading_opts);
-        ui.draw(
-            text_x + heading_w,
-            text_y,
-            &format!("  {}  /  {}", CONFIRM, DISMISS),
-            &gray_opts,
-        );
+        sugarloaf.begin_overlay();
+        paint_confirm(sugarloaf, theme, &prompt.spec, &layout, view, true);
+        sugarloaf.end_overlay();
     }
 }

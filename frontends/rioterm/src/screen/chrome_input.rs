@@ -226,6 +226,9 @@ impl Screen<'_> {
             Key::Named(NamedKey::ArrowDown) => FormInput::Next,
             Key::Named(NamedKey::Home) => FormInput::Home,
             Key::Named(NamedKey::End) => FormInput::End,
+            // winit reports Space as a named key: it is text here (names,
+            // tags, notes, passwords may hold spaces).
+            Key::Named(NamedKey::Space) => FormInput::Text,
             Key::Character(ch) => {
                 let select_mod = self.modifiers.state().control_key()
                     || self.modifiers.state().super_key();
@@ -243,7 +246,10 @@ impl Screen<'_> {
         };
 
         let text = if input == FormInput::Text {
-            key_event.text.as_deref().unwrap_or_default()
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Space) => " ",
+                _ => key_event.text.as_deref().unwrap_or_default(),
+            }
         } else {
             ""
         };
@@ -461,6 +467,9 @@ impl Screen<'_> {
             auth_method: values.auth_method,
             identity_id: values.identity_id,
             password: values.password,
+            group_id: values.group_id,
+            tags: crate::hosts::parse_tags(&values.tags),
+            notes: values.notes,
         };
         let result = if let Some(id) = editing_id.as_deref() {
             self.host_store.probe_and_update(id, &draft)

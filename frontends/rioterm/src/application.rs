@@ -827,6 +827,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         .sugarloaf
                         .font_library()
                         .remove_glyph_registry(route_id);
+                    // A host session that dies while connecting reports why.
+                    route.window.screen.note_session_exit(route_id);
 
                     if route
                         .window
@@ -885,6 +887,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         island.set_progress_report(report);
                         route.request_redraw();
                     }
+                }
+            }
+            RioEventType::Rio(RioEvent::CommandSubmitted {
+                route_id,
+                command,
+                cwd,
+            }) => {
+                if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    route
+                        .window
+                        .screen
+                        .record_submitted_command(route_id, &command, cwd);
                 }
             }
             RioEventType::Rio(RioEvent::SelectionScrollTick) => {
@@ -1368,6 +1382,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Pressed
+                    && button == MouseButton::Left
+                    && route.window.screen.renderer.confirm_quit.is_active()
+                {
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    let size = route.window.screen.sugarloaf.window_size();
+                    let win = (size.width / scale, size.height / scale);
+                    let mouse = &route.window.screen.mouse;
+                    let (x, y) = (mouse.x as f32 / scale, mouse.y as f32 / scale);
+                    let outcome =
+                        route.window.screen.renderer.confirm_quit.press(win, x, y);
+                    route.apply_quit_outcome(outcome);
+                    return;
+                }
                 if route.path != RoutePath::Terminal
                     || route.window.screen.renderer.confirm_quit.is_active()
                 {
@@ -1503,7 +1531,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             }
 
                             // Check if clicking on a panel border to start resize
-                            {
+                            if route.window.screen.chrome.shell.view().shows_terminal() {
                                 let mx = route.window.screen.mouse.x as f32;
                                 let my = route.window.screen.mouse.y as f32;
                                 let grid =
@@ -1565,6 +1593,41 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let mx = route.window.screen.mouse.x as f32 / scale;
                                 let my = route.window.screen.mouse.y as f32 / scale;
                                 match route.window.screen.chrome_press(mx, my) {
+                                    ChromeAction::OpenPalette => {
+                                        route.window.screen.open_palette();
+                                        route.request_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::ViewChanged(_) => {
+                                        route.window.screen.clear_selection();
+                                        route.window.screen.mark_dirty();
+                                        route.request_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::Split { down } => {
+                                        if down {
+                                            route.window.screen.split_down();
+                                        } else {
+                                            route.window.screen.split_right();
+                                        }
+                                        route.request_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::WindowDrag => {
+                                        route.window.screen.on_header_press(
+                                            &route.window.winit_window,
+                                            chrome_press,
+                                        );
+                                        return;
+                                    }
+                                    ChromeAction::WindowControl(button) => {
+                                        route
+                                            .window
+                                            .screen
+                                            .apply_header_control(&route.window.winit_window, button);
+                                        route.request_redraw();
+                                        return;
+                                    }
                                     ChromeAction::OpenAddSnippet => {
                                         route.request_overlay_redraw();
                                         return;
@@ -1961,6 +2024,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                                 },
                                                 identity_id: host.identity_id,
                                                 password: String::new(),
+                                                group_id: host.group_id,
+                                                tags: host.tags.join(", "),
+                                                notes: host.notes,
                                             };
                                         route
                                             .window
@@ -2174,6 +2240,32 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 }
                             }
 
+                            // A non-terminal view owns its content area.
+                            {
+                                let scale = route.window.screen.sugarloaf.scale_factor();
+                                let mx = route.window.screen.mouse.x as f32 / scale;
+                                let my = route.window.screen.mouse.y as f32 / scale;
+                                if route.window.screen.view_owns(mx, my) {
+                                    let double = matches!(
+                                        route.window.screen.mouse.click_state,
+                                        ClickState::DoubleClick | ClickState::TripleClick
+                                    );
+                                    let input = terminus_ui::screens::ViewInput::Press {
+                                        x: mx,
+                                        y: my,
+                                        double,
+                                    };
+                                    if route
+                                        .window
+                                        .screen
+                                        .view_input(input, &mut self.router.clipboard)
+                                    {
+                                        route.request_redraw();
+                                    }
+                                    return;
+                                }
+                            }
+
                             let handled_by_island =
                                 route.window.screen.handle_island_click(
                                     &route.window.winit_window,
@@ -2260,6 +2352,21 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                 }
+                                if route.window.screen.view_owns(mx, my) {
+                                    let input =
+                                        terminus_ui::screens::ViewInput::ContextPress {
+                                            x: mx,
+                                            y: my,
+                                        };
+                                    if route
+                                        .window
+                                        .screen
+                                        .view_input(input, &mut self.router.clipboard)
+                                    {
+                                        route.request_redraw();
+                                    }
+                                    return;
+                                }
                             }
 
                             let handled_by_island =
@@ -2312,6 +2419,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     route.request_redraw();
                                     return;
                                 }
+                            }
+                        }
+
+                        // The terminal is covered by another view: nothing in
+                        // the content area may reach it.
+                        {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            let shell = &route.window.screen.chrome.shell;
+                            if !shell.view().shows_terminal()
+                                && shell.layout().main.contains(mx, my)
+                            {
+                                return;
                             }
                         }
 
@@ -2393,6 +2514,26 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             let timer_id =
                                 TimerId::new(Topic::SelectionScrolling, scroll_timer_id);
                             self.scheduler.unschedule(timer_id);
+                        }
+
+                        if button == MouseButton::Left {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            if route.window.screen.view_owns(mx, my)
+                                && route.window.screen.chrome.panel.host_drag.is_none()
+                            {
+                                let input =
+                                    terminus_ui::screens::ViewInput::Release { x: mx, y: my };
+                                if route
+                                    .window
+                                    .screen
+                                    .view_input(input, &mut self.router.clipboard)
+                                {
+                                    route.request_redraw();
+                                }
+                                return;
+                            }
                         }
 
                         // SFTP file drag-drop between panes.
@@ -2596,9 +2737,33 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 route.window.screen.mouse.y = y;
                 route.window.screen.mouse.raw_y = position.y;
 
-                if route.path != RoutePath::Terminal
-                    || route.window.screen.renderer.confirm_quit.is_active()
-                {
+                if route.window.screen.renderer.confirm_quit.is_active() {
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    let win = (layout.width / scale, layout.height / scale);
+                    let (lx, ly) = (x as f32 / scale, y as f32 / scale);
+                    if route
+                        .window
+                        .screen
+                        .renderer
+                        .confirm_quit
+                        .hover_at(win, lx, ly)
+                    {
+                        route.request_overlay_redraw();
+                    }
+                    let on_button = route
+                        .window
+                        .screen
+                        .renderer
+                        .confirm_quit
+                        .over_button(win, lx, ly);
+                    route.window.winit_window.set_cursor(if on_button {
+                        CursorIcon::Pointer
+                    } else {
+                        CursorIcon::Default
+                    });
+                    return;
+                }
+                if route.path != RoutePath::Terminal {
                     route.window.winit_window.set_cursor(CursorIcon::Default);
                     return;
                 }
@@ -2628,10 +2793,13 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         .is_some()
                     {
                         route.window.winit_window.set_cursor(CursorIcon::Pointer);
-                    } else {
-                        route.window.winit_window.set_cursor(CursorIcon::Default);
+                        return;
                     }
-                    return;
+                    // Errors are modal; a warning lets the pointer through.
+                    if route.window.screen.renderer.assistant.is_error() {
+                        route.window.winit_window.set_cursor(CursorIcon::Default);
+                        return;
+                    }
                 }
 
                 // Handle command palette hover
@@ -2716,6 +2884,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     } else if route.window.screen.chrome_hover(lx, ly) {
                         chrome_dirty = true;
                     }
+                    let over_view = route.window.screen.view_owns(lx, ly);
+                    if over_view {
+                        let dragging = route.window.screen.mouse.left_button_state
+                            == ElementState::Pressed;
+                        let input = terminus_ui::screens::ViewInput::Move {
+                            x: lx,
+                            y: ly,
+                            dragging,
+                        };
+                        if route.window.screen.view_input(input, &mut self.router.clipboard)
+                        {
+                            chrome_dirty = true;
+                        }
+                    }
                     // Overlay dialogs own the pointer; prefer chrome over SFTP.
                     let icon = if route.window.screen.chrome_overlay_dialog_open() {
                         route
@@ -2724,10 +2906,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             .chrome_cursor_at(lx, ly)
                             .or_else(|| route.window.screen.sftp_cursor_at(lx, ly))
                     } else {
-                        route
-                            .window
-                            .screen
-                            .sftp_cursor_at(lx, ly)
+                        let view_icon = route.window.screen.view_cursor_at(lx, ly);
+                        view_icon
+                            .or_else(|| route.window.screen.sftp_cursor_at(lx, ly))
                             .or_else(|| route.window.screen.chrome_cursor_at(lx, ly))
                     };
                     if let Some(icon) = icon {
@@ -2743,6 +2924,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     // contract as the tab strip. Falling through would keep
                     // extending a terminal selection under the open LMB.
                     if host_drag_active {
+                        return;
+                    }
+                    // A view covering the terminal keeps the pointer too.
+                    let shell = &route.window.screen.chrome.shell;
+                    if !shell.view().shows_terminal() && shell.layout().main.contains(lx, ly)
+                    {
+                        if route.window.screen.chrome_cursor_at(lx, ly).is_none()
+                            && route.window.screen.sftp_cursor_at(lx, ly).is_none()
+                        {
+                            route.window.winit_window.set_cursor(CursorIcon::Default);
+                        }
                         return;
                     }
                 }
@@ -2776,7 +2968,14 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 let num_tabs = route.window.screen.ctx().len();
                 let nav = &route.window.screen.renderer.navigation;
                 if nav.chrome_band_reserved(num_tabs) && y <= island_height_px {
-                    route.window.winit_window.set_cursor(CursorIcon::Default);
+                    let over_chrome = route
+                        .window
+                        .screen
+                        .chrome_cursor_at(x as f32 / scale_factor, y as f32 / scale_factor)
+                        .is_some();
+                    if !over_chrome {
+                        route.window.winit_window.set_cursor(CursorIcon::Default);
+                    }
                     return;
                 }
 
@@ -2978,6 +3177,35 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     return;
                 }
 
+                {
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    let mx = route.window.screen.mouse.x as f32 / scale;
+                    let my = route.window.screen.mouse.y as f32 / scale;
+                    if route.window.screen.view_owns(mx, my) {
+                        let lines = match delta {
+                            MouseScrollDelta::LineDelta(_, lines) => -lines,
+                            MouseScrollDelta::PixelDelta(pos) => -(pos.y as f32) / 20.0,
+                        };
+                        let input =
+                            terminus_ui::screens::ViewInput::Wheel { x: mx, y: my, lines };
+                        if route
+                            .window
+                            .screen
+                            .view_input(input, &mut self.router.clipboard)
+                        {
+                            route.request_redraw();
+                        }
+                        return;
+                    }
+                    let shell = &route.window.screen.chrome.shell;
+                    if !shell.view().shows_terminal()
+                        && shell.content_rect().contains(mx, my)
+                        && route.window.screen.sftp.is_none()
+                    {
+                        return;
+                    }
+                }
+
                 if route.window.screen.sftp.is_some() {
                     let scale = route.window.screen.sugarloaf.scale_factor();
                     let mx = route.window.screen.mouse.x as f32 / scale;
@@ -3028,6 +3256,21 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         }
                     }
                     MouseScrollDelta::PixelDelta(mut lpos) => {
+                        // Touchpads: the host list owns the wheel over
+                        // the sidebar, in pixels.
+                        {
+                            let scale = route.window.screen.sugarloaf.scale_factor();
+                            let mx = route.window.screen.mouse.x as f32 / scale;
+                            let my = route.window.screen.mouse.y as f32 / scale;
+                            if route.window.screen.chrome_wheel_pixels(
+                                mx,
+                                my,
+                                lpos.y as f32 / scale,
+                            ) {
+                                route.request_overlay_redraw();
+                                return;
+                            }
+                        }
                         match phase {
                             TouchPhase::Started => {
                                 // Reset offset to zero.
@@ -3383,11 +3626,14 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     screen.chrome.panel.error = opened.err();
                                     route.request_overlay_redraw();
                                 }
-                                terminus_ui::PendingVaultAction::CreateVault => {
+                                terminus_ui::PendingVaultAction::CreateVault
+                                | terminus_ui::PendingVaultAction::UnlockVault => {
                                     route.request_overlay_redraw();
                                 }
                                 terminus_ui::PendingVaultAction::SaveSshKey => {
-                                    route.window.screen.submit_key_draft();
+                                    if !route.window.screen.resubmit_settings_key_draft() {
+                                        route.window.screen.submit_key_draft();
+                                    }
                                     route.request_overlay_redraw();
                                 }
                             }

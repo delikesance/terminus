@@ -459,6 +459,10 @@ where
     pub route_id: usize,
     title_stack: Vec<String>,
     pub current_directory: Option<std::path::PathBuf>,
+    /// OSC 133 `B` position (cursor cell, scrollback size at that moment).
+    command_start: Option<(Pos, usize)>,
+    /// OSC 633 `E` text for the command line being submitted.
+    explicit_command: Option<String>,
     /// Shell state from `OSC 1337 ; SetUserVar` (iTerm2 style).
     pub user_vars: rustc_hash::FxHashMap<String, String>,
 
@@ -531,6 +535,8 @@ impl<U: EventListener> Crosswords<U> {
             route_id,
             title_stack: Default::default(),
             current_directory: None,
+            command_start: None,
+            explicit_command: None,
             user_vars: rustc_hash::FxHashMap::default(),
             damage_event_in_flight: false,
             modify_other_keys: 0,
@@ -2507,6 +2513,29 @@ impl<U: EventListener> Crosswords<U> {
         Some(res)
     }
 
+    /// The command line between the last OSC 133 `B` and the cursor, consuming
+    /// the `B` mark. Wrapped rows are joined; empty / blank text is `None`.
+    fn submitted_command(&mut self) -> Option<String> {
+        let (start, history_at_start) = self.command_start.take()?;
+        // Output pushed into scrollback since `B` shifted the start upwards.
+        let scrolled = self.grid.history_size().saturating_sub(history_at_start) as i32;
+        let start_row = Line(start.row.0 - scrolled);
+        let cursor = self.grid.cursor.pos;
+        let last_col = self.grid.last_column();
+        let top = Line(-(self.grid.history_size() as i32));
+        if start_row < top || start_row > cursor.row {
+            return None;
+        }
+        let end = if cursor.col == Column(0) && cursor.row > start_row {
+            Pos::new(cursor.row - 1i32, last_col)
+        } else {
+            Pos::new(cursor.row, cursor.col)
+        };
+        let text = self.bounds_to_string(Pos::new(start_row, start.col), end);
+        let text = text.trim_end().to_string();
+        (!text.trim().is_empty()).then_some(text)
+    }
+
     pub fn bounds_to_string(&self, start: Pos, end: Pos) -> String {
         let mut text = String::new();
         let mut blank_rows: usize = 0;
@@ -3481,6 +3510,52 @@ impl<U: EventListener> Handler for Crosswords<U> {
     ) {
         let row = self.grid.cursor.pos.row;
         self.grid[row].semantic_prompt = mark;
+    }
+
+    fn prompt_phase(&mut self, phase: crate::performer::handler::PromptPhase) {
+        use crate::performer::handler::PromptPhase;
+        match phase {
+            PromptPhase::CommandStart => {
+                self.explicit_command = None;
+                self.command_start = Some((
+                    Pos::new(self.grid.cursor.pos.row, self.grid.cursor.pos.col),
+                    self.grid.history_size(),
+                ));
+            }
+            PromptPhase::CommandExecuted => {
+                // The shell's own text wins over the screen, which a
+                // readline redraw (resize over a wrapped prompt) can garble.
+                // Either way one `B` records at most one command (a second
+                // C for the same line finds no start).
+                let explicit = self
+                    .explicit_command
+                    .take()
+                    .map(|c| c.trim_end().to_string())
+                    .filter(|c| !c.trim().is_empty());
+                let command = match explicit {
+                    Some(text) if self.command_start.take().is_some() => Some(text),
+                    Some(_) => None,
+                    None => self.submitted_command(),
+                };
+                if let Some(command) = command {
+                    self.event_proxy.send_event(
+                        RioEvent::CommandSubmitted {
+                            route_id: self.route_id,
+                            command,
+                            cwd: self
+                                .current_directory
+                                .as_ref()
+                                .map(|p| p.to_string_lossy().into_owned()),
+                        },
+                        self.window_id,
+                    );
+                }
+            }
+        }
+    }
+
+    fn command_line(&mut self, command: String) {
+        self.explicit_command = Some(command);
     }
 
     fn set_user_var(&mut self, name: String, value: String) {
@@ -6157,6 +6232,159 @@ mod tests {
     #[cfg(feature = "graphics")]
     fn registry_len(cw: &Crosswords<VoidListener>) -> usize {
         cw.glyph_registry.as_ref().map_or(0, |r| r.len())
+    }
+
+    #[derive(Clone, Default)]
+    struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>);
+
+    impl EventListener for Recorder {
+        fn send_event(&self, event: RioEvent, _id: crate::event::WindowId) {
+            if let RioEvent::CommandSubmitted { command, cwd, .. } = event {
+                self.0.lock().unwrap().push((command, cwd));
+            }
+        }
+    }
+
+    fn recording(cols: usize, rows: usize) -> (Crosswords<Recorder>, Recorder) {
+        let rec = Recorder::default();
+        let window_id = crate::event::WindowId::from(0);
+        let cw = Crosswords::new(
+            CrosswordsSize::new(cols, rows),
+            CursorShape::Block,
+            rec.clone(),
+            window_id,
+            7,
+            10,
+        );
+        (cw, rec)
+    }
+
+    fn type_str(cw: &mut Crosswords<Recorder>, s: &str) {
+        for c in s.chars() {
+            cw.input(c);
+        }
+    }
+
+    fn submit(cw: &mut Crosswords<Recorder>) {
+        use crate::performer::handler::PromptPhase;
+        cw.carriage_return();
+        cw.linefeed();
+        cw.prompt_phase(PromptPhase::CommandExecuted);
+    }
+
+    #[test]
+    fn command_submitted_extracts_text_after_prompt_end() {
+        use crate::performer::handler::PromptPhase;
+        let (mut cw, rec) = recording(30, 5);
+        cw.set_current_directory("/home/me/src".into());
+        type_str(&mut cw, "me@box:~$ ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        type_str(&mut cw, "git status  ");
+        submit(&mut cw);
+        let got = rec.0.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![("git status".to_string(), Some("/home/me/src".to_string()))]
+        );
+    }
+
+    #[test]
+    fn command_submitted_joins_wrapped_rows() {
+        use crate::performer::handler::PromptPhase;
+        let (mut cw, rec) = recording(10, 5);
+        type_str(&mut cw, "$ ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        type_str(&mut cw, "echo aaaaaaaaaaaaaa");
+        submit(&mut cw);
+        let got = rec.0.lock().unwrap().clone();
+        assert_eq!(got, vec![("echo aaaaaaaaaaaaaa".to_string(), None)]);
+    }
+
+    #[test]
+    fn command_submitted_survives_scrolling_after_start() {
+        use crate::performer::handler::PromptPhase;
+        // 3 rows: the wrapped command pushes its own first row into scrollback.
+        let (mut cw, rec) = recording(10, 3);
+        for _ in 0..2 {
+            cw.linefeed();
+        }
+        type_str(&mut cw, "$ ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        type_str(&mut cw, "echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        submit(&mut cw);
+        let got = rec.0.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![("echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn command_submitted_prefers_the_text_the_shell_sent() {
+        use crate::performer::handler::PromptPhase;
+        let (mut cw, rec) = recording(30, 5);
+        type_str(&mut cw, "$ ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        // A readline redraw left garbage on screen…
+        type_str(&mut cw, "0m$ git sta");
+        // …but the shell said what it ran (OSC 633;E) before C.
+        cw.command_line("git status".into());
+        submit(&mut cw);
+        // Without OSC 633;E the screen read still works.
+        type_str(&mut cw, "$ ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        type_str(&mut cw, "ls");
+        submit(&mut cw);
+        let got: Vec<String> =
+            rec.0.lock().unwrap().iter().map(|c| c.0.clone()).collect();
+        assert_eq!(got, vec!["git status".to_string(), "ls".to_string()]);
+    }
+
+    #[test]
+    fn one_submission_is_recorded_once_even_with_two_c_marks() {
+        use crate::performer::handler::PromptPhase;
+        // fish 4 emits its own `133;C;cmdline_url=…`, then the Terminus
+        // script sends `633;E` and a second C for the same command.
+        let (mut cw, rec) = recording(30, 5);
+        type_str(&mut cw, "> ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        type_str(&mut cw, "echo hi");
+        cw.command_line("echo hi".into());
+        submit(&mut cw);
+        cw.command_line("echo hi".into());
+        cw.prompt_phase(PromptPhase::CommandExecuted);
+        let got: Vec<String> =
+            rec.0.lock().unwrap().iter().map(|c| c.0.clone()).collect();
+        assert_eq!(got, vec!["echo hi".to_string()]);
+    }
+
+    #[test]
+    fn a_stale_explicit_command_never_leaks_into_the_next_one() {
+        use crate::performer::handler::PromptPhase;
+        let (mut cw, rec) = recording(30, 5);
+        // E without a C (e.g. Ctrl C at the prompt), then a new prompt.
+        cw.command_line("rm -rf build".into());
+        type_str(&mut cw, "$ ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        type_str(&mut cw, "make");
+        submit(&mut cw);
+        let got: Vec<String> =
+            rec.0.lock().unwrap().iter().map(|c| c.0.clone()).collect();
+        assert_eq!(got, vec!["make".to_string()]);
+    }
+
+    #[test]
+    fn command_submitted_ignores_empty_and_unmarked() {
+        use crate::performer::handler::PromptPhase;
+        let (mut cw, rec) = recording(30, 5);
+        // C without a preceding B.
+        type_str(&mut cw, "$ ls");
+        submit(&mut cw);
+        // B then Enter with nothing typed.
+        type_str(&mut cw, "$ ");
+        cw.prompt_phase(PromptPhase::CommandStart);
+        submit(&mut cw);
+        assert!(rec.0.lock().unwrap().is_empty());
     }
 
     #[test]

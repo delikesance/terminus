@@ -41,13 +41,30 @@ use uuid::Uuid;
 /// Legacy WSL section label (no longer emitted by [`sidebar_rows`]).
 pub const WSL_SECTION: &str = "Windows (WSL)";
 /// Section label above this computer and WSL distros.
-pub const LOCAL_SECTION: &str = "Local";
+pub const LOCAL_SECTION: &str = terminus_ui::sidebar::LOCAL_SECTION;
 /// Section label above the stored SSH hosts and groups.
-pub const HOSTS_SECTION: &str = "Hosts";
+pub const HOSTS_SECTION: &str = terminus_ui::sidebar::SERVERS_SECTION;
 /// The row id of the local machine, resolved by the screen when it opens.
 pub const LOCAL_ID: &str = "local";
 /// Prefix marking a row as a WSL distro; the rest is the distro's name.
 pub const WSL_PREFIX: &str = "wsl:";
+
+/// Errors the sidebar shows when a server cannot be opened. They name the
+/// J5 Settings tabs and stay within the two lines of the error band, in
+/// glyphs the UI face (Sora) has.
+pub mod msg {
+    pub const NO_PASSWORD: &str =
+        "No saved password \u{2014} edit the server and save one";
+    pub const NO_SSH_KEY: &str =
+        "No SSH key for this server \u{2014} edit it and pick one";
+    pub const PICK_SSH_KEY: &str = "Pick one of your SSH keys (Settings, SSH keys)";
+    pub const VAULT_FOR_PASSWORD: &str =
+        "Unlock the vault before saving a password (Settings, Sync)";
+    pub const VAULT_FOR_CONNECT: &str =
+        "Unlock the vault before connecting (Settings, Sync)";
+    pub const VAULT_FOR_SSH_KEY: &str =
+        "Unlock the vault before saving an SSH key (Settings, Sync)";
+}
 
 /// Default SSH port, applied when the editor's port field is left empty.
 pub const DEFAULT_PORT: u16 = 22;
@@ -78,6 +95,39 @@ pub fn data_dir() -> PathBuf {
     base.join("terminus")
 }
 
+/// SFTP credentials for a host: `(password, (private key PEM, passphrase))`.
+pub type SftpAuth = (Option<String>, Option<(String, Option<String>)>);
+
+/// SFTP credentials for `auth_method`, reading only what it needs: the
+/// sealed password for `password`, the managed key for `key`, nothing for
+/// `gssapi`. A missing one is an error the user can act on.
+pub fn sftp_auth_for(
+    auth_method: &str,
+    password: impl FnOnce() -> Result<Option<String>, String>,
+    identity: impl FnOnce() -> Result<Option<(String, Option<String>)>, String>,
+) -> Result<SftpAuth, String> {
+    let password = if auth_method == "password" {
+        Some(password()?.ok_or_else(|| msg::NO_PASSWORD.to_string())?)
+    } else {
+        None
+    };
+    let identity = if auth_method == "password" || auth_method == "gssapi" {
+        None
+    } else {
+        Some(identity()?.ok_or_else(|| msg::NO_SSH_KEY.to_string())?)
+    };
+    Ok((password, identity))
+}
+
+/// Whether an SFTP browser opened on host `id` with connection `key` must
+/// be closed: the host was deleted or its connection settings changed.
+pub fn sftp_connection_stale(hosts: &[HostRow], id: &str, key: &str) -> bool {
+    hosts
+        .iter()
+        .find(|h| h.id == id)
+        .is_none_or(|h| h.connection_key() != key)
+}
+
 /// A host as the sidebar needs it — no secrets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRow {
@@ -90,6 +140,8 @@ pub struct HostRow {
     pub auth_method: String,
     pub identity_id: Option<String>,
     pub group_id: Option<String>,
+    pub tags: Vec<String>,
+    pub notes: String,
     pub os_id: Option<String>,
     /// Manual order among peers (same group / ungrouped). Lower first.
     pub sort_order: i64,
@@ -98,6 +150,19 @@ pub struct HostRow {
 }
 
 impl HostRow {
+    /// What an open SFTP connection to this host depends on: address,
+    /// port, user, auth method and key. A change makes it stale.
+    pub fn connection_key(&self) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            self.hostname,
+            self.port,
+            self.username,
+            self.auth_method,
+            self.identity_id.as_deref().unwrap_or("")
+        )
+    }
+
     fn from_host(host: &Host) -> Self {
         Self {
             id: host.id.to_string(),
@@ -108,6 +173,8 @@ impl HostRow {
             auth_method: host.auth_method.clone(),
             identity_id: host.identity_id.map(|id| id.to_string()),
             group_id: host.group_id.map(|id| id.to_string()),
+            tags: host.tags.clone(),
+            notes: host.notes.clone(),
             os_id: host.os_id.clone(),
             sort_order: host.sort_order,
             updated_at: host.updated_at,
@@ -269,18 +336,6 @@ fn sessions_for_host<'a>(
         .collect()
 }
 
-fn push_sessions(rows: &mut Vec<Row>, sessions: &[&OpenSession], host_id: &str) {
-    for session in sessions {
-        rows.push(Row::Session(SessionItem {
-            tab_index: session.tab_index,
-            host_id: host_id.to_string(),
-            title: session.title.clone(),
-            active: session.active,
-            closable: session.closable,
-        }));
-    }
-}
-
 /// The sidebar's list, in order:
 /// 1. `Local` — this computer + WSL distros (+ their open sessions)
 /// 2. `Hosts` — ungrouped hosts and groups interleaved by `sort_order`
@@ -313,7 +368,7 @@ pub fn sidebar_rows(
     rows.push(Row::Section(LOCAL_SECTION.to_string()));
     rows.push(Row::Host(HostItem {
         id: LOCAL_ID.to_string(),
-        name: "This computer".to_string(),
+        name: "Local".to_string(),
         endpoint: local_endpoint,
         badge: Badge::Local,
         stored: false,
@@ -322,9 +377,6 @@ pub fn sidebar_rows(
         nested: false,
         session_count: local_sessions.len(),
     }));
-    if !collapsed_hosts.contains(LOCAL_ID) {
-        push_sessions(&mut rows, &local_sessions, LOCAL_ID);
-    }
 
     for distro in &platform.distros {
         let id = format!("{WSL_PREFIX}{}", distro.name);
@@ -341,27 +393,17 @@ pub fn sidebar_rows(
             nested: false,
             session_count: distro_sessions.len(),
         }));
-        if !collapsed_hosts.contains(&id) {
-            push_sessions(&mut rows, &distro_sessions, &id);
-        }
     }
 
-    rows.push(Row::Section(HOSTS_SECTION.to_string()));
+    // Sessions are shown as pills of the selected machine, not as rows;
+    // rows only carry their count.
+    let _ = collapsed_hosts;
 
-    enum RootItem<'a> {
-        Host(&'a HostRow),
-        Group(&'a str, &'a str, Vec<&'a HostRow>),
-    }
-
-    let mut root: Vec<(i64, String, RootItem<'_>)> = Vec::new();
-    for host in hosts.iter().filter(|host| host.group_id.is_none()) {
-        root.push((
-            host.sort_order,
-            host.name.to_lowercase(),
-            RootItem::Host(host),
-        ));
-    }
-    for (group_id, group_name, group_order) in groups {
+    // One section per group (in group order), then "Servers" for the
+    // ungrouped hosts — the design's machine sections.
+    let mut ordered_groups: Vec<&(String, String, i64)> = groups.iter().collect();
+    ordered_groups.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    for (group_id, group_name, _) in ordered_groups {
         let mut group_hosts: Vec<_> = hosts
             .iter()
             .filter(|host| host.group_id.as_deref() == Some(group_id.as_str()))
@@ -372,54 +414,39 @@ pub fn sidebar_rows(
                 .then_with(|| a.updated_at.cmp(&b.updated_at))
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        root.push((
-            *group_order,
-            group_name.to_lowercase(),
-            RootItem::Group(group_id.as_str(), group_name.as_str(), group_hosts),
-        ));
-    }
-    root.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-    for (_, _, item) in root {
-        match item {
-            RootItem::Host(host) => {
-                let host_sessions = sessions_for_host(sessions, &host.id);
-                rows.push(Row::Host(host_item_from_row(
-                    host,
-                    open_host_ids,
-                    host_sessions.len(),
-                )));
-                if !collapsed_hosts.contains(&host.id) {
-                    push_sessions(&mut rows, &host_sessions, &host.id);
-                }
-            }
-            RootItem::Group(group_id, group_name, group_hosts) => {
-                let is_collapsed = collapsed.contains(group_id);
-                let group_session_count: usize = group_hosts
-                    .iter()
-                    .map(|h| sessions_for_host(sessions, &h.id).len())
-                    .sum();
-                rows.push(Row::Group {
-                    id: group_id.to_string(),
-                    name: group_name.to_string(),
-                    host_count: group_hosts.len(),
-                    session_count: group_session_count,
-                    collapsed: is_collapsed,
-                });
-                if !is_collapsed {
-                    for host in group_hosts {
-                        let host_sessions = sessions_for_host(sessions, &host.id);
-                        let mut item =
-                            host_item_from_row(host, open_host_ids, host_sessions.len());
-                        item.nested = true;
-                        rows.push(Row::Host(item));
-                        if !collapsed_hosts.contains(&host.id) {
-                            push_sessions(&mut rows, &host_sessions, &host.id);
-                        }
-                    }
-                }
+        let is_collapsed = collapsed.contains(group_id);
+        let group_session_count: usize = group_hosts
+            .iter()
+            .map(|h| sessions_for_host(sessions, &h.id).len())
+            .sum();
+        rows.push(Row::Group {
+            id: group_id.to_string(),
+            name: group_name.to_string(),
+            host_count: group_hosts.len(),
+            session_count: group_session_count,
+            collapsed: is_collapsed,
+        });
+        if !is_collapsed {
+            for host in group_hosts {
+                let count = sessions_for_host(sessions, &host.id).len();
+                let mut item = host_item_from_row(host, open_host_ids, count);
+                item.nested = true;
+                rows.push(Row::Host(item));
             }
         }
+    }
+
+    rows.push(Row::Section(HOSTS_SECTION.to_string()));
+    let mut ungrouped: Vec<&HostRow> =
+        hosts.iter().filter(|host| host.group_id.is_none()).collect();
+    ungrouped.sort_by(|a, b| {
+        a.sort_order
+            .cmp(&b.sort_order)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    for host in ungrouped {
+        let count = sessions_for_host(sessions, &host.id).len();
+        rows.push(Row::Host(host_item_from_row(host, open_host_ids, count)));
     }
 
     rows
@@ -488,6 +515,21 @@ pub struct HostDraft {
     /// Plaintext password (memory only) when `auth_method == "password"`.
     /// Empty while editing means keep the existing sealed credential.
     pub password: String,
+    /// Group the host is filed under; `None` keeps it at the root.
+    pub group_id: Option<String>,
+    pub tags: Vec<String>,
+    pub notes: String,
+}
+
+/// Split the editor's comma separated tags: trimmed, no blanks, no repeats.
+pub fn parse_tags(text: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for tag in text.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            tags.push(tag.to_string());
+        }
+    }
+    tags
 }
 
 impl HostDraft {
@@ -534,8 +576,7 @@ impl HostDraft {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
                 if id.is_none() {
-                    return Err("Select a saved SSH key (Settings → Managed SSH Keys)"
-                        .to_string());
+                    return Err(msg::PICK_SSH_KEY.to_string());
                 }
                 id
             }
@@ -563,6 +604,14 @@ impl HostDraft {
             auth_method: method.as_str().to_string(),
             identity_id,
             password,
+            group_id: self
+                .group_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+                .map(str::to_string),
+            tags: parse_tags(&self.tags.join(",")),
+            notes: self.notes.trim().to_string(),
         })
     }
 
@@ -613,9 +662,12 @@ fn host_from_draft(draft: &HostDraft) -> Host {
         auth_method: draft.auth_method.clone(),
         password: None,
         identity_id,
-        group_id: None,
-        tags: Vec::new(),
-        notes: String::new(),
+        group_id: draft
+            .group_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok()),
+        tags: draft.tags.clone(),
+        notes: draft.notes.clone(),
         os_id: None,
         sort_order: 0,
         created_at: now,
@@ -761,6 +813,12 @@ enum Command {
         id: String,
         reply: Sender<Result<Option<(String, Option<String>)>, String>>,
     },
+    /// SFTP credentials for a host, answered as [`HostEvent::SftpAuth`]
+    /// (the UI thread never waits for them).
+    ResolveSftpAuth {
+        id: String,
+        auth_method: String,
+    },
     /// After SSH connect: probe remote OS and persist `os_id` for the sidebar icon.
     DetectOs {
         id: String,
@@ -781,6 +839,11 @@ enum Command {
 /// Answers coming back from the worker.
 #[derive(Debug)]
 enum HostEvent {
+    /// Answer to [`Command::ResolveSftpAuth`].
+    SftpAuth {
+        id: String,
+        result: Result<SftpAuth, String>,
+    },
     SnippetsLoaded(Vec<terminus_ui::snippets::SnippetItem>),
     Loaded(Vec<HostRow>),
     GroupsLoaded(Vec<(String, String, i64)>),
@@ -847,6 +910,8 @@ pub struct HostRepository {
     collapsed_groups_seed: Option<HashSet<String>>,
     /// True after the first `CollapsedGroupsLoaded` has been applied.
     pub(crate) collapsed_groups_seeded: bool,
+    /// SFTP credentials answered by the worker, not yet taken.
+    pub(crate) sftp_auth_replies: Vec<(String, Result<SftpAuth, String>)>,
 }
 
 impl HostRepository {
@@ -887,6 +952,7 @@ impl HostRepository {
             sync_status_is_error: false,
             collapsed_groups_seed: None,
             collapsed_groups_seeded: false,
+            sftp_auth_replies: Vec::new(),
         }
     }
 
@@ -1081,6 +1147,29 @@ impl HostRepository {
             .map_err(|_| "Timed out reading the stored password".to_string())?
     }
 
+    /// Ask the worker for `host_id`'s SFTP credentials without waiting:
+    /// they arrive through [`Self::drain`], see
+    /// [`Self::take_sftp_auth_replies`].
+    pub fn request_sftp_auth(&mut self, host_id: &str, auth_method: &str) {
+        // Not `send`: no busy indicator for a read.
+        if self
+            .commands
+            .send(Command::ResolveSftpAuth {
+                id: host_id.to_string(),
+                auth_method: auth_method.to_string(),
+            })
+            .is_err()
+        {
+            self.sftp_auth_replies
+                .push((host_id.to_string(), Err("Host store is unavailable".into())));
+        }
+    }
+
+    /// SFTP credentials answered since the last call, `(host id, result)`.
+    pub fn take_sftp_auth_replies(&mut self) -> Vec<(String, Result<SftpAuth, String>)> {
+        std::mem::take(&mut self.sftp_auth_replies)
+    }
+
     /// Load the managed OpenSSH private key for `host_id` (PEM + optional passphrase).
     ///
     /// Returns `Ok(None)` when the host is not key-auth or has no identity.
@@ -1269,6 +1358,10 @@ impl HostRepository {
                     self.error = None;
                     changed = true;
                 }
+                Ok(HostEvent::SftpAuth { id, result }) => {
+                    self.sftp_auth_replies.push((id, result));
+                    changed = true;
+                }
                 Ok(HostEvent::Failed(message)) => {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.loading = false;
@@ -1329,6 +1422,8 @@ fn worker(
     events: Sender<HostEvent>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
+    // OS probes finish on the runtime, after the command loop moved on.
+    let probe_wake = wake.clone();
     let wake = move || {
         if let Some(wake) = wake.as_ref() {
             wake();
@@ -1467,7 +1562,7 @@ fn worker(
             Command::Create(draft) => {
                 // Test / skip-probe path: no SSH round-trip.
                 let mut host = host_from_draft(&draft);
-                match runtime.block_on(store.next_host_sort_order(None)) {
+                match runtime.block_on(store.next_host_sort_order(host.group_id)) {
                     Ok(order) => host.sort_order = order,
                     Err(err) => {
                         let _ = events.send(HostEvent::Failed(format!(
@@ -1786,16 +1881,32 @@ fn worker(
                 let result = resolve_host_identity(&runtime, &store, vault.as_ref(), &id);
                 let _ = reply.send(result);
             }
+            Command::ResolveSftpAuth { id, auth_method } => {
+                let result = sftp_auth_for(
+                    &auth_method,
+                    || resolve_host_password(&runtime, &store, vault.as_ref(), &id),
+                    || resolve_host_identity(&runtime, &store, vault.as_ref(), &id),
+                );
+                let _ = events.send(HostEvent::SftpAuth { id, result });
+            }
             Command::DetectOs { id } => {
-                match detect_and_store_os(&runtime, &store, vault.as_ref(), &id) {
-                    Ok(Some(os_id)) => {
-                        let _ = events.send(HostEvent::OsDetected { id, os_id });
-                    }
-                    Ok(None) => {
-                        // Unchanged or unknown — still clear in_flight.
-                        let _ = events.send(HostEvent::OsDetected {
-                            id: id.clone(),
-                            os_id: String::new(),
+                match prepare_os_probe(&runtime, &store, vault.as_ref(), &id) {
+                    Ok((host, opts)) => {
+                        let store = store.clone();
+                        let events = events.clone();
+                        let wake = probe_wake.clone();
+                        runtime.spawn(async move {
+                            let probed = probe_and_store_os(&store, host, &opts).await;
+                            let os_id = probed.unwrap_or_else(|err| {
+                                tracing::debug!(host = %id, error = %err, "OS detect skipped");
+                                None
+                            });
+                            let os_id = os_id.unwrap_or_default();
+                            // Empty = unchanged or unknown; still clears in_flight.
+                            let _ = events.send(HostEvent::OsDetected { id, os_id });
+                            if let Some(wake) = wake.as_ref() {
+                                wake();
+                            }
                         });
                     }
                     Err(err) => {
@@ -1864,15 +1975,12 @@ fn probe_and_persist(
         .map_err(|e| format!("Unknown authentication method '{}'", e.raw))?;
 
     if method == HostAuthMethod::Password && vault.is_none() {
-        return Err(
-            "Unlock the vault before saving a password (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_PASSWORD.into());
     }
 
     let mut host = host_from_draft(&draft);
     host.sort_order = runtime
-        .block_on(store.next_host_sort_order(None))
+        .block_on(store.next_host_sort_order(host.group_id))
         .map_err(|e| format!("Could not save the host: {e}"))?;
     // Probe uses in-memory password when present.
     if method == HostAuthMethod::Password {
@@ -1966,10 +2074,7 @@ fn probe_and_update(
 
     if method == HostAuthMethod::Password && !draft.password.is_empty() && vault.is_none()
     {
-        return Err(
-            "Unlock the vault before saving a password (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_PASSWORD.into());
     }
 
     existing.name = draft.name.clone();
@@ -1979,6 +2084,19 @@ fn probe_and_update(
     existing.auth_method = draft.auth_method.clone();
     existing.identity_id = identity_id;
     existing.password = None;
+    let group_id = draft
+        .group_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
+    if existing.group_id != group_id {
+        // Joins the end of its new group.
+        existing.sort_order = runtime
+            .block_on(store.next_host_sort_order(group_id))
+            .map_err(|e| format!("Could not save the host: {e}"))?;
+    }
+    existing.group_id = group_id;
+    existing.tags = draft.tags.clone();
+    existing.notes = draft.notes.clone();
     existing.updated_at = Utc::now();
 
     let label = existing.name.clone();
@@ -2036,15 +2154,15 @@ fn probe_and_update(
 /// Connect via russh, classify remote OS, persist `os_id` when it changed.
 ///
 /// Returns `Ok(Some(os_id))` when stored, `Ok(None)` when unknown/unchanged.
-fn detect_and_store_os(
+/// The quick, local half of an OS probe (runs on the worker): read the host
+/// and unseal its credentials. The network half is [`probe_and_store_os`].
+fn prepare_os_probe(
     runtime: &tokio::runtime::Runtime,
     store: &Store,
     vault: Option<&Arc<terminus_core::UnlockedVault>>,
     id: &str,
-) -> Result<Option<String>, String> {
-    use terminus_core::{
-        detect_remote_os, probe_options_from_host, HostAuthMethod, UNKNOWN_OS,
-    };
+) -> Result<(Host, terminus_core::ssh::SshConnectOptions), String> {
+    use terminus_core::{probe_options_from_host, HostAuthMethod};
 
     let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
     let hosts = runtime
@@ -2077,10 +2195,22 @@ fn detect_and_store_os(
     // AcceptAll: OS probe runs after the user already opened an SSH session;
     // host-key UX is handled by the shell path / TOFU modal, not here.
     let opts = probe_options_from_host(&probe_host, identity.as_ref());
+    Ok((host, opts))
+}
 
-    let os_id = runtime
-        .block_on(detect_remote_os(&opts))
-        .map_err(|e| e.to_string())?;
+/// The network half of an OS probe. It runs as a task on the worker's
+/// runtime, never on the worker loop itself: a slow or unreachable server
+/// keeps it waiting up to the connect timeout, and the UI thread's
+/// short blocking requests (reading a key for SFTP) must not queue behind
+/// it.
+async fn probe_and_store_os(
+    store: &Store,
+    host: Host,
+    opts: &terminus_core::ssh::SshConnectOptions,
+) -> Result<Option<String>, String> {
+    use terminus_core::{detect_remote_os, UNKNOWN_OS};
+
+    let os_id = detect_remote_os(opts).await.map_err(|e| e.to_string())?;
     if os_id == UNKNOWN_OS {
         return Ok(None);
     }
@@ -2091,8 +2221,9 @@ fn detect_and_store_os(
     let mut updated = host;
     updated.os_id = Some(os_id.clone());
     updated.updated_at = Utc::now();
-    runtime
-        .block_on(store.upsert_host(&updated))
+    store
+        .upsert_host(&updated)
+        .await
         .map_err(|e| format!("Could not save os_id: {e}"))?;
     Ok(Some(os_id))
 }
@@ -2149,10 +2280,7 @@ fn resolve_host_password(
     };
 
     let Some(unlocked) = vault else {
-        return Err(
-            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_CONNECT.into());
     };
 
     let password = open_host_password(unlocked.as_ref(), uuid, cred)
@@ -2211,10 +2339,7 @@ fn load_open_identity(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Selected SSH key was not found".to_string())?;
     if terminus_core::identity_needs_vault(&identity) && vault.is_none() {
-        return Err(
-            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_CONNECT.into());
     }
     let (pem, passphrase) =
         terminus_core::open_identity_secrets(vault.map(|v| v.as_ref()), &identity)
@@ -2541,10 +2666,7 @@ fn create_ssh_key(
     // Private keys are sealed at rest like host passwords, so saving one
     // needs the vault.
     let Some(vault) = vault else {
-        return Err(
-            "Unlock the vault before saving an SSH key (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_SSH_KEY.into());
     };
     let identity = match pem.map(str::trim).filter(|p| !p.is_empty()) {
         Some(input) => {
@@ -2819,6 +2941,27 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn sidebar_errors_fit_the_toast_and_name_the_j5_settings() {
+        for m in [
+            msg::NO_PASSWORD,
+            msg::NO_SSH_KEY,
+            msg::PICK_SSH_KEY,
+            msg::VAULT_FOR_PASSWORD,
+            msg::VAULT_FOR_CONNECT,
+            msg::VAULT_FOR_SSH_KEY,
+        ] {
+            // Sora, the UI face, has no arrow: it would draw a box.
+            assert!(!m.contains('\u{2192}'), "{m}");
+            assert!(
+                !m.contains("Managed SSH Keys") && !m.contains("Remote SQL Sync"),
+                "pre-J5 Settings names: {m}"
+            );
+            // The sidebar error band shows two lines, ~64 characters.
+            assert!(m.chars().count() <= 64, "{m}");
+        }
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("terminus-hosts-{tag}-{}", Uuid::new_v4()))
     }
@@ -2857,6 +3000,8 @@ mod tests {
             auth_method: "key".into(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             sort_order: 0,
             os_id: None,
             updated_at: Utc::now(),
@@ -2924,9 +3069,41 @@ mod tests {
             auth_method: "key".to_string(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_browser_is_stale_when_its_host_is_gone_or_its_connection_changed() {
+        let host = host_row("a", "alpha");
+        let key = host.connection_key();
+        let hosts = vec![host.clone(), host_row("b", "beta")];
+        assert!(!sftp_connection_stale(&hosts, "a", &key));
+        // Renamed, regrouped, re-noted: the same connection.
+        let mut renamed = host.clone();
+        renamed.name = "Alpha prod".into();
+        renamed.group_id = Some("g".into());
+        renamed.notes = "x".into();
+        assert!(!sftp_connection_stale(&[renamed], "a", &key));
+        // Deleted.
+        assert!(sftp_connection_stale(&hosts[1..], "a", &key));
+        // Address, port, user, key or auth method changed.
+        type Edit = fn(&mut HostRow);
+        let edits: [Edit; 5] = [
+            |h| h.hostname = "other.internal".into(),
+            |h| h.port = 2222,
+            |h| h.username = "deploy".into(),
+            |h| h.identity_id = Some("k2".into()),
+            |h| h.auth_method = "password".into(),
+        ];
+        for edit in edits {
+            let mut edited = host.clone();
+            edit(&mut edited);
+            assert!(sftp_connection_stale(&[edited], "a", &key));
         }
     }
 
@@ -2952,7 +3129,7 @@ mod tests {
 
         let local = hosts_of(&rows)[0];
         assert_eq!(local.id, LOCAL_ID);
-        assert_eq!(local.name, "This computer");
+        assert_eq!(local.name, "Local");
         assert_eq!(local.badge, Badge::Local);
         assert_eq!(local.endpoint, "nixos@NixOS · WSL");
     }
@@ -2968,6 +3145,8 @@ mod tests {
             auth_method: "key".to_string(),
             identity_id: None,
             group_id: Some("g1".to_string()),
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),
@@ -3057,7 +3236,7 @@ mod tests {
     }
 
     #[test]
-    fn ungrouped_hosts_come_before_groups() {
+    fn groups_come_before_the_servers_section() {
         let platform = PlatformFacts {
             machine: machine("NixOS", "nixos", Some("NixOS")),
             distros: Vec::new(),
@@ -3082,11 +3261,12 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(root, vec!["mainserver", "jeremy", "test"]);
+        assert_eq!(root, vec!["jeremy", "test", "mainserver"]);
+        assert_eq!(labels(&rows), vec![LOCAL_SECTION, HOSTS_SECTION]);
     }
 
     #[test]
-    fn group_can_sort_above_host_via_sort_order() {
+    fn groups_keep_their_own_sort_order() {
         let platform = PlatformFacts {
             machine: machine("NixOS", "nixos", Some("NixOS")),
             distros: Vec::new(),
@@ -3095,7 +3275,10 @@ mod tests {
         let mut host = host_row("h1", "mainserver");
         host.sort_order = 1;
         let hosts = vec![host];
-        let groups = vec![("g1".into(), "jeremy".into(), 0)];
+        let groups = vec![
+            ("g2".into(), "zeta".into(), 0),
+            ("g1".into(), "alpha".into(), 1),
+        ];
         let empty = HashSet::new();
         let rows = sidebar_rows(&platform, &hosts, &groups, &empty, &empty, &[], &[]);
 
@@ -3107,7 +3290,7 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(root, vec!["jeremy", "mainserver"]);
+        assert_eq!(root, vec!["zeta", "alpha", "mainserver"]);
     }
 
     #[test]
@@ -3140,7 +3323,7 @@ mod tests {
                 .iter()
                 .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["This computer", "Ubuntu 24.04 LTS", "Alpine", "web-01"]
+            vec!["Local", "Ubuntu 24.04 LTS", "Alpine", "web-01"]
         );
 
         // A row id is what the screen resolves a session from, so it has to
@@ -3159,7 +3342,7 @@ mod tests {
     }
 
     #[test]
-    fn open_sessions_attach_under_matching_hosts_with_local_fallback() {
+    fn open_sessions_are_counted_on_their_machine_with_local_fallback() {
         let platform = PlatformFacts {
             machine: machine("NixOS", "nixos", Some("NixOS")),
             distros: Vec::new(),
@@ -3192,21 +3375,16 @@ mod tests {
             &["local".into(), "9c1e".into()],
             &sessions,
         );
-        let session_titles: Vec<_> = rows
-            .iter()
-            .filter_map(|r| match r {
-                Row::Session(s) => {
-                    Some((s.host_id.as_str(), s.tab_index, s.title.as_str()))
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            session_titles,
-            vec![("local", 0, "This computer"), ("9c1e", 1, "web-01")]
+        assert!(
+            !rows.iter().any(|r| matches!(r, Row::Session(_))),
+            "sessions are pills now, not rows"
         );
-        let local = rows.iter().find_map(Row::host).unwrap();
-        assert_eq!(local.session_count, 1);
+        let counts: Vec<_> = rows
+            .iter()
+            .filter_map(Row::host)
+            .map(|h| (h.id.as_str(), h.session_count))
+            .collect();
+        assert_eq!(counts, vec![("local", 1), ("9c1e", 1)]);
     }
 
     #[test]
@@ -3284,6 +3462,8 @@ mod tests {
             auth_method: "key".to_string(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),
@@ -3657,6 +3837,168 @@ mod tests {
 
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Opening Files on a host the OS probe is still connecting to (a slow
+    /// or unreachable server) read its key behind that probe: the UI
+    /// thread waited 5 s, then showed "Timed out reading the stored SSH
+    /// key". The probe's network round-trip must not hold the worker.
+    #[test]
+    fn reading_a_key_does_not_wait_behind_a_slow_os_probe() {
+        // Accepts TCP but never speaks SSH: the probe waits for a banner
+        // until its connect timeout.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in silent.incoming() {
+                held.push(conn);
+            }
+        });
+
+        let dir = temp_dir("slow-probe");
+        let host_id = {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let store = rt.block_on(Store::open(dir.clone())).unwrap();
+            let ident = terminus_core::generate_ed25519_identity("slow").unwrap();
+            rt.block_on(store.upsert_identity(&ident)).unwrap();
+            let mut host = host_from_draft(&HostDraft {
+                name: "slow box".into(),
+                hostname: "127.0.0.1".into(),
+                username: "nixos".into(),
+                auth_method: "key".into(),
+                identity_id: Some(ident.id.to_string()),
+                ..HostDraft::default()
+            });
+            host.port = port;
+            rt.block_on(store.upsert_host(&host)).unwrap();
+            host.id.to_string()
+        };
+
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+        repo.detect_os(&host_id);
+        // Let the worker pick the probe up first.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let started = Instant::now();
+        let key = repo.resolve_host_identity(&host_id);
+        let waited = started.elapsed();
+        assert!(matches!(key, Ok(Some(_))), "key: {key:?}");
+        assert!(
+            waited < Duration::from_secs(1),
+            "the key read waited {waited:?} behind the probe"
+        );
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The SFTP open path asked for the key with a blocking 5 s
+    /// `recv_timeout` on the UI thread: behind a slow probe or sync on
+    /// the worker loop the window froze, then failed. The request must
+    /// return at once and the credentials arrive later through `drain`.
+    #[test]
+    fn sftp_credentials_arrive_later_while_the_worker_is_busy() {
+        // Accepts TCP but never speaks SSH: a probe waits its timeout.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in silent.incoming() {
+                held.push(conn);
+            }
+        });
+
+        let dir = temp_dir("sftp-auth-async");
+        let (host_id, ident_id) = {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let store = rt.block_on(Store::open(dir.clone())).unwrap();
+            let ident = terminus_core::generate_ed25519_identity("e2e").unwrap();
+            rt.block_on(store.upsert_identity(&ident)).unwrap();
+            let host = host_from_draft(&HostDraft {
+                name: "e2e local".into(),
+                hostname: "127.0.0.1".into(),
+                username: "nixos".into(),
+                auth_method: "key".into(),
+                identity_id: Some(ident.id.to_string()),
+                ..HostDraft::default()
+            });
+            rt.block_on(store.upsert_host(&host)).unwrap();
+            (host.id.to_string(), ident.id.to_string())
+        };
+
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+        // Occupy the worker loop with a probe that hangs.
+        repo.probe_and_create(&HostDraft {
+            name: "slow".into(),
+            hostname: "127.0.0.1".into(),
+            port: port.to_string(),
+            username: "nixos".into(),
+            auth_method: "key".into(),
+            identity_id: Some(ident_id),
+            ..HostDraft::default()
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+
+        let started = Instant::now();
+        repo.request_sftp_auth(&host_id, "key");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "the request must not wait for the worker"
+        );
+        assert!(repo.take_sftp_auth_replies().is_empty());
+
+        assert!(drain_until(&mut repo, Duration::from_secs(40), |repo| {
+            !repo.sftp_auth_replies.is_empty()
+        }));
+        let replies = repo.take_sftp_auth_replies();
+        assert_eq!(replies.len(), 1);
+        let (id, auth) = &replies[0];
+        assert_eq!(id, &host_id);
+        assert!(
+            matches!(auth, Ok((None, Some(_)))),
+            "key auth: no password, the key: {auth:?}"
+        );
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sftp_auth_reads_only_what_the_auth_method_needs() {
+        let pw = || Ok(Some("pw".to_string()));
+        let key = || Ok(Some(("PEM".to_string(), None)));
+        assert_eq!(
+            sftp_auth_for("password", pw, key),
+            Ok((Some("pw".into()), None))
+        );
+        assert_eq!(
+            sftp_auth_for("key", || panic!("no password read"), key),
+            Ok((None, Some(("PEM".into(), None))))
+        );
+        assert_eq!(
+            sftp_auth_for("gssapi", || panic!(), || panic!()),
+            Ok((None, None))
+        );
+        assert_eq!(
+            sftp_auth_for("password", || Ok(None), key),
+            Err(msg::NO_PASSWORD.to_string())
+        );
+        assert_eq!(
+            sftp_auth_for("key", pw, || Ok(None)),
+            Err(msg::NO_SSH_KEY.to_string())
+        );
+        assert_eq!(
+            sftp_auth_for("key", pw, || Err("Unlock the vault".into())),
+            Err("Unlock the vault".to_string())
+        );
     }
 
     /// Poll a `HostPersistHandle` for its outcome until `timeout` elapses.
