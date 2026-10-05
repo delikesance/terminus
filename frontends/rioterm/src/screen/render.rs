@@ -68,6 +68,16 @@ impl Screen<'_> {
             return None;
         }
 
+        // Workspace view preview (TERMINUS_VIEW_PREVIEW=snippets).
+        if crate::renderer::views::snippets::preview_selected() {
+            crate::renderer::views::snippets::paint_preview(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
+
         self.tick_session_connecting();
         let host_drag_action = self.tick_host_drag_animation();
         if let Some(action) = host_drag_action {
