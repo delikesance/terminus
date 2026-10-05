@@ -433,6 +433,10 @@ impl Chrome {
     /// `None` when there is none or the pointer is outside its area.
     fn connection_hit(&self, x: f32, y: f32) -> Option<ConnectionHit> {
         let conn = self.connection.as_ref()?;
+        // Painted on the Terminal view only; other views keep their input.
+        if !self.shell.view().shows_terminal() {
+            return None;
+        }
         let area = self.connection_area();
         area.contains(x, y).then(|| conn.hit_test_in(area, x, y))
     }
@@ -1887,6 +1891,15 @@ mod tests {
             chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
             ChromeAction::OpenHost("id-1".to_string())
         );
+
+        // Only the Terminal view shows it: another view's content is live.
+        chrome.show_view(crate::shell::WorkspaceView::Home);
+        let home = chrome.connection_area();
+        let (hx, hy) = (home.x + home.width / 2.0, home.y + 40.0);
+        let conn = chrome.connection.take();
+        let without = chrome.handle_press(1200.0, 800.0, hx, hy);
+        chrome.connection = conn;
+        assert_eq!(chrome.handle_press(1200.0, 800.0, hx, hy), without);
     }
 
     #[test]
