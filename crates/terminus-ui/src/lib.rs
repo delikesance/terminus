@@ -38,6 +38,7 @@ pub mod text_field;
 pub mod theme;
 pub mod tokens;
 pub mod vault_unlock;
+pub mod views;
 
 pub use activity_bar::{
     ActivityBarState, RailAction, RailHit, Section, SECTIONS, TOP_SECTIONS,
