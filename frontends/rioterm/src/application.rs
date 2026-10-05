@@ -1961,6 +1961,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                                 },
                                                 identity_id: host.identity_id,
                                                 password: String::new(),
+                                                group_id: host.group_id,
+                                                tags: host.tags.join(", "),
+                                                notes: host.notes,
                                             };
                                         route
                                             .window
