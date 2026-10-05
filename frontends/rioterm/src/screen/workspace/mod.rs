@@ -157,7 +157,12 @@ impl Screen<'_> {
         };
         match outcome {
             ViewOutcome::Ignored | ViewOutcome::Consumed => false,
-            ViewOutcome::Redraw => true,
+            ViewOutcome::Redraw => {
+                // UI-only change: the callers' `request_redraw` repaints
+                // only a dirty context.
+                self.mark_dirty();
+                true
+            }
             ViewOutcome::Action(action) => {
                 self.apply_view_action(action, clipboard);
                 true
