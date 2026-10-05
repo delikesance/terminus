@@ -49,6 +49,23 @@ pub const LOCAL_ID: &str = "local";
 /// Prefix marking a row as a WSL distro; the rest is the distro's name.
 pub const WSL_PREFIX: &str = "wsl:";
 
+/// Errors the sidebar shows when a server cannot be opened. They name the
+/// J5 Settings tabs and stay within the two lines of the error band, in
+/// glyphs the UI face (Sora) has.
+pub mod msg {
+    pub const NO_PASSWORD: &str =
+        "No saved password \u{2014} edit the server and save one";
+    pub const NO_SSH_KEY: &str =
+        "No SSH key for this server \u{2014} edit it and pick one";
+    pub const PICK_SSH_KEY: &str = "Pick one of your SSH keys (Settings, SSH keys)";
+    pub const VAULT_FOR_PASSWORD: &str =
+        "Unlock the vault before saving a password (Settings, Sync)";
+    pub const VAULT_FOR_CONNECT: &str =
+        "Unlock the vault before connecting (Settings, Sync)";
+    pub const VAULT_FOR_SSH_KEY: &str =
+        "Unlock the vault before saving an SSH key (Settings, Sync)";
+}
+
 /// Default SSH port, applied when the editor's port field is left empty.
 pub const DEFAULT_PORT: u16 = 22;
 
@@ -513,8 +530,7 @@ impl HostDraft {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
                 if id.is_none() {
-                    return Err("Select a saved SSH key (Settings → Managed SSH Keys)"
-                        .to_string());
+                    return Err(msg::PICK_SSH_KEY.to_string());
                 }
                 id
             }
@@ -1854,10 +1870,7 @@ fn probe_and_persist(
         .map_err(|e| format!("Unknown authentication method '{}'", e.raw))?;
 
     if method == HostAuthMethod::Password && vault.is_none() {
-        return Err(
-            "Unlock the vault before saving a password (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_PASSWORD.into());
     }
 
     let mut host = host_from_draft(&draft);
@@ -1956,10 +1969,7 @@ fn probe_and_update(
 
     if method == HostAuthMethod::Password && !draft.password.is_empty() && vault.is_none()
     {
-        return Err(
-            "Unlock the vault before saving a password (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_PASSWORD.into());
     }
 
     existing.name = draft.name.clone();
@@ -2152,10 +2162,7 @@ fn resolve_host_password(
     };
 
     let Some(unlocked) = vault else {
-        return Err(
-            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_CONNECT.into());
     };
 
     let password = open_host_password(unlocked.as_ref(), uuid, cred)
@@ -2214,10 +2221,7 @@ fn load_open_identity(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Selected SSH key was not found".to_string())?;
     if terminus_core::identity_needs_vault(&identity) && vault.is_none() {
-        return Err(
-            "Unlock the vault before connecting (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_CONNECT.into());
     }
     let (pem, passphrase) =
         terminus_core::open_identity_secrets(vault.map(|v| v.as_ref()), &identity)
@@ -2544,10 +2548,7 @@ fn create_ssh_key(
     // Private keys are sealed at rest like host passwords, so saving one
     // needs the vault.
     let Some(vault) = vault else {
-        return Err(
-            "Unlock the vault before saving an SSH key (Settings → Remote SQL Sync passphrase)"
-                .into(),
-        );
+        return Err(msg::VAULT_FOR_SSH_KEY.into());
     };
     let identity = match pem.map(str::trim).filter(|p| !p.is_empty()) {
         Some(input) => {
@@ -2821,6 +2822,27 @@ pub fn database_path(dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn sidebar_errors_fit_the_toast_and_name_the_j5_settings() {
+        for m in [
+            msg::NO_PASSWORD,
+            msg::NO_SSH_KEY,
+            msg::PICK_SSH_KEY,
+            msg::VAULT_FOR_PASSWORD,
+            msg::VAULT_FOR_CONNECT,
+            msg::VAULT_FOR_SSH_KEY,
+        ] {
+            // Sora, the UI face, has no arrow: it would draw a box.
+            assert!(!m.contains('\u{2192}'), "{m}");
+            assert!(
+                !m.contains("Managed SSH Keys") && !m.contains("Remote SQL Sync"),
+                "pre-J5 Settings names: {m}"
+            );
+            // The sidebar error band shows two lines, ~64 characters.
+            assert!(m.chars().count() <= 64, "{m}");
+        }
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("terminus-hosts-{tag}-{}", Uuid::new_v4()))
