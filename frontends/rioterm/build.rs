@@ -52,8 +52,8 @@ fn load_app_icon() {
     res.set_icon(icon_path.to_str().expect("manifest dir must be utf-8"));
         res.set("FileDescription", "Terminus");
     res.set("ProductName", "Terminus");
-    res.set("OriginalFilename", "terminus.exe");
-    res.set("InternalName", "terminus");
+    res.set("OriginalFilename", "tmnx.exe");
+    res.set("InternalName", "tmnx");
     res.compile()
         .expect("failed to compile the windows icon resource");
 }
