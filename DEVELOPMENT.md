@@ -396,7 +396,7 @@ What an installed copy does with a new version:
 | Install | Update |
 | --- | --- |
 | Linux tarball (writable folder) | at launch: installed before the app opens; found later: swapped in, palette → **Restart to Update** |
-| Windows setup `.exe` / `.msi` (per-user, since 0.6), portable `terminus-windows-x86_64.zip` | same as the tarball: `terminus.exe` from the signed zip replaces the running one (moved aside, removed on the next start); no installer, no admin prompt |
+| Windows setup `.exe` / `.msi` (per-user, since 0.6), portable `terminus-windows-x86_64.zip` | same as the tarball: the zip's `terminus.exe` entry replaces the running executable (installed as `tmnx.exe` since 0.7.1, a name Discord's game overlay does not recognise; older installs and the unzipped portable copy keep `terminus.exe`) (moved aside, removed on the next start); no installer, no admin prompt |
 | `.deb` / `.rpm` | package downloaded to `~/Downloads` and verified; **Install Update** copies the `sudo apt/dnf install` command |
 | Windows installed for all users in Program Files (before 0.6) | **Install Update** downloads the setup, which runs when Terminus quits; it offers to remove the old all-users copy, and from then on the per-user copy updates itself |
 | Nix, dev builds, read-only folders | notice only (**Install Update** opens the release page) |

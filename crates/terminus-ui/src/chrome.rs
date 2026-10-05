@@ -96,6 +96,8 @@ pub enum ChromeAction {
     CopyPublicKey(String),
     /// Put this stored host's `ssh …` command on the clipboard.
     CopySshCommand(String),
+    /// Put this text (an error message, say) on the clipboard.
+    CopyText(String),
     /// Soft-delete a stored host (context menu).
     DeleteHost(String),
     /// Soft-delete a host group (context menu).
@@ -955,6 +957,10 @@ impl Chrome {
                     self.form.prev_step();
                     ChromeAction::Consumed
                 }
+                AddHostHit::CopyError => match self.form.error() {
+                    Some(error) => ChromeAction::CopyText(error.to_string()),
+                    None => ChromeAction::Consumed,
+                },
                 AddHostHit::Next => {
                     self.form.next_step();
                     ChromeAction::Consumed
@@ -1300,6 +1306,7 @@ impl Chrome {
                 AddHostHit::Field(_) => ChromeCursor::Text,
                 AddHostHit::StepPill(_)
                 | AddHostHit::Back
+                | AddHostHit::CopyError
                 | AddHostHit::Next
                 | AddHostHit::SelectAuth(_)
                 | AddHostHit::ToggleIdentityMenu
@@ -2326,5 +2333,21 @@ mod tests {
         // Released there, the drop lands on the row now under the pointer.
         let action = chrome.handle_release(h, row.x + 20.0, edge_y);
         assert!(matches!(action, ChromeAction::ReorderHost { .. }));
+    }
+
+    #[test]
+    fn copy_button_on_the_add_host_error_copies_the_full_message() {
+        let mut chrome = chrome_with_hosts(0);
+        chrome.open_add_host();
+        let message = "Could not save the host: Database error: error returned from \
+                       database: (code: 1) table hosts has no column named os_id";
+        chrome.form.set_error(message);
+        let layout = chrome.dialog_layout(1200.0, 800.0);
+        let copy = layout.copy_error_rect(&chrome.form).expect("copy button");
+
+        let action = chrome.handle_press(1200.0, 800.0, copy.x + 2.0, copy.y + 2.0);
+
+        assert_eq!(action, ChromeAction::CopyText(message.into()));
+        assert!(chrome.form.is_open(), "copying keeps the dialog open");
     }
 }
