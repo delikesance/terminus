@@ -1522,9 +1522,19 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let scale = route.window.screen.sugarloaf.scale_factor();
                                 let mx = route.window.screen.mouse.x as f32 / scale;
                                 let my = route.window.screen.mouse.y as f32 / scale;
-                                let action = route.window.screen.chrome_press(mx, my);
-                                if matches!(action, ChromeAction::SubmitHostForm) {
-                                    route.window.screen.submit_host_form();
+                                match route.window.screen.chrome_press(mx, my) {
+                                    ChromeAction::SubmitHostForm => {
+                                        route.window.screen.submit_host_form();
+                                    }
+                                    // The footer "Copy" button: this modal path
+                                    // returns early, so it must copy here.
+                                    ChromeAction::CopyText(text) => {
+                                        self.router.clipboard.set(
+                                            rio_backend::clipboard::ClipboardType::Clipboard,
+                                            text,
+                                        );
+                                    }
+                                    _ => {}
                                 }
                                 route.request_overlay_redraw();
                                 return;
