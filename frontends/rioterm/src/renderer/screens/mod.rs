@@ -13,10 +13,7 @@
 
 pub mod add_server;
 pub mod files;
-pub mod history;
 pub mod home;
-pub mod settings;
-pub mod tunnels;
 
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::chrome::Chrome;
@@ -29,10 +26,24 @@ use terminus_ui::theme::ChromeTheme;
 use crate::renderer::components::button::paint_button;
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
+/// View state that lives on the frontend `Screen` (it needs the SFTP
+/// session, the process runtime or text measure), handed to the painter.
+pub struct ViewStates<'a> {
+    /// Open SFTP session of the Files view.
+    pub files: Option<(
+        &'a terminus_ui::SftpPaneState,
+        &'a crate::renderer::views::files::FilesView,
+    )>,
+    pub settings: &'a terminus_ui::views::settings::SettingsView,
+    pub history: &'a terminus_ui::views::history::HistoryState,
+    pub tunnels: Option<&'a terminus_ui::views::tunnels::TunnelsState>,
+}
+
 /// Paint the current view into `content`.
 pub fn paint(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
+    views: &ViewStates,
     theme: &ChromeTheme,
     content: Rect,
     device_scale: f32,
@@ -40,11 +51,22 @@ pub fn paint(
     let s = &chrome.screens;
     match chrome.shell.view() {
         WorkspaceView::Terminal => {}
-        WorkspaceView::Files => {
-            files::paint(sugarloaf, theme, content, &s.files, device_scale)
-        }
+        WorkspaceView::Files => match views.files {
+            Some((state, view)) => crate::renderer::views::files::paint(
+                sugarloaf, theme, content, state, view,
+            ),
+            None => files::paint(sugarloaf, theme, content, &s.files, device_scale),
+        },
         WorkspaceView::Tunnels => {
-            tunnels::paint(sugarloaf, theme, content, &s.tunnels, device_scale)
+            let Some(tunnels) = views.tunnels else {
+                return;
+            };
+            let size = sugarloaf.window_size();
+            let scale = sugarloaf.scale_factor();
+            let window = Rect::new(0.0, 0.0, size.width / scale, size.height / scale);
+            crate::renderer::views::tunnels::paint(
+                sugarloaf, theme, window, content, tunnels,
+            )
         }
         WorkspaceView::Snippets => crate::renderer::views::snippets::paint_measured(
             sugarloaf,
@@ -53,12 +75,19 @@ pub fn paint(
             &s.snippets,
             device_scale,
         ),
-        WorkspaceView::History => {
-            history::paint(sugarloaf, theme, content, &s.history, device_scale)
-        }
-        WorkspaceView::Settings(page) => {
-            settings::paint(sugarloaf, theme, content, page, &s.settings, device_scale)
-        }
+        WorkspaceView::History => crate::renderer::views::history::paint(
+            sugarloaf,
+            theme,
+            content,
+            views.history,
+            chrono::Utc::now().timestamp(),
+        ),
+        WorkspaceView::Settings(_) => crate::renderer::views::settings::paint(
+            sugarloaf,
+            theme,
+            content,
+            views.settings,
+        ),
         WorkspaceView::Home => {
             home::paint(sugarloaf, theme, content, &s.home, device_scale)
         }
@@ -67,14 +96,10 @@ pub fn paint(
 
 /// Record the text widths the views' layouts need.
 pub fn measure(sugarloaf: &mut Sugarloaf, chrome: &mut Chrome) {
-    let view = chrome.shell.view();
     let s = &mut chrome.screens;
     files::measure(sugarloaf, &mut s.files);
     s.snippets.labels = crate::renderer::views::snippets::measure_labels(sugarloaf);
     home::measure(sugarloaf, &mut s.home);
-    if let WorkspaceView::Settings(page) = view {
-        settings::measure(sugarloaf, page, &mut s.settings);
-    }
 }
 
 /// Width of a Large Primary button label.

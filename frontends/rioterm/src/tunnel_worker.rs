@@ -14,7 +14,6 @@
 //!   ([`terminus_ui::views::tunnels::TunnelsState`]), the persistence worker
 //!   (SQLite on its own thread, like `hosts.rs`) and the registry.
 
-#![allow(dead_code)] // plugged into the shell by the coordinator
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -517,6 +516,15 @@ impl TunnelController {
         });
     }
 
+    /// The machine on screen has no SSH server (this computer, WSL): show
+    /// no tunnels and persist nothing. Running tunnels keep running.
+    pub fn clear_machine(&mut self, label: &str) {
+        if self.host_id.is_some() || self.state.host_label != label {
+            self.state = TunnelsState::new(label);
+            self.host_id = None;
+        }
+    }
+
     /// Running tunnels of the machine on screen: the Tunnels tab badge.
     pub fn running_count(&self) -> usize {
         self.state.running_count()
@@ -991,6 +999,21 @@ mod tests {
         assert!(pump(&mut c, |c| c.state().items.len() == 1));
         c.select_machine(&uuid::Uuid::new_v4().to_string(), "other");
         assert!(pump(&mut c, |c| c.state().items.is_empty()));
+    }
+
+    #[test]
+    fn a_machine_without_ssh_shows_no_tunnels_and_saves_nothing() {
+        let mut c = TunnelController::spawn(dir("nossh"), None);
+        let host = uuid::Uuid::new_v4().to_string();
+        c.select_machine(&host, "prod");
+        c.save(&draft("db", 5432));
+        assert!(pump(&mut c, |c| c.state().items.len() == 1));
+        c.clear_machine("This computer");
+        assert_eq!(c.host_id(), None);
+        assert!(c.state().items.is_empty());
+        assert_eq!(c.state().host_label, "This computer");
+        c.save(&draft("ignored", 5433));
+        assert!(!pump(&mut c, |c| !c.state().items.is_empty()));
     }
 
     #[test]

@@ -2791,10 +2791,13 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         .is_some()
                     {
                         route.window.winit_window.set_cursor(CursorIcon::Pointer);
-                    } else {
-                        route.window.winit_window.set_cursor(CursorIcon::Default);
+                        return;
                     }
-                    return;
+                    // Errors are modal; a warning lets the pointer through.
+                    if route.window.screen.renderer.assistant.is_error() {
+                        route.window.winit_window.set_cursor(CursorIcon::Default);
+                        return;
+                    }
                 }
 
                 // Handle command palette hover
@@ -3611,7 +3614,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     route.request_overlay_redraw();
                                 }
                                 terminus_ui::PendingVaultAction::SaveSshKey => {
-                                    route.window.screen.submit_key_draft();
+                                    if !route.window.screen.resubmit_settings_key_draft() {
+                                        route.window.screen.submit_key_draft();
+                                    }
                                     route.request_overlay_redraw();
                                 }
                             }

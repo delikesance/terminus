@@ -8,8 +8,6 @@
 //! path, a filter) belongs to that view's own state in
 //! [`crate::screens`], keyed by machine id when it needs to be.
 
-use crate::settings::SettingsTab;
-
 /// A section of the Settings page (header tabs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingsPage {
@@ -35,14 +33,16 @@ impl SettingsPage {
             SettingsPage::Updates => "Updates",
         }
     }
+}
 
-    /// The tab of the legacy settings modal that holds this page's
-    /// controls, while the Settings screen is still a stub.
-    pub fn legacy_tab(self) -> Option<SettingsTab> {
-        match self {
-            SettingsPage::Keys => Some(SettingsTab::Keys),
-            SettingsPage::Sync => Some(SettingsTab::SqlSync),
-            SettingsPage::Appearance | SettingsPage::Updates => None,
+impl From<SettingsPage> for crate::views::settings::Page {
+    fn from(page: SettingsPage) -> Self {
+        use crate::views::settings::Page;
+        match page {
+            SettingsPage::Keys => Page::Keys,
+            SettingsPage::Sync => Page::Sync,
+            SettingsPage::Appearance => Page::Appearance,
+            SettingsPage::Updates => Page::Updates,
         }
     }
 }
@@ -206,12 +206,18 @@ mod tests {
     }
 
     #[test]
-    fn settings_pages_map_to_the_legacy_modal_tabs() {
+    fn settings_pages_map_to_the_settings_view_pages() {
+        use crate::views::settings::Page;
+        assert_eq!(Page::from(SettingsPage::Keys), Page::Keys);
+        assert_eq!(Page::from(SettingsPage::Sync), Page::Sync);
+        assert_eq!(Page::from(SettingsPage::Appearance), Page::Appearance);
+        assert_eq!(Page::from(SettingsPage::Updates), Page::Updates);
+    }
+
+    #[test]
+    fn settings_page_labels_follow_the_mock() {
         let labels: Vec<_> = SettingsPage::ALL.iter().map(|p| p.label()).collect();
         assert_eq!(labels, ["SSH keys", "Sync", "Appearance", "Updates"]);
-        assert_eq!(SettingsPage::Keys.legacy_tab(), Some(SettingsTab::Keys));
-        assert_eq!(SettingsPage::Sync.legacy_tab(), Some(SettingsTab::SqlSync));
-        assert_eq!(SettingsPage::Appearance.legacy_tab(), None);
     }
 
     #[test]

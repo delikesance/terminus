@@ -4,7 +4,6 @@
 //! list component's history row (with a real "Run again" button) and the
 //! filter is the input component's search box.
 
-#![allow(dead_code)] // plugged into the shell by the coordinator
 
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::input::SearchKind;

@@ -15,7 +15,7 @@ use terminus_core::ssh::{
 };
 use terminus_ui::sftp_pane::{
     join_remote, parent_path, SftpBackend, SftpClickResult, SftpConflictKind, SftpDrag,
-    SftpFocus, SftpHit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow,
+    SftpFocus, SftpHit, SftpNameKind, SftpPaneState, SftpRow,
     SftpSideState, SFTP_DRAG_THRESHOLD,
 };
 
@@ -218,17 +218,6 @@ impl ActiveSftp {
         true
     }
 
-    pub fn handle_click(
-        &mut self,
-        layout: &SftpPaneLayout,
-        x: f32,
-        y: f32,
-        double: bool,
-    ) -> SftpClickResult {
-        let hit = layout.hit_test(&self.state, x, y);
-        self.handle_hit(hit, double)
-    }
-
     /// Activate an already hit-tested target (shared by the classic pane and
     /// the Files view, which hit-tests with its own geometry).
     pub fn handle_hit(&mut self, hit: SftpHit, double: bool) -> SftpClickResult {
@@ -389,11 +378,6 @@ impl ActiveSftp {
         true
     }
 
-    /// Release: drop onto the other pane list → Transfer. Returns true if handled.
-    pub fn drag_release(&mut self, layout: &SftpPaneLayout, x: f32, y: f32) -> bool {
-        self.drag_release_to(layout.focus_at_list(x, y), None)
-    }
-
     /// Release a drag over pane `target` (`None` = outside both panes).
     /// `into` is a folder entry of `target` to drop into instead of its cwd.
     pub fn drag_release_to(
@@ -448,25 +432,6 @@ impl ActiveSftp {
             .filter(|r| r.is_dir)
             .map(|r| r.path.clone())
             .unwrap_or_else(|| side.cwd.clone())
-    }
-
-    /// Build a context menu for a right-click hit inside the SFTP pane.
-    /// Selects the row under the cursor when applicable.
-    pub fn context_menu_for_hit(
-        &mut self,
-        layout: &SftpPaneLayout,
-        hit: SftpHit,
-        x: f32,
-        y: f32,
-    ) -> Option<terminus_ui::ContextMenu> {
-        let blank = if layout.left_list.contains(x, y) || layout.left.contains(x, y) {
-            Some(SftpFocus::Left)
-        } else if layout.right_list.contains(x, y) || layout.right.contains(x, y) {
-            Some(SftpFocus::Right)
-        } else {
-            None
-        };
-        self.context_menu_for(hit, blank, x, y)
     }
 
     /// Context menu for `hit`; `blank_pane` is the pane under the pointer when
@@ -549,16 +514,6 @@ impl ActiveSftp {
         }
     }
 
-    /// Update hover highlight from pointer position.
-    pub fn handle_hover(&mut self, layout: &SftpPaneLayout, x: f32, y: f32) -> bool {
-        let hit = layout.hit_test(&self.state, x, y);
-        let hover = match hit {
-            SftpHit::Miss => None,
-            other => Some(other),
-        };
-        self.state.set_hover(hover)
-    }
-
     pub fn handle_key(&mut self, key: SftpKey) -> bool {
         match key {
             SftpKey::Tab => {
@@ -609,25 +564,6 @@ impl ActiveSftp {
                 self.transfer_selected();
                 true
             }
-        }
-    }
-
-    pub fn scroll(
-        &mut self,
-        layout: &SftpPaneLayout,
-        x: f32,
-        y: f32,
-        delta_y: f32,
-    ) -> bool {
-        let step = delta_y * 20.0;
-        if layout.left.contains(x, y) {
-            self.state.left.scroll = (self.state.left.scroll - step).max(0.0);
-            true
-        } else if layout.right.contains(x, y) {
-            self.state.right.scroll = (self.state.right.scroll - step).max(0.0);
-            true
-        } else {
-            false
         }
     }
 
@@ -1181,10 +1117,8 @@ mod tests {
             .iter()
             .position(|e| e.name == "notes.txt" && !e.is_dir)
             .expect("notes.txt listed");
-        let layout =
-            SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
         let menu = s
-            .context_menu_for_hit(&layout, SftpHit::LeftRow(file_idx), 40.0, 120.0)
+            .context_menu_for(SftpHit::LeftRow(file_idx), None, 40.0, 120.0)
             .expect("menu for local file");
         assert!(
             menu.items
@@ -1229,40 +1163,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn crumb_click_cds_to_parent_segment() {
-        let root = scratch("crumb");
-        let left = root.join("L");
-        let mid = left.join("a");
-        let nested = mid.join("b");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::create_dir_all(root.join("R")).unwrap();
-        let mut s = ActiveSftp::start_local_dual(left.clone(), root.join("R"), None);
-        wait_ready(&mut s);
-        // Seed cwd as if the user had already entered the nested folder.
-        s.state.left.cwd = nested.to_string_lossy().into_owned();
-        let layout =
-            SftpPaneLayout::from_bounds(terminus_ui::Rect::new(0.0, 0.0, 800.0, 600.0));
-        let x = layout.left_header.x + 40.0;
-        let y = layout.left_header.y + 4.0;
-        assert_eq!(layout.hit_test(&s.state, x, y), SftpHit::LeftCrumb);
-        s.handle_click(&layout, x, y, false);
-        for _ in 0..50 {
-            s.pump();
-            let cwd = PathBuf::from(&s.state.left.cwd);
-            if cwd == mid || cwd.file_name().is_some_and(|n| n == "a") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let cwd = PathBuf::from(&s.state.left.cwd);
-        assert_eq!(
-            cwd.canonicalize().unwrap_or(cwd.clone()),
-            mid.canonicalize().unwrap_or(mid),
-            "crumb click should cd to the parent breadcrumb segment, got {}",
-            cwd.display()
-        );
-        s.close();
-        let _ = std::fs::remove_dir_all(root);
-    }
 }

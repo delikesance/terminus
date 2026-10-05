@@ -118,12 +118,17 @@ impl Screen<'_> {
         self.sync_shell();
         crate::renderer::shell::measure(&mut self.sugarloaf, &mut self.chrome);
 
-        let sftp_bounds = self.sftp_bounds();
-        let sftp_paint = self
-            .sftp
-            .as_ref()
-            .zip(sftp_bounds)
-            .map(|(session, bounds)| (&session.state, &self.files_view, bounds));
+        let bridged = self.sftp_bridged();
+        let views = crate::renderer::screens::ViewStates {
+            files: self
+                .sftp
+                .as_ref()
+                .filter(|_| bridged)
+                .map(|session| (&session.state, &self.files_view)),
+            settings: &self.settings_view,
+            history: &self.history_view,
+            tunnels: self.tunnels.as_ref().map(|t| t.state()),
+        };
 
         let (window_update, any_panel_dirty) = self.renderer.run(
             &mut self.sugarloaf,
@@ -131,7 +136,7 @@ impl Screen<'_> {
             &self.chrome,
             connecting_phase,
             self.window_maximized,
-            sftp_paint,
+            &views,
         );
 
         if self.renderer.custom_mouse_cursor {

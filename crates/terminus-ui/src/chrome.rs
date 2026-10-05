@@ -256,21 +256,12 @@ impl Chrome {
         false
     }
 
-    /// Switch the workspace view. Settings pages backed by the legacy
-    /// dialog open it on their tab; leaving Settings closes it.
+    /// Switch the workspace view. The Settings page replaces the legacy
+    /// settings dialog: switching view closes it if something opened it.
     pub fn show_view(&mut self, view: crate::shell::WorkspaceView) -> bool {
         let changed = self.shell.workspace.show(view);
-        match view {
-            crate::shell::WorkspaceView::Settings(page) => match page.legacy_tab() {
-                Some(tab) if changed || !self.settings.open => self.open_settings(tab),
-                Some(_) => {}
-                None => self.settings.close(),
-            },
-            _ => {
-                if changed && self.settings.open {
-                    self.settings.close();
-                }
-            }
+        if changed && self.settings.open {
+            self.settings.close();
         }
         changed
     }
@@ -1652,20 +1643,20 @@ mod tests {
         let page = crate::shell::WorkspaceView::Settings(crate::shell::SettingsPage::Keys);
         assert_eq!(action, ChromeAction::ViewChanged(page));
         assert_eq!(chrome.shell.view(), page);
-        assert!(chrome.settings_is_open());
-        assert_eq!(chrome.settings.tab, SettingsTab::Keys);
+        // The J5 Settings page replaces the legacy dialog.
+        assert!(!chrome.settings_is_open());
     }
 
     #[test]
-    fn settings_header_tabs_follow_the_dialog_and_leaving_closes_it() {
+    fn settings_pages_never_open_the_legacy_dialog_and_leaving_closes_it() {
         use crate::shell::{SettingsPage, WorkspaceView};
         let mut chrome = chrome_with_hosts(1);
-        chrome.show_view(WorkspaceView::Settings(SettingsPage::Sync));
-        assert_eq!(chrome.settings.tab, SettingsTab::SqlSync);
-        chrome.show_view(WorkspaceView::Settings(SettingsPage::Updates));
-        assert!(!chrome.settings_is_open(), "no legacy tab for Updates");
-        chrome.show_view(WorkspaceView::Settings(SettingsPage::Keys));
-        assert!(chrome.settings_is_open());
+        for page in SettingsPage::ALL {
+            chrome.show_view(WorkspaceView::Settings(page));
+            assert!(!chrome.settings_is_open(), "{page:?}");
+        }
+        // Opened some other way (palette): leaving Settings closes it.
+        chrome.open_settings(SettingsTab::Keys);
         chrome.show_view(WorkspaceView::Terminal);
         assert!(!chrome.settings_is_open());
     }
