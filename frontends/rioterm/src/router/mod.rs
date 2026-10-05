@@ -431,6 +431,15 @@ impl Route<'_> {
             return true;
         }
 
+        // An open context menu (sidebar row, Files entry) is a popup over
+        // everything: Escape closes it, other keys never reach the view or
+        // the PTY behind it.
+        if self.window.screen.chrome.context_menu.is_some() {
+            let _ = self.window.screen.chrome_key_input(key_event);
+            self.request_overlay_redraw();
+            return true;
+        }
+
         // One dispatch on THE modal roster; each arm keeps its
         // existing handling. `active_modal` already checked each
         // overlay's open state.
