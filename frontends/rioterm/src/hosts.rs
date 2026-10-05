@@ -1335,6 +1335,8 @@ fn worker(
     events: Sender<HostEvent>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
+    // OS probes finish on the runtime, after the command loop moved on.
+    let probe_wake = wake.clone();
     let wake = move || {
         if let Some(wake) = wake.as_ref() {
             wake();
@@ -1793,15 +1795,23 @@ fn worker(
                 let _ = reply.send(result);
             }
             Command::DetectOs { id } => {
-                match detect_and_store_os(&runtime, &store, vault.as_ref(), &id) {
-                    Ok(Some(os_id)) => {
-                        let _ = events.send(HostEvent::OsDetected { id, os_id });
-                    }
-                    Ok(None) => {
-                        // Unchanged or unknown — still clear in_flight.
-                        let _ = events.send(HostEvent::OsDetected {
-                            id: id.clone(),
-                            os_id: String::new(),
+                match prepare_os_probe(&runtime, &store, vault.as_ref(), &id) {
+                    Ok((host, opts)) => {
+                        let store = store.clone();
+                        let events = events.clone();
+                        let wake = probe_wake.clone();
+                        runtime.spawn(async move {
+                            let probed = probe_and_store_os(&store, host, &opts).await;
+                            let os_id = probed.unwrap_or_else(|err| {
+                                tracing::debug!(host = %id, error = %err, "OS detect skipped");
+                                None
+                            });
+                            let os_id = os_id.unwrap_or_default();
+                            // Empty = unchanged or unknown; still clears in_flight.
+                            let _ = events.send(HostEvent::OsDetected { id, os_id });
+                            if let Some(wake) = wake.as_ref() {
+                                wake();
+                            }
                         });
                     }
                     Err(err) => {
@@ -2049,15 +2059,15 @@ fn probe_and_update(
 /// Connect via russh, classify remote OS, persist `os_id` when it changed.
 ///
 /// Returns `Ok(Some(os_id))` when stored, `Ok(None)` when unknown/unchanged.
-fn detect_and_store_os(
+/// The quick, local half of an OS probe (runs on the worker): read the host
+/// and unseal its credentials. The network half is [`probe_and_store_os`].
+fn prepare_os_probe(
     runtime: &tokio::runtime::Runtime,
     store: &Store,
     vault: Option<&Arc<terminus_core::UnlockedVault>>,
     id: &str,
-) -> Result<Option<String>, String> {
-    use terminus_core::{
-        detect_remote_os, probe_options_from_host, HostAuthMethod, UNKNOWN_OS,
-    };
+) -> Result<(Host, terminus_core::ssh::SshConnectOptions), String> {
+    use terminus_core::{probe_options_from_host, HostAuthMethod};
 
     let uuid = Uuid::parse_str(id).map_err(|_| "Invalid host id".to_string())?;
     let hosts = runtime
@@ -2090,10 +2100,22 @@ fn detect_and_store_os(
     // AcceptAll: OS probe runs after the user already opened an SSH session;
     // host-key UX is handled by the shell path / TOFU modal, not here.
     let opts = probe_options_from_host(&probe_host, identity.as_ref());
+    Ok((host, opts))
+}
 
-    let os_id = runtime
-        .block_on(detect_remote_os(&opts))
-        .map_err(|e| e.to_string())?;
+/// The network half of an OS probe. It runs as a task on the worker's
+/// runtime, never on the worker loop itself: a slow or unreachable server
+/// keeps it waiting up to the connect timeout, and the UI thread's
+/// short blocking requests (reading a key for SFTP) must not queue behind
+/// it.
+async fn probe_and_store_os(
+    store: &Store,
+    host: Host,
+    opts: &terminus_core::ssh::SshConnectOptions,
+) -> Result<Option<String>, String> {
+    use terminus_core::{detect_remote_os, UNKNOWN_OS};
+
+    let os_id = detect_remote_os(opts).await.map_err(|e| e.to_string())?;
     if os_id == UNKNOWN_OS {
         return Ok(None);
     }
@@ -2104,8 +2126,9 @@ fn detect_and_store_os(
     let mut updated = host;
     updated.os_id = Some(os_id.clone());
     updated.updated_at = Utc::now();
-    runtime
-        .block_on(store.upsert_host(&updated))
+    store
+        .upsert_host(&updated)
+        .await
         .map_err(|e| format!("Could not save os_id: {e}"))?;
     Ok(Some(os_id))
 }
@@ -3686,6 +3709,63 @@ mod tests {
             repo.vault_unlocked()
         }));
         assert_eq!(repo.take_vault_message().as_deref(), Some("Vault unlocked"));
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Opening Files on a host the OS probe is still connecting to (a slow
+    /// or unreachable server) read its key behind that probe: the UI
+    /// thread waited 5 s, then showed "Timed out reading the stored SSH
+    /// key". The probe's network round-trip must not hold the worker.
+    #[test]
+    fn reading_a_key_does_not_wait_behind_a_slow_os_probe() {
+        // Accepts TCP but never speaks SSH: the probe waits for a banner
+        // until its connect timeout.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in silent.incoming() {
+                held.push(conn);
+            }
+        });
+
+        let dir = temp_dir("slow-probe");
+        let host_id = {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let store = rt.block_on(Store::open(dir.clone())).unwrap();
+            let ident = terminus_core::generate_ed25519_identity("slow").unwrap();
+            rt.block_on(store.upsert_identity(&ident)).unwrap();
+            let mut host = host_from_draft(&HostDraft {
+                name: "slow box".into(),
+                hostname: "127.0.0.1".into(),
+                username: "nixos".into(),
+                auth_method: "key".into(),
+                identity_id: Some(ident.id.to_string()),
+                ..HostDraft::default()
+            });
+            host.port = port;
+            rt.block_on(store.upsert_host(&host)).unwrap();
+            host.id.to_string()
+        };
+
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+        repo.detect_os(&host_id);
+        // Let the worker pick the probe up first.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let started = Instant::now();
+        let key = repo.resolve_host_identity(&host_id);
+        let waited = started.elapsed();
+        assert!(matches!(key, Ok(Some(_))), "key: {key:?}");
+        assert!(
+            waited < Duration::from_secs(1),
+            "the key read waited {waited:?} behind the probe"
+        );
 
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
