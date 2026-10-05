@@ -4,26 +4,33 @@
 //! vault is still locked. The passphrase row reuses the Settings field-card
 //! geometry (`field_input_in_card` + eye slot).
 
+use crate::components::overlay::wrap_text;
+use crate::confirm::{estimate_text_width, BODY_FONT, BUTTON_ADVANCE, BUTTON_FONT};
 use crate::geom::Rect;
-use crate::settings::{
-    field_input_in_card, FIELD_CARD_HEIGHT, FIELD_CARD_PAD, FIELD_EYE_ICON,
-    FIELD_EYE_SLOT,
-};
 
 pub const WIDTH: f32 = 400.0;
-pub const HEIGHT: f32 = 292.0;
-pub const PAD: f32 = 24.0;
-pub const TITLE_HEIGHT: f32 = 28.0;
-pub const CHECK_SIZE: f32 = 16.0;
-pub const CHECK_ROW_HEIGHT: f32 = 28.0;
-pub const BUTTON_HEIGHT: f32 = 32.0;
-pub const BUTTON_WIDTH: f32 = 88.0;
-pub const CANCEL_WIDTH: f32 = 72.0;
-pub const BUTTON_GAP: f32 = 8.0;
-pub const RADIUS: f32 = 16.0;
-pub const INPUT_RADIUS: f32 = 12.0;
-/// Extra height for the confirm card when creating a vault.
-pub const CONFIRM_EXTRA: f32 = FIELD_CARD_HEIGHT + 12.0;
+pub const PAD: f32 = 32.0;
+/// Vertical gap between the dialog's blocks.
+pub const GAP: f32 = 20.0;
+pub const TILE: f32 = 48.0;
+pub const TITLE_LINE: f32 = 26.0;
+pub const TITLE_BODY_GAP: f32 = 6.0;
+pub const BODY_LINE: f32 = 21.0;
+pub const FIELD_HEIGHT: f32 = 46.0;
+pub const FIELD_GAP: f32 = 12.0;
+/// Eye button inside the field (34px square, 6px from the right edge).
+pub const EYE_SLOT: f32 = 34.0;
+pub const EYE_ICON: f32 = 16.0;
+pub const CHECK_SIZE: f32 = 20.0;
+pub const CHECK_ROW_HEIGHT: f32 = 20.0;
+/// Error / progress line under the checkbox.
+pub const HINT_HEIGHT: f32 = 16.0;
+pub const HINT_GAP: f32 = 12.0;
+pub const BUTTON_HEIGHT: f32 = 44.0;
+pub const BUTTON_GAP: f32 = 10.0;
+pub const RADIUS: f32 = 18.0;
+/// Label shown next to the checkbox.
+pub const REMEMBER_LABEL: &str = "Remember on this computer";
 /// Vault passphrases shorter than this are refused (matches the worker).
 pub const MIN_PASSPHRASE_CHARS: usize = 8;
 
@@ -87,6 +94,8 @@ pub struct VaultUnlockPrompt {
     creating: bool,
     confirm: String,
     confirm_focused: bool,
+    /// Name of the host this unlock is for, when known.
+    host_label: Option<String>,
 }
 
 impl Default for VaultUnlockPrompt {
@@ -95,6 +104,7 @@ impl Default for VaultUnlockPrompt {
             creating: false,
             confirm: String::new(),
             confirm_focused: false,
+            host_label: None,
             open: false,
             passphrase: String::new(),
             visible: false,
@@ -121,6 +131,7 @@ impl VaultUnlockPrompt {
         self.error = None;
         self.unlocking = false;
         self.pending = Some(pending);
+        self.host_label = None;
     }
 
     pub fn close(&mut self) {
@@ -223,10 +234,15 @@ impl VaultUnlockPrompt {
 
     pub fn title(&self) -> &'static str {
         if self.creating {
-            "Create Vault"
+            "Create your vault"
         } else {
-            "Unlock Vault"
+            "Unlock your vault"
         }
+    }
+
+    /// Name the host in the body ("jerem prod uses a saved password...").
+    pub fn set_host_label(&mut self, label: Option<String>) {
+        self.host_label = label;
     }
 
     pub fn action_label(&self) -> &'static str {
@@ -239,6 +255,23 @@ impl VaultUnlockPrompt {
 
     /// Subtitle: why the vault is needed, plus a warning when creating.
     pub fn subtitle(&self) -> String {
+        if let (
+            Some(name),
+            false,
+            Some(
+                PendingVaultAction::OpenHost(_)
+                | PendingVaultAction::AddHostSession(_)
+                | PendingVaultAction::OpenSftp { .. },
+            ),
+        ) = (
+            self.host_label.as_deref(),
+            self.creating,
+            self.pending.as_ref(),
+        ) {
+            return format!(
+                "{name} uses a saved password. Enter your vault passphrase to connect."
+            );
+        }
         let why = self
             .pending
             .as_ref()
@@ -362,165 +395,223 @@ impl VaultUnlockPrompt {
 pub struct VaultUnlockLayout {
     pub x: f32,
     pub y: f32,
-    /// Create mode: a confirm card below the passphrase card.
+    /// Create mode: a confirm field below the passphrase field.
     pub creating: bool,
+    /// Wrapped body lines (the host name makes this vary).
+    pub body_lines: usize,
+    /// Room for the error / progress line.
+    pub with_hint: bool,
+}
+
+/// Width of a button for `label` (shared estimate, see `confirm`).
+pub fn button_width(label: &str) -> f32 {
+    label.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE + 40.0
 }
 
 impl VaultUnlockLayout {
     pub fn centered(window_width: f32, window_height: f32) -> Self {
-        Self::for_creating(window_width, window_height, false)
+        Self::build(window_width, window_height, false, 2, false)
     }
 
-    /// Layout matching `prompt` (create mode adds the confirm card).
+    /// Layout matching `prompt` (create mode adds the confirm field; the
+    /// body wraps with the shared width estimate).
     pub fn for_prompt(
         window_width: f32,
         window_height: f32,
         prompt: &VaultUnlockPrompt,
     ) -> Self {
-        Self::for_creating(window_width, window_height, prompt.creating())
+        let lines = wrap_text(&prompt.subtitle(), WIDTH - 2.0 * PAD, |s| {
+            estimate_text_width(s, BODY_FONT)
+        })
+        .len();
+        let hint = prompt.error().is_some() || prompt.unlocking();
+        Self::build(window_width, window_height, prompt.creating(), lines, hint)
     }
 
     pub fn for_creating(window_width: f32, window_height: f32, creating: bool) -> Self {
-        let height = Self::height_for(creating);
-        Self {
-            x: ((window_width - WIDTH) * 0.5).max(8.0),
-            y: ((window_height - height) * 0.5).max(8.0),
-            creating,
-        }
+        Self::build(window_width, window_height, creating, 2, false)
     }
 
-    fn height_for(creating: bool) -> f32 {
-        if creating {
-            HEIGHT + CONFIRM_EXTRA
+    fn build(w: f32, h: f32, creating: bool, body_lines: usize, with_hint: bool) -> Self {
+        let mut l = Self {
+            x: 0.0,
+            y: 0.0,
+            creating,
+            body_lines: body_lines.max(1),
+            with_hint,
+        };
+        let height = l.height();
+        l.x = ((w - WIDTH) * 0.5).round().max(8.0);
+        l.y = ((h - height) * 0.5).round().max(8.0);
+        l
+    }
+
+    pub fn height(&self) -> f32 {
+        let confirm = if self.creating {
+            FIELD_GAP + FIELD_HEIGHT
         } else {
-            HEIGHT
-        }
+            0.0
+        };
+        let hint = if self.with_hint {
+            HINT_GAP + HINT_HEIGHT
+        } else {
+            0.0
+        };
+        PAD * 2.0
+            + TILE
+            + GAP
+            + TITLE_LINE
+            + TITLE_BODY_GAP
+            + self.body_lines as f32 * BODY_LINE
+            + GAP
+            + FIELD_HEIGHT
+            + confirm
+            + GAP
+            + CHECK_ROW_HEIGHT
+            + hint
+            + GAP
+            + BUTTON_HEIGHT
     }
 
     pub fn rect(&self) -> Rect {
-        Rect::new(self.x, self.y, WIDTH, Self::height_for(self.creating))
+        Rect::new(self.x, self.y, WIDTH, self.height())
     }
 
-    /// Confirm-passphrase card (create mode only).
-    pub fn confirm_card_rect(&self) -> Option<Rect> {
-        self.creating.then(|| {
-            let pass = self.passphrase_card_rect();
-            Rect::new(pass.x, pass.bottom() + 12.0, pass.width, FIELD_CARD_HEIGHT)
-        })
+    fn inner_w() -> f32 {
+        WIDTH - 2.0 * PAD
+    }
+
+    /// Lock tile at the top-left.
+    pub fn tile_rect(&self) -> Rect {
+        Rect::new(self.x + PAD, self.y + PAD, TILE, TILE)
     }
 
     pub fn title_rect(&self) -> Rect {
-        Rect::new(self.x + PAD, self.y + PAD, WIDTH - 2.0 * PAD, TITLE_HEIGHT)
+        Rect::new(
+            self.x + PAD,
+            self.tile_rect().bottom() + GAP,
+            Self::inner_w(),
+            TITLE_LINE,
+        )
     }
 
     pub fn subtitle_rect(&self) -> Rect {
         Rect::new(
             self.x + PAD,
-            self.y + PAD + TITLE_HEIGHT,
-            WIDTH - 2.0 * PAD,
-            36.0,
+            self.title_rect().bottom() + TITLE_BODY_GAP,
+            Self::inner_w(),
+            self.body_lines as f32 * BODY_LINE,
         )
     }
 
-    /// Settings-style field card hosting the passphrase input + eye.
+    /// Passphrase field box.
     pub fn passphrase_card_rect(&self) -> Rect {
         Rect::new(
             self.x + PAD,
-            self.y + PAD + TITLE_HEIGHT + 40.0,
-            WIDTH - 2.0 * PAD,
-            FIELD_CARD_HEIGHT,
+            self.subtitle_rect().bottom() + GAP,
+            Self::inner_w(),
+            FIELD_HEIGHT,
         )
+    }
+
+    /// Confirm-passphrase field (create mode only).
+    pub fn confirm_card_rect(&self) -> Option<Rect> {
+        self.creating.then(|| {
+            let pass = self.passphrase_card_rect();
+            Rect::new(pass.x, pass.bottom() + FIELD_GAP, pass.width, FIELD_HEIGHT)
+        })
     }
 
     pub fn input_rect(&self) -> Rect {
-        field_input_in_card(self.passphrase_card_rect())
+        self.passphrase_card_rect()
     }
 
+    /// Text area of the passphrase field (left of the eye).
     pub fn text_rect(&self) -> Rect {
-        let input = self.input_rect();
-        Rect::new(
-            input.x,
-            input.y,
-            (input.width - FIELD_EYE_SLOT).max(0.0),
-            input.height,
-        )
+        let f = self.passphrase_card_rect();
+        Rect::new(f.x, f.y, (f.width - EYE_SLOT - 6.0).max(0.0), f.height)
     }
 
     pub fn eye_rect(&self) -> Rect {
-        let input = self.input_rect();
+        let f = self.passphrase_card_rect();
         Rect::new(
-            input.right() - FIELD_EYE_SLOT,
-            input.y,
-            FIELD_EYE_SLOT,
-            input.height,
+            f.right() - 6.0 - EYE_SLOT,
+            f.y + (f.height - EYE_SLOT) / 2.0,
+            EYE_SLOT,
+            EYE_SLOT,
         )
     }
 
     pub fn eye_icon_size() -> f32 {
-        FIELD_EYE_ICON
+        EYE_ICON
     }
 
-    /// Full hit row for the "Remember on this device" checkbox.
+    /// Full hit row for the "Remember on this computer" checkbox.
     pub fn remember_row_rect(&self) -> Rect {
         let above = self
             .confirm_card_rect()
             .unwrap_or_else(|| self.passphrase_card_rect());
         Rect::new(
             self.x + PAD,
-            above.bottom() + 12.0,
-            WIDTH - 2.0 * PAD,
+            above.bottom() + GAP,
+            Self::inner_w(),
             CHECK_ROW_HEIGHT,
         )
     }
 
     pub fn remember_box_rect(&self) -> Rect {
         let row = self.remember_row_rect();
-        Rect::new(
-            row.x,
-            row.y + (row.height - CHECK_SIZE) * 0.5,
-            CHECK_SIZE,
-            CHECK_SIZE,
-        )
+        Rect::new(row.x, row.y, CHECK_SIZE, CHECK_SIZE)
     }
 
+    /// Error / progress line (zero height when nothing is reserved).
     pub fn hint_rect(&self) -> Rect {
-        Rect::new(
-            self.x + PAD,
-            self.remember_row_rect().bottom() + 4.0,
-            WIDTH - 2.0 * PAD,
-            18.0,
-        )
+        let row = self.remember_row_rect();
+        if self.with_hint {
+            Rect::new(row.x, row.bottom() + HINT_GAP, Self::inner_w(), HINT_HEIGHT)
+        } else {
+            Rect::new(row.x, row.bottom(), Self::inner_w(), 0.0)
+        }
     }
 
     pub fn unlock_button_rect(&self) -> Rect {
-        let dialog = self.rect();
-        Rect::new(
-            dialog.right() - PAD - BUTTON_WIDTH,
-            dialog.bottom() - PAD - BUTTON_HEIGHT,
-            BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-        )
+        self.unlock_button_rect_for("Unlock")
     }
 
     pub fn cancel_button_rect(&self) -> Rect {
-        let unlock = self.unlock_button_rect();
-        Rect::new(
-            unlock.x - BUTTON_GAP - CANCEL_WIDTH,
-            unlock.y,
-            CANCEL_WIDTH,
-            BUTTON_HEIGHT,
-        )
+        self.button_rects("Cancel", "Unlock").0
+    }
+
+    /// Confirm button sized for `label` ("Unlock" / "Create").
+    pub fn unlock_button_rect_for(&self, label: &str) -> Rect {
+        self.button_rects("Cancel", label).1
+    }
+
+    /// `(cancel, confirm)` rects for the given labels.
+    pub fn button_rects(&self, cancel: &str, confirm: &str) -> (Rect, Rect) {
+        let d = self.rect();
+        let y = d.bottom() - PAD - BUTTON_HEIGHT;
+        let cw = button_width(confirm);
+        let kw = button_width(cancel);
+        let confirm_r = Rect::new(d.right() - PAD - cw, y, cw, BUTTON_HEIGHT);
+        let cancel_r = Rect::new(confirm_r.x - BUTTON_GAP - kw, y, kw, BUTTON_HEIGHT);
+        (cancel_r, confirm_r)
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> VaultUnlockHit {
-        let dialog = self.rect();
-        if !dialog.contains(x, y) {
+        self.hit_test_labels(x, y, "Unlock")
+    }
+
+    /// Hit test with the confirm button sized for `confirm` ("Create" differs).
+    pub fn hit_test_labels(&self, x: f32, y: f32, confirm: &str) -> VaultUnlockHit {
+        if !self.rect().contains(x, y) {
             return VaultUnlockHit::Cancel;
         }
-        if self.unlock_button_rect().contains(x, y) {
+        let (cancel, ok) = self.button_rects("Cancel", confirm);
+        if ok.contains(x, y) {
             return VaultUnlockHit::Unlock;
         }
-        if self.cancel_button_rect().contains(x, y) {
+        if cancel.contains(x, y) {
             return VaultUnlockHit::Cancel;
         }
         if self.remember_row_rect().contains(x, y) {
@@ -532,10 +623,7 @@ impl VaultUnlockLayout {
         if self.confirm_card_rect().is_some_and(|r| r.contains(x, y)) {
             return VaultUnlockHit::ConfirmField;
         }
-        if self.text_rect().contains(x, y)
-            || self.input_rect().contains(x, y)
-            || self.passphrase_card_rect().contains(x, y)
-        {
+        if self.passphrase_card_rect().contains(x, y) {
             return VaultUnlockHit::Field;
         }
         VaultUnlockHit::Consume
@@ -569,7 +657,43 @@ mod tests {
             layout.hit_test(text.x + 2.0, text.y + 2.0),
             VaultUnlockHit::Field
         );
-        let _ = FIELD_CARD_PAD;
+    }
+
+    #[test]
+    fn body_names_the_host_and_the_dialog_follows_the_mock_metrics() {
+        let mut prompt = VaultUnlockPrompt::default();
+        prompt.open(PendingVaultAction::OpenHost("h1".into()));
+        prompt.set_host_label(Some("jerem prod".into()));
+        assert_eq!(
+            prompt.subtitle(),
+            "jerem prod uses a saved password. Enter your vault passphrase to connect."
+        );
+        let l = VaultUnlockLayout::for_prompt(1440.0, 900.0, &prompt);
+        assert_eq!(l.rect().width, 400.0);
+        assert_eq!(l.tile_rect().width, 48.0);
+        assert_eq!(l.passphrase_card_rect().height, 46.0);
+        let (cancel, ok) = l.button_rects("Cancel", "Unlock");
+        assert_eq!((cancel.height, ok.height), (44.0, 44.0));
+        assert!((ok.right() - (l.rect().right() - 32.0)).abs() < 0.01);
+        assert!((ok.bottom() - (l.rect().bottom() - 32.0)).abs() < 0.01);
+        assert!(l.rect().contains(l.rect().x + 1.0, l.rect().y + 1.0));
+        // A non-host reason keeps its generic copy.
+        prompt.open(PendingVaultAction::SubmitHostForm);
+        assert!(prompt.subtitle().contains("encrypt and save"));
+    }
+
+    #[test]
+    fn an_error_line_makes_room_above_the_buttons() {
+        let mut prompt = VaultUnlockPrompt::default();
+        prompt.open(PendingVaultAction::SubmitHostForm);
+        let plain = VaultUnlockLayout::for_prompt(1200.0, 800.0, &prompt);
+        prompt.set_error("Wrong passphrase");
+        let err = VaultUnlockLayout::for_prompt(1200.0, 800.0, &prompt);
+        assert_eq!(
+            err.rect().height - plain.rect().height,
+            HINT_GAP + HINT_HEIGHT
+        );
+        assert!(err.hint_rect().bottom() <= err.unlock_button_rect().y);
     }
 
     #[test]
@@ -589,7 +713,7 @@ mod tests {
         let mut prompt = VaultUnlockPrompt::default();
         prompt.open(PendingVaultAction::SubmitHostForm);
         prompt.set_creating(true);
-        assert_eq!(prompt.title(), "Create Vault");
+        assert_eq!(prompt.title(), "Create your vault");
         assert_eq!(prompt.action_label(), "Create");
         prompt.insert("correct horse");
         prompt.focus_confirm();
@@ -603,7 +727,7 @@ mod tests {
         // Unlocking an existing vault needs no confirmation.
         let mut unlock = VaultUnlockPrompt::default();
         unlock.open(PendingVaultAction::SubmitHostForm);
-        assert_eq!(unlock.title(), "Unlock Vault");
+        assert_eq!(unlock.title(), "Unlock your vault");
         unlock.insert("anything");
         assert_eq!(unlock.validate().unwrap(), "anything");
     }
@@ -615,6 +739,12 @@ mod tests {
         assert!(confirm.y >= layout.passphrase_card_rect().bottom());
         assert!(layout.remember_row_rect().y >= confirm.bottom());
         assert!(layout.unlock_button_rect().y >= layout.hint_rect().bottom());
+        assert_eq!(
+            layout.rect().height,
+            VaultUnlockLayout::centered(1200.0, 800.0).rect().height
+                + FIELD_GAP
+                + FIELD_HEIGHT
+        );
         assert_eq!(
             layout.hit_test(confirm.x + 4.0, confirm.y + 30.0),
             VaultUnlockHit::ConfirmField

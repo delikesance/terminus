@@ -5,20 +5,32 @@
 use crate::geom::Rect;
 use crate::text_field::{TextDraft, TextMoveKind};
 
-pub const PAD: f32 = 24.0;
+pub const WIDTH: f32 = 520.0;
+pub const PAD: f32 = 28.0;
 pub const TITLE_HEIGHT: f32 = 28.0;
-pub const FIELD_HEIGHT: f32 = 52.0;
-pub const FIELD_GAP: f32 = 12.0;
-/// Corner radius (`rounded-2xl`).
-pub const DIALOG_RADIUS: f32 = 16.0;
-pub const BUTTON_HEIGHT: f32 = 32.0;
-pub const BUTTON_GAP: f32 = 8.0;
+/// Gap between the title and the first field, and between blocks.
+pub const BLOCK_GAP: f32 = 18.0;
+/// Label (16) + gap (8) above the 46px input.
+pub const LABEL_BLOCK: f32 = 24.0;
+pub const INPUT_HEIGHT: f32 = 46.0;
+/// A whole labelled field: label, gap and input.
+pub const FIELD_HEIGHT: f32 = LABEL_BLOCK + INPUT_HEIGHT;
+pub const FIELD_GAP: f32 = BLOCK_GAP;
+pub const ERROR_HEIGHT: f32 = 16.0;
+/// Extra room above the buttons (mock `padding-top: 6px`).
+pub const BUTTONS_TOP: f32 = 6.0;
+/// Corner radius of the dialog (design token `radius.dialog`).
+pub const DIALOG_RADIUS: f32 = 18.0;
+pub const BUTTON_HEIGHT: f32 = 44.0;
+pub const BUTTON_GAP: f32 = 10.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormFieldData {
     pub key: String,
     pub label: String,
     pub draft: TextDraft,
+    /// Shown faintly while the field is empty.
+    pub placeholder: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +66,16 @@ impl DynamicFormState {
             key: key.to_string(),
             label: label.to_string(),
             draft,
+            placeholder: String::new(),
         });
+        self
+    }
+
+    /// Placeholder of the field added last.
+    pub fn with_placeholder(mut self, text: &str) -> Self {
+        if let Some(f) = self.fields.last_mut() {
+            f.placeholder = text.to_string();
+        }
         self
     }
 
@@ -197,70 +218,64 @@ impl DialogFormLayout {
         window_width: f32,
         window_height: f32,
     ) -> Self {
-        let width = 460.0;
+        let n = form.fields.len() as f32;
         let mut height = PAD + TITLE_HEIGHT;
-        let n: f32 = form.fields.len() as f32;
-
         if n > 0.0 {
-            height += n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP;
+            height += BLOCK_GAP + n * FIELD_HEIGHT + (n - 1.0) * FIELD_GAP;
         }
+        if form.error.is_some() {
+            height += BLOCK_GAP + ERROR_HEIGHT;
+        }
+        height += BLOCK_GAP + BUTTONS_TOP + BUTTON_HEIGHT + PAD;
 
-        let error_rect = if form.error.is_some() {
-            height += PAD;
-            height += 24.0; // error text height space
-            Some(Rect::new(0.0, 0.0, 0.0, 0.0)) // assigned later
-        } else {
-            None
-        };
-
-        height += PAD + BUTTON_HEIGHT + PAD;
-
-        let x = (window_width - width).max(0.0) / 2.0;
-        let y = (window_height - height).max(0.0) / 2.0;
-        let dialog = Rect::new(x, y, width, height);
-
-        let title = Rect::new(x + PAD, y + PAD, width - 2.0 * PAD, TITLE_HEIGHT);
+        let x = ((window_width - WIDTH).max(0.0) / 2.0).round();
+        let y = ((window_height - height).max(0.0) / 2.0).round();
+        let dialog = Rect::new(x, y, WIDTH, height);
+        let title = Rect::new(x + PAD, y + PAD, WIDTH - 2.0 * PAD, TITLE_HEIGHT);
 
         let mut fields = Vec::with_capacity(form.fields.len());
-        for i in 0..form.fields.len() {
-            let ry = y + PAD + TITLE_HEIGHT + i as f32 * (FIELD_HEIGHT + FIELD_GAP);
-            fields.push(Rect::new(x + PAD, ry, width - 2.0 * PAD, FIELD_HEIGHT));
+        let mut cy = title.bottom() + BLOCK_GAP;
+        for _ in 0..form.fields.len() {
+            fields.push(Rect::new(x + PAD, cy, WIDTH - 2.0 * PAD, FIELD_HEIGHT));
+            cy += FIELD_HEIGHT + FIELD_GAP;
         }
-
-        let mut bottom_y = if form.fields.is_empty() {
-            title.bottom() + PAD
+        // `cy` overshoots by one field gap after the last field.
+        let mut bottom_y = if fields.is_empty() {
+            title.bottom() + BLOCK_GAP
         } else {
-            fields.last().unwrap().bottom() + PAD
+            cy - FIELD_GAP + BLOCK_GAP
         };
 
-        let mut final_error_rect = None;
+        let mut error_line = None;
         if form.error.is_some() {
-            final_error_rect =
-                Some(Rect::new(x + PAD, bottom_y, width - 2.0 * PAD, 24.0));
-            bottom_y += 24.0 + PAD;
+            error_line = Some(Rect::new(
+                x + PAD,
+                bottom_y,
+                WIDTH - 2.0 * PAD,
+                ERROR_HEIGHT,
+            ));
+            bottom_y += ERROR_HEIGHT + BLOCK_GAP;
         }
+        bottom_y += BUTTONS_TOP;
 
-        // buttons are aligned to the right like AddHostForm
-        // wait, AddHostForm has CANCEL_BUTTON_WIDTH and CONNECT_BUTTON_WIDTH
-        // Let's use 84.0 and 72.0
-        let btn_w = 84.0;
-        let cancel_w = 72.0;
-
-        // Right alignment
-        let save_x = x + width - PAD - btn_w;
+        let save_w = crate::vault_unlock::button_width(&form.save_label);
+        let cancel_w = crate::vault_unlock::button_width("Cancel");
+        let save_x = x + WIDTH - PAD - save_w;
         let cancel_x = save_x - BUTTON_GAP - cancel_w;
-
-        let save_btn = Rect::new(save_x, bottom_y, btn_w, BUTTON_HEIGHT);
-        let cancel_btn = Rect::new(cancel_x, bottom_y, cancel_w, BUTTON_HEIGHT);
-
         Self {
             dialog,
             title,
             fields,
-            error_line: final_error_rect,
-            cancel_btn,
-            save_btn,
+            error_line,
+            cancel_btn: Rect::new(cancel_x, bottom_y, cancel_w, BUTTON_HEIGHT),
+            save_btn: Rect::new(save_x, bottom_y, save_w, BUTTON_HEIGHT),
         }
+    }
+
+    /// The 46px input box of field `i` (below its label).
+    pub fn input_rect(&self, i: usize) -> Rect {
+        let f = self.fields[i];
+        Rect::new(f.x, f.y + LABEL_BLOCK, f.width, INPUT_HEIGHT)
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<DynamicFormHit> {
@@ -288,4 +303,59 @@ pub enum DynamicFormHit {
     Save,
     Cancel,
     Background,
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn form() -> DynamicFormState {
+        DynamicFormState::new("New snippet", "Save snippet")
+            .with_field("name", "Title", "")
+            .with_placeholder("Restart the web server")
+            .with_field("command", "Command", "")
+            .with_field("tags", "Description", "")
+    }
+
+    #[test]
+    fn follows_the_design_metrics() {
+        let l = DialogFormLayout::compute(&form(), 1440.0, 900.0);
+        assert_eq!(l.dialog.width, 520.0);
+        assert_eq!(l.fields[0].height, 70.0);
+        assert_eq!(l.input_rect(0).height, 46.0);
+        assert_eq!(l.fields[1].y - l.fields[0].bottom(), 18.0);
+        assert_eq!(l.save_btn.height, 44.0);
+        assert!((l.save_btn.right() - (l.dialog.right() - 28.0)).abs() < 0.01);
+        assert!((l.save_btn.bottom() - (l.dialog.bottom() - 28.0)).abs() < 0.01);
+        assert_eq!(l.save_btn.x - l.cancel_btn.right(), 10.0);
+        assert!(l.fields[2].bottom() < l.cancel_btn.y);
+        assert_eq!(form().fields[0].placeholder, "Restart the web server");
+    }
+
+    #[test]
+    fn an_error_line_grows_the_dialog_and_stays_above_the_buttons() {
+        let plain = DialogFormLayout::compute(&form(), 1440.0, 900.0);
+        let mut f = form();
+        f.set_error("Name is required".into());
+        let l = DialogFormLayout::compute(&f, 1440.0, 900.0);
+        assert_eq!(
+            l.dialog.height - plain.dialog.height,
+            BLOCK_GAP + ERROR_HEIGHT
+        );
+        let e = l.error_line.unwrap();
+        assert!(e.y >= l.fields[2].bottom() && e.bottom() <= l.save_btn.y);
+    }
+
+    #[test]
+    fn hit_test_finds_fields_and_buttons() {
+        let l = DialogFormLayout::compute(&form(), 1440.0, 900.0);
+        let i = l.input_rect(1);
+        assert_eq!(
+            l.hit_test(i.x + 4.0, i.y + 4.0),
+            Some(DynamicFormHit::Field(1))
+        );
+        let s = l.save_btn;
+        assert_eq!(l.hit_test(s.x + 2.0, s.y + 2.0), Some(DynamicFormHit::Save));
+        assert_eq!(l.hit_test(1.0, 1.0), Some(DynamicFormHit::Background));
+    }
 }
