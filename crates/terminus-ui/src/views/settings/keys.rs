@@ -21,6 +21,8 @@ use crate::text_field::TextDraft;
 pub const INTRO: &str =
     "Keys Terminus manages for you. Copy a public key into a server's authorized_keys.";
 pub const HEADER_HEIGHT: f32 = 40.0;
+/// Line height of the wrapped intro on a narrow page.
+pub const INTRO_LINE: f32 = 20.0;
 pub const HEADER_GAP: f32 = 18.0;
 pub const DRAFT_PAD: f32 = 20.0;
 pub const DRAFT_TITLE_HEIGHT: f32 = 22.0;
@@ -179,6 +181,8 @@ pub struct RowLayout {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeysLayout {
     pub intro: Rect,
+    /// [`INTRO`] wrapped to `intro`'s width (one line when it fits).
+    pub intro_lines: Vec<String>,
     pub import: Rect,
     pub generate: Rect,
     pub draft: Option<DraftLayout>,
@@ -259,9 +263,13 @@ impl KeysState {
             import_spec.width(),
             ButtonSize::Medium.height(),
         );
-        let intro =
-            Rect::new(col.x, y, (import.x - 16.0 - col.x).max(0.0), HEADER_HEIGHT);
-        y += HEADER_HEIGHT + HEADER_GAP;
+        let intro_w = (import.x - 16.0 - col.x).max(0.0);
+        let intro_lines = crate::components::overlay::wrap_text(INTRO, intro_w, |t| {
+            m(t, crate::tokens::font_size::BODY_SM, false)
+        });
+        let intro_h = HEADER_HEIGHT.max(intro_lines.len() as f32 * INTRO_LINE);
+        let intro = Rect::new(col.x, y, intro_w, intro_h);
+        y += intro_h + HEADER_GAP;
 
         let draft = self.draft.as_ref().map(|d| {
             let l = draft_layout(d, Rect::new(col.x, y, col.width, 0.0), m);
@@ -314,6 +322,7 @@ impl KeysState {
 
         KeysLayout {
             intro,
+            intro_lines,
             import,
             generate,
             draft,
@@ -601,6 +610,27 @@ mod tests {
         assert!(l.intro.right() < l.import.x);
         assert_eq!(l.rows.len(), 2);
         assert!(l.rows[1].card.rect.y > l.rows[0].card.rect.y);
+    }
+
+    #[test]
+    fn a_narrow_page_wraps_the_intro_above_the_list() {
+        // 1100 px window: the content is ~828 px wide.
+        let narrow = Rect::new(260.0, 104.0, 828.0, 584.0);
+        let s = state();
+        let mut m = test_measure;
+        let l = s.layout(narrow, &mut m);
+        assert!(l.intro_lines.len() > 1, "{:?}", l.intro_lines);
+        for line in &l.intro_lines {
+            assert!(
+                test_measure(line, 14.0, false) <= l.intro.width + 0.01,
+                "{line}"
+            );
+        }
+        assert!(l.intro.right() <= l.import.x);
+        assert!(l.rows[0].card.rect.y >= l.intro.bottom());
+        // Wide enough: one line, as in the mock.
+        let wide = s.layout(CONTENT, &mut test_measure);
+        assert_eq!(wide.intro_lines, vec![INTRO.to_string()]);
     }
 
     #[test]

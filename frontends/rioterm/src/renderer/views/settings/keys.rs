@@ -9,7 +9,7 @@ use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::font_size;
 use terminus_ui::views::settings::keys::{
-    DraftField, KeyDraft, KeysLayout, KeysState, KeysTarget, INTRO,
+    DraftField, KeyDraft, KeysLayout, KeysState, KeysTarget, INTRO_LINE,
 };
 
 use super::with_measure;
@@ -70,15 +70,25 @@ fn paint_layout(
     l: &KeysLayout,
 ) {
     let scale = sugarloaf.scale_factor();
-    draw_ui_text(
-        sugarloaf,
-        l.intro.x,
-        text_top(l.intro.y + l.intro.height / 2.0, font_size::BODY_SM),
-        INTRO,
-        font_size::BODY_SM,
-        theme.text_muted,
-        UiWeight::Regular,
-    );
+    // One line centred on the header like the mock; wrapped lines (narrow
+    // window) stack from its top.
+    let single = l.intro_lines.len() <= 1;
+    for (i, line) in l.intro_lines.iter().enumerate() {
+        let centre = if single {
+            l.intro.y + l.intro.height / 2.0
+        } else {
+            l.intro.y + (i as f32 + 0.5) * INTRO_LINE
+        };
+        draw_ui_text(
+            sugarloaf,
+            l.intro.x,
+            text_top(centre, font_size::BODY_SM),
+            line,
+            font_size::BODY_SM,
+            theme.text_muted,
+            UiWeight::Regular,
+        );
+    }
     let import = label_spec(
         sugarloaf,
         (l.import.x, l.import.y),
