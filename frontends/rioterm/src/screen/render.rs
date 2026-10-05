@@ -68,6 +68,15 @@ impl Screen<'_> {
             return None;
         }
 
+        // View preview (TERMINUS_VIEW_PREVIEW=tunnels): view painted alone.
+        if crate::renderer::views::tunnels::paint_preview_if_selected(
+            &mut self.sugarloaf,
+            &self.renderer.chrome_theme,
+        ) {
+            self.sugarloaf.render();
+            return None;
+        }
+
         self.tick_session_connecting();
         let host_drag_action = self.tick_host_drag_animation();
         if let Some(action) = host_drag_action {
