@@ -564,10 +564,18 @@ fn submit_inline_oneshot(
         let submit = vk::SubmitInfo::default().command_buffers(&cmds);
         shared
             .queue_submit(queue, &[submit], fence)
-            .expect("oneshot: queue_submit");
+            .unwrap_or_else(|e| {
+                crate::context::vulkan::queue_submit_failed(
+                    shared,
+                    "atlas page submit",
+                    e,
+                )
+            });
         shared
             .wait_for_fences(&[fence], true, u64::MAX)
-            .expect("oneshot: wait_for_fences");
+            .unwrap_or_else(|e| {
+                crate::context::vulkan::queue_submit_failed(shared, "atlas page wait", e)
+            });
 
         shared.destroy_fence(fence, None);
         shared.destroy_command_pool(pool, None);
