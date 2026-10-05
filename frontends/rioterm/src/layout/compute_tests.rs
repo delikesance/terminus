@@ -647,3 +647,53 @@ fn test_split_inside_resized_panel_preserves_proportions() {
         "Bottom (bottom half) should be ~400px tall, got {bottom_h}"
     );
 }
+
+fn dimension_80x24() -> ContextDimension {
+    let dims = TextDimensions {
+        width: 16.0,
+        height: 32.0,
+        scale: 1.0,
+    };
+    ContextDimension::build(
+        1280.0,
+        768.0,
+        dims,
+        cell_for(dims),
+        1.0,
+        14.0,
+        Margin::all(0.0),
+    )
+}
+
+#[test]
+fn test_update_keeps_grid_when_window_collapses_to_zero() {
+    // A minimized window reports a 0x0 client area; the PTY must not be
+    // told to reflow to MIN_COLS, or its output stays wrapped on restore.
+    let mut dim = dimension_80x24();
+    assert_eq!((dim.columns, dim.lines), (80, 24));
+
+    dim.update_width(0.0);
+    dim.update_height(0.0);
+
+    assert_eq!((dim.columns, dim.lines), (80, 24));
+}
+
+#[test]
+fn test_update_keeps_grid_when_margins_eat_all_space() {
+    let mut dim = dimension_80x24();
+    dim.margin = Margin::new(0.0, 0.0, 0.0, 2000.0);
+    dim.update_width(1280.0);
+
+    assert_eq!((dim.columns, dim.lines), (80, 24));
+}
+
+#[test]
+fn test_update_recovers_after_collapse() {
+    let mut dim = dimension_80x24();
+    dim.update_width(0.0);
+    dim.update_height(0.0);
+    dim.update_width(640.0);
+    dim.update_height(384.0);
+
+    assert_eq!((dim.columns, dim.lines), (40, 12));
+}
