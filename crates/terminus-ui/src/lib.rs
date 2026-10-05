@@ -22,6 +22,7 @@ pub mod anim;
 pub mod button;
 pub mod chrome;
 pub mod components;
+pub mod confirm;
 pub mod connection;
 pub mod context_menu;
 pub mod dialog_form;
