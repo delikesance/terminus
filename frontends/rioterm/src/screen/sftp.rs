@@ -1,7 +1,6 @@
 //! `Screen` sftp surface, split out of `screen/mod.rs`.
 
 use super::Screen;
-use crate::context::renderable::Cursor;
 use crate::hosts;
 use crate::renderer::views::files::{self as files_view, FilesAction};
 use rio_window::window::CursorIcon;

@@ -272,12 +272,14 @@ impl TunnelRegistry {
         self.procs.contains_key(id)
     }
 
+    #[cfg(test)]
     pub fn active_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.procs.keys().cloned().collect();
         ids.sort();
         ids
     }
 
+    #[cfg(test)]
     pub fn pid(&self, id: &str) -> Option<u32> {
         self.procs.get(id).map(|p| p.child.id())
     }
@@ -510,10 +512,6 @@ impl TunnelController {
         &self.state
     }
 
-    pub fn state_mut(&mut self) -> &mut TunnelsState {
-        &mut self.state
-    }
-
     pub fn host_id(&self) -> Option<&str> {
         self.host_id.as_deref()
     }
@@ -546,6 +544,7 @@ impl TunnelController {
         self.state.running_count()
     }
 
+    #[cfg(test)]
     /// Running tunnels of any machine (sidebar badges).
     pub fn running_count_for(&self, host_id: &str) -> usize {
         self.statuses
