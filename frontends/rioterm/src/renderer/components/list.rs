@@ -315,11 +315,23 @@ pub fn paint_history_row(
     let act_w = action.map_or(0.0, |a| a.width(s));
     let l = history_row_layout(rect, cwd_w, act_w);
     let cy = rect.y + rect.height / 2.0;
+    // Mono: one advance per char, so a width is a char budget.
+    let fits = |s: &mut Sugarloaf, width: f32, size: f32| {
+        let adv =
+            crate::renderer::ui_text::measure_mono_text(s, "M", size, UiWeight::Regular);
+        if adv > 0.0 {
+            (width / adv).floor() as usize
+        } else {
+            usize::MAX
+        }
+    };
+    let command_chars = fits(s, l.command.width, 12.0);
+    let cwd_chars = fits(s, l.cwd.width, 11.0);
     draw_mono_text(
         s,
         l.command.x,
         text_top(cy, 12.0),
-        command,
+        &elide_end(command, command_chars),
         12.0,
         theme.text,
         UiWeight::Regular,
@@ -328,7 +340,7 @@ pub fn paint_history_row(
         s,
         l.cwd.x,
         text_top(cy, 11.0),
-        cwd,
+        &elide_start(cwd, cwd_chars),
         11.0,
         theme.text_faint,
         UiWeight::Regular,
