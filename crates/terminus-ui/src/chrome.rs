@@ -27,7 +27,6 @@ use crate::vault_unlock::{
 /// Painters must emit glyphs only for [`Chrome::top_modal_paint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalPaintLayer {
-    Connection,
     HostEditor,
     AddSnippet,
     Settings,
@@ -341,10 +340,9 @@ impl Chrome {
     /// layer as (all quads) → (all text), so only the **front** entry may
     /// emit glyphs; lower entries paint shell/scrim quads only.
     pub fn modal_paint_stack(&self) -> Vec<ModalPaintLayer> {
+        // Connection progress is not here: the shell paints it inside the
+        // Terminal content (see [`Self::connection_area`]).
         let mut stack = Vec::new();
-        if self.connection.is_some() {
-            stack.push(ModalPaintLayer::Connection);
-        }
         if self.form.is_open() {
             stack.push(ModalPaintLayer::HostEditor);
         }
@@ -423,6 +421,20 @@ impl Chrome {
         });
         self.vault_unlock.set_host_label(label);
         self.vault_unlock.set_creating(!self.vault_configured);
+    }
+
+    /// Where connection progress is shown: the shell's content rect (the
+    /// Terminal view's area, under the session pills).
+    pub fn connection_area(&self) -> crate::geom::Rect {
+        self.shell.content_rect()
+    }
+
+    /// What a pointer at `(x, y)` hits on the connection progress, or
+    /// `None` when there is none or the pointer is outside its area.
+    fn connection_hit(&self, x: f32, y: f32) -> Option<ConnectionHit> {
+        let conn = self.connection.as_ref()?;
+        let area = self.connection_area();
+        area.contains(x, y).then(|| conn.hit_test_in(area, x, y))
     }
 
     /// Open the add-host editor.
@@ -521,7 +533,7 @@ impl Chrome {
     ) -> ChromeAction {
         // Modals / overlays own the pointer; don't open under them.
         if self.settings.open
-            || self.connection.is_some()
+            || self.connection_hit(x, y).is_some()
             || self.form.is_open()
             || self.snippet_form.is_open()
             || self.vault_unlock.is_open()
@@ -828,15 +840,10 @@ impl Chrome {
             };
         }
 
-        // The connection modal sits above everything else: clicks never
-        // fall through to the terminal or the add-host form behind it.
-        if self.connection.is_some() {
-            let hit = self.connection.as_ref().unwrap().hit_test(
-                window_width,
-                window_height,
-                x,
-                y,
-            );
+        // Connection progress owns the Terminal content: clicks there never
+        // fall through to the terminal behind it. The sidebar and header
+        // stay live.
+        if let Some(hit) = self.connection_hit(x, y) {
             return match hit {
                 ConnectionHit::ToggleLogs => {
                     if let Some(conn) = self.connection.as_mut() {
@@ -1146,7 +1153,7 @@ impl Chrome {
                 .settings
                 .handle_hover(window_width, window_height, x, y);
         }
-        if self.connection.is_some() {
+        if self.connection_hit(x, y).is_some() {
             return false;
         }
 
@@ -1250,8 +1257,8 @@ impl Chrome {
         if self.settings.open {
             return self.settings.cursor_at(window_width, window_height, x, y);
         }
-        if let Some(conn) = self.connection.as_ref() {
-            return match conn.hit_test(window_width, window_height, x, y) {
+        if let Some(hit) = self.connection_hit(x, y) {
+            return match hit {
                 ConnectionHit::Close | ConnectionHit::ToggleLogs => ChromeCursor::Pointer,
                 ConnectionHit::Consume => ChromeCursor::Default,
             };
@@ -1834,6 +1841,52 @@ mod tests {
         let item = menu.item_rect(delete).unwrap();
         chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
         assert!(chrome.confirm.as_ref().unwrap().spec.body.contains("2 open sessions"));
+    }
+
+    #[test]
+    fn connection_progress_fills_the_content_and_leaves_the_sidebar_live() {
+        let mut chrome = chrome_with_hosts(3);
+        chrome.set_window_size(1200.0, 800.0);
+        chrome.connection = Some(ConnectionSequence::start_ssh(
+            "id-0",
+            "host-0",
+            "SSH root@host-0",
+        ));
+        // Painted by the shell in the Terminal content, not as a window modal.
+        assert!(chrome.modal_paint_stack().is_empty());
+        let content = chrome.connection_area();
+        assert_eq!(content, chrome.shell.content_rect());
+        let conn = chrome.connection.clone().unwrap();
+        let dialog = conn.dialog_rect_in(content);
+        assert!(content.contains(dialog.x, dialog.y));
+        assert!(content.contains(dialog.right() - 1.0, dialog.bottom() - 1.0));
+
+        // Cancel, inside the content, dismisses; the rest of it swallows.
+        let (cx, cy) = centre(&conn.close_button_rect(dialog));
+        assert_eq!(
+            chrome.cursor_at(1200.0, 800.0, cx, cy),
+            ChromeCursor::Pointer
+        );
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, content.x + 4.0, content.bottom() - 4.0),
+            ChromeAction::Consumed
+        );
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, cx, cy),
+            ChromeAction::DismissConnection
+        );
+
+        // The sidebar still answers while connecting.
+        let row = chrome.panel.item_rect(0.0, 2);
+        assert_eq!(
+            chrome.cursor_at(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
+            ChromeCursor::Pointer
+        );
+        chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0);
+        assert_eq!(
+            chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
+            ChromeAction::OpenHost("id-1".to_string())
+        );
     }
 
     #[test]

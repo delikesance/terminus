@@ -76,9 +76,6 @@ const CARET_WIDTH: f32 = 1.5;
 /// divided by the scale factor), matching `terminus_ui`'s geometry;
 /// `device_scale` is that same factor, needed to rasterize icons into
 /// masks that land 1:1 on the device grid.
-///
-/// `connecting_phase` is the looping `0.0..1.0` orbit phase when a
-/// host session is starting; `None` skips the animation paints.
 pub fn render(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
@@ -86,7 +83,6 @@ pub fn render(
     window_width: f32,
     window_height: f32,
     device_scale: f32,
-    connecting_phase: Option<f32>,
 ) {
     // Register Sora / Martian Mono (once per library) so every `opts()`
     // below resolves to the UI faces.
@@ -100,7 +96,6 @@ pub fn render(
         window_width,
         window_height,
         device_scale,
-        connecting_phase,
     );
 
     if let Some(menu) = chrome.context_menu.as_ref() {
@@ -124,7 +119,6 @@ fn paint_modal_stack(
     window_width: f32,
     window_height: f32,
     device_scale: f32,
-    connecting_phase: Option<f32>,
 ) {
     let stack = chrome.modal_paint_stack();
     if stack.is_empty() {
@@ -135,16 +129,6 @@ fn paint_modal_stack(
     for layer in stack {
         let paint_glyphs = top == Some(layer);
         match layer {
-            terminus_ui::ModalPaintLayer::Connection => {
-                super::dialogs::connection::paint_connection_modal(
-                    sugarloaf,
-                    chrome,
-                    theme,
-                    (window_width, window_height),
-                    connecting_phase.unwrap_or(0.0),
-                    paint_glyphs,
-                );
-            }
             terminus_ui::ModalPaintLayer::HostEditor => {
                 crate::renderer::screens::add_server::render(
                     sugarloaf,

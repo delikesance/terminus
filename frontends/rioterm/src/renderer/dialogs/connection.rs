@@ -1,16 +1,15 @@
 //! Connection progress: the Feedback step line (Local, Network, Handshake,
 //! Shell) with a status line, optional logs and a Cancel button.
 //!
-//! [`paint_connection_in`] paints into any area (the workspace content
-//! rect, once the shell exposes it); the modal path calls it with the whole
-//! window and a scrim.
+//! [`paint_connection_content`] paints it over the shell's content rect
+//! (where the connecting session's terminal will appear), through
+//! [`paint_connection_in`], which centres the card in any area.
 
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::feedback::{
     step_paint, steps_at, StepLine, StepState, STEP_HALO_ALPHA, STEP_LABELS,
 };
-use terminus_ui::components::overlay as ov;
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::ChromeTheme;
@@ -18,24 +17,36 @@ use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::{Chrome, ConnectKind, ConnectionSequence, STEP_COUNT};
 
 use super::{button_state, paint_button_rect, paint_shadow, text_y, DEPTH, ORDER};
-use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
+use crate::renderer::chrome::{draw_icon, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_mono_text, draw_ui_text, measure_ui_text, UiWeight};
 
-/// Whole-window modal entry (called from the chrome's modal stack).
-pub fn paint_connection_modal(
+/// Paint the progress over the shell's content rect (the Terminal view's
+/// area): an opaque card-coloured cover hides the session's terminal, and
+/// the progress card sits centred on it. The sidebar and header stay live.
+pub fn paint_connection_content(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
-    window: (f32, f32),
+    card: [f32; 4],
     phase: f32,
-    glyphs: bool,
 ) {
     let Some(conn) = chrome.connection.as_ref() else {
         return;
     };
-    let area = Rect::new(0.0, 0.0, window.0, window.1);
-    paint_flat(sugarloaf, &area, ov::SCRIM, DEPTH - 0.02, ORDER);
-    paint_connection_in(sugarloaf, conn, theme, area, phase, glyphs);
+    let area = chrome.connection_area();
+    let r = terminus_ui::shell::layout::MAIN_RADIUS;
+    sugarloaf.quad(
+        None,
+        area.x,
+        area.y,
+        area.width,
+        area.height,
+        card,
+        [0.0, 0.0, r, r],
+        DEPTH - 0.02,
+        ORDER,
+    );
+    paint_connection_in(sugarloaf, conn, theme, area, phase, true);
 }
 
 fn disc(sugarloaf: &mut Sugarloaf, r: &Rect, color: [f32; 4], depth: f32) {

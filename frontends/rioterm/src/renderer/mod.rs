@@ -918,7 +918,6 @@ impl Renderer {
             window_size.width / scale_factor,
             window_size.height / scale_factor,
             scale_factor,
-            connecting_phase,
         );
 
         // Above the chrome's own dialogs (it can be raised over any of them).
