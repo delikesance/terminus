@@ -1,47 +1,50 @@
-<!-- LOGO -->
-<h1>
 <p align="center">
-  <img src="https://rioterm.com/assets/rio-logo.png" alt="Rio terminal logo" width="128">
-  <br>Rio Terminal
-</h1>
-  <p align="center">
-    Rio is a modern terminal built to run everywhere.
-    <br />
-    <a href="#about">About</a>
-    ·
-    <a href="https://rioterm.com/docs/install">Install</a>
-    ·
-    <a href="https://rioterm.com/docs/config">Config</a>
-    ·
-    <a href="https://rioterm.com/changelog">Changelog</a>
-    ·
-    <a href="https://github.com/sponsors/raphamorim">Sponsor</a>
-  </p>
+  <img src="docs/assets/hero.png" alt="Terminus — the terminal that knows your servers" width="100%">
 </p>
 
-Documentation: [rioterm.com](https://rioterm.com).
+<p align="center">
+  <a href="https://github.com/delikesance/terminus/releases">Download</a>
+  ·
+  <a href="#features">Features</a>
+  ·
+  <a href="DEVELOPMENT.md">Development</a>
+  ·
+  <a href="milestone.md">Roadmap</a>
+</p>
 
-## Supporting the Project
+Terminus is a terminal with a built-in SSH / SFTP / WSL host manager. It is a fork of
+[Rio](https://github.com/raphamorim/rio) (GPU-rendered, cross-platform) with its own
+interface on top.
 
-If you use and like Rio, please consider sponsoring it: your support helps to cover the fees required to maintain the project and to validate the time spent working on it!
+## Features
 
-[![Sponsor Rio terminal](https://img.shields.io/github/sponsors/raphamorim?label=Sponsor%20Rio&logo=github&style=for-the-badge)](https://github.com/sponsors/raphamorim)
+- **Host manager**: save servers, organise them in groups and open a tab in one click.
+- **SFTP file browser**: dual-pane transfers between your machine and a host, or between two hosts.
+- **WSL aware**: distros are discovered automatically and listed next to your local shell.
+- **Encrypted vault**: credentials stay locked behind an Argon2id-derived key.
+- **Command palette**: fuzzy-search hosts and commands from the keyboard; tabs and splits included.
+- **Signed updates**: releases are verified with minisign and SHA-256 before they are applied.
 
-## Packaging
+<p align="center">
+  <img src="docs/assets/features.png" alt="Terminus features" width="100%">
+</p>
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/rio-terminal.svg?columns=3)](https://repology.org/project/rio-terminal/versions)
+## Screenshots
 
-> Demo with split and CRT on MacOS
+<p align="center">
+  <img src="docs/assets/screens.png" alt="Terminus screens" width="100%">
+</p>
 
-![Demo Rio 0.2.0 on MacOS](https://rioterm.com/assets/posts/0.2.0/demo-rio.png)
+## Install
 
-> Demo with blurred background on Linux
+Packages for Linux (`.deb`, `.rpm`, tarball, Nix) and Windows (installer, `.msi`, zip) are on the
+[releases page](https://github.com/delikesance/terminus/releases). To build from source, see
+[DEVELOPMENT.md](DEVELOPMENT.md).
 
-![Demo blurred background](https://rioterm.com/assets/demos/demos-nixos-blur.png)
+## Credits
 
-> Demo of Rio running on a Steam Deck
-
-![Demo of Rio running on a Steam Deck](https://rioterm.com/assets/demos/demo-flatpak-steamdeck.jpg)
+Terminus builds on [Rio](https://rioterm.com) by Raphael Amorim (MIT). Rio's crates
+(`sugarloaf`, `rio-backend`, `rio-window`, `teletypewriter`, …) are kept as upstream code.
 
 ## Minimal stable rust version
 
