@@ -44,6 +44,31 @@ pub struct ResizeState {
     pub original_sizes: (f32, f32),
 }
 
+/// False when the area is degenerate (minimized window reporting 0x0,
+/// margins swallowing the whole width, unset cell metrics). `compute` then
+/// only has `MIN_COLS`/`MIN_LINES` to offer, which must never reach the PTY.
+fn has_usable_space(
+    width: f32,
+    height: f32,
+    cell: rio_backend::sugarloaf::layout::CellMetrics,
+    margin: Margin,
+    scale: f32,
+) -> bool {
+    if width <= 0.0
+        || height <= 0.0
+        || scale <= 0.0
+        || cell.cell_width == 0
+        || cell.cell_height == 0
+    {
+        return false;
+    }
+
+    // Margins are logical pixels; scale them to physical ones.
+    let available_width = width - (margin.left * scale) - (margin.right * scale);
+    let available_height = height - (margin.top * scale) - (margin.bottom * scale);
+    available_width > 0.0 && available_height > 0.0
+}
+
 fn compute(
     width: f32,
     height: f32,
@@ -51,24 +76,12 @@ fn compute(
     margin: Margin,
     scale: f32,
 ) -> (usize, usize) {
-    // Ensure we have positive dimensions
-    if width <= 0.0
-        || height <= 0.0
-        || scale <= 0.0
-        || cell.cell_width == 0
-        || cell.cell_height == 0
-    {
+    if !has_usable_space(width, height, cell, margin, scale) {
         return (MIN_COLS, MIN_LINES);
     }
 
-    // Calculate available space accounting for margins (scale margins to physical pixels)
     let available_width = width - (margin.left * scale) - (margin.right * scale);
     let available_height = height - (margin.top * scale) - (margin.bottom * scale);
-
-    // Ensure we have positive available space
-    if available_width <= 0.0 || available_height <= 0.0 {
-        return (MIN_COLS, MIN_LINES);
-    }
 
     // Cols/rows divide by the canonical integer cell stride
     // (`Metrics.cell_width / cell_height`). Same value the grid
@@ -1864,6 +1877,18 @@ impl ContextDimension {
 
     #[inline]
     fn update(&mut self) {
+        // Keep the last real grid while the window is degenerate so a
+        // minimize/restore never reflows the PTY down to MIN_COLS.
+        if !has_usable_space(
+            self.width,
+            self.height,
+            self.cell,
+            self.margin,
+            self.dimension.scale,
+        ) {
+            return;
+        }
+
         let (columns, lines) = compute(
             self.width,
             self.height,
