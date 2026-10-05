@@ -23,6 +23,7 @@ mod selection;
 mod sessions;
 mod sftp;
 mod shell;
+mod snippet_view_actions;
 pub mod touch;
 
 use crate::bindings::MouseBinding;
