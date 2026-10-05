@@ -5,14 +5,15 @@
 
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::identity::{
-    self as id, HeaderRects, TileGlyph, BOARD, HEADER_ADDRESS_SIZE, HEADER_TAB_GAP,
-    HEADER_TITLE_SIZE,
+    self as id, HeaderRects, TileGlyph, BOARD, HEADER_ADDRESS_SIZE, HEADER_TITLE_SIZE,
 };
+use terminus_ui::components::navigation::{view_tabs, TabSize, TabState};
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::IconPlacement;
-use terminus_ui::theme::{text_color, ChromeTheme};
+use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, space};
 
+use super::navigation::{measure_tab, paint_view_tab};
 use crate::renderer::chrome::{draw_icon, draw_os_glyph};
 use crate::renderer::ui_text::{
     draw_mono_text, draw_ui_text, measure_mono_text, measure_ui_text, UiWeight,
@@ -48,29 +49,7 @@ pub fn paint_tile(
     }
 }
 
-/// A view tab stand-in (the real tabs belong to the Navigation family).
-struct StandInTab {
-    label: &'static str,
-    active: bool,
-    badge: &'static str,
-}
-
-fn tab_width(sugarloaf: &mut Sugarloaf, tab: &StandInTab) -> f32 {
-    let w = measure_ui_text(sugarloaf, tab.label, font_size::BODY_SM, UiWeight::Medium);
-    if tab.badge.is_empty() {
-        w
-    } else {
-        w + 6.0
-            + measure_ui_text(sugarloaf, tab.badge, font_size::BODY_SM, UiWeight::Regular)
-    }
-}
-
-fn tabs_total(sugarloaf: &mut Sugarloaf, tabs: &[StandInTab]) -> f32 {
-    let widths: f32 = tabs.iter().map(|t| tab_width(sugarloaf, t)).sum();
-    widths + HEADER_TAB_GAP * tabs.len().saturating_sub(1) as f32
-}
-
-/// Paint a header with stand-in tabs; returns the height used.
+/// Paint a header with Navigation view tabs; returns the height used.
 pub fn paint_header(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -80,14 +59,13 @@ pub fn paint_header(
     address: Option<&str>,
     tabs: &[(&'static str, bool, &'static str)],
 ) -> f32 {
-    let tabs: Vec<StandInTab> = tabs
+    let sizes: Vec<TabSize> = tabs
         .iter()
-        .map(|&(label, active, badge)| StandInTab {
-            label,
-            active,
-            badge,
-        })
+        .map(|&(label, _, badge)| measure_tab(sugarloaf, label, badge))
         .collect();
+    let tabs_w = view_tabs::layout(0.0, 0.0, &sizes)
+        .last()
+        .map_or(0.0, |r| r.right());
     let mut block_w =
         measure_ui_text(sugarloaf, title, HEADER_TITLE_SIZE, UiWeight::SemiBold);
     if let Some(a) = address {
@@ -98,7 +76,6 @@ pub fn paint_header(
             UiWeight::Regular,
         ));
     }
-    let tabs_w = tabs_total(sugarloaf, &tabs);
     let h: HeaderRects = id::header_rects(
         origin.0,
         origin.1,
@@ -120,7 +97,7 @@ pub fn paint_header(
     draw_ui_text(
         sugarloaf,
         h.title.x,
-        h.title.y,
+        h.title.y + id::HEADER_TITLE_INK_DY,
         title,
         HEADER_TITLE_SIZE,
         theme.text,
@@ -137,39 +114,10 @@ pub fn paint_header(
             UiWeight::Regular,
         );
     }
-    let mut x = h.tabs.x;
-    for tab in &tabs {
-        let w = tab_width(sugarloaf, tab);
-        let (color, weight) = if tab.active {
-            (theme.text, UiWeight::Medium)
-        } else {
-            (theme.text_muted, UiWeight::Regular)
-        };
-        draw_ui_text(
-            sugarloaf,
-            x,
-            h.tabs.y,
-            tab.label,
-            font_size::BODY_SM,
-            color,
-            weight,
-        );
-        if !tab.badge.is_empty() {
-            let lw = measure_ui_text(sugarloaf, tab.label, font_size::BODY_SM, weight);
-            draw_ui_text(
-                sugarloaf,
-                x + lw + 6.0,
-                h.tabs.y,
-                tab.badge,
-                font_size::BODY_SM,
-                text_color(theme.success),
-                UiWeight::Regular,
-            );
-        }
-        if tab.active {
-            sugarloaf.rect(None, x, h.border.y - 2.0, w, 2.0, theme.accent, 0.0, 2);
-        }
-        x += w + HEADER_TAB_GAP;
+    let rects = view_tabs::layout(h.tabs.x, h.tabs.y, &sizes);
+    for (rect, &(label, active, badge)) in rects.iter().zip(tabs) {
+        let state = if active { TabState::Active } else { TabState::Default };
+        paint_view_tab(sugarloaf, theme, rect, label, badge, state);
     }
     h.bounds.height
 }

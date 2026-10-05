@@ -16,11 +16,6 @@ pub const FOCUS_GAP: f32 = 2.0;
 /// Accent ring thickness.
 pub const FOCUS_RING: f32 = 2.0;
 
-/// Text and icon colour on a danger fill (`#1A0B08`).
-pub const ON_DANGER: [f32; 4] = [26.0 / 255.0, 11.0 / 255.0, 8.0 / 255.0, 1.0];
-/// Danger fill while pressed (`#D2503F`).
-pub const DANGER_PRESS: [f32; 4] = [210.0 / 255.0, 80.0 / 255.0, 63.0 / 255.0, 1.0];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
     Primary,
@@ -206,9 +201,9 @@ pub fn colors(theme: &ChromeTheme, kind: ButtonKind, state: ButtonState) -> Butt
                 p,
                 theme.danger_fill,
                 theme.danger_hover,
-                DANGER_PRESS,
+                theme.danger_press,
             )),
-            fg: ON_DANGER,
+            fg: theme.on_danger,
         },
         ButtonKind::Text => ButtonColors {
             fill: pick(h, p, None, Some(theme.surface), Some(theme.raised)),
@@ -499,8 +494,8 @@ mod tests {
         assert_eq!(c(Secondary, Pressed).fill, Some(t.line));
         assert_eq!(c(Danger, Default).fill, Some(t.danger_fill));
         assert_eq!(c(Danger, Hover).fill, Some(t.danger_hover));
-        assert_eq!(c(Danger, Pressed).fill, Some(DANGER_PRESS));
-        assert_eq!(c(Danger, Default).fg, ON_DANGER);
+        assert_eq!(c(Danger, Pressed).fill, Some(t.danger_press));
+        assert_eq!(c(Danger, Default).fg, t.on_danger);
         assert_eq!(c(Text, Default).fill, None);
         assert_eq!(c(Text, Default).fg, t.accent);
         assert_eq!(c(Text, Hover).fill, Some(t.surface));
