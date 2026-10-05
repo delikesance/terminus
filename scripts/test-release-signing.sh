@@ -96,17 +96,30 @@ cat > "$WORK/bin/cargo" <<'CARGO'
 echo "cargo must not run" >&2; exit 98
 CARGO
 chmod +x "$WORK/bin/gh" "$WORK/bin/cargo"
+cat > "$WORK/bin/docker" <<'DOCKER'
+#!/bin/sh
+echo "docker must not run" >&2; exit 98
+DOCKER
+chmod +x "$WORK/bin/docker"
 VERSION="$(grep -m 1 '^version = ' "$ROOT/Cargo.toml" | awk -F '"' '{print $2}')"
-PATH="$WORK/bin:$PATH" bash "$ROOT/scripts/release.sh" >"$WORK/out" 2>&1
+# --replace reaches dist cleanup: run release guards in an isolated repository
+# so these tests cannot delete the developer's existing release artifacts.
+mkdir -p "$WORK/repo/scripts"
+cp "$ROOT/scripts/release.sh" "$ROOT/scripts/build-linux-release.sh" "$WORK/repo/scripts/"
+cp "$ROOT/Cargo.toml" "$ROOT/rust-toolchain.toml" "$WORK/repo/"
+PATH="$WORK/bin:$PATH" GH_REPO=test/terminus GITHUB_REMOTE_URL=test \
+    bash "$WORK/repo/scripts/release.sh" >"$WORK/out" 2>&1
 status=$?
 if [[ $status -ne 0 ]] && grep -q "already published" "$WORK/out" \
-    && grep -q "prepare-release.sh" "$WORK/out" && ! grep -q "cargo must not run" "$WORK/out"; then
+    && grep -q "prepare-release.sh" "$WORK/out" \
+    && ! grep -Eq "(cargo|docker) must not run" "$WORK/out"; then
     pass "release.sh refuses to overwrite v$VERSION before building"
 else
     fail "release.sh refuses to overwrite v$VERSION before building"; cat "$WORK/out"
 fi
-PATH="$WORK/bin:$PATH" bash "$ROOT/scripts/release.sh" --replace >"$WORK/out" 2>&1
-if grep -q "cargo must not run" "$WORK/out"; then
+PATH="$WORK/bin:$PATH" GH_REPO=test/terminus GITHUB_REMOTE_URL=test \
+    bash "$WORK/repo/scripts/release.sh" --replace >"$WORK/out" 2>&1
+if grep -q "docker must not run" "$WORK/out"; then
     pass "--replace goes on to build"
 else
     fail "--replace goes on to build"; cat "$WORK/out"
