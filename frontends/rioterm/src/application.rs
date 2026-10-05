@@ -2904,10 +2904,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             .chrome_cursor_at(lx, ly)
                             .or_else(|| route.window.screen.sftp_cursor_at(lx, ly))
                     } else {
-                        route
-                            .window
-                            .screen
-                            .sftp_cursor_at(lx, ly)
+                        let view_icon = route.window.screen.view_cursor_at(lx, ly);
+                        view_icon
+                            .or_else(|| route.window.screen.sftp_cursor_at(lx, ly))
                             .or_else(|| route.window.screen.chrome_cursor_at(lx, ly))
                     };
                     if let Some(icon) = icon {
