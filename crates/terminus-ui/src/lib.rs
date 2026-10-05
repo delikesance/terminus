@@ -21,6 +21,7 @@ pub mod anim;
 pub mod button;
 pub mod chrome;
 pub mod components;
+pub mod confirm;
 pub mod connection;
 pub mod context_menu;
 pub mod dialog_form;
@@ -29,6 +30,7 @@ pub mod icons;
 pub mod loading;
 pub mod os_icons;
 pub mod overlap;
+pub mod palette_view;
 pub mod screens;
 pub mod settings;
 pub mod shell;
@@ -70,7 +72,7 @@ pub use settings::{
 };
 pub use sftp_pane::{
     hit_is_clickable, hit_is_text, join_remote, parent_path, SftpBackend,
-    SftpClickResult, SftpConflictKind, SftpConflictPrompt, SftpDrag, SftpFocus, SftpHit,
+    SftpClickResult, SftpConflictKey, SftpConflictKind, SftpConflictPrompt, SftpDrag, SftpFocus, SftpHit,
     SftpNameEdit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState,
     BTN_GAP, BTN_SIZE, FOOTER_HEIGHT, HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT,
     SFTP_DRAG_THRESHOLD, TOOLBAR_HEIGHT,

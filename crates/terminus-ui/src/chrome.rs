@@ -8,6 +8,8 @@
 //! with a hit-test.
 
 use crate::add_host::{AddHostForm, AddHostHit, FormInput, FormOutcome};
+use crate::components::overlay::DialogKey;
+use crate::confirm::{ConfirmAction, ConfirmOutcome, ConfirmPrompt};
 use crate::connection::{ConnectionHit, ConnectionSequence};
 use crate::context_menu::{ContextAction, ContextMenu, ContextMenuHit};
 use crate::settings::{SettingsHit, SettingsModal, SettingsTab};
@@ -30,6 +32,8 @@ pub enum ModalPaintLayer {
     AddSnippet,
     Settings,
     VaultUnlock,
+    /// Delete-host / delete-group confirmation (above everything).
+    Confirm,
 }
 
 /// Mouse cursor affordance for chrome hit targets.
@@ -185,6 +189,8 @@ pub struct Chrome {
     pub snippet_form: crate::add_snippet::AddSnippetForm,
     /// Prompt when a sealed secret is needed and the vault is locked.
     pub vault_unlock: VaultUnlockPrompt,
+    /// Destructive-action confirmation (delete host / group), when open.
+    pub confirm: Option<ConfirmPrompt>,
     /// Whether a vault already exists; when not, the prompt creates one.
     pub vault_configured: bool,
     /// Live SSH/WSL connecting modal, when a session is starting.
@@ -213,6 +219,7 @@ impl Default for Chrome {
             form: AddHostForm::default(),
             snippet_form: crate::add_snippet::AddSnippetForm::default(),
             vault_unlock: VaultUnlockPrompt::default(),
+            confirm: None,
             vault_configured: true,
             connection: None,
             context_menu: None,
@@ -359,6 +366,9 @@ impl Chrome {
         if self.vault_unlock.is_open() {
             stack.push(ModalPaintLayer::VaultUnlock);
         }
+        if self.confirm.is_some() {
+            stack.push(ModalPaintLayer::Confirm);
+        }
         stack
     }
 
@@ -367,9 +377,60 @@ impl Chrome {
         self.modal_paint_stack().last().copied()
     }
 
+    pub fn confirm_is_open(&self) -> bool {
+        self.confirm.is_some()
+    }
+
+    /// Show a confirmation dialog; its action runs only on Confirm.
+    pub fn open_confirm(&mut self, prompt: ConfirmPrompt) {
+        self.context_menu = None;
+        self.confirm = Some(prompt);
+    }
+
+    fn confirm_action(action: ConfirmAction) -> ChromeAction {
+        match action {
+            ConfirmAction::DeleteHost(id) => ChromeAction::DeleteHost(id),
+            ConfirmAction::DeleteGroup(id) => ChromeAction::DeleteGroup(id),
+            ConfirmAction::Quit => ChromeAction::Consumed,
+        }
+    }
+
+    /// Keyboard on the confirmation dialog: `Some` when it is open (the
+    /// action is `Consumed` unless the user confirmed), `None` otherwise.
+    pub fn handle_confirm_key(&mut self, key: DialogKey) -> Option<ChromeAction> {
+        let prompt = self.confirm.as_mut()?;
+        Some(match prompt.key(key) {
+            ConfirmOutcome::Confirm => {
+                let action = self.confirm.take()?.action;
+                Self::confirm_action(action)
+            }
+            ConfirmOutcome::Cancel => {
+                self.confirm = None;
+                ChromeAction::Consumed
+            }
+            ConfirmOutcome::Idle | ConfirmOutcome::Changed => ChromeAction::Consumed,
+        })
+    }
+
     /// Ask for the vault passphrase, then retry `pending` after unlock.
     pub fn open_vault_unlock(&mut self, pending: PendingVaultAction) {
+        let host_id = match &pending {
+            PendingVaultAction::OpenHost(id) | PendingVaultAction::AddHostSession(id) => {
+                Some(id.clone())
+            }
+            PendingVaultAction::OpenSftp { host_id, .. } => Some(host_id.clone()),
+            _ => None,
+        };
         self.vault_unlock.open(pending);
+        let label = host_id.and_then(|id| {
+            self.panel
+                .rows
+                .iter()
+                .filter_map(Row::host)
+                .find(|h| h.id == id)
+                .map(|h| h.name.clone())
+        });
+        self.vault_unlock.set_host_label(label);
         self.vault_unlock.set_creating(!self.vault_configured);
     }
 
@@ -473,6 +534,7 @@ impl Chrome {
             || self.form.is_open()
             || self.snippet_form.is_open()
             || self.vault_unlock.is_open()
+            || self.confirm.is_some()
         {
             self.close_context_menu();
             return ChromeAction::Ignored;
@@ -522,6 +584,38 @@ impl Chrome {
         self.context_menu = None;
     }
 
+    /// The confirmation a context-menu row raises, if it is destructive.
+    fn delete_prompt_for(&self, index: usize) -> Option<ConfirmPrompt> {
+        let action = self.context_menu.as_ref()?.take_action(index)?;
+        match action {
+            ContextAction::DeleteHost(id) => {
+                let host = self
+                    .panel
+                    .rows
+                    .iter()
+                    .filter_map(Row::host)
+                    .find(|h| h.id == id);
+                let name = host.map_or("this server", |h| h.name.as_str());
+                let sessions = host.map_or(0, |h| h.session_count);
+                Some(ConfirmPrompt::delete_host(&id, name, sessions))
+            }
+            ContextAction::DeleteGroup(id) => {
+                let group = self.panel.rows.iter().find_map(|r| match r {
+                    Row::Group {
+                        id: gid,
+                        name,
+                        host_count,
+                        ..
+                    } if *gid == id => Some((name.as_str(), *host_count)),
+                    _ => None,
+                });
+                let (name, hosts) = group.unwrap_or(("this group", 0));
+                Some(ConfirmPrompt::delete_group(&id, name, hosts))
+            }
+            _ => None,
+        }
+    }
+
     fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
         let Some(menu) = self.context_menu.as_mut() else {
             return None;
@@ -534,27 +628,14 @@ impl Chrome {
             }
             ContextMenuHit::Consume => Some(ChromeAction::Consumed),
             ContextMenuHit::Item(index) => {
-                if !menu.confirm(index) {
-                    // Destructive item armed; wait for the second click. Say
-                    // so when deleting a host also closes its open sessions.
-                    if let Some(ContextAction::DeleteHost(id)) = menu.take_action(index) {
-                        let sessions = self
-                            .panel
-                            .rows
-                            .iter()
-                            .filter_map(crate::sidebar::Row::host)
-                            .find(|h| h.id == id)
-                            .map_or(0, |h| h.session_count);
-                        if sessions > 0 {
-                            let plural = if sessions == 1 { "" } else { "s" };
-                            menu.set_label(
-                                index,
-                                format!("Click again: delete, close {sessions} session{plural}"),
-                            );
-                        }
-                    }
+                // Deleting a host or group cannot be undone: ask first.
+                if let Some(prompt) = self.delete_prompt_for(index) {
+                    self.open_confirm(prompt);
                     return Some(ChromeAction::Consumed);
                 }
+                let Some(menu) = self.context_menu.as_mut() else {
+                    return Some(ChromeAction::Consumed);
+                };
                 let action = menu.take_action(index);
                 self.close_context_menu();
                 Some(match action {
@@ -595,6 +676,21 @@ impl Chrome {
         x: f32,
         y: f32,
     ) -> ChromeAction {
+        // A confirmation sits above every other dialog.
+        if let Some(prompt) = self.confirm.as_mut() {
+            return match prompt.press((window_width, window_height), x, y) {
+                ConfirmOutcome::Confirm => match self.confirm.take() {
+                    Some(p) => Self::confirm_action(p.action),
+                    None => ChromeAction::Consumed,
+                },
+                ConfirmOutcome::Cancel => {
+                    self.confirm = None;
+                    ChromeAction::Consumed
+                }
+                ConfirmOutcome::Idle | ConfirmOutcome::Changed => ChromeAction::Consumed,
+            };
+        }
+
         // An open context menu eats the next left click: select or dismiss.
         if let Some(action) = self.route_context_menu_press(x, y) {
             return action;
@@ -608,7 +704,7 @@ impl Chrome {
                 window_height,
                 &self.vault_unlock,
             );
-            return match layout.hit_test(x, y) {
+            return match layout.hit_test_labels(x, y, self.vault_unlock.action_label()) {
                 VaultUnlockHit::Field => {
                     self.vault_unlock.focus_passphrase();
                     ChromeAction::Consumed
@@ -1048,6 +1144,9 @@ impl Chrome {
     /// Route a mouse move; returns whether anything needs repainting.
     pub fn handle_hover(&mut self, window_height: f32, x: f32, y: f32) -> bool {
         let window_width = { self.last_window_width };
+        if let Some(prompt) = self.confirm.as_mut() {
+            return prompt.hover_at((window_width, window_height), x, y);
+        }
         if let Some(menu) = self.context_menu.as_mut() {
             return menu.hover_at(x, y);
         }
@@ -1123,6 +1222,15 @@ impl Chrome {
         x: f32,
         y: f32,
     ) -> ChromeCursor {
+        if let Some(prompt) = self.confirm.as_ref() {
+            use crate::components::overlay::DialogHit;
+            return match prompt.layout((window_width, window_height)).hit_test(x, y) {
+                DialogHit::Confirm | DialogHit::Cancel | DialogHit::Option => {
+                    ChromeCursor::Pointer
+                }
+                DialogHit::Inside | DialogHit::Scrim => ChromeCursor::Default,
+            };
+        }
         if let Some(menu) = self.context_menu.as_ref() {
             return match menu.hit_test(x, y) {
                 ContextMenuHit::Item(_) => ChromeCursor::Pointer,
@@ -1137,7 +1245,7 @@ impl Chrome {
                 window_height,
                 &self.vault_unlock,
             );
-            return match layout.hit_test(x, y) {
+            return match layout.hit_test_labels(x, y, self.vault_unlock.action_label()) {
                 VaultUnlockHit::Field | VaultUnlockHit::ConfirmField => {
                     ChromeCursor::Text
                 }
@@ -1673,14 +1781,68 @@ mod tests {
             })
             .expect("delete item");
         let item = menu.item_rect(delete).unwrap();
-        // First click only arms the destructive row…
+        // The destructive row opens a confirmation instead of deleting.
         let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
         assert_eq!(action, ChromeAction::Consumed);
-        assert!(chrome.context_menu.is_some(), "menu stays open to confirm");
-        // …the second click on it deletes.
-        let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
+        assert!(chrome.context_menu.is_none(), "menu closes");
+        let prompt = chrome.confirm.as_ref().expect("confirm dialog open");
+        assert_eq!(prompt.spec.title, "Delete host-0?");
+        assert_eq!(
+            chrome.top_modal_paint(),
+            Some(ModalPaintLayer::Confirm),
+            "the dialog paints above everything"
+        );
+        // Enter on the default (Cancel) focus keeps the host.
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Enter), Some(ChromeAction::Consumed));
+        assert!(chrome.confirm.is_none());
+    }
+
+    #[test]
+    fn confirming_the_delete_dialog_emits_the_delete_action() {
+        let mut chrome = chrome_with_hosts(2);
+        chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
+        let confirm = chrome.confirm.as_ref().unwrap().layout((1200.0, 800.0)).dialog.confirm;
+        let action =
+            chrome.handle_press(1200.0, 800.0, confirm.x + 4.0, confirm.y + 4.0);
         assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
-        assert!(chrome.context_menu.is_none());
+        assert!(chrome.confirm.is_none());
+
+        chrome.open_confirm(ConfirmPrompt::delete_group("g", "prod", 1));
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Tab), Some(ChromeAction::Consumed));
+        assert_eq!(
+            chrome.handle_confirm_key(DialogKey::Enter),
+            Some(ChromeAction::DeleteGroup("g".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_scrim_and_escape_dismiss_the_delete_dialog() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, 3.0, 3.0),
+            ChromeAction::Consumed
+        );
+        assert!(chrome.confirm.is_none());
+        chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Escape), Some(ChromeAction::Consumed));
+        assert!(chrome.confirm.is_none());
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Escape), None);
+    }
+
+    #[test]
+    fn deleting_a_host_with_open_sessions_says_so() {
+        let mut chrome = chrome_with_hosts(1);
+        if let Some(Row::Host(h)) = chrome.panel.rows.iter_mut().find(|r| matches!(r, Row::Host(_))) {
+            h.session_count = 2;
+        }
+        let row = chrome.panel.item_rect(0.0, 1);
+        chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
+        let menu = chrome.context_menu.as_ref().unwrap();
+        let delete = menu.items.iter().position(|i| matches!(i.action, crate::context_menu::ContextAction::DeleteHost(_))).unwrap();
+        let item = menu.item_rect(delete).unwrap();
+        chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
+        assert!(chrome.confirm.as_ref().unwrap().spec.body.contains("2 open sessions"));
     }
 
     #[test]

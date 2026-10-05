@@ -589,6 +589,8 @@ pub struct CommandPalette {
     last_scroll_time: Option<Instant>,
     /// Shortcut labels from the window's live key bindings.
     shortcuts: Vec<(PaletteAction, String)>,
+    /// Geometry of the last painted frame: hit-testing walks exactly this.
+    last_layout: Option<terminus_ui::components::overlay::PaletteLayout>,
 }
 
 impl Default for CommandPalette {
@@ -605,6 +607,7 @@ impl Default for CommandPalette {
             caret_blink_start: Instant::now(),
             last_scroll_time: None,
             shortcuts: Vec::new(),
+            last_layout: None,
         }
     }
 }
@@ -834,56 +837,98 @@ impl CommandPalette {
         };
 
         results.sort_by_key(|r| std::cmp::Reverse(r.0));
+        // Servers list after commands so each group is contiguous (the
+        // overlay palette draws one header per group). Stable: scores keep
+        // their order inside a group.
+        results.sort_by_key(|(_, row)| matches!(row, PaletteRow::Host { .. }));
         results
     }
 
-    /// Returns the palette geometry (x, y, width, height) for hit-testing.
-    fn palette_rect(&self, window_width: f32, scale_factor: f32) -> (f32, f32, f32, f32) {
-        let px = (window_width / scale_factor - PALETTE_WIDTH) / 2.0;
-        let py = PALETTE_MARGIN_TOP;
-        let h = PALETTE_PADDING
-            + INPUT_HEIGHT
-            + SEPARATOR_HEIGHT
-            + RESULTS_MARGIN_TOP
-            + RESULT_ITEM_HEIGHT * MAX_VISIBLE_RESULTS as f32
-            + PALETTE_PADDING;
-        (px, py, PALETTE_WIDTH, h)
+    /// Group header a row belongs under.
+    fn group_of(row: &PaletteRow<'_>) -> &'static str {
+        match row {
+            PaletteRow::Command { .. } => "Commands",
+            PaletteRow::Font { .. } => "Fonts",
+            PaletteRow::Host { .. } => "Servers",
+        }
     }
 
-    /// Hit-test a mouse click. Returns Some(index) if a result row was clicked,
-    /// or None if clicked outside the palette or on the input area.
-    /// Returns Err(()) if clicked outside the palette entirely (should close).
+    fn placeholder(&self) -> &'static str {
+        match self.mode {
+            PaletteMode::Commands => "Search servers and commands",
+            PaletteMode::Fonts(_) => "Type a font name",
+            PaletteMode::Hosts(_) if self.host_pick == HostPick::Sftp => {
+                "Choose a server to browse"
+            }
+            PaletteMode::Hosts(_) => "Type a server name",
+        }
+    }
+
+    /// Rows as the overlay palette shows them (group, label, right hint).
+    fn row_specs(&self) -> Vec<terminus_ui::palette_view::RowSpec> {
+        use terminus_ui::palette_view::RowSpec;
+        self.filtered_rows()
+            .iter()
+            .map(|(_, row)| {
+                let hint = match row {
+                    PaletteRow::Command { shortcut, .. } => (*shortcut).to_string(),
+                    PaletteRow::Host { subtitle, .. } => (*subtitle).to_string(),
+                    PaletteRow::Font { .. } => "Copy".to_string(),
+                };
+                RowSpec::new(Self::group_of(row), row.title(), hint)
+            })
+            .collect()
+    }
+
+    /// The overlay palette for the current scroll window.
+    fn view(&self) -> terminus_ui::components::overlay::Palette {
+        terminus_ui::palette_view::visible_palette(
+            &self.query,
+            self.placeholder(),
+            &self.row_specs(),
+            self.scroll_offset,
+            self.selected_index,
+            MAX_VISIBLE_RESULTS,
+        )
+    }
+
+    /// Query to offer "Add server" for: nothing matched but something was typed.
+    pub fn add_server_query(&self) -> Option<String> {
+        let q = self.query.trim();
+        (!q.is_empty() && self.filtered_rows().is_empty()).then(|| q.to_string())
+    }
+
+    /// Hit-test a click against the last painted frame (logical pixels).
+    /// `Err(())`: outside the panel (close). `Ok(Some(i))`: result row `i`.
     pub fn hit_test(
         &self,
         mouse_x: f32,
         mouse_y: f32,
-        window_width: f32,
-        scale_factor: f32,
+        _window_width: f32,
+        _scale_factor: f32,
     ) -> Result<Option<usize>, ()> {
-        let (px, py, pw, ph) = self.palette_rect(window_width, scale_factor);
-
-        // Outside palette bounds
-        if mouse_x < px || mouse_x > px + pw || mouse_y < py || mouse_y > py + ph {
-            return Err(()); // Close palette
+        use terminus_ui::components::overlay::PaletteHit;
+        let Some(layout) = self.last_layout.as_ref() else {
+            return Ok(None);
+        };
+        match layout.hit_test(mouse_x, mouse_y) {
+            PaletteHit::Outside => Err(()),
+            PaletteHit::Item(rel) => {
+                let index = self.scroll_offset + rel;
+                Ok((index < self.filtered_rows().len()).then_some(index))
+            }
+            PaletteHit::AddServer | PaletteHit::Inside => Ok(None),
         }
+    }
 
-        // Results area starts after input + separator
-        let results_y =
-            py + PALETTE_PADDING + INPUT_HEIGHT + SEPARATOR_HEIGHT + RESULTS_MARGIN_TOP;
-        if mouse_y < results_y {
-            return Ok(None); // Clicked on input area
-        }
-
-        let relative_y = mouse_y - results_y;
-        let row = (relative_y / RESULT_ITEM_HEIGHT) as usize;
-        let filtered_count = self.filtered_rows().len();
-        let actual_index = self.scroll_offset + row;
-
-        if actual_index < filtered_count {
-            Ok(Some(actual_index))
-        } else {
-            Ok(None)
-        }
+    /// Whether the click landed on the empty-state "Add server" line.
+    pub fn add_server_hit(&self, mouse_x: f32, mouse_y: f32) -> bool {
+        use terminus_ui::components::overlay::PaletteHit;
+        self.add_server_query().is_some()
+            && self
+                .last_layout
+                .as_ref()
+                .is_some_and(|l| l.hit_test(mouse_x, mouse_y) == PaletteHit::AddServer)
     }
 
     /// Update selection based on mouse position. Returns true if selection changed.
@@ -905,257 +950,62 @@ impl CommandPalette {
         false
     }
 
-    pub fn render(&mut self, sugarloaf: &mut Sugarloaf, dimensions: (f32, f32, f32)) {
+    pub fn render(
+        &mut self,
+        sugarloaf: &mut Sugarloaf,
+        theme: &terminus_ui::theme::ChromeTheme,
+        dimensions: (f32, f32, f32),
+    ) {
+        use crate::renderer::components::overlay::paint_palette;
+        use crate::renderer::ui_text::{measure_ui_text, UiWeight};
+        use terminus_ui::components::overlay as ov;
+
         if !self.enabled {
             // Immediate mode: not drawing == not visible.
+            self.last_layout = None;
             return;
         }
 
         let (window_width, window_height, scale_factor) = dimensions;
+        let window = (window_width / scale_factor, window_height / scale_factor);
+        let palette = self.view();
+        let layout = palette.layout(window);
 
-        let (palette_x, palette_y, palette_width, palette_height) =
-            self.palette_rect(window_width, scale_factor);
-
-        crate::renderer::chrome::paint_scrim(
+        sugarloaf.begin_overlay();
+        crate::renderer::chrome::paint_flat(
             sugarloaf,
-            window_width / scale_factor,
-            window_height / scale_factor,
-            BACKDROP_COLOR,
-            DEPTH_BACKDROP,
-            ORDER,
+            &terminus_ui::Rect::new(0.0, 0.0, window.0, window.1),
+            ov::SCRIM,
+            0.08,
+            30,
         );
-
-        crate::renderer::chrome::paint_surface_stroke(
-            sugarloaf,
-            &terminus_ui::Rect::new(palette_x, palette_y, palette_width, palette_height),
-            BG_COLOR,
-            None,
-            PALETTE_CORNER_RADIUS,
-            1.0,
-            DEPTH_BG,
-            ORDER,
-            false,
-        );
-
-        let input_x = palette_x + PALETTE_PADDING;
-        let input_y = palette_y + PALETTE_PADDING;
-        let input_width = palette_width - PALETTE_PADDING * 2.0;
-
-        // No separate input background — blends with palette bg for minimalism
-
-        let placeholder = match self.mode {
-            PaletteMode::Commands => "Type a command or host…",
-            PaletteMode::Fonts(_) => "Type a font name...",
-            PaletteMode::Hosts(_) if self.host_pick == HostPick::Sftp => {
-                "Open SFTP for host…"
-            }
-            PaletteMode::Hosts(_) => "Type a host name…",
-        };
-        let display_text = if self.query.is_empty() {
-            placeholder
-        } else {
-            self.query.as_str()
-        };
-        let text_color = if self.query.is_empty() {
-            DIM_TEXT_COLOR
-        } else {
-            TEXT_COLOR
-        };
-
-        let text_x = input_x + INPUT_PADDING_X;
-        let text_y = input_y + (INPUT_HEIGHT - INPUT_FONT_SIZE) / 2.0;
-        let input_opts = DrawOpts {
-            font_size: INPUT_FONT_SIZE,
-            color: color_u8(text_color),
-            ..DrawOpts::default()
-        };
-        let input_rendered_width =
-            sugarloaf
-                .text_mut()
-                .draw(text_x, text_y, display_text, &input_opts);
+        paint_palette(sugarloaf, theme, &palette, &layout);
 
         let elapsed_ms = self.caret_blink_start.elapsed().as_millis();
-        let caret_visible = (elapsed_ms / CARET_BLINK_MS).is_multiple_of(2);
-
-        if caret_visible {
-            let text_width = if self.query.is_empty() {
+        if (elapsed_ms / CARET_BLINK_MS).is_multiple_of(2) {
+            let q = &layout.query;
+            let text_x = q.x + ov::PALETTE_QUERY_PAD_X + ov::PALETTE_QUERY_ICON + 12.0;
+            let w = if self.query.is_empty() {
                 0.0
             } else {
-                input_rendered_width
+                measure_ui_text(sugarloaf, &self.query, 19.0, UiWeight::Regular)
             };
-
-            let caret_x = text_x + text_width;
-            let caret_height = INPUT_FONT_SIZE + 4.0;
-            let caret_y = input_y + (INPUT_HEIGHT - caret_height) / 2.0 + 2.0;
-
-            crate::renderer::chrome::paint_caret(
+            let h = (19.0_f32 * 1.25).round();
+            crate::renderer::chrome::paint_flat(
                 sugarloaf,
-                caret_x,
-                caret_y,
-                caret_height,
-                TEXT_COLOR,
-                DEPTH_ELEMENT,
-                ORDER,
+                &terminus_ui::Rect::new(
+                    text_x + w,
+                    q.y + (q.height - h) / 2.0,
+                    1.5,
+                    h,
+                ),
+                theme.accent,
+                0.16,
+                30,
             );
         }
-
-        let sep_y = input_y + INPUT_HEIGHT;
-        crate::renderer::chrome::paint_hairline_h(
-            sugarloaf,
-            palette_x + PALETTE_PADDING,
-            sep_y,
-            palette_width - PALETTE_PADDING * 2.0,
-            SEPARATOR_COLOR,
-            DEPTH_ELEMENT,
-            ORDER,
-        );
-
-        let results_y = sep_y + SEPARATOR_HEIGHT + RESULTS_MARGIN_TOP;
-        let filtered = self.filtered_rows();
-
-        let shortcut_opts = DrawOpts {
-            font_size: SHORTCUT_FONT_SIZE,
-            color: color_u8(SHORTCUT_TEXT_COLOR),
-            ..DrawOpts::default()
-        };
-
-        for (display_i, (_, row)) in filtered
-            .iter()
-            .skip(self.scroll_offset)
-            .take(MAX_VISIBLE_RESULTS)
-            .enumerate()
-        {
-            let actual_index = self.scroll_offset + display_i;
-            let item_y = results_y + RESULT_ITEM_HEIGHT * display_i as f32;
-            let is_selected = actual_index == self.selected_index;
-
-            // Selection highlight
-            if is_selected {
-                crate::renderer::chrome::paint_surface_stroke(
-                    sugarloaf,
-                    &terminus_ui::Rect::new(
-                        input_x,
-                        item_y,
-                        input_width,
-                        RESULT_ITEM_HEIGHT,
-                    ),
-                    SELECTED_BG_COLOR,
-                    None,
-                    4.0,
-                    1.0,
-                    DEPTH_ELEMENT,
-                    ORDER,
-                    false,
-                );
-            }
-
-            let result_opts = DrawOpts {
-                font_size: RESULT_FONT_SIZE,
-                color: color_u8(if is_selected {
-                    TEXT_COLOR
-                } else {
-                    [0.55, 0.55, 0.55, 1.0]
-                }),
-                ..DrawOpts::default()
-            };
-            let row_text_x = input_x + INPUT_PADDING_X;
-            let row_text_y = item_y + (RESULT_ITEM_HEIGHT - RESULT_FONT_SIZE) / 2.0;
-            sugarloaf
-                .text_mut()
-                .draw(row_text_x, row_text_y, row.title(), &result_opts);
-
-            // Right-side hint: shortcut for commands, endpoint for hosts,
-            // copy icon for font rows (signals "Enter copies this").
-            let shortcut = row.shortcut();
-            let is_font_row = matches!(row, PaletteRow::Font { .. });
-            let host_hint = match row {
-                PaletteRow::Host { subtitle, .. } => Some(*subtitle),
-                _ => None,
-            };
-            if !shortcut.is_empty() {
-                let ui = sugarloaf.text_mut();
-                let shortcut_width = ui.measure(shortcut, &shortcut_opts);
-                let shortcut_x = input_x + input_width - INPUT_PADDING_X - shortcut_width;
-                let shortcut_y = item_y + (RESULT_ITEM_HEIGHT - SHORTCUT_FONT_SIZE) / 2.0;
-                ui.draw(shortcut_x, shortcut_y, shortcut, &shortcut_opts);
-            } else if let Some(hint) = host_hint.filter(|s| !s.is_empty()) {
-                let ui = sugarloaf.text_mut();
-                let hint_width = ui.measure(hint, &shortcut_opts);
-                let hint_x = input_x + input_width - INPUT_PADDING_X - hint_width;
-                let hint_y = item_y + (RESULT_ITEM_HEIGHT - SHORTCUT_FONT_SIZE) / 2.0;
-                ui.draw(hint_x, hint_y, hint, &shortcut_opts);
-            }
-
-            if is_font_row {
-                let stroke_color = if is_selected {
-                    TEXT_COLOR
-                } else {
-                    SHORTCUT_TEXT_COLOR
-                };
-                // Cutout inside each page uses the row's own background
-                // so the border reads as a clean outline on either
-                // palette-bg (idle) or selection-highlight-bg (hovered).
-                let row_fill_color = if is_selected {
-                    SELECTED_BG_COLOR
-                } else {
-                    BG_COLOR
-                };
-                let icon_x = input_x + input_width - INPUT_PADDING_X - COPY_ICON_W;
-                let icon_y = item_y + (RESULT_ITEM_HEIGHT - COPY_ICON_H) / 2.0;
-                draw_copy_icon(
-                    sugarloaf,
-                    icon_x,
-                    icon_y,
-                    stroke_color,
-                    row_fill_color,
-                    DEPTH_ELEMENT,
-                    ORDER,
-                );
-            }
-        }
-
-        // Scrollbar: shares the terminal scrollbar's visual language
-        // (6 px wide, gray semi-transparent, 2 s visibility + 300 ms
-        // fade after the last scroll event) via `renderer::scrollbar`.
-        // Drawn only when the palette has actually been scrolled —
-        // hidden on first open, faded out 2.3 s after the last scroll.
-        let total = filtered.len();
-        let track_height = MAX_VISIBLE_RESULTS as f32 * RESULT_ITEM_HEIGHT;
-        let normalized = if total > MAX_VISIBLE_RESULTS {
-            self.scroll_offset as f32 / (total - MAX_VISIBLE_RESULTS) as f32
-        } else {
-            0.0
-        };
-        if let Some((thumb_y, thumb_height)) = scrollbar::compute_thumb(
-            MAX_VISIBLE_RESULTS,
-            total,
-            results_y,
-            track_height,
-            normalized,
-        ) {
-            let opacity = scrollbar::opacity_from_last_scroll(
-                self.last_scroll_time,
-                false, // palette has no drag interaction
-            );
-            let bar_x = input_x + input_width
-                - scrollbar::SCROLLBAR_WIDTH
-                - scrollbar::SCROLLBAR_MARGIN;
-            // Palette backdrop + bg rects use ORDER=20; the terminal
-            // scrollbar's default ORDER=5 would land *under* them and
-            // be invisible. Piggy-back on the palette's own order, at
-            // a depth slightly above the selection highlight so a
-            // hovered row doesn't mask the thumb.
-            scrollbar::draw_thumb(
-                sugarloaf,
-                bar_x,
-                thumb_y,
-                thumb_height,
-                opacity,
-                false,
-                DEPTH_ELEMENT + 0.05,
-                ORDER,
-            );
-        }
+        sugarloaf.end_overlay();
+        self.last_layout = Some(layout);
     }
 }
 
@@ -1289,9 +1139,30 @@ mod tests {
     }
 
     #[test]
-    fn test_hit_test_outside() {
-        let palette = CommandPalette::new();
-        assert!(palette.hit_test(0.0, 0.0, 1200.0, 1.0).is_err());
+    fn test_hit_test_walks_the_painted_layout() {
+        let mut palette = CommandPalette::new();
+        // Nothing painted yet: nothing to hit.
+        assert_eq!(palette.hit_test(0.0, 0.0, 1200.0, 1.0), Ok(None));
+        palette.set_enabled(true);
+        let layout = palette.view().layout((1440.0, 900.0));
+        let second = layout
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                terminus_ui::components::overlay::PaletteRow::Item { rect, index } => {
+                    Some((*rect, *index))
+                }
+                _ => None,
+            })
+            .nth(1)
+            .unwrap();
+        palette.last_layout = Some(layout);
+        assert!(palette.hit_test(0.0, 0.0, 1440.0, 1.0).is_err(), "scrim closes");
+        let (rect, _) = second;
+        assert_eq!(palette.hit_test(rect.x + 4.0, rect.y + 4.0, 1440.0, 1.0), Ok(Some(1)));
+        // Scrolled by 3: the same row is absolute index 4.
+        palette.scroll_offset = 3;
+        assert_eq!(palette.hit_test(rect.x + 4.0, rect.y + 4.0, 1440.0, 1.0), Ok(Some(4)));
     }
 
     #[test]
@@ -1625,5 +1496,57 @@ mod tests {
             palette.set_query(query.to_string());
             assert_eq!(palette.get_selected_action(), Some(action), "{query}");
         }
+    }
+
+    fn host(id: &str, title: &str) -> HostPaletteItem {
+        HostPaletteItem {
+            id: id.into(),
+            title: title.into(),
+            subtitle: format!("root@{title}"),
+        }
+    }
+
+    #[test]
+    fn servers_list_after_commands_so_each_group_is_contiguous() {
+        let mut palette = CommandPalette::new();
+        palette.set_hosts(vec![host("1", "tab-server")]);
+        palette.query = "tab".to_string();
+        let specs = palette.row_specs();
+        let first_server = specs.iter().position(|r| r.group == "Servers").unwrap();
+        assert!(first_server > 0);
+        assert!(specs[..first_server].iter().all(|r| r.group == "Commands"));
+        assert!(specs[first_server..].iter().all(|r| r.group == "Servers"));
+        assert_eq!(specs[first_server].hint, "root@tab-server");
+    }
+
+    #[test]
+    fn view_windows_the_rows_and_names_the_placeholder() {
+        let mut palette = CommandPalette::new();
+        palette.set_enabled(true);
+        for _ in 0..(MAX_VISIBLE_RESULTS + 2) {
+            palette.move_selection_down();
+        }
+        let view = palette.view();
+        assert_eq!(view.item_count(), MAX_VISIBLE_RESULTS);
+        assert_eq!(view.selected, MAX_VISIBLE_RESULTS - 1);
+        assert_eq!(view.placeholder.as_deref(), Some("Search servers and commands"));
+    }
+
+    #[test]
+    fn nothing_matching_offers_add_server_with_the_query() {
+        let mut palette = CommandPalette::new();
+        assert_eq!(palette.add_server_query(), None, "empty query never offers it");
+        palette.set_query("zzzqqq".to_string());
+        assert_eq!(palette.add_server_query().as_deref(), Some("zzzqqq"));
+        palette.set_query("quit".to_string());
+        assert_eq!(palette.add_server_query(), None, "there are matches");
+    }
+
+    #[test]
+    fn font_rows_hint_copy() {
+        let mut palette = CommandPalette::new();
+        palette.enter_fonts_mode(vec!["Fira Code".into()]);
+        let specs = palette.row_specs();
+        assert_eq!((specs[0].group, specs[0].hint.as_str()), ("Fonts", "Copy"));
     }
 }
