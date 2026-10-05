@@ -68,9 +68,17 @@ impl Screen<'_> {
             return None;
         }
 
-        // Workspace view preview (TERMINUS_VIEW_PREVIEW=snippets).
+        // Workspace view previews (TERMINUS_VIEW_PREVIEW=snippets|files).
         if crate::renderer::views::snippets::preview_selected() {
             crate::renderer::views::snippets::paint_preview(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
+        if crate::renderer::views::files::preview_selected() {
+            crate::renderer::views::files::paint_preview(
                 &mut self.sugarloaf,
                 &self.renderer.chrome_theme,
             );
