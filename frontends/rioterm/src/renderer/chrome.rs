@@ -18,7 +18,6 @@
 use rio_backend::sugarloaf::text::{CoverageMask, DrawOpts};
 use rio_backend::sugarloaf::Sugarloaf;
 
-use terminus_ui::activity_bar;
 use terminus_ui::add_host::{auth_method_label, Field};
 use terminus_ui::chrome::Chrome;
 use terminus_ui::connection::{NodeVisual, STEP_COUNT};
@@ -27,14 +26,12 @@ use terminus_ui::context_menu::{
 };
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Cmd, Icon, IconPlacement, LUCIDE_STROKE};
-use terminus_ui::loading::{breath_ring, orbit_dots, shimmer_bar};
+use terminus_ui::loading::{breath_ring, orbit_dots};
 use terminus_ui::os_icons::OsGlyph;
 use terminus_ui::sidebar;
 use terminus_ui::theme::ChromeTheme;
 
 /// Chrome paint orders. The grid is 3 and the overlays are 20.
-const ORDER_RAIL: u8 = 4;
-const ORDER_PANEL: u8 = 6;
 const ORDER_CONTENT: u8 = 7;
 const ORDER_CONNECTING: u8 = 8;
 const ORDER_DIALOG: u8 = 30;
@@ -52,7 +49,6 @@ const DEPTH_DIALOG: f32 = 0.1;
 const DEPTH_DIALOG_BG: f32 = 0.2;
 const DEPTH_GHOST: f32 = 0.35;
 
-const RAIL_ICON_SIZE: f32 = activity_bar::ICON_SIZE;
 const ADD_ICON_SIZE: f32 = 15.0;
 
 // Whole-pixel sizes on purpose: the atlas rasterises each size bucket
@@ -64,8 +60,6 @@ const ROW_TITLE_SIZE: f32 = 13.0;
 /// Secondary labels / endpoints — one step smaller than the title.
 const ROW_SUB_SIZE: f32 = 11.0;
 /// Section labels are headings: small, faint and letter-spaced by case.
-const SECTION_LABEL_SIZE: f32 = 10.0;
-const ADD_LABEL_SIZE: f32 = 12.0;
 
 const DIALOG_TITLE_SIZE: f32 = 14.0;
 const CAPTION_SIZE: f32 = 11.0;
@@ -98,43 +92,8 @@ pub fn render(
     // Register Sora / Martian Mono (once per library) so every `opts()`
     // below resolves to the UI faces.
     super::ui_text::sync_ui_fonts(sugarloaf);
-    if chrome.activity.collapsed {
-        // Rail collapsed: still paint overlay dialogs (they are not part of
-        // the panel). Same stacked overlay rules as the expanded path.
-        paint_modal_stack(
-            sugarloaf,
-            chrome,
-            theme,
-            window_width,
-            window_height,
-            device_scale,
-            connecting_phase,
-        );
-        return;
-    }
-
-    let origin_y = chrome.origin_y();
-    let height = (window_height - origin_y).max(0.0);
-    if height <= 0.0 {
-        return;
-    }
-
-    render_rail(sugarloaf, chrome, theme, origin_y, height, device_scale);
-
-    if chrome.panel_visible {
-        render_panel(
-            sugarloaf,
-            chrome,
-            theme,
-            origin_y,
-            height,
-            window_width,
-            window_height,
-            device_scale,
-            connecting_phase,
-        );
-    }
-
+    // The sidebar itself is painted by `renderer::shell` (under the grid
+    // decorations); here only what floats above it.
     paint_modal_stack(
         sugarloaf,
         chrome,
@@ -147,9 +106,6 @@ pub fn render(
 
     if let Some(menu) = chrome.context_menu.as_ref() {
         render_context_menu(sugarloaf, menu, theme, device_scale);
-    }
-    if let Some((rect, label)) = chrome.rail_tooltip(window_height) {
-        render_rail_tooltip(sugarloaf, &rect, &label, theme, device_scale);
     }
 
     // Insertion bar while dragging, then ghost at max z-order.
@@ -241,210 +197,8 @@ fn paint_modal_stack(
     sugarloaf.end_overlay();
 }
 
-fn render_rail(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    device_scale: f32,
-) {
-    let rail = activity_bar::rect(origin_y, height);
-    paint_flat(sugarloaf, &rail, theme.rail_bg, DEPTH_BG, ORDER_RAIL);
-    // Right hairline against the drawer.
-    paint_hairline_v(
-        sugarloaf,
-        rail.right() - BORDER_WIDTH,
-        rail.y,
-        rail.height,
-        theme.panel_border,
-        DEPTH_BG + 0.005,
-        ORDER_RAIL,
-    );
-
-    for section in activity_bar::TOP_SECTIONS {
-        let item = activity_bar::section_rect(origin_y, section);
-        let selected = section == chrome.activity.selected && chrome.panel_visible;
-        if selected {
-            let pill = activity_bar::pill_rect(item);
-            paint_surface(
-                sugarloaf,
-                &pill,
-                theme.rail_active_bg,
-                None,
-                activity_bar::PILL_RADIUS,
-                DEPTH_CONTENT,
-                ORDER_CONTENT,
-                false,
-            );
-        }
-        let icon_rect = activity_bar::icon_in(item);
-        let color = if selected {
-            theme.accent
-        } else {
-            as_f32(theme.text_muted)
-        };
-        draw_icon(
-            sugarloaf,
-            section.icon(),
-            IconPlacement::new(icon_rect.x, icon_rect.y, RAIL_ICON_SIZE),
-            color,
-            device_scale,
-        );
-    }
-
-    for action in activity_bar::BOTTOM_ACTIONS {
-        let item = activity_bar::action_rect(origin_y, height, action);
-        let icon_rect = activity_bar::icon_in(item);
-        let color = match action {
-            activity_bar::RailAction::CloudSync if chrome.activity.cloud_sync_active => {
-                theme.success
-            }
-            activity_bar::RailAction::Settings if chrome.settings_is_open() => {
-                theme.accent
-            }
-            _ => as_f32(theme.text_muted),
-        };
-        draw_icon(
-            sugarloaf,
-            action.icon(),
-            IconPlacement::new(icon_rect.x, icon_rect.y, RAIL_ICON_SIZE),
-            color,
-            device_scale,
-        );
-    }
-}
-
-fn render_panel(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    window_width: f32,
-    window_height: f32,
-    device_scale: f32,
-    connecting_phase: Option<f32>,
-) {
-    let panel = chrome.panel.rect(origin_y, height);
-    paint_flat(sugarloaf, &panel, theme.panel_bg, DEPTH_BG, ORDER_PANEL);
-    // A hairline separator against the terminal, on the panel's right edge.
-    paint_hairline_v(
-        sugarloaf,
-        panel.right() - BORDER_WIDTH,
-        panel.y,
-        panel.height,
-        theme.panel_border,
-        DEPTH_BG + 0.005,
-        ORDER_PANEL,
-    );
-
-    // Sugarloaf UI text always composites above quads, so glyphs that sit
-    // under an open dialog would float on top of it. Keep painting the
-    // dimmed background chrome, and only suppress labels/icons whose
-    // rects overlap the dialog (and its dropdowns).
-    let label_cover = add_host_label_cover(chrome, window_width, window_height);
-
-    let title = chrome.panel.title_rect(origin_y);
-    if !text_blocked_by(label_cover.as_ref(), &title) {
-        draw_text(
-            sugarloaf,
-            title.x + sidebar::PAD_X,
-            title.y + 14.0,
-            &chrome.panel_title().to_ascii_uppercase(),
-            sidebar::SECTION_LABEL_FONT_SIZE,
-            [0xcb, 0xd5, 0xe1, 255], // slate-300
-            true,
-        );
-        paint_hairline_h(
-            sugarloaf,
-            title.x,
-            title.bottom() - BORDER_WIDTH,
-            title.width,
-            theme.panel_border,
-            DEPTH_CONTENT,
-            ORDER_CONTENT,
-        );
-
-        if chrome.hosts_visible() {
-            paint_search_field(
-                sugarloaf,
-                chrome,
-                theme,
-                origin_y,
-                device_scale,
-                DEPTH_CONTENT,
-            );
-            let band = chrome.panel.search_band_rect(origin_y);
-            paint_hairline_h(
-                sugarloaf,
-                band.x,
-                band.bottom() - BORDER_WIDTH,
-                band.width,
-                theme.panel_border,
-                DEPTH_CONTENT,
-                ORDER_CONTENT,
-            );
-        }
-    }
-
-    if chrome.hosts_visible() {
-        let cta = chrome.panel.add_button_rect(origin_y, height);
-        render_new_host_cta(
-            sugarloaf,
-            chrome,
-            theme,
-            origin_y,
-            height,
-            !text_blocked_by(label_cover.as_ref(), &cta),
-            device_scale,
-        );
-        render_host_rows(
-            sugarloaf,
-            chrome,
-            theme,
-            origin_y,
-            height,
-            label_cover.as_ref(),
-            device_scale,
-            connecting_phase,
-        );
-        // Re-paint the title + search band above the scrolled list so cards
-        // tuck under the filter instead of covering it.
-        if !text_blocked_by(label_cover.as_ref(), &title) {
-            render_sticky_drawer_chrome(sugarloaf, chrome, theme, origin_y, device_scale);
-        }
-    } else if chrome.snippets_visible() {
-        render_snippets(
-            sugarloaf,
-            chrome,
-            theme,
-            origin_y,
-            height,
-            label_cover.is_none(),
-            device_scale,
-        );
-    }
-
-    // Sticky footer: paint last so host rows scroll underneath it.
-    let notice_labels = chrome
-        .panel
-        .notice_rect(origin_y, height)
-        .map(|n| !text_blocked_by(label_cover.as_ref(), &n))
-        .unwrap_or(true);
-    render_empty_hint(
-        sugarloaf,
-        chrome,
-        theme,
-        origin_y,
-        height,
-        label_cover.as_ref(),
-    );
-    render_notice(sugarloaf, chrome, theme, origin_y, height, notice_labels);
-}
-
 /// "No saved hosts yet" / "No matches" under the list.
-fn render_empty_hint(
+pub(crate) fn render_empty_hint(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
@@ -488,7 +242,7 @@ fn render_empty_hint(
     }
 }
 
-fn render_notice(
+pub(crate) fn render_notice(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
@@ -570,66 +324,8 @@ fn render_notice(
     }
 }
 
-/// Opaque title + search band redrawn after the list so scrolled cards pass
-/// underneath the filter instead of painting over it.
-fn render_sticky_drawer_chrome(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    device_scale: f32,
-) {
-    let title = chrome.panel.title_rect(origin_y);
-    let band = chrome.panel.search_band_rect(origin_y);
-    let cover_bottom = band.bottom();
-    paint_flat(
-        sugarloaf,
-        &Rect::new(title.x, title.y, title.width, cover_bottom - title.y),
-        theme.panel_bg,
-        DEPTH_STICKY,
-        ORDER_CONTENT,
-    );
-
-    draw_text(
-        sugarloaf,
-        title.x + sidebar::PAD_X,
-        title.y + 14.0,
-        &chrome.panel_title().to_ascii_uppercase(),
-        SECTION_LABEL_SIZE,
-        [0xcb, 0xd5, 0xe1, 255],
-        true,
-    );
-    paint_hairline_h(
-        sugarloaf,
-        title.x,
-        title.bottom() - BORDER_WIDTH,
-        title.width,
-        theme.panel_border,
-        DEPTH_STICKY + 0.001,
-        ORDER_CONTENT,
-    );
-
-    paint_search_field(
-        sugarloaf,
-        chrome,
-        theme,
-        origin_y,
-        device_scale,
-        DEPTH_STICKY + 0.002,
-    );
-    paint_hairline_h(
-        sugarloaf,
-        band.x,
-        band.bottom() - BORDER_WIDTH,
-        band.width,
-        theme.panel_border,
-        DEPTH_STICKY + 0.006,
-        ORDER_CONTENT,
-    );
-}
-
 /// Search field chrome + loupe + filter text (mock `pl-9` with left icon).
-fn paint_search_field(
+pub(crate) fn paint_search_field(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
@@ -701,58 +397,6 @@ fn paint_search_field(
         ROW_SUB_SIZE,
         filter_color,
         false,
-    );
-}
-
-fn render_new_host_cta(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    labels: bool,
-    device_scale: f32,
-) {
-    let cta = chrome.panel.add_button_rect(origin_y, height);
-    let body = chrome.panel.body_rect(origin_y, height);
-    let Some((top, bottom)) = cta.clip_rows(body.y, body.bottom()) else {
-        return;
-    };
-    if bottom - top < 8.0 {
-        return;
-    }
-
-    // Mock: `border-dashed border-appleBorder bg-appleCard/40 hover:bg-appleCard`
-    let bg = if chrome.panel.add_hover {
-        theme.button_bg
-    } else {
-        with_alpha(theme.button_bg, 0.40)
-    };
-    let border = if chrome.panel.add_hover {
-        theme.accent
-    } else {
-        theme.panel_border
-    };
-    let title_color = if chrome.panel.add_hover {
-        color_from_f32(theme.accent)
-    } else {
-        theme.text
-    };
-    paint_dashed_cta(
-        sugarloaf,
-        theme,
-        &cta,
-        sidebar::CARD_RADIUS,
-        bg,
-        border,
-        "New Host",
-        "Configure SSH connection",
-        title_color,
-        Icon::Plus,
-        device_scale,
-        labels,
-        DEPTH_CONTENT,
-        ORDER_CONTENT,
     );
 }
 
@@ -868,150 +512,6 @@ fn draw_dashed_rounded_rect(
             }
         }
     }
-}
-
-fn render_snippets(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    labels: bool,
-    device_scale: f32,
-) {
-    let body = chrome.snippets.body_rect(origin_y, height);
-    if chrome.snippets.items.is_empty() && labels {
-        draw_text(
-            sugarloaf,
-            body.x + 16.0,
-            body.y + 18.0,
-            "No snippets yet",
-            ROW_TITLE_SIZE,
-            theme.text_muted,
-            false,
-        );
-        draw_text(
-            sugarloaf,
-            body.x + 16.0,
-            body.y + 38.0,
-            "Save commands you run often: Add snippet below.",
-            ROW_SUB_SIZE,
-            theme.text_muted,
-            false,
-        );
-    }
-    for (index, item) in chrome.snippets.items.iter().enumerate() {
-        let row = chrome.snippets.item_rect(origin_y, index);
-        let Some((top, bottom)) = row.clip_rows(body.y, body.bottom()) else {
-            continue;
-        };
-        if bottom - top < 8.0 {
-            continue;
-        }
-        let hovered = chrome.snippets.hover == Some(index);
-        let bg = if hovered {
-            theme.item_hover
-        } else {
-            theme.button_bg
-        };
-        paint_surface(
-            sugarloaf,
-            &row,
-            bg,
-            Some(theme.panel_border),
-            sidebar::CARD_RADIUS,
-            DEPTH_CONTENT,
-            ORDER_CONTENT,
-            false,
-        );
-        if labels {
-            let pad_x = 12.0;
-            let title_color = if hovered {
-                color_from_f32(theme.accent)
-            } else {
-                theme.text
-            };
-            let title_w = row.width - pad_x * 2.0 - if hovered { 22.0 } else { 0.0 };
-            let name = elide(
-                sugarloaf,
-                &item.name,
-                title_w,
-                &opts(ROW_TITLE_SIZE, title_color, true),
-            );
-            draw_text(
-                sugarloaf,
-                row.x + pad_x,
-                row.y + 10.0,
-                &name,
-                ROW_TITLE_SIZE,
-                title_color,
-                true,
-            );
-
-            let cmd_y = row.y + 30.0;
-            let max_cmd_w = row.width - pad_x * 2.0 - 22.0;
-            let cmd = elide(
-                sugarloaf,
-                &item.cmd,
-                max_cmd_w,
-                &opts(HINT_SIZE, theme.text_muted, false),
-            );
-            draw_icon(
-                sugarloaf,
-                Icon::SquareTerminal,
-                IconPlacement::new(row.x + pad_x, cmd_y, 14.0),
-                [
-                    theme.text_muted[0] as f32 / 255.0,
-                    theme.text_muted[1] as f32 / 255.0,
-                    theme.text_muted[2] as f32 / 255.0,
-                    theme.text_muted[3] as f32 / 255.0,
-                ],
-                device_scale,
-            );
-            draw_text(
-                sugarloaf,
-                row.x + pad_x + 20.0,
-                cmd_y + 1.0,
-                &cmd,
-                HINT_SIZE,
-                theme.text_muted,
-                false,
-            );
-
-            if hovered {
-                let del_rect = chrome.snippets.delete_button_rect(origin_y, index);
-                let del_hover = chrome.snippets.delete_hover == Some(index);
-                let del_color = if del_hover {
-                    theme.danger
-                } else {
-                    theme.text_muted
-                };
-                draw_icon(
-                    sugarloaf,
-                    Icon::X,
-                    IconPlacement::new(del_rect.x, del_rect.y, 16.0),
-                    [
-                        del_color[0] as f32 / 255.0,
-                        del_color[1] as f32 / 255.0,
-                        del_color[2] as f32 / 255.0,
-                        del_color[3] as f32 / 255.0,
-                    ],
-                    device_scale,
-                );
-            }
-        }
-    }
-
-    render_footer_button(
-        sugarloaf,
-        chrome.snippets.add_button_rect(origin_y, height),
-        chrome.snippets.add_hover,
-        Icon::Plus,
-        "Add snippet",
-        theme,
-        labels,
-        device_scale,
-    );
 }
 
 fn render_settings_modal(
@@ -2036,610 +1536,8 @@ fn rgba_u8(r: u8, g: u8, b: u8, a: f32) -> [f32; 4] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a]
 }
 
-fn render_host_rows(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    label_cover: Option<&Rect>,
-    device_scale: f32,
-    connecting_phase: Option<f32>,
-) {
-    let body = chrome.panel.body_rect(origin_y, height);
-    if body.height <= 0.0 {
-        return;
-    }
-
-    // Group trays paint as containing boxes; Local hosts stay discrete cards.
-
-    let visible = chrome.panel.visible_row_indices();
-    for &index in &visible {
-        let row_kind = &chrome.panel.rows[index];
-        let row = chrome.panel.item_rect(origin_y, index);
-        // Clip: a partially scrolled row is drawn truncated rather than
-        // over the header or the add-host row.
-        let Some((top, bottom)) = row.clip_rows(body.y, body.bottom()) else {
-            continue;
-        };
-        let labels = !text_blocked_by(label_cover, &row);
-
-        // A section label is a heading, not a target: no hover, no
-        // selection marker, no icon.
-        if let Some(label) = row_kind.label() {
-            let label_bottom = row.y + sidebar::SECTION_HEIGHT;
-            if labels
-                && bottom - top >= 10.0
-                && bottom >= row.y + 8.0
-                && top <= label_bottom
-            {
-                draw_text(
-                    sugarloaf,
-                    row.x,
-                    sidebar::section_label_y(row),
-                    &label.to_uppercase(),
-                    sidebar::SECTION_LABEL_FONT_SIZE,
-                    theme.text_faint,
-                    true,
-                );
-                if label.eq_ignore_ascii_case("Hosts") {
-                    paint_new_group_button(
-                        sugarloaf,
-                        chrome,
-                        theme,
-                        origin_y,
-                        height,
-                        labels,
-                        device_scale,
-                    );
-                }
-            }
-            if label.eq_ignore_ascii_case("Hosts") {
-                paint_new_group_form(sugarloaf, chrome, theme, origin_y, labels, &body);
-            }
-            continue;
-        }
-
-        if let Some((name, host_count, collapsed)) = row_kind.group() {
-            let card = chrome.panel.card_rect(origin_y, index);
-            if bottom - top < 8.0 {
-                continue;
-            }
-            let hovered = chrome.panel.hover == Some(index);
-
-            // Real containing box: one tray around header + nested hosts.
-            if let Some(tray) = chrome.panel.group_tray_rect(origin_y, index) {
-                if let Some((tray_top, tray_bottom)) =
-                    tray.clip_rows(body.y, body.bottom())
-                {
-                    if tray_bottom - tray_top >= 4.0 {
-                        let group_id = match row_kind {
-                            sidebar::Row::Group { id, .. } => Some(id.as_str()),
-                            _ => None,
-                        };
-                        let drop_hl = chrome.panel.host_drag.as_ref().is_some_and(|d| {
-                            d.started()
-                                && matches!(
-                                    &d.drop_target,
-                                    Some(sidebar::HostDropTarget::Group(gid))
-                                        | Some(sidebar::HostDropTarget::BeforeGroup(gid))
-                                        if Some(gid.as_str()) == group_id
-                                )
-                        });
-                        let border = if drop_hl {
-                            Some(theme.accent)
-                        } else {
-                            Some(theme.panel_border)
-                        };
-                        let fill = if drop_hl {
-                            opaque_over(theme.button_bg, theme.accent_soft)
-                        } else {
-                            theme.button_bg
-                        };
-                        paint_floating_surface(
-                            sugarloaf,
-                            &tray,
-                            fill,
-                            border,
-                            sidebar::CARD_RADIUS,
-                        );
-                    }
-                }
-            }
-
-            // Header wash only on hover — the tray already provides the fill.
-            if hovered {
-                let wash = Rect::new(
-                    card.x + 1.0,
-                    card.y + 1.0,
-                    (card.width - 2.0).max(0.0),
-                    (card.height - 2.0).max(0.0),
-                );
-                paint_surface(
-                    sugarloaf,
-                    &wash,
-                    theme.item_hover,
-                    None,
-                    (sidebar::CARD_RADIUS - 1.0).max(0.0),
-                    DEPTH_CONTENT + 0.012,
-                    ORDER_CONTENT,
-                    false,
-                );
-            }
-
-            // Hairline under the folder header.
-            if !collapsed {
-                let sep_y = sidebar::host_item_separator_y(card);
-                if sep_y >= top && sep_y <= bottom {
-                    paint_hairline_h(
-                        sugarloaf,
-                        card.x + sidebar::CARD_PAD,
-                        sep_y,
-                        (card.width - 2.0 * sidebar::CARD_PAD).max(0.0),
-                        with_alpha(theme.panel_border, 0.85),
-                        DEPTH_CONTENT + 0.013,
-                        ORDER_CONTENT,
-                    );
-                }
-            }
-
-            if labels && bottom - top >= 14.0 {
-                let badge_x = card.x + sidebar::CARD_PAD;
-                let badge_y =
-                    card.y + (sidebar::ITEM_HEIGHT - sidebar::HOST_BADGE_TILE) / 2.0;
-                let badge = Rect::new(
-                    badge_x,
-                    badge_y,
-                    sidebar::HOST_BADGE_TILE,
-                    sidebar::HOST_BADGE_TILE,
-                );
-                // Folder badge with soft accent ring (mock).
-                paint_bordered_badge(
-                    sugarloaf,
-                    &badge,
-                    theme.field_bg,
-                    theme.accent,
-                    8.0,
-                    DEPTH_CONTENT + 0.02,
-                    ORDER_CONTENT,
-                );
-                draw_icon(
-                    sugarloaf,
-                    Icon::Folder,
-                    IconPlacement::new(
-                        badge_x + (sidebar::HOST_BADGE_TILE - sidebar::ICON_SIZE) / 2.0,
-                        badge_y + (sidebar::HOST_BADGE_TILE - sidebar::ICON_SIZE) / 2.0,
-                        sidebar::ICON_SIZE,
-                    ),
-                    theme.accent,
-                    device_scale,
-                );
-                let text_x = badge_x + sidebar::HOST_BADGE_TILE + sidebar::ICON_GAP;
-                let renaming = chrome.panel.is_renaming(match row_kind {
-                    sidebar::Row::Group { id, .. } => id.as_str(),
-                    _ => "",
-                });
-                if renaming {
-                    if let Some(draft) = chrome.panel.rename.as_ref() {
-                        paint_rename_text(sugarloaf, draft, text_x, card.y + 12.0, theme);
-                    }
-                } else {
-                    draw_text(
-                        sugarloaf,
-                        text_x,
-                        card.y + 12.0,
-                        name,
-                        ROW_TITLE_SIZE,
-                        theme.text,
-                        true,
-                    );
-                }
-                let sessions = match row_kind {
-                    sidebar::Row::Group { session_count, .. } => *session_count,
-                    _ => 0,
-                };
-                let count = match (host_count, sessions) {
-                    (0, _) => "Empty group".to_string(),
-                    (1, 0) => "1 host".to_string(),
-                    (1, s) => format!("1 host · {s} sessions"),
-                    (n, 0) => format!("{n} hosts"),
-                    (n, s) => format!("{n} hosts · {s} sessions"),
-                };
-                draw_text(
-                    sugarloaf,
-                    text_x,
-                    card.y + 32.0,
-                    &count,
-                    ROW_SUB_SIZE,
-                    theme.text_muted,
-                    false,
-                );
-                let chevron = if collapsed {
-                    Icon::ChevronRight
-                } else {
-                    Icon::ChevronDown
-                };
-                let icon_sz = sidebar::ICON_SIZE;
-                let icon_x = card.right() - sidebar::CARD_PAD - icon_sz;
-                let icon_y = card.y + (sidebar::ITEM_HEIGHT - icon_sz) / 2.0;
-                draw_icon(
-                    sugarloaf,
-                    chevron,
-                    IconPlacement::new(icon_x, icon_y, icon_sz),
-                    as_f32(theme.text_muted),
-                    device_scale,
-                );
-            }
-            continue;
-        }
-
-        if let Some(session) = row_kind.session() {
-            let card = chrome.panel.card_rect(origin_y, index);
-            if bottom - top < 4.0 {
-                continue;
-            }
-            let hovered = chrome.panel.hover == Some(index);
-            let active = session.active
-                || chrome.panel.selected_session == Some(session.tab_index);
-            // Soft leaf + thin accent ring (follows the radius). No left bar —
-            // straight bars fight rounded corners and kept regressing.
-            let r = sidebar::SESSION_RADIUS;
-            let inset = 2.0;
-            let leaf = Rect::new(
-                card.x + inset,
-                card.y + 1.0,
-                (card.width - inset * 2.0).max(0.0),
-                (card.height - 2.0).max(0.0),
-            );
-            if active {
-                let soft = opaque_over(theme.panel_bg, theme.accent_soft);
-                paint_floating_surface(sugarloaf, &leaf, soft, Some(theme.accent), r);
-            } else if hovered {
-                paint_floating_surface(sugarloaf, &leaf, theme.item_hover, None, r);
-            }
-
-            if labels && bottom - top >= 10.0 {
-                let icon_color = if active {
-                    theme.accent
-                } else {
-                    as_f32(theme.text_muted)
-                };
-                let text_color = if active { theme.text } else { theme.text_muted };
-                let content_x = leaf.x + sidebar::SESSION_CONTENT_PAD;
-                draw_icon(
-                    sugarloaf,
-                    Icon::SquareTerminal,
-                    IconPlacement::new(
-                        content_x,
-                        card.y + (card.height - 14.0) * 0.5,
-                        14.0,
-                    ),
-                    icon_color,
-                    device_scale,
-                );
-                draw_text(
-                    sugarloaf,
-                    content_x + 20.0,
-                    card.y + (card.height - 11.0) * 0.5,
-                    &session.title,
-                    11.0,
-                    text_color,
-                    active,
-                );
-                if session.closable && hovered {
-                    if let Some(close) = chrome.panel.session_close_rect(origin_y, index)
-                    {
-                        draw_icon(
-                            sugarloaf,
-                            Icon::X,
-                            IconPlacement::new(close.x + 3.0, close.y + 3.0, 14.0),
-                            as_f32(theme.text_muted),
-                            device_scale,
-                        );
-                    }
-                }
-            }
-            continue;
-        }
-
-        let Some(host) = row_kind.host() else {
-            continue;
-        };
-        let connecting = chrome.panel.is_connecting(&host.id);
-
-        // Selection lives on the session leaf when a tab is open for this host.
-        // Painting the host as "selected" with an accent shell + translucent
-        // fill was the solid-blue brick on chevron expand.
-        let selected = chrome.panel.selected == Some(index)
-            && chrome.panel.selected_session.is_none()
-            && !matches!(host.status, terminus_ui::HostStatus::Active);
-        let hovered = chrome.panel.hover == Some(index);
-        let card = chrome.panel.card_rect(origin_y, index);
-        let nested = host.nested;
-        let dragging_source = chrome
-            .panel
-            .host_drag
-            .as_ref()
-            .is_some_and(|d| d.started() && d.host_id == host.id);
-
-        // Inside a folder tray: no second floating card — hover/selection wash only.
-        // Root hosts keep the floating surface.
-        if nested {
-            if selected || connecting {
-                let soft = if connecting {
-                    opaque_over(theme.button_bg, with_alpha(theme.item_selected, 0.85))
-                } else {
-                    opaque_over(theme.button_bg, theme.item_selected)
-                };
-                paint_floating_surface(
-                    sugarloaf,
-                    &card,
-                    soft,
-                    Some(theme.accent),
-                    sidebar::SESSION_RADIUS,
-                );
-            } else if hovered || dragging_source {
-                paint_surface(
-                    sugarloaf,
-                    &card,
-                    if dragging_source {
-                        with_alpha(theme.item_hover, 0.55)
-                    } else {
-                        theme.item_hover
-                    },
-                    None,
-                    sidebar::SESSION_RADIUS,
-                    DEPTH_CONTENT + 0.014,
-                    ORDER_CONTENT,
-                    false,
-                );
-            }
-        } else {
-            let bg = if connecting {
-                opaque_over(theme.button_bg, with_alpha(theme.item_selected, 0.85))
-            } else if selected {
-                opaque_over(theme.button_bg, theme.item_selected)
-            } else if hovered {
-                theme.item_hover
-            } else if dragging_source {
-                with_alpha(theme.button_bg, 0.55)
-            } else {
-                theme.button_bg
-            };
-            let border = if selected || connecting {
-                Some(theme.accent)
-            } else {
-                None
-            };
-            paint_floating_surface(sugarloaf, &card, bg, border, sidebar::CARD_RADIUS);
-        }
-
-        if !labels {
-            continue;
-        }
-
-        // Keep badges/text while the card is partially scrolled — an empty
-        // shell at the viewport edge is worse than a clipped glyph. Still
-        // skip when the content sits entirely under the sticky header.
-        if bottom - top < 14.0 {
-            continue;
-        }
-        let badge_tile = if nested {
-            sidebar::HOST_BADGE_TILE - 2.0
-        } else {
-            sidebar::HOST_BADGE_TILE
-        };
-        let leading = chrome.panel.host_leading_inset(index);
-        let badge_x = card.x + leading;
-        let badge_y = card.y + (sidebar::ITEM_HEIGHT - badge_tile) / 2.0;
-        if badge_y + badge_tile * 0.5 < top {
-            continue;
-        }
-
-        // Soft badge tile — no gray ring; status lives on the luminous dot.
-        paint_soft_badge_tile(sugarloaf, badge_x, badge_y, badge_tile, theme);
-        if let Some(dot) = host.status.dot_color() {
-            paint_status_dot(sugarloaf, badge_x, badge_y, badge_tile, dot);
-        }
-
-        let badge_color = if connecting {
-            theme.accent
-        } else {
-            match host.badge {
-                sidebar::Badge::Local => theme.accent,
-                sidebar::Badge::Wsl | sidebar::Badge::Ssh => as_f32(theme.text_muted),
-            }
-        };
-        let glyph = match host.badge {
-            // "This computer" never matches a brand; prefer os_id, then the
-            // subtitle which carries the OS label (`nixos@… · WSL`).
-            sidebar::Badge::Local => OsGlyph::from_hint(
-                host.os_id.as_deref(),
-                host.os_id
-                    .as_deref()
-                    .filter(|id| !id.is_empty())
-                    .unwrap_or(host.endpoint.as_str()),
-            ),
-            _ => OsGlyph::from_hint(host.os_id.as_deref(), &host.name),
-        };
-        let icon_x = badge_x + (badge_tile - sidebar::ICON_SIZE) / 2.0;
-        let icon_y = badge_y + (badge_tile - sidebar::ICON_SIZE) / 2.0;
-        let placement = IconPlacement::new(icon_x, icon_y, sidebar::ICON_SIZE);
-        if glyph.has_mark() {
-            draw_os_glyph(sugarloaf, glyph, placement, glyph.color(), device_scale);
-        } else {
-            draw_icon(
-                sugarloaf,
-                host.badge.icon(),
-                placement,
-                badge_color,
-                device_scale,
-            );
-        }
-
-        // One trailing affordance: connecting > hover + > disclosure.
-        if connecting {
-            // Orbit painted below.
-        } else if hovered {
-            if let Some(add) = chrome.panel.host_add_session_rect(origin_y, index) {
-                draw_icon(
-                    sugarloaf,
-                    Icon::Plus,
-                    IconPlacement::new(add.x + 2.0, add.y + 2.0, 16.0),
-                    theme.accent,
-                    device_scale,
-                );
-            }
-            // Keep expand chevron visible beside + when sessions exist.
-            if host.session_count > 0 {
-                if let Some(ch) = chrome.panel.host_chevron_rect(origin_y, index) {
-                    let collapsed = chrome.panel.collapsed_hosts.contains(&host.id);
-                    let chevron = if collapsed {
-                        Icon::ChevronRight
-                    } else {
-                        Icon::ChevronDown
-                    };
-                    draw_icon(
-                        sugarloaf,
-                        chevron,
-                        IconPlacement::new(ch.x + 1.0, ch.y + 1.0, 16.0),
-                        as_f32(theme.text_faint),
-                        device_scale,
-                    );
-                }
-            }
-        } else if host.session_count > 0 {
-            if let Some(ch) = chrome.panel.host_chevron_rect(origin_y, index) {
-                let collapsed = chrome.panel.collapsed_hosts.contains(&host.id);
-                let chevron = if collapsed {
-                    Icon::ChevronRight
-                } else {
-                    Icon::ChevronDown
-                };
-                draw_icon(
-                    sugarloaf,
-                    chevron,
-                    IconPlacement::new(ch.x + 1.0, ch.y + 1.0, 16.0),
-                    as_f32(theme.text_faint),
-                    device_scale,
-                );
-            }
-        } else {
-            let icon_sz = sidebar::ICON_SIZE;
-            let icon_x = card.right() - sidebar::CARD_PAD - icon_sz;
-            let icon_y = card.y + (sidebar::ITEM_HEIGHT - icon_sz) / 2.0;
-            draw_icon(
-                sugarloaf,
-                Icon::ChevronRight,
-                IconPlacement::new(icon_x, icon_y, icon_sz),
-                as_f32(theme.text_faint),
-                device_scale,
-            );
-        }
-
-        let text_x = badge_x + badge_tile + sidebar::ICON_GAP;
-        let trailing = if connecting {
-            sidebar::CARD_PAD + sidebar::CONNECTING_SLOT + 6.0
-        } else if host.session_count > 0 {
-            sidebar::CARD_PAD + sidebar::CHEVRON_HIT + sidebar::HOST_ADD_HIT + 8.0
-        } else {
-            sidebar::CARD_PAD + sidebar::HOST_ADD_HIT + 8.0
-        };
-        let text_width = (card.right() - text_x - trailing).max(0.0);
-
-        let renaming = chrome.panel.is_renaming(&host.id);
-        if renaming {
-            if let Some(draft) = chrome.panel.rename.as_ref() {
-                paint_rename_text(sugarloaf, draft, text_x, card.y + 12.0, theme);
-            }
-        } else {
-            let name = elide(
-                sugarloaf,
-                &host.name,
-                text_width,
-                &opts(ROW_TITLE_SIZE, theme.text, true),
-            );
-            draw_text(
-                sugarloaf,
-                text_x,
-                card.y + 12.0,
-                &name,
-                ROW_TITLE_SIZE,
-                theme.text,
-                true,
-            );
-        }
-
-        // While connecting, the subtitle becomes a status line and a
-        // shimmer sweeps under it; otherwise it stays the endpoint.
-        if connecting {
-            let status = elide(
-                sugarloaf,
-                "Starting…",
-                text_width,
-                &opts(ROW_SUB_SIZE, theme.text_muted, false),
-            );
-            draw_text(
-                sugarloaf,
-                text_x,
-                card.y + 32.0,
-                &status,
-                ROW_SUB_SIZE,
-                theme.text_muted,
-                false,
-            );
-            if let Some(phase) = connecting_phase {
-                if let Some((sx, sy, sw)) =
-                    chrome.panel.connecting_shimmer_track(origin_y, index)
-                {
-                    if sw > 8.0 {
-                        let bar = shimmer_bar(sx, sy, sw, 2.0, phase);
-                        let color = with_alpha(theme.accent, bar.alpha);
-                        let track = Rect::new(bar.x, bar.y, bar.width, bar.height);
-                        paint_surface(
-                            sugarloaf,
-                            &track,
-                            color,
-                            None,
-                            1.0,
-                            DEPTH_CONTENT + 0.02,
-                            ORDER_CONNECTING,
-                            false,
-                        );
-                    }
-                }
-                if let Some((cx, cy)) = chrome.panel.connecting_center(origin_y, index) {
-                    draw_orbit_indicator(sugarloaf, theme, cx, cy, 5.5, 2.0, phase);
-                }
-            }
-        } else {
-            // The endpoint is the row's second line, not decoration: at the
-            // faint colour it dropped to a 4:1 contrast against the panel and
-            // read as smudge at 11px, so it gets the muted tone the header
-            // uses.
-            let endpoint = elide(
-                sugarloaf,
-                &host.endpoint,
-                text_width,
-                &opts(ROW_SUB_SIZE, theme.text_muted, false),
-            );
-            draw_text(
-                sugarloaf,
-                text_x,
-                card.y + 32.0,
-                &endpoint,
-                ROW_SUB_SIZE,
-                theme.text_muted,
-                false,
-            );
-        }
-    }
-
-    render_panel_scrollbar(sugarloaf, chrome, theme, origin_y, height, body);
-}
-
 /// Accent insertion bar showing where a dragged host/group will land.
-fn paint_host_drag_insertion_bar(
+pub(crate) fn paint_host_drag_insertion_bar(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
@@ -3235,7 +2133,7 @@ pub(crate) fn paint_field_caret_prefix_at(
 }
 
 /// Inline rename name + optional selection wash + caret.
-fn paint_rename_text(
+pub(crate) fn paint_rename_text(
     sugarloaf: &mut Sugarloaf,
     draft: &sidebar::RenameDraft,
     text_x: f32,
@@ -3282,6 +2180,29 @@ fn paint_rename_text(
     );
 }
 
+/// Apple HIG title-bar strip + bottom hairline (island / context bar).
+pub(crate) fn paint_title_strip(sugarloaf: &mut Sugarloaf, logical_w: f32, height: f32) {
+    let theme = ChromeTheme::default();
+    let strip = theme.frame;
+    let strip_border = theme.divider;
+    paint_flat(
+        sugarloaf,
+        &Rect::new(0.0, 0.0, logical_w, height),
+        strip,
+        0.04,
+        0,
+    );
+    paint_hairline_h(
+        sugarloaf,
+        0.0,
+        height - 1.0,
+        logical_w,
+        strip_border,
+        0.041,
+        0,
+    );
+}
+
 /// Full-window modal/overlay scrim.
 pub(crate) fn paint_scrim(
     sugarloaf: &mut Sugarloaf,
@@ -3313,29 +2234,6 @@ pub(crate) fn paint_line(
     order: u8,
 ) {
     sugarloaf.line(x0, y0, x1, y1, stroke, depth, color, order);
-}
-
-/// Apple HIG title-bar strip + bottom hairline (island / context bar).
-pub(crate) fn paint_title_strip(sugarloaf: &mut Sugarloaf, logical_w: f32, height: f32) {
-    let theme = ChromeTheme::default();
-    let strip = theme.frame;
-    let strip_border = theme.divider;
-    paint_flat(
-        sugarloaf,
-        &Rect::new(0.0, 0.0, logical_w, height),
-        strip,
-        0.04,
-        0,
-    );
-    paint_hairline_h(
-        sugarloaf,
-        0.0,
-        height - 1.0,
-        logical_w,
-        strip_border,
-        0.041,
-        0,
-    );
 }
 
 /// Bordered square icon badge (CTA / folder / key tiles).
@@ -3441,118 +2339,8 @@ fn paint_dashed_cta(
 }
 
 /// Corner radius of the soft OS/folder badge tile.
-const HOST_BADGE_RADIUS: f32 = 8.0;
 
-/// Soft OS/folder badge without a gray outline ring.
-fn paint_soft_badge_tile(
-    sugarloaf: &mut Sugarloaf,
-    x: f32,
-    y: f32,
-    size: f32,
-    theme: &ChromeTheme,
-) {
-    paint_surface(
-        sugarloaf,
-        &Rect::new(x, y, size, size),
-        theme.field_bg,
-        None,
-        HOST_BADGE_RADIUS,
-        DEPTH_CONTENT + 0.02,
-        ORDER_CONTENT,
-        false,
-    );
-}
-
-/// Luminous status pastille at the badge's bottom-right corner.
-fn paint_status_dot(
-    sugarloaf: &mut Sugarloaf,
-    badge_x: f32,
-    badge_y: f32,
-    badge_size: f32,
-    color: [f32; 4],
-) {
-    let d = sidebar::STATUS_DOT;
-    // Center on the *visible* rounded corner (45° on the arc), not the
-    // AABB corner — otherwise the fill radius leaves the pastille floating
-    // outside the tile.
-    let corner_inset = HOST_BADGE_RADIUS * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
-    let x = badge_x + badge_size - corner_inset - d * 0.5;
-    let y = badge_y + badge_size - corner_inset - d * 0.5;
-    // Dark halo so the dot reads on both light badges and brand fills.
-    paint_surface(
-        sugarloaf,
-        &Rect::new(x - 1.0, y - 1.0, d + 2.0, d + 2.0),
-        [0.067, 0.067, 0.075, 1.0], // panel_bg
-        None,
-        (d + 2.0) * 0.5,
-        DEPTH_CONTENT + 0.03,
-        ORDER_CONTENT,
-        false,
-    );
-    paint_surface(
-        sugarloaf,
-        &Rect::new(x, y, d, d),
-        color,
-        None,
-        d * 0.5,
-        DEPTH_CONTENT + 0.031,
-        ORDER_CONTENT,
-        false,
-    );
-}
-
-fn paint_new_group_button(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    labels: bool,
-    device_scale: f32,
-) {
-    let button = chrome.panel.new_group_button_rect(origin_y, height);
-    if button.width <= 0.0 {
-        return;
-    }
-    if chrome.panel.new_group_hover {
-        paint_surface(
-            sugarloaf,
-            &button,
-            with_alpha([1.0, 1.0, 1.0, 1.0], 0.06),
-            None,
-            6.0,
-            DEPTH_CONTENT + 0.02,
-            ORDER_CONTENT,
-            false,
-        );
-    }
-    if !labels {
-        return;
-    }
-    let color = if chrome.panel.new_group_hover {
-        as_f32(theme.text)
-    } else {
-        as_f32(theme.text_muted)
-    };
-    draw_icon(
-        sugarloaf,
-        Icon::Plus,
-        IconPlacement::new(button.x + 4.0, button.y + 3.0, 12.0),
-        color,
-        device_scale,
-    );
-    draw_text(
-        sugarloaf,
-        button.x + 18.0,
-        button.y + 4.0,
-        "New group",
-        11.0,
-        color_from_f32(color),
-        false,
-    );
-}
-
-fn paint_new_group_form(
+pub(crate) fn paint_new_group_form(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
     theme: &ChromeTheme,
@@ -3656,148 +2444,6 @@ fn paint_new_group_form(
         theme.text_muted,
         false,
     );
-}
-
-fn render_panel_scrollbar(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    body: Rect,
-) {
-    let content = chrome.panel.content_height();
-    if content <= body.height || body.height <= 0.0 {
-        return;
-    }
-    let max_scroll = chrome.panel.max_scroll(origin_y, height);
-    if max_scroll <= 0.0 {
-        return;
-    }
-
-    const TRACK: f32 = 3.0;
-    let thumb_height = (body.height * (body.height / content)).max(24.0);
-    let travel = body.height - thumb_height;
-    let progress = (chrome.panel.scroll / max_scroll).clamp(0.0, 1.0);
-    paint_flat(
-        sugarloaf,
-        &Rect::new(
-            body.right() - TRACK - 2.0,
-            body.y + travel * progress,
-            TRACK,
-            thumb_height,
-        ),
-        theme.panel_border,
-        DEPTH_CONTENT + 0.01,
-        ORDER_CONTENT,
-    );
-}
-
-fn render_footer(
-    sugarloaf: &mut Sugarloaf,
-    chrome: &Chrome,
-    theme: &ChromeTheme,
-    origin_y: f32,
-    height: f32,
-    labels: bool,
-    device_scale: f32,
-) {
-    let footer = chrome.panel.footer_rect(origin_y, height);
-    paint_hairline_h(
-        sugarloaf,
-        footer.x,
-        footer.y,
-        footer.width,
-        theme.panel_border,
-        DEPTH_CONTENT,
-        ORDER_CONTENT,
-    );
-
-    render_footer_button(
-        sugarloaf,
-        chrome.panel.add_button_rect(origin_y, height),
-        chrome.panel.add_hover,
-        terminus_ui::icons::Icon::Plus,
-        "Add host",
-        theme,
-        labels,
-        device_scale,
-    );
-    render_footer_button(
-        sugarloaf,
-        chrome.panel.new_group_button_rect(origin_y, height),
-        chrome.panel.new_group_hover,
-        terminus_ui::icons::Icon::Folder,
-        "New group",
-        theme,
-        labels,
-        device_scale,
-    );
-}
-
-fn render_footer_button(
-    sugarloaf: &mut Sugarloaf,
-    button: Rect,
-    hovered: bool,
-    icon: Icon,
-    label: &str,
-    theme: &ChromeTheme,
-    labels: bool,
-    device_scale: f32,
-) {
-    if button.height <= 0.0 {
-        return;
-    }
-    paint_surface(
-        sugarloaf,
-        &button,
-        if hovered {
-            theme.item_hover
-        } else {
-            theme.button_bg
-        },
-        None,
-        5.0,
-        DEPTH_CONTENT,
-        ORDER_CONTENT,
-        false,
-    );
-
-    const LABEL_GAP: f32 = 8.0;
-    let label_width = if labels {
-        sugarloaf
-            .text_mut()
-            .measure(label, &opts(ADD_LABEL_SIZE, theme.text, false))
-    } else {
-        0.0
-    };
-    let group_width = if labels {
-        ADD_ICON_SIZE + LABEL_GAP + label_width
-    } else {
-        ADD_ICON_SIZE
-    };
-    let start_x = (button.x + (button.width - group_width) / 2.0).round();
-    let icon_y = (button.y + (button.height - ADD_ICON_SIZE) / 2.0).round();
-    draw_icon(
-        sugarloaf,
-        icon,
-        IconPlacement::new(start_x, icon_y, ADD_ICON_SIZE),
-        theme.accent,
-        device_scale,
-    );
-
-    if labels {
-        let text_y = (button.y + (button.height - ADD_LABEL_SIZE) / 2.0 - 1.0).round();
-        draw_text(
-            sugarloaf,
-            start_x + ADD_ICON_SIZE + LABEL_GAP,
-            text_y,
-            label,
-            ADD_LABEL_SIZE,
-            theme.text,
-            false,
-        );
-    }
 }
 
 fn render_add_host(
@@ -4810,45 +3456,6 @@ fn render_context_menu(
     }
 }
 
-/// Name of the hovered rail icon, drawn in the late pass like the context
-/// menu so it covers host labels in the panel beside the rail.
-fn render_rail_tooltip(
-    sugarloaf: &mut Sugarloaf,
-    rect: &Rect,
-    label: &str,
-    theme: &ChromeTheme,
-    device_scale: f32,
-) {
-    let scale = device_scale.max(1.0);
-    let content_w = (rect.width * scale).round().max(1.0);
-    let content_h = (rect.height * scale).round().max(1.0);
-    let side = (content_w.max(content_h).ceil() as u16).max(1);
-    let radius_px = 6.0 * scale;
-    for (kind, color, stroke) in [
-        (TOOLTIP_BG_KIND, theme.button_bg, false),
-        (TOOLTIP_BORDER_KIND, theme.panel_border, true),
-    ] {
-        sugarloaf.text_mut().draw_mask_late(
-            rect.x,
-            rect.y,
-            ctx_menu_mask_id(kind, content_w, content_h),
-            side,
-            color_from_f32(color),
-            move |size| {
-                rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, stroke)
-            },
-        );
-    }
-    sugarloaf.text_mut().draw_late(
-        rect.x + terminus_ui::activity_bar::TOOLTIP_PAD_X,
-        rect.y + (rect.height - ROW_SUB_SIZE) * 0.5,
-        label,
-        &opts(ROW_SUB_SIZE, theme.text, false),
-    );
-}
-
-const TOOLTIP_BG_KIND: u32 = 0x03;
-const TOOLTIP_BORDER_KIND: u32 = 0x04;
 const CTX_MENU_BG_KIND: u32 = 0x01;
 const CTX_MENU_BORDER_KIND: u32 = 0x02;
 const CTX_MENU_HOVER_KIND: u32 = 0x10;
@@ -5478,7 +4085,7 @@ fn success_color() -> [f32; 4] {
 }
 
 /// Three chasing dots + a breathing ring around `(cx, cy)`.
-fn draw_orbit_indicator(
+pub(crate) fn draw_orbit_indicator(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
     cx: f32,
@@ -5685,9 +4292,7 @@ mod tests {
         // search and hint tooltip at 20. Chrome goes in between, and the
         // editor above them all so it is never occluded. The host-drag
         // ghost sits above dialogs so the phantom is always on top.
-        assert!(ORDER_RAIL > 3);
-        assert!(ORDER_PANEL > ORDER_RAIL);
-        assert!(ORDER_CONTENT > ORDER_PANEL);
+        assert!(ORDER_CONTENT > 3);
         assert!(ORDER_CONTENT < 20);
         assert!(ORDER_DIALOG > 20);
         assert!(ORDER_GHOST > ORDER_DIALOG);

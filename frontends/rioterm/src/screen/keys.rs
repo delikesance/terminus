@@ -100,7 +100,7 @@ impl Screen<'_> {
             return;
         }
 
-        if self.sftp.is_some() && key.state == ElementState::Pressed {
+        if self.sftp_bridged() && key.state == ElementState::Pressed {
             use crate::sftp_ui::SftpKey;
             use rio_window::keyboard::Key as WKey;
             use rio_window::keyboard::NamedKey;
@@ -188,6 +188,12 @@ impl Screen<'_> {
         let mode = self.get_mode();
         let mods = self.modifiers.state();
 
+        // Another view covers the terminal: key releases never reach the
+        // PTY (presses are routed after the bindings below).
+        if key.state == ElementState::Released && self.view_takes_keys() {
+            return;
+        }
+
         if key.state == ElementState::Released {
             if !mode.contains(Mode::REPORT_EVENT_TYPES)
                 || mode.contains(Mode::VI)
@@ -270,6 +276,13 @@ impl Screen<'_> {
 
         let ignore_chars = self.process_key_bindings(key, &mode, mods, clipboard);
         if ignore_chars {
+            return;
+        }
+
+        // App bindings (palette, tabs, splits…) still work above; the
+        // rest goes to the view instead of the shell.
+        if self.view_takes_keys() {
+            self.view_key_input(key, clipboard);
             return;
         }
 

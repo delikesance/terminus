@@ -75,6 +75,9 @@ impl Screen<'_> {
         }
         let connecting_phase = self.connecting_phase();
 
+        self.sync_shell();
+        crate::renderer::shell::measure(&mut self.sugarloaf, &mut self.chrome);
+
         let sftp_paint = self.sftp.as_ref().and_then(|session| {
             self.sftp_bounds().map(|bounds| (&session.state, bounds))
         });
@@ -98,7 +101,7 @@ impl Screen<'_> {
             );
         }
 
-        if self.renderer.trail_cursor_enabled {
+        if self.renderer.trail_cursor_enabled && self.chrome.shell.view().shows_terminal() {
             let current_grid = self.context_manager.current_grid();
             let scaled_margin = current_grid.get_scaled_margin();
 

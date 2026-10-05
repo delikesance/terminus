@@ -26,7 +26,10 @@ impl Screen<'_> {
             num_tabs,
             config.window.macos_use_unified_titlebar,
         );
-        let padding_y_bottom = config.margin.bottom;
+        let padding_y_bottom = crate::renderer::utils::padding_bottom_from_config(
+            &config.navigation,
+            config.margin.bottom,
+        );
         self.chrome.top_inset = padding_y_top;
 
         if should_update_font_library {
@@ -69,7 +72,10 @@ impl Screen<'_> {
 
             context_grid.update_scaled_margin(Margin::new(
                 padding_y_top * scale,
-                config.margin.right * scale,
+                crate::renderer::utils::padding_right_from_config(
+                    &config.navigation,
+                    config.margin.right,
+                ) * scale,
                 padding_y_bottom * scale,
                 (config.margin.left + self.chrome.reserved_width()) * scale,
             ));

@@ -133,6 +133,10 @@ pub enum PaletteAction {
     /// Relaunch into an update that is already installed.
     RestartToUpdate,
     Quit,
+    /// Shell: switch the workspace view.
+    ShowView(terminus_ui::shell::WorkspaceView),
+    /// Shell: show the sidebar's server filter field.
+    FilterServers,
 }
 
 struct Command {
@@ -300,6 +304,40 @@ const COMMANDS: &[Command] = &[
     Command {
         title: "Quit",
         action: PaletteAction::Quit,
+    },
+    Command {
+        title: "Show Terminal",
+        action: PaletteAction::ShowView(terminus_ui::shell::WorkspaceView::Terminal),
+    },
+    Command {
+        title: "Show Files",
+        action: PaletteAction::ShowView(terminus_ui::shell::WorkspaceView::Files),
+    },
+    Command {
+        title: "Show Tunnels",
+        action: PaletteAction::ShowView(terminus_ui::shell::WorkspaceView::Tunnels),
+    },
+    Command {
+        title: "Show Snippets",
+        action: PaletteAction::ShowView(terminus_ui::shell::WorkspaceView::Snippets),
+    },
+    Command {
+        title: "Show History",
+        action: PaletteAction::ShowView(terminus_ui::shell::WorkspaceView::History),
+    },
+    Command {
+        title: "Go Home",
+        action: PaletteAction::ShowView(terminus_ui::shell::WorkspaceView::Home),
+    },
+    Command {
+        title: "Open Settings",
+        action: PaletteAction::ShowView(terminus_ui::shell::WorkspaceView::Settings(
+            terminus_ui::shell::SettingsPage::Keys,
+        )),
+    },
+    Command {
+        title: "Filter Servers",
+        action: PaletteAction::FilterServers,
     },
 ];
 

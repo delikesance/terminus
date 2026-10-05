@@ -406,6 +406,12 @@ impl Screen<'_> {
             PaletteAction::Quit => {
                 self.context_manager.quit();
             }
+            PaletteAction::ShowView(view) => {
+                self.show_view(view);
+            }
+            PaletteAction::FilterServers => {
+                self.chrome.panel.filter_focused = true;
+            }
         }
     }
 }

@@ -22,6 +22,7 @@ mod search;
 mod selection;
 mod sessions;
 mod sftp;
+mod workspace;
 mod shell;
 pub mod touch;
 
@@ -184,7 +185,10 @@ impl Screen<'_> {
             config.window.macos_use_unified_titlebar,
         );
 
-        let padding_y_bottom = config.margin.bottom;
+        let padding_y_bottom = crate::renderer::utils::padding_bottom_from_config(
+            &config.navigation,
+            config.margin.bottom,
+        );
         let sugarloaf_layout =
             RootStyle::new(scale as f32, config.fonts.size, config.line_height);
 
@@ -328,15 +332,19 @@ impl Screen<'_> {
         };
         let chrome_left = chrome.reserved_width();
 
+        let padding_right = crate::renderer::utils::padding_right_from_config(
+            &config.navigation,
+            config.margin.right,
+        );
         let margin = Margin::new(
             padding_y_top,
-            config.margin.right,
+            padding_right,
             padding_y_bottom,
             config.margin.left + chrome_left,
         );
         let scaled_margin = Margin::new(
             padding_y_top * scale as f32,
-            config.margin.right * scale as f32,
+            padding_right * scale as f32,
             padding_y_bottom * scale as f32,
             (config.margin.left + chrome_left) * scale as f32,
         );
