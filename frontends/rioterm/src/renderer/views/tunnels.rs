@@ -25,7 +25,7 @@ use crate::renderer::components::list::{paint_card, Action, CardContent, DotKind
 use crate::renderer::components::selection::paint_segmented;
 use crate::renderer::components::Layer;
 use crate::renderer::ui_text::{
-    draw_ui_text, measure_mono_text, measure_ui_text, UiWeight,
+    draw_mono_text, draw_ui_text, measure_mono_text, measure_ui_text, UiWeight,
 };
 
 const ORDER: u8 = 7;
@@ -355,8 +355,8 @@ fn paint_dialog(
     );
     if let (Some(a), Some(dest), Some(port)) = (d.arrow, d.dest, d.port) {
         let aw =
-            measure_ui_text(sugarloaf, "\u{2192}", font_size::BODY, UiWeight::Regular);
-        draw_ui_text(
+            measure_mono_text(sugarloaf, "\u{2192}", font_size::BODY, UiWeight::Regular);
+        draw_mono_text(
             sugarloaf,
             a.x + (a.width - aw) / 2.0,
             text_top(&a, font_size::BODY),
