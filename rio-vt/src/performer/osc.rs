@@ -69,6 +69,18 @@ pub(super) fn parse_semantic_prompt(
     }
 }
 
+/// Parse the command-boundary subcommands of OSC 133: `B` ends the prompt
+/// (the command line starts at the cursor), `C` is emitted right after the
+/// command line is submitted and before its output.
+pub(super) fn parse_prompt_phase(params: &[&[u8]]) -> Option<super::handler::PromptPhase> {
+    use super::handler::PromptPhase;
+    match *params.get(1)?.first()? {
+        b'B' => Some(PromptPhase::CommandStart),
+        b'C' => Some(PromptPhase::CommandExecuted),
+        _ => None,
+    }
+}
+
 /// Parse `OSC 1337 ; SetUserVar=name=<base64 value>`. The value is
 /// base64 per iTerm2's spec; anything undecodable is dropped.
 pub(super) fn parse_set_user_var(params: &[&[u8]]) -> Option<(String, String)> {
