@@ -20,10 +20,11 @@ use terminus_ui::theme::ChromeTheme;
 use terminus_ui::Chrome;
 
 use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke, wrap_lines};
-use crate::renderer::components::button::paint_button;
+use crate::renderer::components::button::paint_button_on;
 use crate::renderer::components::input::{paint_field, FieldContent};
 use crate::renderer::components::overlay::paint_stepper;
 use crate::renderer::components::selection::paint_choice;
+use crate::renderer::components::Layer;
 use crate::renderer::ui_text::{
     draw_ui_text, measure_mono_text, measure_ui_text, ui_opts, UiFamily, UiWeight,
 };
@@ -326,6 +327,14 @@ fn paint_form_field(
         shown = text;
     }
 
+    let placeholder_fit;
+    let placeholder = if shown.is_empty() {
+        placeholder_fit =
+            fit_text(sugarloaf, mono, font, placeholder, None, fl.text.width).0;
+        placeholder_fit.as_str()
+    } else {
+        placeholder
+    };
     let label = (!covered(menu, &fl.label.unwrap_or(fl.box_rect)))
         .then(|| field.label())
         .filter(|_| fl.label.is_some());
@@ -544,7 +553,19 @@ fn paint_footer(
         let state = ButtonState::resolve(form.hover() == Some(hit), false, false, false);
         // The component draws the fill; the label is centred here because
         // the width comes from the layout, not from the measured label.
-        paint_button(sugarloaf, theme, &spec, state, "", None);
+        paint_button_on(
+            sugarloaf,
+            theme,
+            &spec,
+            state,
+            "",
+            None,
+            Layer {
+                order: 2,
+                depth: DEPTH,
+                backdrop: theme.dialog,
+            },
+        );
         if covered(menu, &rect) {
             continue;
         }
