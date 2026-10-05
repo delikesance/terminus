@@ -169,6 +169,17 @@ pub fn paint(
             device_scale,
         );
     }
+    if view.shows_terminal() && chrome.connection.is_some() {
+        // Connection progress replaces the session's terminal until it
+        // speaks (the mock's "connecting" state of the Terminal view).
+        crate::renderer::dialogs::connection::paint_connection_content(
+            sugarloaf,
+            chrome,
+            theme,
+            card,
+            connecting_phase.unwrap_or(0.0),
+        );
+    }
     header::paint(sugarloaf, chrome, theme, device_scale);
     pills::paint(sugarloaf, chrome, theme, device_scale);
 }

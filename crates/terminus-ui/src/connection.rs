@@ -206,6 +206,23 @@ impl ConnectionSequence {
         )
     }
 
+    /// The card centred in `area` (the shell's content rect), in window
+    /// coordinates.
+    pub fn dialog_rect_in(&self, area: Rect) -> Rect {
+        let local = self.dialog_rect(area.width, area.height);
+        Rect::new(
+            area.x + local.x,
+            area.y + local.y,
+            local.width,
+            local.height,
+        )
+    }
+
+    /// [`Self::hit_test`] for the card centred in `area`.
+    pub fn hit_test_in(&self, area: Rect, x: f32, y: f32) -> ConnectionHit {
+        self.hit_test(area.width, area.height, x - area.x, y - area.y)
+    }
+
     pub fn header_icon_rect(&self, dialog: Rect) -> Rect {
         Rect::new(dialog.x + DIALOG_PAD, dialog.y + DIALOG_PAD, 44.0, 44.0)
     }
