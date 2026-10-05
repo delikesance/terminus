@@ -31,6 +31,10 @@ XDOTOOL = tool("xdotool", "xdotool")
 SHOTS = ROOT / ".dev/shots/host-wizard"
 FAILURES = []
 CHECKS = []
+FRAMES = []
+FRAME_WIDTH, FRAME_HEIGHT = 1000, 800
+LAST_GEOMETRY = None
+DIALOG_LEFT, DIALOG_WIDTH = 276, 448
 
 
 def check(condition, message):
@@ -49,44 +53,83 @@ def rgb(path):
 
 def count(data, rect, predicate):
     x, y, width, height = map(int, rect)
-    return sum(predicate(*data[(row * 1000 + col) * 3: (row * 1000 + col) * 3 + 3])
+    return sum(predicate(*data[(row * FRAME_WIDTH + col) * 3: (row * FRAME_WIDTH + col) * 3 + 3])
                for row in range(y, y + height) for col in range(x, x + width))
 
 
-def geometry(rows, baseline=False):
-    height = (274 if baseline else 326) + (rows - 2) * 64
-    top = (800 - height) // 2
-    footer = top + height - 24 - (38 if baseline else 32)
-    return top, height, footer
+def geometry(rows, baseline=False, data=None):
+    """Read the dialog shell from the framebuffer, without predicting its height."""
+    global LAST_GEOMETRY, DIALOG_LEFT, DIALOG_WIDTH
+    if baseline:
+        height = 274 + (rows - 2) * 64
+        top = (800 - height) // 2
+        return top, height, top + height - 24 - 38
+    if data is not None:
+        def dialog_pixel(x, y):
+            at = (y * FRAME_WIDTH + x) * 3
+            return tuple(data[at:at + 3]) == (17, 17, 19)
+        expected_width = min(448, FRAME_WIDTH)
+        expected_left = (FRAME_WIDTH - expected_width) // 2
+        # Require both padding columns to agree: a sidebar card can share the
+        # modal color, but cannot span both sides of this centered dialog.
+        ys = [y for y in range(FRAME_HEIGHT)
+              if dialog_pixel(expected_left + 12, y)
+              and dialog_pixel(expected_left + expected_width - 13, y)]
+        assert ys, "No dialog shell in framebuffer"
+        top, bottom = min(ys), max(ys) + 1
+        while top > 0 and dialog_pixel(FRAME_WIDTH // 2, top - 1):
+            top -= 1
+        while bottom < FRAME_HEIGHT and dialog_pixel(FRAME_WIDTH // 2, bottom):
+            bottom += 1
+        assert bottom - top > 100 and top > 40, "No modal dialog shell in framebuffer"
+        # Only follow the connected interior around the center. Sidebar cards can
+        # have the same color; the dialog border separates them from this run.
+        left = right = FRAME_WIDTH // 2
+        while left > 0 and dialog_pixel(left - 1, top + 20):
+            left -= 1
+        while right + 1 < FRAME_WIDTH and dialog_pixel(right + 1, top + 20):
+            right += 1
+        DIALOG_LEFT, DIALOG_WIDTH = left, right - left + 1
+        LAST_GEOMETRY = top, bottom - top, bottom - 24 - 32
+    assert LAST_GEOMETRY, "Capture a dialog before asking for its geometry"
+    return LAST_GEOMETRY
 
 
 def inspect(path, rows, step, empty_row=None, error=False, baseline=False):
     data = rgb(path)
-    check(len(data) == 1000 * 800 * 3, f"{path.stem}: real 1000x800 framebuffer")
-    top, height, footer = geometry(rows, baseline)
+    check(len(data) == FRAME_WIDTH * FRAME_HEIGHT * 3,
+          f"{path.stem}: real {FRAME_WIDTH}x{FRAME_HEIGHT} framebuffer")
+    top, height, footer = geometry(rows, baseline, data)
+    left = DIALOG_LEFT + 24
+    content_width = DIALOG_WIDTH - 48
+    if not baseline:
+        FRAMES.append({"name": path.stem, "viewport": [FRAME_WIDTH, FRAME_HEIGHT],
+                       "dialog": [DIALOG_LEFT, top, DIALOG_WIDTH, height],
+                       "footer_y": footer, "error": error})
     light = lambda r, g, b: r > 130 and g > 130 and b > 130
-    check(count(data, (300, top + 27, 220, 24), light) > 80,
+    check(count(data, (left, top + 27, min(220, content_width), 24), light) > 80,
           f"{path.stem}: wizard title is present")
-    pill_x = 300 + step * (406 / 3)
-    fill = tuple(data[((top + 70) * 1000 + int(pill_x + 115)) * 3:
-                      ((top + 70) * 1000 + int(pill_x + 115)) * 3 + 3])
+    pill_width = (content_width - 12) / 3
+    pill_x = left + step * (pill_width + 6)
+    fill = tuple(data[((top + 70) * FRAME_WIDTH + int(pill_x + pill_width - 12)) * 3:
+                      ((top + 70) * FRAME_WIDTH + int(pill_x + pill_width - 12)) * 3 + 3])
     check(fill[2] < 100, f"{path.stem}: active pill has a dark fill")
     blue = lambda r, g, b: b > 120 and 40 < g < 180 and r < 100
-    check(count(data, (pill_x + 7, top + 60, 105, 16), blue) > 20,
+    check(count(data, (pill_x + 7, top + 60, int(pill_width - 14), 16), blue) > 20,
           f"{path.stem}: active step label is visible")
     if empty_row is not None:
         placeholder = lambda r, g, b: r > 60 and g > 70 and 90 < b < 210
-        check(count(data, (315, top + 117 + empty_row * 64, 370, 16), placeholder) > 10,
+        check(count(data, (left + 15, top + (117 if baseline else 123) + empty_row * 64, content_width - 30, 16), placeholder) > 10,
               f"{path.stem}: focused empty field retains its placeholder")
     red = lambda r, g, b: r > 100 and r > g * 1.4 and abs(g - b) < 30
     if error:
-        last_input_bottom = top + 140 + (rows - 1) * 64
-        check(count(data, (300, last_input_bottom, 400, footer - last_input_bottom), red) > 20,
+        last_input_bottom = top + (140 if baseline else 146) + (rows - 1) * 64
+        check(count(data, (left, last_input_bottom, content_width, footer - last_input_bottom), red) > 20,
               f"{path.stem}: error is visible below inputs")
-        check(count(data, (300, footer, 400, 32), red) == 0,
+        check(count(data, (left, footer, content_width, 32), red) == 0,
               f"{path.stem}: no error pixels overlap action buttons")
     else:
-        check(count(data, (300, top + height - 110, 400, 86), red) == 0,
+        check(count(data, (left, top + 146 + (rows - 1) * 64, content_width, footer - top - 146 - (rows - 1) * 64), red) == 0,
               f"{path.stem}: no stale validation error")
     return data
 
@@ -132,25 +175,38 @@ def run_gui(edit_only=False):
                     action("mousemove", "--window", window, x, y)
                     action("click", 1)
 
+                def capture(path):
+                    subprocess.run([tool("xorg_xwd", "xwd"), "-silent", "-id", window,
+                                    "-out", str(SHOTS / "frame.xwd")], env=env, check=True)
+                    subprocess.run([MAGICK, str(SHOTS / "frame.xwd"), str(path)], check=True)
+
+                def current_geometry(rows):
+                    path = SHOTS / "current.png"
+                    capture(path)
+                    return geometry(rows, data=rgb(path))
+
                 def field(rows, row):
-                    click(350, geometry(rows)[0] + 124 + row * 64)
+                    top, _, _ = current_geometry(rows)
+                    click(DIALOG_LEFT + 74, top + 130 + row * 64)
 
                 def next_button(rows):
-                    click(660, geometry(rows)[2] + 16)
+                    _, _, footer = current_geometry(rows)
+                    click(DIALOG_LEFT + DIALOG_WIDTH - 64, footer + 16)
 
                 def back(rows):
-                    click(330, geometry(rows)[2] + 16)
+                    _, _, footer = current_geometry(rows)
+                    click(DIALOG_LEFT + 54, footer + 16)
 
                 def text(value):
                     action("type", "--clearmodifiers", "--delay", 40, value)
 
                 def shot(name, rows, step, **kwargs):
                     path = SHOTS / f"{name}.png"
-                    subprocess.run([tool("xorg_xwd", "xwd"), "-silent", "-id", window,
-                                    "-out", str(SHOTS / "frame.xwd")], env=env, check=True)
-                    subprocess.run([MAGICK, str(SHOTS / "frame.xwd"), str(path)], check=True)
-                    top, height, _ = geometry(rows)
-                    subprocess.run([MAGICK, str(path), "-crop", f"450x{height + 2}+275+{top - 1}",
+                    capture(path)
+                    top, height, _ = geometry(rows, data=rgb(path))
+                    crop_x = max(0, DIALOG_LEFT - 1)
+                    subprocess.run([MAGICK, str(path), "-crop",
+                                    f"{min(DIALOG_WIDTH + 2, FRAME_WIDTH)}x{height + 2}+{crop_x}+{top - 1}",
                                     "+repage", str(SHOTS / f"{name}-dialog.png")], check=True)
                     return inspect(path, rows, step, **kwargs)
 
@@ -170,7 +226,7 @@ def run_gui(edit_only=False):
                     action("key", "Home", "Right", "Right")
                     data = shot("04-hostname-cursor", 2, 0)
                     light = lambda r, g, b: r > 130 and g > 130 and b > 130
-                    check(count(data, (315, geometry(2)[0] + 117, 200, 16), light) > 80,
+                    check(count(data, (315, geometry(2)[0] + 123, 200, 16), light) > 80,
                           "Populated hostname remains visible around the cursor")
                     field(2, 1)
                     text("abc")
@@ -183,11 +239,11 @@ def run_gui(edit_only=False):
                     shot("07-focused-password", 3, 1, empty_row=2)
                     text("e2e-pass")
                     data = shot("08-masked-password", 3, 1)
-                    check(count(data, (315, geometry(3)[0] + 245, 200, 16), light) > 20,
+                    check(count(data, (315, geometry(3)[0] + 251, 200, 16), light) > 20,
                           "Masked password glyphs remain visible while focused")
-                    click(680, geometry(3)[0] + 252)
+                    click(680, geometry(3)[0] + 258)
                     data = shot("09-visible-password", 3, 1)
-                    check(count(data, (315, geometry(3)[0] + 245, 200, 16), light) > 80,
+                    check(count(data, (315, geometry(3)[0] + 251, 200, 16), light) > 80,
                           "Revealed password is rendered")
                     next_button(3)
                     shot("10-focused-details", 1, 2, empty_row=0)
@@ -198,7 +254,7 @@ def run_gui(edit_only=False):
                     shot("12-back-auth", 3, 1)
                     back(3)
                     data = shot("13-back-target", 2, 0)
-                    check(count(data, (315, geometry(2)[0] + 181, 200, 16), light) > 20,
+                    check(count(data, (315, geometry(2)[0] + 187, 200, 16), light) > 20,
                           "Invalid port value is preserved on backward navigation")
                     field(2, 1)
                     action("key", "End", "BackSpace", "BackSpace", "BackSpace")
@@ -206,8 +262,8 @@ def run_gui(edit_only=False):
                     next_button(2)
                     next_button(3)
                     corrected = shot("14-corrected-details", 1, 2)
-                    name_y = geometry(1)[0] + 117
                     def name_text(data):
+                        name_y = geometry(1, data=data)[0] + 123
                         return b"".join(data[(y * 1000 + 315) * 3:(y * 1000 + 500) * 3]
                                         for y in range(name_y, name_y + 16))
                     check(name_text(details) == name_text(corrected),
@@ -263,7 +319,7 @@ def run_gui(edit_only=False):
                       "Edit Target has one readable Next label, without a Save label over it")
                 field(2, 1)
                 action("key", "End", "BackSpace", "BackSpace")
-                text("invalid" * 7)
+                text("invalid" * 9)
                 next_button(2)
                 field(3, 2)
                 shot("20-edit-password-placeholder", 3, 1, empty_row=2)
@@ -273,9 +329,32 @@ def run_gui(edit_only=False):
                 data = shot("22-wrapped-port-error", 1, 2, error=True)
                 red = lambda r, g, b: r > 100 and r > g * 1.4 and abs(g - b) < 30
                 top, height, footer = geometry(1)
-                check(count(data, (300, footer - 48, 400, 14), red) > 20
-                      and count(data, (300, footer - 34, 400, 14), red) > 20,
+                red_rows = [y for y in range(top + 146, footer)
+                            if count(data, (300, y, 400, 1), red) > 1]
+                line_starts = [y for i, y in enumerate(red_rows) if i == 0 or y > red_rows[i - 1] + 1]
+                check(len(line_starts) == 2,
                       "Long validation message wraps onto two lines above Save")
+                wide_height = height
+                global FRAME_WIDTH, FRAME_HEIGHT
+                FRAME_WIDTH, FRAME_HEIGHT = 320, 800
+                action("windowsize", window, FRAME_WIDTH, FRAME_HEIGHT)
+                narrow = shot("23-narrow-wrapped-error", 1, 2, error=True)
+                narrow_top, narrow_height, narrow_footer = geometry(1)
+                check(narrow_height > wide_height,
+                      "Narrowing the window grows the measured validation block")
+                check(DIALOG_LEFT == 0 and DIALOG_WIDTH == 320,
+                      "Dialog components fit the narrow viewport")
+                # Click the recomputed Back hitbox while the notice is visible.
+                back(1)
+                field(3, 2)
+                shot("24-narrow-auth", 3, 1, empty_row=2)
+                next_button(3)
+                shot("25-narrow-details", 1, 2)
+                FRAME_WIDTH, FRAME_HEIGHT = 1000, 800
+                action("windowsize", window, FRAME_WIDTH, FRAME_HEIGHT)
+                shot("26-restored-details", 1, 2)
+                check(geometry(1)[1] < wide_height,
+                      "Cleared notice releases its space after widening the window")
             finally:
                 for process in (app, display):
                     if process is not None and process.poll() is None:
@@ -296,6 +375,6 @@ if args.baseline:
     inspect(ROOT / ".dev/shots/wizard-error-before.png", 2, 0, error=True, baseline=True)
 else:
     run_gui(args.edit_only)
-    (SHOTS / "results.json").write_text(json.dumps({"checks": CHECKS, "failures": FAILURES}, indent=2))
+    (SHOTS / "results.json").write_text(json.dumps({"checks": CHECKS, "failures": FAILURES, "frames": FRAMES}, indent=2))
 print(f"{len(CHECKS) - len(FAILURES)}/{len(CHECKS)} checks passed; {len(FAILURES)} failures")
 raise SystemExit(bool(FAILURES))

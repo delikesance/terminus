@@ -26,6 +26,7 @@ pub mod context_menu;
 pub mod dialog_form;
 pub mod geom;
 pub mod icons;
+pub mod layout;
 pub mod loading;
 pub mod os_icons;
 pub mod overlap;

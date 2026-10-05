@@ -4,7 +4,9 @@
 #
 # Intended to run inside `nix develop .#release` (which provides cargo,
 # cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, nfpm, minisign, nix
-# and tar). Updates are signed with minisign: see scripts/sign-release.sh.
+# and tar). Linux compilation runs in Docker against distro libraries,
+# never against the Nix shell's libraries. A running Docker daemon is required.
+# Updates are signed with minisign: see scripts/sign-release.sh.
 # The convenient entry point is the flake app:
 #
 #   nix run .#release                 # build Linux + Windows and publish
@@ -105,14 +107,15 @@ mkdir -p "$DIST_DIR"
 UPLOAD=()
 
 if [[ "$WINDOWS_ONLY" == "0" ]]; then
-    echo "=== Linux x86_64: cargo build --release -p rioterm --features wgpu ==="
-    cargo build --release -p rioterm --features wgpu
-
-    BIN="$(find target/release -maxdepth 1 -type f -name terminus -executable | head -1)"
-    if [[ -z "$BIN" ]]; then
-        echo "release.sh: rio binary not found in target/release" >&2
-        exit 1
-    fi
+    echo "=== Linux x86_64: isolated distro build ==="
+    bash "$ROOT/scripts/build-linux-release.sh"
+    BIN="$ROOT/target/linux-release/x86_64-unknown-linux-gnu/release/terminus"
+    python3 "$ROOT/scripts/check-linux-release.py" "$BIN"
+    # Every distribution format consumes this validated copy. Never package
+    # target/release: it may contain an unrelated local/Nix development build.
+    mkdir -p "$DIST_DIR/linux"
+    install -m755 "$BIN" "$DIST_DIR/linux/terminus"
+    BIN="$DIST_DIR/linux/terminus"
 
     # Portable tarball (Arch, NixOS, and other distros without a native package).
     STAGE="$(mktemp -d)"
