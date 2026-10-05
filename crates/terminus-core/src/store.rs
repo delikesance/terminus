@@ -266,6 +266,20 @@ impl Store {
         Self::ensure_settings_updated_at(pool).await?;
         Self::ensure_sort_order(pool, "hosts").await?;
         Self::ensure_sort_order(pool, "groups").await?;
+        // Same story for the columns `upsert_host` writes: a `hosts` table made
+        // by an older build keeps its old shape, and saving a host then fails
+        // with "table hosts has no column named os_id".
+        for (column, ddl) in [
+            ("password", "TEXT"),
+            ("identity_id", "TEXT"),
+            ("group_id", "TEXT"),
+            ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+            ("notes", "TEXT NOT NULL DEFAULT ''"),
+            ("os_id", "TEXT"),
+            ("deleted_at", "TEXT"),
+        ] {
+            Self::ensure_column(pool, "hosts", column, ddl).await?;
+        }
 
         sqlx::query(
             r#"
@@ -306,6 +320,31 @@ impl Store {
             .execute(pool)
             .await
             .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Add `column` to `table` when an older schema lacks it.
+    async fn ensure_column(
+        pool: &SqlitePool,
+        table: &str,
+        column: &str,
+        ddl: &str,
+    ) -> Result<()> {
+        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        let has = rows.iter().any(|r| {
+            r.try_get::<String, _>("name")
+                .map(|n| n == column)
+                .unwrap_or(false)
+        });
+        if !has {
+            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+                .execute(pool)
+                .await
+                .map_err(|e| Error::DatabaseError(e.to_string()))?;
         }
         Ok(())
     }
