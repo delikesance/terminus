@@ -384,7 +384,7 @@ impl VulkanContext {
         unsafe {
             self.shared
                 .wait_for_fences(&[sync.in_flight], true, u64::MAX)
-                .expect("wait_for_fences");
+                .unwrap_or_else(|e| queue_submit_failed(&self.shared, "frame wait", e));
         }
 
         let (image_index, suboptimal) = unsafe {
@@ -458,7 +458,7 @@ impl VulkanContext {
                 .signal_semaphores(&signal_semaphores);
             self.shared
                 .queue_submit(self.queue, &[submit], sync.in_flight)
-                .expect("queue_submit");
+                .unwrap_or_else(|e| queue_submit_failed(&self.shared, "frame submit", e));
 
             let swapchains = [self.swapchain];
             let image_indices = [frame.image_index];
@@ -588,7 +588,9 @@ impl VulkanContext {
             let submit = vk::SubmitInfo::default().command_buffers(&cmds);
             self.shared
                 .queue_submit(self.queue, &[submit], fence)
-                .expect("queue_submit(oneshot)");
+                .unwrap_or_else(|e| {
+                    queue_submit_failed(&self.shared, "oneshot submit", e)
+                });
             self.shared
                 .wait_for_fences(&[fence], true, u64::MAX)
                 .expect("wait_for_fences(oneshot)");
@@ -1362,6 +1364,27 @@ fn pick_physical_device(
     (device, queue_family)
 }
 
+/// Handle a failed `vkQueueSubmit`. `ERROR_DEVICE_LOST` means the GPU
+/// faulted (driver bug or hung shader): nothing can be recovered on this
+/// device, so report which adapter died and how to pick another instead
+/// of a bare panic backtrace.
+pub(crate) fn queue_submit_failed(shared: &VkShared, what: &str, err: vk::Result) -> ! {
+    if err == vk::Result::ERROR_DEVICE_LOST {
+        let name = physical_device_name(&shared.instance, shared.physical_device);
+        tracing::error!(
+            "Vulkan device lost during {what} on '{name}'. The GPU driver \
+             faulted; relaunch with RIO_VULKAN_DEVICE=<name or index> to pick \
+             a different adapter."
+        );
+        eprintln!(
+            "error: Vulkan device lost on '{name}' ({what}). Relaunch with \
+             RIO_VULKAN_DEVICE=<name or index> to use another GPU."
+        );
+        std::process::exit(1);
+    }
+    panic!("{what}: {err:?}");
+}
+
 fn physical_device_name(instance: &Instance, device: vk::PhysicalDevice) -> String {
     let props = unsafe { instance.get_physical_device_properties(device) };
     // `device_name` is a C string embedded in a fixed-size array.
@@ -1391,14 +1414,31 @@ fn create_device(
     // the feature enabled, the v2 barrier calls are silently ignored,
     // the swapchain image stays in UNDEFINED layout, and the compositor
     // discards the present — visible as "first frame and stops."
+    // Robust access: the text shader `texelFetch`es atlas pages with
+    // host-supplied coordinates and the vertex stage fetches instance
+    // data. Without robustness an out-of-range access is undefined
+    // behaviour, which hardware like NVIDIA's can turn into a fatal
+    // SM exception (`ERROR_DEVICE_LOST`) instead of returning zeros.
+    // Enable it wherever the driver exposes it.
+    let mut supported13 = vk::PhysicalDeviceVulkan13Features::default();
+    let mut supported =
+        vk::PhysicalDeviceFeatures2::default().push_next(&mut supported13);
+    unsafe { instance.get_physical_device_features2(physical_device, &mut supported) };
+    let robust_buffer = supported.features.robust_buffer_access == vk::TRUE;
+    let robust_image = supported13.robust_image_access == vk::TRUE;
+
     let mut vk13_features = vk::PhysicalDeviceVulkan13Features::default()
         .dynamic_rendering(true)
-        .synchronization2(true);
+        .synchronization2(true)
+        .robust_image_access(robust_image);
+    let base_features =
+        vk::PhysicalDeviceFeatures::default().robust_buffer_access(robust_buffer);
 
     let queue_infos = [queue_info];
     let create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
         .enabled_extension_names(&device_extensions)
+        .enabled_features(&base_features)
         .push_next(&mut vk13_features);
 
     unsafe { instance.create_device(physical_device, &create_info, None) }
