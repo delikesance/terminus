@@ -8,14 +8,15 @@ use terminus_ui::components::navigation::{
     drop_target, section_header, server_row, session_pill, view_tabs, MetaTone,
     PillState, RowMeta, RowState, TabSize, TabState,
 };
+use terminus_ui::components::identity::TileGlyph;
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::os_icons::OsGlyph;
 use terminus_ui::theme::{text_color, ChromeTheme};
-use terminus_ui::tokens::{font_size, radius, space};
+use terminus_ui::tokens::{font_size, space};
 
 use crate::renderer::chrome::{
-    draw_icon, draw_os_glyph, paint_flat, paint_surface_stroke,
+    draw_icon, paint_flat, paint_surface_stroke,
 };
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
@@ -35,8 +36,7 @@ fn text_top(cy: f32, size: f32) -> f32 {
     cy - size * 0.6
 }
 
-/// What the local stand-in tile shows (switch to the Identity component's
-/// tile after merge).
+/// What a server-row tile shows (mapped onto the Identity tile).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TileKind {
     /// This computer.
@@ -44,47 +44,26 @@ pub enum TileKind {
     /// A known OS / distro brand mark.
     Os(OsGlyph),
     /// Generic remote server.
+    #[allow(dead_code)]
     Server,
 }
 
-/// Local stand-in for the Identity tile: rounded square + glyph.
+/// Paint a server-row tile with the Identity component's tile (brand tint,
+/// accent when the row is active).
 pub fn paint_tile(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
     rect: &Rect,
     kind: TileKind,
     active: bool,
-    device_scale: f32,
+    _device_scale: f32,
 ) {
-    let r = radius::tile(rect.width).max(6.0).round();
-    let bg = if active { theme.accent } else { theme.raised };
-    fill(sugarloaf, rect, bg, r, DEPTH + 0.02);
-    let g = (rect.width * 0.57).round();
-    let at = IconPlacement::new(
-        rect.x + (rect.width - g) * 0.5,
-        rect.y + (rect.height - g) * 0.5,
-        g,
-    );
-    let mark = |normal: [f32; 4]| if active { theme.on_accent } else { normal };
-    match kind {
-        TileKind::Os(glyph) if glyph.has_mark() => {
-            draw_os_glyph(sugarloaf, glyph, at, mark(glyph.color()), device_scale)
-        }
-        TileKind::Local => draw_icon(
-            sugarloaf,
-            Icon::Monitor,
-            at,
-            mark(u8_to_f32([0xC3, 0xBA, 0xD6, 255])),
-            device_scale,
-        ),
-        _ => draw_icon(
-            sugarloaf,
-            Icon::Server,
-            at,
-            mark(u8_to_f32(theme.text_faint)),
-            device_scale,
-        ),
-    }
+    let glyph = match kind {
+        TileKind::Local => TileGlyph::Local,
+        TileKind::Os(g) => TileGlyph::from_os_glyph(g),
+        TileKind::Server => TileGlyph::Unknown,
+    };
+    super::identity::paint_tile(sugarloaf, theme, rect, glyph, active);
 }
 
 /// Soft drop shadow (`0 10px 24px rgba(0,0,0,.45)` approximated by layers).

@@ -20,12 +20,6 @@ pub const TRAILING_ICON: f32 = 16.0;
 pub const FOCUS_RING: f32 = 3.0;
 pub const FOCUS_RING_ALPHA: f32 = 0.18;
 pub const DISABLED_OPACITY: f32 = 0.5;
-pub const HOVER_BORDER: [f32; 4] = [
-    0x46 as f32 / 255.0,
-    0x3c as f32 / 255.0,
-    0x5e as f32 / 255.0,
-    1.0,
-];
 pub const CARET_WIDTH: f32 = 1.5;
 
 pub const SANS_VALUE_FONT: f32 = 15.0;
@@ -244,7 +238,7 @@ pub fn mask(chars: usize) -> String {
 pub fn border_color(theme: &crate::theme::ChromeTheme, state: FieldState) -> [f32; 4] {
     match state {
         FieldState::Default | FieldState::Filled => theme.line,
-        FieldState::Hover => HOVER_BORDER,
+        FieldState::Hover => theme.hover_border,
         FieldState::Focus => theme.accent,
         FieldState::Error => theme.danger_fill,
         FieldState::Disabled => theme.divider,
@@ -501,7 +495,7 @@ mod tests {
         let th = ChromeTheme::default();
         assert_eq!(border_color(&th, FieldState::Default), th.line);
         assert_eq!(border_color(&th, FieldState::Filled), th.line);
-        assert_eq!(border_color(&th, FieldState::Hover), HOVER_BORDER);
+        assert_eq!(border_color(&th, FieldState::Hover), th.hover_border);
         assert_eq!(border_color(&th, FieldState::Focus), th.accent);
         assert_eq!(border_color(&th, FieldState::Error), th.danger_fill);
         assert_eq!(border_color(&th, FieldState::Disabled), th.divider);
