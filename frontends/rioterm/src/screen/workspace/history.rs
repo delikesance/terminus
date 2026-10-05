@@ -28,6 +28,9 @@ impl Screen<'_> {
         let items = crate::history_worker::to_items(&entries, home.as_deref());
         self.history_view.set_items(items);
         self.history_view.scroll = 0.0;
+        // A filter typed for another machine (or visit) would hide rows.
+        self.history_view.filter.clear();
+        self.history_view.filter_focused = false;
         self.history_for = Some(machine_id.to_string());
     }
 
