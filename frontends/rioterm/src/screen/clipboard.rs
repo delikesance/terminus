@@ -44,6 +44,19 @@ impl Screen<'_> {
         self.context_manager.current_mut().set_selection(None);
     }
 
+    /// A clipboard / selection paste from a key or mouse binding. While a
+    /// view covers the terminal it goes to the view's focused field (a
+    /// pasted private key must land in Settings, not in the hidden shell).
+    pub fn paste_from_clipboard(&mut self, text: &str) {
+        if self.view_takes_keys() {
+            if !self.sftp_bridged() {
+                self.view_text(text);
+            }
+            return;
+        }
+        self.paste(text, true);
+    }
+
     #[inline]
     pub fn paste(&mut self, text: &str, bracketed: bool) {
         if self.search_active() {

@@ -100,10 +100,31 @@ impl Screen<'_> {
             return;
         }
 
-        if self.sftp.is_some() && key.state == ElementState::Pressed {
+        if self.sftp_bridged() && key.state == ElementState::Pressed {
             use crate::sftp_ui::SftpKey;
             use rio_window::keyboard::Key as WKey;
             use rio_window::keyboard::NamedKey;
+            use terminus_ui::components::overlay::DialogKey;
+
+            // A pending name conflict owns the keyboard (Esc / Enter / Tab).
+            if self
+                .sftp
+                .as_ref()
+                .is_some_and(|s| s.state.conflict.is_some())
+            {
+                let dk = match key.logical_key.as_ref() {
+                    WKey::Named(NamedKey::Escape) => Some(DialogKey::Escape),
+                    WKey::Named(NamedKey::Enter) => Some(DialogKey::Enter),
+                    WKey::Named(NamedKey::Tab)
+                    | WKey::Named(NamedKey::ArrowLeft)
+                    | WKey::Named(NamedKey::ArrowRight) => Some(DialogKey::Tab),
+                    _ => None,
+                };
+                if let Some(dk) = dk {
+                    self.sftp_conflict_key(dk);
+                }
+                return;
+            }
 
             // Inline name editor captures typing first.
             if self
@@ -130,6 +151,21 @@ impl Screen<'_> {
                         if let Some(s) = self.sftp.as_mut() {
                             let _ = s.name_edit_backspace();
                             self.mark_dirty();
+                        }
+                        return;
+                    }
+                    // Ctrl/Cmd chords are not text (Ctrl+A selects all).
+                    WKey::Character(c)
+                        if self.modifiers.state().control_key()
+                            || self.modifiers.state().super_key() =>
+                    {
+                        if c.eq_ignore_ascii_case("a") {
+                            if let Some(edit) =
+                                self.sftp.as_mut().and_then(|s| s.state.name_edit.as_mut())
+                            {
+                                edit.draft.select_all();
+                                self.mark_dirty();
+                            }
                         }
                         return;
                     }
@@ -187,6 +223,12 @@ impl Screen<'_> {
 
         let mode = self.get_mode();
         let mods = self.modifiers.state();
+
+        // Another view covers the terminal: key releases never reach the
+        // PTY (presses are routed after the bindings below).
+        if key.state == ElementState::Released && self.view_takes_keys() {
+            return;
+        }
 
         if key.state == ElementState::Released {
             if !mode.contains(Mode::REPORT_EVENT_TYPES)
@@ -270,6 +312,13 @@ impl Screen<'_> {
 
         let ignore_chars = self.process_key_bindings(key, &mode, mods, clipboard);
         if ignore_chars {
+            return;
+        }
+
+        // App bindings (palette, tabs, splits…) still work above; the
+        // rest goes to the view instead of the shell.
+        if self.view_takes_keys() {
+            self.view_key_input(key, clipboard);
             return;
         }
 
@@ -397,7 +446,7 @@ impl Screen<'_> {
                 && binding.action == Act::PasteSelection
             {
                 let content = clipboard.get(ClipboardType::Selection);
-                self.paste(&content, true);
+                self.paste_from_clipboard(&content);
             }
         }
     }
@@ -460,14 +509,14 @@ impl Screen<'_> {
                     }
                     Act::Paste => {
                         let content = clipboard.get(ClipboardType::Clipboard);
-                        self.paste(&content, true);
+                        self.paste_from_clipboard(&content);
                     }
                     Act::ClearSelection => {
                         self.clear_selection();
                     }
                     Act::PasteSelection => {
                         let content = clipboard.get(ClipboardType::Selection);
-                        self.paste(&content, true);
+                        self.paste_from_clipboard(&content);
                     }
                     Act::Copy => {
                         self.copy_selection(ClipboardType::Clipboard, clipboard);
