@@ -3609,7 +3609,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     screen.chrome.panel.error = opened.err();
                                     route.request_overlay_redraw();
                                 }
-                                terminus_ui::PendingVaultAction::CreateVault => {
+                                terminus_ui::PendingVaultAction::CreateVault
+                                | terminus_ui::PendingVaultAction::UnlockVault => {
                                     route.request_overlay_redraw();
                                 }
                                 terminus_ui::PendingVaultAction::SaveSshKey => {
