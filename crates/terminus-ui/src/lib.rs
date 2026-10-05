@@ -31,6 +31,7 @@ pub mod icons;
 pub mod loading;
 pub mod os_icons;
 pub mod overlap;
+pub mod palette_view;
 pub mod settings;
 pub mod sftp_pane;
 pub mod sidebar;
