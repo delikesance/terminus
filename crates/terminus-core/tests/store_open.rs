@@ -223,3 +223,61 @@ async fn open_adds_updated_at_to_two_column_settings() {
     drop(pool);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn history(
+    command: &str,
+    host: Option<Uuid>,
+    kind: &str,
+    age_secs: i64,
+) -> terminus_core::models::HistoryEntry {
+    terminus_core::models::HistoryEntry {
+        id: Uuid::new_v4(),
+        command: command.to_string(),
+        cwd: Some("/srv".to_string()),
+        host_id: host,
+        session_kind: kind.to_string(),
+        created_at: Utc::now() - chrono::Duration::seconds(age_secs),
+    }
+}
+
+#[tokio::test]
+async fn history_is_listed_per_machine_newest_first() {
+    let dir = temp_dir("history");
+    let store = Store::open(dir).await.expect("open");
+    let ssh = Uuid::new_v4();
+    store
+        .insert_history(&history("old", None, "local", 30))
+        .await
+        .unwrap();
+    store
+        .insert_history(&history("new", None, "local", 5))
+        .await
+        .unwrap();
+    store
+        .insert_history(&history("remote", Some(ssh), "ssh", 10))
+        .await
+        .unwrap();
+    store
+        .insert_history(&history("distro", None, "wsl:Ubuntu", 10))
+        .await
+        .unwrap();
+
+    let local = store.list_history_for_machine("local", 10).await.unwrap();
+    assert_eq!(
+        local.iter().map(|e| e.command.as_str()).collect::<Vec<_>>(),
+        ["new", "old"]
+    );
+    let remote = store
+        .list_history_for_machine(&ssh.to_string(), 10)
+        .await
+        .unwrap();
+    assert_eq!(remote.len(), 1);
+    assert_eq!(remote[0].command, "remote");
+    let wsl = store
+        .list_history_for_machine("wsl:Ubuntu", 10)
+        .await
+        .unwrap();
+    assert_eq!(wsl[0].command, "distro");
+    let limited = store.list_history_for_machine("local", 1).await.unwrap();
+    assert_eq!(limited.len(), 1);
+}
