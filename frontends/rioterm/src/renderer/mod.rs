@@ -34,6 +34,7 @@ pub mod sftp_pane;
 pub mod trail_cursor;
 pub mod ui_text;
 pub mod utils;
+pub mod views;
 #[cfg(target_os = "windows")]
 pub mod window_controls;
 

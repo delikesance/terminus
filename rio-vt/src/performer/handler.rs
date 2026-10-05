@@ -101,6 +101,15 @@ pub enum ScpUpdateMode {
     PresentationToData,
 }
 
+/// OSC 133 command boundaries the terminal tracks beyond row marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptPhase {
+    /// `OSC 133 ; B`: the prompt ended, the command line starts here.
+    CommandStart,
+    /// `OSC 133 ; C`: the command line was submitted.
+    CommandExecuted,
+}
+
 pub trait Handler {
     /// OSC to set window title.
     fn set_title(&mut self, _: Option<String>) {}
@@ -110,6 +119,9 @@ pub trait Handler {
 
     /// OSC 133: mark the cursor row as a semantic prompt row.
     fn set_semantic_prompt(&mut self, _: crate::crosswords::grid::row::SemanticPrompt) {}
+
+    /// OSC 133 `B` / `C`: command line boundaries.
+    fn prompt_phase(&mut self, _: PromptPhase) {}
 
     /// OSC 1337 SetUserVar: record a shell-provided variable.
     fn set_user_var(&mut self, _name: String, _value: String) {}
@@ -1172,6 +1184,8 @@ impl<U: Handler> Perform for Performer<'_, U> {
             b"133" => {
                 if let Some(mark) = osc::parse_semantic_prompt(params) {
                     self.handler.set_semantic_prompt(mark);
+                } else if let Some(phase) = osc::parse_prompt_phase(params) {
+                    self.handler.prompt_phase(phase);
                 }
             }
 
@@ -2485,6 +2499,14 @@ mod tests {
         // Accepted subcommands that set no row mark.
         assert_eq!(parse(&[b"133", b"B"]), None);
         assert_eq!(parse(&[b"133", b"C"]), None);
+
+        use crate::performer::handler::PromptPhase;
+        use crate::performer::osc::parse_prompt_phase as phase;
+        assert_eq!(phase(&[b"133", b"B"]), Some(PromptPhase::CommandStart));
+        assert_eq!(phase(&[b"133", b"C"]), Some(PromptPhase::CommandExecuted));
+        assert_eq!(phase(&[b"133", b"D", b"0"]), None);
+        assert_eq!(phase(&[b"133", b"A"]), None);
+        assert_eq!(phase(&[b"133"]), None);
         assert_eq!(parse(&[b"133", b"D", b"0"]), None);
         assert_eq!(parse(&[b"133"]), None);
         assert_eq!(parse(&[b"133", b""]), None);

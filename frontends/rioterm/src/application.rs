@@ -887,6 +887,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     }
                 }
             }
+            RioEventType::Rio(RioEvent::CommandSubmitted {
+                route_id,
+                command,
+                cwd,
+            }) => {
+                if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    route
+                        .window
+                        .screen
+                        .record_submitted_command(route_id, &command, cwd);
+                }
+            }
             RioEventType::Rio(RioEvent::SelectionScrollTick) => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
                     route.window.screen.selection_scroll_tick();

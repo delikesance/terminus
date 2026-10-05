@@ -247,6 +247,15 @@ pub enum RioEvent {
     /// Progress bar report from OSC 9;4 sequence
     ProgressReport(ProgressReport),
 
+    /// A command line was submitted in a shell that emits OSC 133 (B then C).
+    /// `command` is the text between the prompt end and the cursor, `cwd`
+    /// the last OSC 7 directory.
+    CommandSubmitted {
+        route_id: usize,
+        command: String,
+        cwd: Option<String>,
+    },
+
     /// Terminal bell ring.
     Bell,
 
@@ -319,6 +328,9 @@ impl Debug for RioEvent {
             }
             RioEvent::ProgressReport(report) => {
                 write!(f, "ProgressReport({:?})", report)
+            }
+            RioEvent::CommandSubmitted { route_id, .. } => {
+                write!(f, "CommandSubmitted({route_id})")
             }
             RioEvent::MouseCursorDirty => write!(f, "MouseCursorDirty"),
             RioEvent::ResetTitle => write!(f, "ResetTitle"),
