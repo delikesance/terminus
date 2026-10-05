@@ -906,10 +906,8 @@ fn connect_options_for_host(
             });
         }
         HostAuthMethod::Key => {
-            let (pem, passphrase) = identity_pem.ok_or_else(|| {
-                "No saved SSH key — edit the host and select one (Settings → Managed SSH Keys)"
-                    .to_string()
-            })?;
+            let (pem, passphrase) =
+                identity_pem.ok_or_else(|| crate::hosts::msg::NO_SSH_KEY.to_string())?;
             auth.identity_pem = Some(pem);
             auth.identity_passphrase = passphrase;
         }
