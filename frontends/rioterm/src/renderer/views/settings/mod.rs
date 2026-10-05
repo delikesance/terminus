@@ -65,6 +65,18 @@ pub fn press(
     with_measure(sugarloaf, |m| view.press(content, m, x, y))
 }
 
+/// Pointer shape over the Settings content (hand on controls, I-beam on
+/// fields).
+pub fn cursor_at(
+    sugarloaf: &mut Sugarloaf,
+    content: Rect,
+    view: &SettingsView,
+    x: f32,
+    y: f32,
+) -> terminus_ui::ChromeCursor {
+    with_measure(sugarloaf, |m| view.cursor_at(content, m, x, y))
+}
+
 /// Pointer move; true when a repaint is needed.
 pub fn hover(
     sugarloaf: &mut Sugarloaf,

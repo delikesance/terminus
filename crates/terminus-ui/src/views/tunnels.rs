@@ -777,6 +777,32 @@ impl TunnelsState {
         }
     }
 
+    /// Pointer shape at `(x, y)`: a hand over buttons, segments and cards
+    /// (a card press opens it for editing), an I-beam over form fields.
+    pub fn cursor_at(
+        &self,
+        content: Rect,
+        x: f32,
+        y: f32,
+    ) -> crate::chrome::ChromeCursor {
+        use crate::chrome::ChromeCursor;
+        let m = self.metrics.get();
+        if let Some(form) = &self.form {
+            let l = dialog_layout(content, form, &m);
+            return match dialog_hit(&l, form, x, y) {
+                DialogHit::Field(_) => ChromeCursor::Text,
+                DialogHit::Kind(_) | DialogHit::Cancel | DialogHit::Confirm => {
+                    ChromeCursor::Pointer
+                }
+                DialogHit::Inside | DialogHit::Outside => ChromeCursor::Default,
+            };
+        }
+        match list_hit(content, &self.items, &m, x, y) {
+            Some(_) => ChromeCursor::Pointer,
+            None => ChromeCursor::Default,
+        }
+    }
+
     /// Pointer move; true when the hover changed (repaint).
     pub fn hover(&mut self, content: Rect, x: f32, y: f32) -> bool {
         let next = self.hover_at(content, x, y);
@@ -887,6 +913,36 @@ mod tests {
 
     fn free(_: u16) -> bool {
         true
+    }
+
+    #[test]
+    fn list_and_dialog_controls_show_a_hand_fields_an_i_beam() {
+        use crate::chrome::ChromeCursor;
+        let mut s = TunnelsState::new("jerem prod");
+        s.items = vec![item("a", TunnelKind::Local, TunnelStatus::Running)];
+        let m = s.metrics.get();
+        let mid = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+        let l = list_layout(content(), 1, &m);
+        let (x, y) = mid(l.new_button);
+        assert_eq!(s.cursor_at(content(), x, y), ChromeCursor::Pointer);
+        let (x, y) = mid(l.cards[0]);
+        assert_eq!(s.cursor_at(content(), x, y), ChromeCursor::Pointer);
+        assert_eq!(
+            s.cursor_at(content(), content().x + 2.0, content().bottom() - 2.0),
+            ChromeCursor::Default
+        );
+
+        s.open_new();
+        let form = s.form.clone().unwrap();
+        let d = dialog_layout(content(), &form, &m);
+        let (x, y) = mid(d.confirm);
+        assert_eq!(s.cursor_at(content(), x, y), ChromeCursor::Pointer);
+        let (x, y) = mid(d.cancel);
+        assert_eq!(s.cursor_at(content(), x, y), ChromeCursor::Pointer);
+        let (x, y) = mid(d.local.box_rect);
+        assert_eq!(s.cursor_at(content(), x, y), ChromeCursor::Text);
+        let (x, y) = mid(d.title);
+        assert_eq!(s.cursor_at(content(), x, y), ChromeCursor::Default);
     }
 
     #[test]

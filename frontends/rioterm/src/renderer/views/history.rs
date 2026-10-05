@@ -4,7 +4,6 @@
 //! list component's history row (with a real "Run again" button) and the
 //! filter is the input component's search box.
 
-
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::input::SearchKind;
 use terminus_ui::components::list::HISTORY_ROW_HEIGHT;
@@ -217,6 +216,17 @@ pub fn pointer_press(
 ) -> Option<HistoryAction> {
     let h = hit(s, content, state, x, y);
     ui::press(state, h)
+}
+
+/// Pointer shape at `(x, y)` (hand over "Run again", I-beam on the filter).
+pub fn cursor_at(
+    s: &mut Sugarloaf,
+    content: Rect,
+    state: &HistoryState,
+    x: f32,
+    y: f32,
+) -> terminus_ui::ChromeCursor {
+    ui::cursor_for(hit(s, content, state, x, y))
 }
 
 /// Pointer move; `true` when the hover state changed (needs a redraw).

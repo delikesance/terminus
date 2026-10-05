@@ -106,6 +106,52 @@ impl Screen<'_> {
         self.chrome.shell.view_owns(x, y) && !self.sftp_bridged()
     }
 
+    /// Pointer shape over the views whose hit tests need measured text
+    /// (Settings, History) or live in the frontend (Tunnels). `None`
+    /// leaves the decision to [`Self::chrome_cursor_at`].
+    pub fn view_cursor_at(
+        &mut self,
+        x: f32,
+        y: f32,
+    ) -> Option<rio_window::window::CursorIcon> {
+        if !self.view_owns(x, y)
+            || self.chrome_overlay_dialog_open()
+            || self.chrome.confirm.is_some()
+            || self.chrome.context_menu.is_some()
+        {
+            return None;
+        }
+        let content = self.chrome.shell.content_rect();
+        let cursor = match self.chrome.shell.view() {
+            WorkspaceView::Settings(_) => crate::renderer::views::settings::cursor_at(
+                &mut self.sugarloaf,
+                content,
+                &self.settings_view,
+                x,
+                y,
+            ),
+            WorkspaceView::History => crate::renderer::views::history::cursor_at(
+                &mut self.sugarloaf,
+                content,
+                &self.history_view,
+                x,
+                y,
+            ),
+            WorkspaceView::Tunnels => self
+                .tunnels
+                .as_ref()
+                .filter(|c| c.host_id().is_some())?
+                .state()
+                .cursor_at(content, x, y),
+            _ => return None,
+        };
+        Some(match cursor {
+            terminus_ui::ChromeCursor::Pointer => rio_window::window::CursorIcon::Pointer,
+            terminus_ui::ChromeCursor::Text => rio_window::window::CursorIcon::Text,
+            terminus_ui::ChromeCursor::Default => rio_window::window::CursorIcon::Default,
+        })
+    }
+
     /// Files shows the legacy SFTP pane while a session is open.
     pub(crate) fn sftp_bridged(&self) -> bool {
         self.sftp.is_some() && self.chrome.shell.view() == WorkspaceView::Files

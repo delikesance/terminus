@@ -232,6 +232,17 @@ pub fn hit_test(
     HistoryHit::Background
 }
 
+/// Pointer shape for what is under it: "Run again" is a hand, the filter
+/// an I-beam.
+pub fn cursor_for(hit: HistoryHit) -> crate::chrome::ChromeCursor {
+    use crate::chrome::ChromeCursor;
+    match hit {
+        HistoryHit::RunAgain(_) => ChromeCursor::Pointer,
+        HistoryHit::Filter => ChromeCursor::Text,
+        HistoryHit::Row(_) | HistoryHit::Background => ChromeCursor::Default,
+    }
+}
+
 /// Press: focus handling plus the action a "Run again" press produces.
 pub fn press(state: &mut HistoryState, hit: HistoryHit) -> Option<HistoryAction> {
     state.filter_focused = hit == HistoryHit::Filter;
@@ -442,6 +453,15 @@ mod tests {
             hit_test(CONTENT, &s, &cwd_w, btn, 5.0, 5.0),
             HistoryHit::Background
         );
+    }
+
+    #[test]
+    fn run_again_is_a_hand_and_the_filter_an_i_beam() {
+        use crate::chrome::ChromeCursor;
+        assert_eq!(cursor_for(HistoryHit::RunAgain(0)), ChromeCursor::Pointer);
+        assert_eq!(cursor_for(HistoryHit::Filter), ChromeCursor::Text);
+        assert_eq!(cursor_for(HistoryHit::Row(0)), ChromeCursor::Default);
+        assert_eq!(cursor_for(HistoryHit::Background), ChromeCursor::Default);
     }
 
     #[test]
