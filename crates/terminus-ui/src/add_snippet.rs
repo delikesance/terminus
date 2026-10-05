@@ -42,10 +42,13 @@ pub struct SnippetFormValues {
 impl Default for AddSnippetForm {
     fn default() -> Self {
         Self {
-            inner: DynamicFormState::new("Configure New Snippet", "Save")
-                .with_field("name", "Snippet Name", "")
-                .with_field("command", "Command (e.g. docker ps)", "")
-                .with_field("description", "Description", ""),
+            inner: DynamicFormState::new("New snippet", "Save snippet")
+                .with_field("name", "Title", "")
+                .with_placeholder("Restart the web server")
+                .with_field("command", "Command", "")
+                .with_placeholder("sudo systemctl restart nginx")
+                .with_field("description", "Description", "")
+                .with_placeholder("Optional"),
         }
     }
 }

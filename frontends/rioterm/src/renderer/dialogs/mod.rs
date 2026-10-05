@@ -19,7 +19,9 @@ use crate::renderer::components::Layer;
 
 pub mod confirm;
 pub mod conflict;
+pub mod connection;
 pub mod context_menu;
+pub mod snippet;
 pub mod vault;
 
 /// Draw order of every re-skinned modal (above the chrome's own dialogs).

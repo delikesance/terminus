@@ -943,6 +943,7 @@ impl Renderer {
 
         self.assistant.render(
             sugarloaf,
+            &self.chrome_theme,
             (window_size.width, window_size.height, scale_factor),
         );
 
@@ -971,6 +972,7 @@ impl Renderer {
 
         self.command_palette.render(
             sugarloaf,
+            &self.chrome_theme,
             (window_size.width, window_size.height, scale_factor),
         );
 
