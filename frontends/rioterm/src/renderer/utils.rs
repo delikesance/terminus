@@ -11,10 +11,10 @@ pub fn padding_top_from_config(
     #[allow(unused)] num_tabs: usize,
     #[allow(unused)] macos_use_unified_titlebar: bool,
 ) -> f32 {
-    // Tab mode reserves a thin context bar (no horizontal tab island).
+    // Tab mode: the Terminus shell's header + session pills sit above
+    // the grid (`terminus_ui::shell::layout::grid_insets`).
     if navigation.is_enabled() {
-        use crate::renderer::island::CONTEXT_BAR_HEIGHT;
-        return CONTEXT_BAR_HEIGHT + padding_y_top;
+        return terminus_ui::shell::grid_insets().top + padding_y_top;
     }
 
     let default_padding = constants::PADDING_Y + padding_y_top;
@@ -33,6 +33,26 @@ pub fn padding_top_from_config(
     }
 
     default_padding
+}
+
+/// Bottom grid margin: the config margin plus the shell's card gutter.
+#[inline]
+pub fn padding_bottom_from_config(navigation: &Navigation, padding_y_bottom: f32) -> f32 {
+    if navigation.is_enabled() {
+        terminus_ui::shell::grid_insets().bottom + padding_y_bottom
+    } else {
+        padding_y_bottom
+    }
+}
+
+/// Right grid margin: the config margin plus the shell's card gutter.
+#[inline]
+pub fn padding_right_from_config(navigation: &Navigation, padding_right: f32) -> f32 {
+    if navigation.is_enabled() {
+        terminus_ui::shell::grid_insets().right + padding_right
+    } else {
+        padding_right
+    }
 }
 
 #[inline]

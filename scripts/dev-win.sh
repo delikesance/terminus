@@ -43,7 +43,7 @@ fi
 
 TARGET="x86_64-pc-windows-msvc"
 PACKAGE="rioterm"
-ARTIFACT="$ROOT/target/$TARGET/debug/rio.exe"
+ARTIFACT="$ROOT/target/$TARGET/debug/terminus.exe"
 # wgpu is forced on for Windows via target-specific deps; keep an override hook.
 FEATURES="${TERMINUS_DEV_WIN_FEATURES:-}"
 DEPLOY_DIR="${TERMINUS_DEV_WIN_DEPLOY_DIR:-}"

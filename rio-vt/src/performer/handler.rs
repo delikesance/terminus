@@ -101,6 +101,15 @@ pub enum ScpUpdateMode {
     PresentationToData,
 }
 
+/// OSC 133 command boundaries the terminal tracks beyond row marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptPhase {
+    /// `OSC 133 ; B`: the prompt ended, the command line starts here.
+    CommandStart,
+    /// `OSC 133 ; C`: the command line was submitted.
+    CommandExecuted,
+}
+
 pub trait Handler {
     /// OSC to set window title.
     fn set_title(&mut self, _: Option<String>) {}
@@ -110,6 +119,13 @@ pub trait Handler {
 
     /// OSC 133: mark the cursor row as a semantic prompt row.
     fn set_semantic_prompt(&mut self, _: crate::crosswords::grid::row::SemanticPrompt) {}
+
+    /// OSC 133 `B` / `C`: command line boundaries.
+    fn prompt_phase(&mut self, _: PromptPhase) {}
+
+    /// OSC 633 `E`: the command line the shell is about to run, sent
+    /// explicitly (preferred over reading it off the screen at `C`).
+    fn command_line(&mut self, _command: String) {}
 
     /// OSC 1337 SetUserVar: record a shell-provided variable.
     fn set_user_var(&mut self, _name: String, _value: String) {}
@@ -1172,6 +1188,19 @@ impl<U: Handler> Perform for Performer<'_, U> {
             b"133" => {
                 if let Some(mark) = osc::parse_semantic_prompt(params) {
                     self.handler.set_semantic_prompt(mark);
+                } else if let Some(phase) = osc::parse_prompt_phase(params) {
+                    // `C;cmdline_url=…` (fish 4, kitty) names the command.
+                    if let Some(command) = osc::parse_command_line(params) {
+                        self.handler.command_line(command);
+                    }
+                    self.handler.prompt_phase(phase);
+                }
+            }
+
+            // OSC 633 - VS Code shell integration; only `E` (command line).
+            b"633" => {
+                if let Some(command) = osc::parse_command_line(params) {
+                    self.handler.command_line(command);
                 }
             }
 
@@ -2485,9 +2514,71 @@ mod tests {
         // Accepted subcommands that set no row mark.
         assert_eq!(parse(&[b"133", b"B"]), None);
         assert_eq!(parse(&[b"133", b"C"]), None);
+
+        use crate::performer::handler::PromptPhase;
+        use crate::performer::osc::parse_prompt_phase as phase;
+        assert_eq!(phase(&[b"133", b"B"]), Some(PromptPhase::CommandStart));
+        assert_eq!(phase(&[b"133", b"C"]), Some(PromptPhase::CommandExecuted));
+        assert_eq!(phase(&[b"133", b"D", b"0"]), None);
+        assert_eq!(phase(&[b"133", b"A"]), None);
+        assert_eq!(phase(&[b"133"]), None);
         assert_eq!(parse(&[b"133", b"D", b"0"]), None);
         assert_eq!(parse(&[b"133"]), None);
         assert_eq!(parse(&[b"133", b""]), None);
+    }
+
+    #[test]
+    fn explicit_command_line_parsing() {
+        use crate::performer::osc::parse_command_line as cmd;
+        assert_eq!(
+            cmd(&[b"633", b"E", b"git status"]),
+            Some("git status".into())
+        );
+        // `;` and `\` arrive escaped, as do control characters.
+        assert_eq!(
+            cmd(&[b"633", b"E", br"echo a\x3bb \\n"]),
+            Some(r"echo a;b \n".into())
+        );
+        assert_eq!(
+            cmd(&[b"633", b"E", br"for i in 1 2\x0ado echo\x09$i"]),
+            Some("for i in 1 2\ndo echo\t$i".into())
+        );
+        // UTF-8 passes through; an escaped multi-byte sequence decodes.
+        assert_eq!(cmd(&[b"633", b"E", "ls é".as_bytes()]), Some("ls é".into()));
+        assert_eq!(cmd(&[b"633", b"E", br"ls \xc3\xa9"]), Some("ls é".into()));
+        // A trailing nonce (VS Code) is ignored; a bad escape stays literal.
+        assert_eq!(cmd(&[b"633", b"E", b"ls", b"nonce"]), Some("ls".into()));
+        assert_eq!(cmd(&[b"633", b"E", br"a\xZZ"]), Some(r"a\xZZ".into()));
+        // Empty text, other subcommands and other OSCs carry no command.
+        assert_eq!(cmd(&[b"633", b"E", b""]), None);
+        assert_eq!(cmd(&[b"633", b"E"]), None);
+        assert_eq!(cmd(&[b"633", b"C"]), None);
+        // fish 4 / kitty: `133;C;cmdline_url=<percent-encoded>`.
+        assert_eq!(
+            cmd(&[b"133", b"C", b"cmdline_url=echo%20%22a%3Bb%5C%22"]),
+            Some(r#"echo "a;b\""#.into())
+        );
+        assert_eq!(
+            cmd(&[b"133", b"C", b"aid=3", b"cmdline_url=ls"]),
+            Some("ls".into())
+        );
+        assert_eq!(cmd(&[b"133", b"C"]), None);
+        assert_eq!(cmd(&[b"133", b"B", b"cmdline_url=ls"]), None);
+    }
+
+    #[test]
+    fn osc_633_e_reaches_the_handler() {
+        #[derive(Default)]
+        struct H(Vec<String>);
+        impl Handler for H {
+            fn command_line(&mut self, command: String) {
+                self.0.push(command);
+            }
+        }
+        let mut handler = H::default();
+        let mut processor = Processor::default();
+        processor.advance(&mut handler, b"\x1b]633;E;echo a\\x3bb\x07");
+        assert_eq!(handler.0, vec!["echo a;b".to_string()]);
     }
 
     #[test]

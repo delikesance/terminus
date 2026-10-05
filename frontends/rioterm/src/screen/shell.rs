@@ -52,30 +52,23 @@ impl Screen<'_> {
                     match self.host_store.resolve_host_password(id)? {
                         Some(pw) => Some(pw),
                         None => {
-                            return Err(
-                                "No saved password — edit the host and save one (vault unlocked)"
-                                    .into(),
-                            );
+                            return Err(crate::hosts::msg::NO_PASSWORD.into());
                         }
                     }
                 } else {
                     None
                 };
-                let identity = if host.auth_method == "password"
-                    || host.auth_method == "gssapi"
-                {
-                    None
-                } else {
-                    match self.host_store.resolve_host_identity(id)? {
-                        Some(pair) => Some(pair),
-                        None => {
-                            return Err(
-                                "No saved SSH key — edit the host and select one (Settings → Managed SSH Keys)"
-                                    .into(),
-                            );
+                let identity =
+                    if host.auth_method == "password" || host.auth_method == "gssapi" {
+                        None
+                    } else {
+                        match self.host_store.resolve_host_identity(id)? {
+                            Some(pair) => Some(pair),
+                            None => {
+                                return Err(crate::hosts::msg::NO_SSH_KEY.into());
+                            }
                         }
-                    }
-                };
+                    };
                 let (shell, env) = ssh_shell(
                     host,
                     password.as_deref(),

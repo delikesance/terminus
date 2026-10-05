@@ -444,6 +444,16 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        sqlx::query(
+            "UPDATE port_forwards SET deleted_at = ?, updated_at = ? \
+             WHERE host_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::DatabaseError(e.to_string()))?;
         tx.commit()
             .await
             .map_err(|e| Error::DatabaseError(e.to_string()))?;
@@ -868,23 +878,33 @@ impl Store {
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
-        Ok(rows
-            .into_iter()
-            .filter_map(|r| -> Option<HistoryEntry> {
-                Some(HistoryEntry {
-                    id: row_uuid(&r, "id")?,
-                    command: r.try_get("command").ok()?,
-                    cwd: r.try_get("cwd").ok()?,
-                    host_id: r
-                        .try_get::<Option<String>, _>("host_id")
-                        .ok()
-                        .flatten()
-                        .and_then(|s| Uuid::parse_str(&s).ok()),
-                    session_kind: r.try_get("session_kind").ok()?,
-                    created_at: row_ts(&r, "created_at")?,
-                })
-            })
-            .collect())
+        Ok(rows.into_iter().filter_map(history_from_row).collect())
+    }
+
+    /// Newest-first history of one machine (a sidebar row id: `local`,
+    /// `wsl:<distro>` or a host uuid), see [`crate::history::machine_columns`].
+    pub async fn list_history_for_machine(
+        &self,
+        row_id: &str,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>> {
+        let (host_id, kind) = crate::history::machine_columns(row_id);
+        let query = match host_id {
+            Some(id) => sqlx::query(
+                "SELECT * FROM history WHERE host_id = ? ORDER BY created_at DESC LIMIT ?",
+            )
+            .bind(id.to_string()),
+            None => sqlx::query(
+                "SELECT * FROM history WHERE host_id IS NULL AND session_kind = ? ORDER BY created_at DESC LIMIT ?",
+            )
+            .bind(kind),
+        };
+        let rows = query
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        Ok(rows.into_iter().filter_map(history_from_row).collect())
     }
 
     // --- Port Forward CRUD ---
@@ -914,6 +934,20 @@ impl Store {
         .execute(&self.pool)
         .await
         .map_err(|e| Error::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Tombstone a forward (soft delete; the bumped `updated_at` lets sync
+    /// order the deletion after every live copy).
+    pub async fn delete_forward(&self, id: Uuid) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE port_forwards SET deleted_at = ?, updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(&now)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::DatabaseError(e.to_string()))?;
         Ok(())
     }
 
@@ -1115,4 +1149,19 @@ impl Store {
             })
             .collect())
     }
+}
+
+fn history_from_row(r: sqlx::sqlite::SqliteRow) -> Option<HistoryEntry> {
+    Some(HistoryEntry {
+        id: row_uuid(&r, "id")?,
+        command: r.try_get("command").ok()?,
+        cwd: r.try_get("cwd").ok()?,
+        host_id: r
+            .try_get::<Option<String>, _>("host_id")
+            .ok()
+            .flatten()
+            .and_then(|s| Uuid::parse_str(&s).ok()),
+        session_kind: r.try_get("session_kind").ok()?,
+        created_at: row_ts(&r, "created_at")?,
+    })
 }

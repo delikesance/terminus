@@ -15,12 +15,13 @@
 //! focus model here means they can be tested without a window, a GPU or
 //! a database.
 
-pub mod activity_bar;
 pub mod add_host;
 pub mod add_snippet;
 pub mod anim;
 pub mod button;
 pub mod chrome;
+pub mod components;
+pub mod confirm;
 pub mod connection;
 pub mod context_menu;
 pub mod dialog_form;
@@ -29,17 +30,19 @@ pub mod icons;
 pub mod loading;
 pub mod os_icons;
 pub mod overlap;
+pub mod palette_view;
+pub mod screens;
 pub mod settings;
+pub mod shell;
 pub mod sftp_pane;
 pub mod sidebar;
 pub mod snippets;
 pub mod text_field;
 pub mod theme;
+pub mod tokens;
 pub mod vault_unlock;
+pub mod views;
 
-pub use activity_bar::{
-    ActivityBarState, RailAction, RailHit, Section, SECTIONS, TOP_SECTIONS,
-};
 pub use add_host::{
     auth_method_label, AddHostForm, AddHostHit, AddHostLayout, AddHostStep, Field,
     FormInput, FormOutcome, HostFormValues, AUTH_METHODS, BASE_FIELDS, STEPS,
@@ -69,7 +72,7 @@ pub use settings::{
 };
 pub use sftp_pane::{
     hit_is_clickable, hit_is_text, join_remote, parent_path, SftpBackend,
-    SftpClickResult, SftpConflictKind, SftpConflictPrompt, SftpDrag, SftpFocus, SftpHit,
+    SftpClickResult, SftpConflictKey, SftpConflictKind, SftpConflictPrompt, SftpDrag, SftpFocus, SftpHit,
     SftpNameEdit, SftpNameKind, SftpPaneLayout, SftpPaneState, SftpRow, SftpSideState,
     BTN_GAP, BTN_SIZE, FOOTER_HEIGHT, HEADER_HEIGHT, PANE_GAP, PANE_PAD, ROW_HEIGHT,
     SFTP_DRAG_THRESHOLD, TOOLBAR_HEIGHT,
