@@ -513,7 +513,8 @@ impl Screen<'_> {
         self.chrome.panel.follow_session(tab_index, &id);
     }
 
-    /// Advance host→group snap tween; returns a persist action when done.
+    /// Advance a host drag (edge auto-scroll; legacy snap tween); returns
+    /// a persist action when done.
     pub(super) fn tick_host_drag_animation(
         &mut self,
     ) -> Option<terminus_ui::chrome::ChromeAction> {
@@ -522,7 +523,7 @@ impl Screen<'_> {
             .panel
             .host_drag
             .as_ref()
-            .is_some_and(|d| d.is_snapping())
+            .is_some_and(|d| d.is_snapping() || d.started())
         {
             self.host_drag_anim_at = None;
             return None;

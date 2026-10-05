@@ -391,6 +391,13 @@ impl Screen<'_> {
         self.chrome.handle_wheel(height, x, y, lines)
     }
 
+    /// Route a pixel wheel delta (touchpad). Returns whether the chrome
+    /// consumed it.
+    pub fn chrome_wheel_pixels(&mut self, x: f32, y: f32, dy: f32) -> bool {
+        let (_, height) = self.chrome_viewport();
+        self.chrome.handle_wheel_pixels(height, x, y, dy)
+    }
+
     /// Chrome-aware cursor under logical `(x, y)`. `None` means the
     /// pointer is over the terminal grid and [`Self::mouse_cursor_icon`]
     /// should decide.

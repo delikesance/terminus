@@ -207,6 +207,8 @@ pub struct Chrome {
     pub shell: crate::shell::Shell,
     /// State of the non-terminal views (Files, Snippets, Settings, …).
     pub screens: crate::screens::Screens,
+    /// Machine id last scrolled into view by [`Self::reveal_machine`].
+    pub revealed_machine: Option<String>,
 }
 
 impl Default for Chrome {
@@ -227,6 +229,7 @@ impl Default for Chrome {
             last_window_width: 1200.0,
             shell: crate::shell::Shell::default(),
             screens: crate::screens::Screens::default(),
+            revealed_machine: None,
         }
     }
 }
@@ -1488,8 +1491,33 @@ impl Chrome {
         }
     }
 
-    /// Kept for the animation loop; host-drag no longer uses a snap tween.
-    pub fn tick_host_drag(&mut self, _dt: f32) -> Option<ChromeAction> {
+    /// Per-frame drag tick: while a host is dragged near the top or
+    /// bottom edge of the machine list, scroll the list and retarget the
+    /// drop under the (still) pointer. Never produces an action.
+    pub fn tick_host_drag(&mut self, dt: f32) -> Option<ChromeAction> {
+        let Some(drag) = self.panel.host_drag.as_ref() else {
+            return None;
+        };
+        if !matches!(drag.phase, crate::sidebar::HostDragPhase::Dragging) {
+            return None;
+        }
+        let (x, y) = (drag.current_x, drag.current_y);
+        // The frontend keeps the window size current every frame.
+        let window_height = self.shell.window.1;
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        let speed = self.panel.drag_autoscroll_speed(origin_y, height, y);
+        if speed == 0.0 {
+            return None;
+        }
+        let before = self.panel.scroll;
+        self.panel.scroll_by(speed * dt, origin_y, height);
+        if self.panel.scroll != before {
+            let target = self.panel.drop_target_at(origin_y, height, x, y);
+            if let Some(drag) = self.panel.host_drag.as_mut() {
+                drag.drop_target = target;
+            }
+        }
         None
     }
 
@@ -1503,6 +1531,44 @@ impl Chrome {
                 .is_some_and(|d| d.started() && !d.is_snapping())
     }
 
+    /// Scroll the selected machine's row into view when the selection
+    /// changed (palette, tab switch, a new session). Only once per
+    /// change: the user may then scroll the list away freely. An id
+    /// without a row (yet) is retried on the next call.
+    pub fn reveal_machine(&mut self, id: &str, window_height: f32) -> bool {
+        if self.revealed_machine.as_deref() == Some(id) {
+            return false;
+        }
+        let Some(index) = self.panel.row_of_host(id) else {
+            return false;
+        };
+        if !self.panel.visible_row_indices().contains(&index) {
+            return false;
+        }
+        self.revealed_machine = Some(id.to_string());
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        self.panel.reveal_row(index, origin_y, height)
+    }
+
+    /// Route a pixel wheel delta (touchpads; positive = content moves
+    /// down, i.e. scroll toward the top) over the panel.
+    pub fn handle_wheel_pixels(
+        &mut self,
+        window_height: f32,
+        x: f32,
+        y: f32,
+        dy: f32,
+    ) -> bool {
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        if !self.panel.rect(origin_y, height).contains(x, y) {
+            return false;
+        }
+        let before = self.panel.scroll;
+        self.panel.scroll_by(-dy, origin_y, height);
+        self.panel.scroll != before || self.panel.content_height() == 0.0
+    }
     /// Route a wheel notch over the panel; returns whether it was consumed.
     pub fn handle_wheel(
         &mut self,
@@ -2201,5 +2267,64 @@ mod tests {
             vec![ModalPaintLayer::HostEditor, ModalPaintLayer::Settings]
         );
         assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::Settings));
+    }
+
+    // ---- Polish 4: overflowing machine list ----
+
+    #[test]
+    fn a_machine_selected_elsewhere_is_scrolled_into_view_once() {
+        let mut chrome = chrome_with_hosts(30);
+        let h = 630.0;
+        // Selected from the palette: row 26 ("id-25") is below the fold.
+        assert!(chrome.reveal_machine("id-25", h));
+        let body = chrome.panel.body_rect(0.0, h);
+        assert!(chrome.panel.row_painted(0.0, h, 26));
+        assert!(chrome.panel.card_rect(0.0, 26).bottom() <= body.bottom() + 0.01);
+
+        // The user then scrolls away: the same selection does not pull
+        // the list back on every frame.
+        chrome.panel.scroll = 0.0;
+        assert!(!chrome.reveal_machine("id-25", h));
+        assert_eq!(chrome.panel.scroll, 0.0);
+
+        // Unknown ids (Local without a row, a collapsed group) are a no-op.
+        assert!(!chrome.reveal_machine("nope", h));
+    }
+
+    #[test]
+    fn pixel_wheel_deltas_scroll_the_list_too() {
+        let mut chrome = chrome_with_hosts(30);
+        let h = 630.0;
+        let row = chrome.panel.item_rect(0.0, 3);
+        // Touchpads send pixels, not lines (positive = content moves down).
+        assert!(chrome.handle_wheel_pixels(h, row.x + 10.0, row.y + 5.0, -30.0));
+        assert_eq!(chrome.panel.scroll, 30.0);
+        assert!(chrome.handle_wheel_pixels(h, row.x + 10.0, row.y + 5.0, 100.0));
+        assert_eq!(chrome.panel.scroll, 0.0);
+        // Outside the sidebar the terminal keeps the wheel.
+        assert!(!chrome.handle_wheel_pixels(h, 600.0, 300.0, -30.0));
+    }
+
+    #[test]
+    fn dragging_a_host_to_the_bottom_edge_auto_scrolls_and_retargets() {
+        let mut chrome = chrome_with_hosts(30);
+        let h = 630.0;
+        chrome.set_window_size(922.0, h);
+        let row = chrome.panel.card_rect(0.0, 2);
+        chrome.handle_press(1200.0, h, row.x + 20.0, row.y + 20.0);
+        let body = chrome.panel.body_rect(0.0, h);
+        let edge_y = body.bottom() - 3.0;
+        assert!(chrome.handle_drag_move(h, row.x + 20.0, edge_y));
+        let before = chrome.panel.drop_target_at(0.0, h, row.x + 20.0, edge_y);
+        for _ in 0..30 {
+            chrome.tick_host_drag(1.0 / 60.0);
+        }
+        assert!(chrome.panel.scroll > 0.0, "the list follows the dragged host");
+        let after = chrome.panel.host_drag.as_ref().unwrap().drop_target.clone();
+        assert!(after.is_some());
+        assert_ne!(after, before, "the drop target follows the scrolled rows");
+        // Released there, the drop lands on the row now under the pointer.
+        let action = chrome.handle_release(h, row.x + 20.0, edge_y);
+        assert!(matches!(action, ChromeAction::ReorderHost { .. }));
     }
 }

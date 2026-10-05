@@ -99,6 +99,9 @@ impl Screen<'_> {
         shell.pills = pills;
         shell.sync_ok = self.host_store.sync_connected();
         shell.machine = Some(machine.clone());
+        // A selection made elsewhere (palette, tab switch) scrolls the
+        // machine's row into view, once.
+        self.chrome.reveal_machine(&machine_id, h);
 
         // Files follows the selected machine: each one keeps its own
         // browser (parked ones keep running).
