@@ -635,6 +635,8 @@ pub struct Palette {
     pub groups: Vec<PaletteGroup>,
     /// Flat index of the highlighted item.
     pub selected: usize,
+    /// Query placeholder; `None` uses the default "Search servers and commands".
+    pub placeholder: Option<String>,
 }
 
 impl Palette {
@@ -643,6 +645,7 @@ impl Palette {
             query: query.into(),
             groups,
             selected: 0,
+            placeholder: None,
         }
     }
 

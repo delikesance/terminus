@@ -336,14 +336,9 @@ impl ConnectionSequence {
         }
     }
 
+    /// Label under each node: Local, Network, Handshake, Shell.
     pub fn step_label(&self, index: usize) -> &str {
-        match (self.kind, index) {
-            (_, 0) => "Local",
-            (ConnectKind::Ssh, 1) => "DNS",
-            (ConnectKind::Wsl, 1) => "Windows",
-            (_, 2) => "Handshake",
-            _ => self.title.as_str(),
-        }
+        crate::components::feedback::STEP_LABELS[index.min(STEP_COUNT - 1)]
     }
 
     pub fn hit_test(
@@ -445,6 +440,16 @@ impl ConnectionSequence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_labels_follow_the_design_line() {
+        let ssh = ConnectionSequence::start_ssh("h", "jerem prod", "ubuntu@1.2.3.4");
+        let wsl = ConnectionSequence::start_wsl("w", "Ubuntu", "WSL");
+        for seq in [&ssh, &wsl] {
+            let labels: Vec<&str> = (0..STEP_COUNT).map(|i| seq.step_label(i)).collect();
+            assert_eq!(labels, ["Local", "Network", "Handshake", "Shell"]);
+        }
+    }
 
     #[test]
     fn progress_hits_the_four_stops() {

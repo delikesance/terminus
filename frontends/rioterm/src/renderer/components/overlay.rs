@@ -272,7 +272,10 @@ pub fn paint_palette(
         sugarloaf.scale_factor(),
     );
     let (qtext, qcol) = if palette.query.is_empty() {
-        ("Search servers and commands", theme.text_faint)
+        (
+            palette.placeholder.as_deref().unwrap_or("Search servers and commands"),
+            theme.text_faint,
+        )
     } else {
         (palette.query.as_str(), theme.text)
     };
