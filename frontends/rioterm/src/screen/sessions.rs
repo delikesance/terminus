@@ -647,6 +647,9 @@ impl Screen<'_> {
                 self.close_tab_at(index, clipboard);
             }
         }
+        if let Some(tunnels) = self.tunnels.as_mut() {
+            tunnels.host_deleted(id);
+        }
         self.host_store.delete_host(id);
     }
 

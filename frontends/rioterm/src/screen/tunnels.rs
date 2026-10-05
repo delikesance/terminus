@@ -6,7 +6,6 @@ use crate::tunnel_worker::tunnel_ssh_args;
 use std::process::Command;
 use terminus_ui::views::tunnels::TunnelItem;
 
-#[allow(dead_code)] // called once the shell plugs the Tunnels view in
 impl Screen<'_> {
     /// `ssh -N -L/-R/-D …` for `item` on host `host_id`, using the host's
     /// user/port/identity/askpass from [`Screen::shell_for_row`] (the same

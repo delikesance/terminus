@@ -32,7 +32,6 @@ pub mod screens;
 pub mod scrollbar;
 pub mod search;
 pub mod shell;
-pub mod sftp_pane;
 pub mod trail_cursor;
 pub mod ui_text;
 pub mod utils;
@@ -474,11 +473,7 @@ impl Renderer {
         connecting_phase: Option<f32>,
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         window_maximized: bool,
-        sftp: Option<(
-            &terminus_ui::SftpPaneState,
-            &crate::renderer::views::files::FilesView,
-            terminus_ui::Rect,
-        )>,
+        views: &crate::renderer::screens::ViewStates,
     ) -> (Option<crate::context::renderable::WindowUpdate>, bool) {
         let mut any_panel_dirty = false;
         let grid = context_manager.current_grid_mut();
@@ -870,6 +865,7 @@ impl Renderer {
                 scale_factor,
                 card,
                 connecting_phase,
+                views,
             );
         }
 
@@ -908,15 +904,6 @@ impl Renderer {
             (window_size.width, window_size.height, scale_factor),
         );
 
-        if let Some((state, view, content)) = sftp {
-            crate::renderer::views::files::paint(
-                sugarloaf,
-                &self.chrome_theme,
-                content,
-                state,
-                view,
-            );
-        }
 
         // Terminus chrome (activity rail, host panel, add-host editor).
         // Painted from the same rectangles the mouse hit-tests against;

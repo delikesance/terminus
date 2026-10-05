@@ -22,7 +22,6 @@ impl Screen<'_> {
 
     /// Run again: type `command` into the active session and press Enter.
     /// The one place the History view's `RunAgain` action is executed.
-    #[allow(dead_code)]
     pub fn run_history_command(&mut self, command: &str) {
         // Strip control characters so a recorded line cannot inject escapes.
         let mut line: String = command.chars().filter(|c| !c.is_control()).collect();

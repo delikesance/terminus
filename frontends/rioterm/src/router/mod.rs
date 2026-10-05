@@ -375,18 +375,9 @@ impl Route<'_> {
                 true
             }
             // A view covering the terminal takes committed text (IME,
-            // dead keys) instead of the PTY. Text never triggers a view
-            // action today, so only the repaint is honoured here.
+            // dead keys) instead of the PTY.
             _ if self.window.screen.view_takes_keys() => {
-                let input = terminus_ui::screens::ViewInput::Key {
-                    key: terminus_ui::screens::ViewKey::Text(text.to_string()),
-                    mods: Default::default(),
-                };
-                if !matches!(
-                    self.window.screen.chrome.view_input(&input),
-                    terminus_ui::screens::ViewOutcome::Ignored
-                        | terminus_ui::screens::ViewOutcome::Consumed
-                ) {
+                if self.window.screen.view_text(text) {
                     self.request_overlay_redraw();
                 }
                 true
@@ -407,6 +398,10 @@ impl Route<'_> {
 
     #[inline]
     pub fn quit(&mut self) {
+        // process::exit skips Drop: stop the tunnels' ssh processes first.
+        if let Some(tunnels) = self.window.screen.tunnels.as_mut() {
+            tunnels.shutdown();
+        }
         self.window.screen.updater.run_exit_action();
         std::process::exit(0);
     }

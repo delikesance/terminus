@@ -151,6 +151,7 @@ impl Screen<'_> {
             if let Some(notice) = self.host_store.take_notice() {
                 if notice.starts_with("SSH key") {
                     self.chrome.settings.close_key_draft();
+                    self.settings_view.keys.close_draft();
                 }
                 self.chrome.panel.notice = Some(notice);
                 self.chrome.panel.error = None;
@@ -179,6 +180,17 @@ impl Screen<'_> {
                 }
             }
             if let Some(message) = self.host_store.error().map(str::to_string) {
+                if self.settings_view.keys.draft.is_some() {
+                    if message.contains("Unlock the vault")
+                        && !self.chrome.vault_unlock_is_open()
+                    {
+                        self.open_vault_unlock_for(
+                            terminus_ui::PendingVaultAction::SaveSshKey,
+                        );
+                    } else {
+                        self.settings_view.keys.set_draft_error(message.clone());
+                    }
+                }
                 if self.chrome.settings.key_drafting {
                     if message.contains("Unlock the vault")
                         && !self.chrome.vault_unlock_is_open()

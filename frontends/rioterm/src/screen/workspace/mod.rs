@@ -88,14 +88,16 @@ impl Screen<'_> {
         s.files.machine_name = machine.name.clone();
         s.files.can_browse = can_browse;
         s.files.session_open = self.sftp.is_some();
-        s.tunnels.machine_name = machine.name.clone();
-        s.history.machine_name = machine.name;
         if s.snippets.items != self.host_store.snippet_items {
             s.snippets.items = self.host_store.snippet_items.clone();
             s.snippets.hover = None;
             let content = self.chrome.shell.content_rect();
             s.snippets.scroll = s.snippets.scroll.min(s.snippets.max_scroll(content));
         }
+
+        self.sync_settings_view();
+        self.sync_history_view(&machine.id);
+        self.sync_tunnels(&machine, row.as_ref().is_some_and(|r| r.stored));
     }
 
     /// Whether a pointer event at `(x, y)` belongs to the view on screen
@@ -122,7 +124,38 @@ impl Screen<'_> {
 
     /// Route one input to the view. Returns whether to repaint.
     pub fn view_input(&mut self, input: ViewInput, clipboard: &mut Clipboard) -> bool {
-        match self.chrome.view_input(&input) {
+        let view = self.chrome.shell.view();
+        // Views whose input needs the frontend (text measure, processes).
+        let frontend = match view {
+            WorkspaceView::Settings(_) => {
+                Some(self.settings_view_input(&input, clipboard))
+            }
+            WorkspaceView::History => Some(self.history_view_input(&input)),
+            WorkspaceView::Tunnels => Some(self.tunnels_view_input(&input)),
+            _ => None,
+        };
+        let outcome = match frontend {
+            Some(ViewOutcome::Ignored)
+                if view.is_machine_view()
+                    && matches!(
+                        input,
+                        ViewInput::Key {
+                            key: terminus_ui::screens::ViewKey::Escape,
+                            ..
+                        }
+                    ) =>
+            {
+                // Esc a view ignores goes back to the terminal.
+                if self.show_view(WorkspaceView::Terminal) {
+                    ViewOutcome::Redraw
+                } else {
+                    ViewOutcome::Ignored
+                }
+            }
+            Some(outcome) => outcome,
+            None => self.chrome.view_input(&input),
+        };
+        match outcome {
             ViewOutcome::Ignored | ViewOutcome::Consumed => false,
             ViewOutcome::Redraw => true,
             ViewOutcome::Action(action) => {
@@ -132,13 +165,25 @@ impl Screen<'_> {
         }
     }
 
+    /// Committed text (IME, dead keys) for the view on screen. Text never
+    /// triggers an action that needs the clipboard. Returns whether to
+    /// repaint.
+    pub fn view_text(&mut self, text: &str) -> bool {
+        if self.sftp_bridged() {
+            return false;
+        }
+        let mut clipboard = rio_backend::clipboard::Clipboard::new_nop();
+        let input = ViewInput::Key {
+            key: terminus_ui::screens::ViewKey::Text(text.to_string()),
+            mods: Default::default(),
+        };
+        self.view_input(input, &mut clipboard)
+    }
+
     pub fn apply_view_action(&mut self, action: ViewAction, clipboard: &mut Clipboard) {
         match action {
             ViewAction::Files(a) => self.files_view_action(a, clipboard),
-            ViewAction::Tunnels(a) => self.tunnels_view_action(a, clipboard),
             ViewAction::Snippets(a) => self.snippets_view_action(a, clipboard),
-            ViewAction::History(a) => self.history_view_action(a, clipboard),
-            ViewAction::Settings(a) => self.settings_view_action(a, clipboard),
             ViewAction::Home(a) => self.home_view_action(a, clipboard),
         }
         self.mark_dirty();
