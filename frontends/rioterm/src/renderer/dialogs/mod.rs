@@ -22,6 +22,7 @@ use crate::renderer::chrome::{draw_icon, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
 pub mod confirm;
+pub mod conflict;
 
 /// Draw order of every re-skinned modal (above the chrome's own dialogs).
 pub const ORDER: u8 = 30;

@@ -146,6 +146,26 @@ impl Screen<'_> {
                 }
             }
 
+            // The name-conflict dialog owns Esc / Enter / Tab while it is open.
+            if self.sftp.as_ref().is_some_and(|s| s.state.conflict.is_some()) {
+                use terminus_ui::components::overlay::DialogKey;
+                let dialog_key = match key.logical_key.as_ref() {
+                    WKey::Named(NamedKey::Escape) => Some(DialogKey::Escape),
+                    WKey::Named(NamedKey::Enter) => Some(DialogKey::Enter),
+                    WKey::Named(NamedKey::Tab)
+                    | WKey::Named(NamedKey::ArrowLeft)
+                    | WKey::Named(NamedKey::ArrowRight) => Some(DialogKey::Tab),
+                    _ => None,
+                };
+                if let Some(dialog_key) = dialog_key {
+                    if let Some(s) = self.sftp.as_mut() {
+                        s.conflict_key(dialog_key);
+                    }
+                }
+                self.mark_dirty();
+                return;
+            }
+
             let action = match key.logical_key.as_ref() {
                 WKey::Named(NamedKey::Tab) => Some(SftpKey::Tab),
                 WKey::Named(NamedKey::ArrowUp) => Some(SftpKey::Up),
