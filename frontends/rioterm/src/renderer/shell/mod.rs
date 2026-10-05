@@ -136,6 +136,7 @@ pub fn paint(
     device_scale: f32,
     card: [f32; 4],
     connecting_phase: Option<f32>,
+    views: &crate::renderer::screens::ViewStates,
 ) {
     crate::renderer::ui_text::sync_ui_fonts(sugarloaf);
     let shell = &chrome.shell;
@@ -159,7 +160,14 @@ pub fn paint(
             DEPTH,
             ORDER,
         );
-        crate::renderer::screens::paint(sugarloaf, chrome, theme, content, device_scale);
+        crate::renderer::screens::paint(
+            sugarloaf,
+            chrome,
+            views,
+            theme,
+            content,
+            device_scale,
+        );
     }
     header::paint(sugarloaf, chrome, theme, device_scale);
     pills::paint(sugarloaf, chrome, theme, device_scale);

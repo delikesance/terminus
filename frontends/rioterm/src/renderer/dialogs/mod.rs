@@ -18,7 +18,6 @@ use crate::renderer::components::selection::paint_checkbox_on;
 use crate::renderer::components::Layer;
 
 pub mod confirm;
-pub mod conflict;
 pub mod connection;
 pub mod context_menu;
 pub mod snippet;
@@ -28,10 +27,6 @@ pub mod vault;
 pub const ORDER: u8 = 30;
 /// Base depth of a modal panel; children add small offsets.
 pub const DEPTH: f32 = 0.1;
-
-pub fn rgba8(c: [u8; 4]) -> [f32; 4] {
-    c.map(|v| v as f32 / 255.0)
-}
 
 /// Y that vertically centres a text line of `size` in `rect`.
 pub fn text_y(rect: &Rect, size: f32) -> f32 {

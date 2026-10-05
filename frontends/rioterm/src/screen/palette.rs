@@ -217,12 +217,14 @@ impl Screen<'_> {
                 // Clicked inside overlay but not on a button
                 true
             }
-            Err(()) => {
-                // Clicked outside — close the assistant overlay
+            Err(()) if self.renderer.assistant.is_error() => {
+                // Clicked outside an error — close it (errors are modal).
                 self.renderer.assistant.clear();
                 self.mark_dirty();
                 true
             }
+            // A warning never blocks: the click goes where it was aimed.
+            Err(()) => false,
         }
     }
 

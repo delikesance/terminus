@@ -4,7 +4,6 @@
 //! through `crate::tunnel_worker::TunnelController::{press, key, hover}` with
 //! the same `content` rect.
 
-#![allow(dead_code)] // plugged into the shell by the coordinator
 
 use std::cell::RefCell;
 

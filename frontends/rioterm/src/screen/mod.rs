@@ -138,6 +138,16 @@ pub struct Screen<'screen> {
     pub files_view: crate::renderer::views::files::FilesView,
     /// Wake the event loop when the SFTP worker emits (same as host_store).
     sftp_wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Settings page state (SSH keys, Sync, Appearance, Updates).
+    pub settings_view: terminus_ui::views::settings::SettingsView,
+    /// History view state, and the machine its rows were loaded for.
+    pub history_view: terminus_ui::views::history::HistoryState,
+    pub(crate) history_for: Option<String>,
+    /// Tunnels of the selected machine and their `ssh -N` processes
+    /// (`None` only while borrowed by `with_tunnels`).
+    pub tunnels: Option<crate::tunnel_worker::TunnelController>,
+    /// When the pending "tunnel settled" wake-up fires.
+    pub(crate) tunnel_wake_at: Option<std::time::Instant>,
 }
 
 pub struct ChromePress {
@@ -399,6 +409,10 @@ impl Screen<'_> {
             sugarloaf.clear_background_image();
         }
 
+        let mut settings_view =
+            terminus_ui::views::settings::SettingsView::new(env!("CARGO_PKG_VERSION"));
+        crate::renderer::views::settings::load_config(&mut settings_view, config);
+
         Ok(Screen {
             search_state: SearchState::default(),
             hint_state: HintState::new(config.hints.alphabet.clone()),
@@ -423,6 +437,10 @@ impl Screen<'_> {
                 config.updates.into(),
                 host_wake.clone(),
             ),
+            tunnels: Some(crate::tunnel_worker::TunnelController::spawn(
+                crate::hosts::data_dir(),
+                host_wake.clone(),
+            )),
             host_store: crate::hosts::HostRepository::spawn(
                 crate::hosts::data_dir(),
                 host_wake,
@@ -447,6 +465,13 @@ impl Screen<'_> {
             sftp: None,
             files_view: Default::default(),
             sftp_wake,
+            settings_view,
+            history_view: terminus_ui::views::history::HistoryState::new(
+                Vec::new(),
+                crate::history_worker::env_recording_enabled(),
+            ),
+            history_for: None,
+            tunnel_wake_at: None,
         })
     }
 

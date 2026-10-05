@@ -1,6 +1,7 @@
-//! State, layout and input of the workspace views that replace the
-//! terminal in the main card: Files, Tunnels, Snippets, History, Settings
-//! and Home.
+//! Input dispatch of the workspace views that replace the terminal in
+//! the main card. Files (empty state), Snippets and Home are routed here;
+//! Tunnels, History and Settings (whose input needs the frontend's text
+//! measure or process runtime) are routed by `rioterm::screen::workspace`.
 //!
 //! **Contract** (see `SHELL_CONTRACT.md`): each view owns one file here
 //! and one painter in `rioterm::renderer::screens`. The shell gives a view
@@ -11,15 +12,11 @@
 //! carries out (open SFTP, paste a snippet, …) in
 //! `rioterm::screen::workspace::<view>`.
 //!
-//! These are stubs: they paint a title / empty state and expose the hooks.
-//! The next wave fills each file without touching the shell.
+//! The views themselves live in [`crate::views`].
 
 pub mod files;
-pub mod history;
 pub mod home;
-pub mod settings;
 pub mod snippets;
-pub mod tunnels;
 
 use crate::geom::Rect;
 use crate::shell::WorkspaceView;
@@ -116,10 +113,7 @@ impl ViewInput {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ViewAction {
     Files(files::FilesAction),
-    Tunnels(tunnels::TunnelsAction),
     Snippets(snippets::SnippetsAction),
-    History(history::HistoryAction),
-    Settings(settings::SettingsAction),
     Home(home::HomeAction),
 }
 
@@ -141,10 +135,7 @@ pub enum ViewOutcome {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Screens {
     pub files: files::FilesState,
-    pub tunnels: tunnels::TunnelsState,
     pub snippets: snippets::SnippetsView,
-    pub history: history::HistoryState,
-    pub settings: settings::SettingsState,
     pub home: home::HomeState,
 }
 
@@ -158,14 +149,17 @@ impl Screens {
         input: &ViewInput,
     ) -> ViewOutcome {
         match view {
-            WorkspaceView::Terminal => ViewOutcome::Ignored,
+            // Terminal input goes to the PTY; Tunnels, History and Settings
+            // need the frontend (text measure, process runtime) and are
+            // routed by `rioterm::screen::workspace` before reaching here.
+            WorkspaceView::Terminal
+            | WorkspaceView::Tunnels
+            | WorkspaceView::History
+            | WorkspaceView::Settings(_) => ViewOutcome::Ignored,
             WorkspaceView::Files => self.files.handle(content, input),
-            WorkspaceView::Tunnels => self.tunnels.handle(content, input),
             WorkspaceView::Snippets => {
                 snippets::handle(&mut self.snippets, content, input)
             }
-            WorkspaceView::History => self.history.handle(content, input),
-            WorkspaceView::Settings(page) => self.settings.handle(page, content, input),
             WorkspaceView::Home => self.home.handle(content, input),
         }
     }
@@ -179,15 +173,13 @@ impl Screens {
         y: f32,
     ) -> bool {
         match view {
-            WorkspaceView::Terminal => false,
+            WorkspaceView::Terminal
+            | WorkspaceView::Tunnels
+            | WorkspaceView::History
+            | WorkspaceView::Settings(_) => false,
             WorkspaceView::Files => self.files.is_clickable(content, x, y),
-            WorkspaceView::Tunnels => self.tunnels.is_clickable(content, x, y),
             WorkspaceView::Snippets => {
                 snippets::is_clickable(&self.snippets, content, x, y)
-            }
-            WorkspaceView::History => self.history.is_clickable(content, x, y),
-            WorkspaceView::Settings(page) => {
-                self.settings.is_clickable(page, content, x, y)
             }
             WorkspaceView::Home => self.home.is_clickable(content, x, y),
         }
