@@ -140,6 +140,13 @@ impl Screen<'_> {
             self.chrome
                 .form
                 .set_identities(key_items.into_iter().map(|k| (k.id, k.name)).collect());
+            self.chrome.form.set_groups(
+                self.host_store
+                    .groups()
+                    .iter()
+                    .map(|(id, name, _)| (id.clone(), name.clone()))
+                    .collect(),
+            );
 
             if let Some(notice) = self.host_store.take_notice() {
                 if notice.starts_with("SSH key") {
