@@ -1,16 +1,17 @@
 //! List component painter and gallery: list cards, file rows, history rows.
 //!
 //! Geometry comes from `terminus_ui::components::list`; this file only
-//! paints it. The action buttons here are local stand-ins (rounded rect +
-//! label); they should switch to the Buttons component after merge.
+//! paints it. Card and history actions are real Button components.
 
 use rio_backend::sugarloaf::Sugarloaf;
+use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonSpec, ButtonState};
 use terminus_ui::components::list::*;
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::ChromeTheme;
-use terminus_ui::tokens::{font_size, radius, space};
+use terminus_ui::tokens::{font_size, space};
 
+use super::button::{label_spec, paint_button};
 use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_mono_text, draw_ui_text, measure_ui_text, UiWeight};
 
@@ -18,7 +19,6 @@ use crate::renderer::ui_text::{draw_mono_text, draw_ui_text, measure_ui_text, Ui
 const D_PANEL: f32 = 0.0;
 const D_ROW: f32 = 0.1;
 const D_CTRL: f32 = 0.2;
-const D_GLYPH: f32 = 0.3;
 
 /// Vertical text origin so a line of `size` is centred on `center`.
 fn text_top(center: f32, size: f32) -> f32 {
@@ -71,21 +71,13 @@ pub fn paint_dot(
 ) {
     match kind {
         DotKind::Running => rrect(s, r, theme.success, CARD_DOT / 2.0, D_CTRL),
-        // Hollow ring, #776E8C in the board.
-        DotKind::Idle => ring(
-            s,
-            r,
-            bg,
-            [0.467, 0.431, 0.549, 1.0],
-            CARD_DOT / 2.0,
-            1.5,
-            D_CTRL,
-        ),
+        // Hollow ring in the idle colour.
+        DotKind::Idle => ring(s, r, bg, theme.idle_ring, CARD_DOT / 2.0, 1.5, D_CTRL),
     }
 }
 
 // ---------------------------------------------------------------------
-// Stand-in action buttons (to be replaced by the Buttons component)
+// Action buttons (Button component, medium)
 // ---------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -97,75 +89,49 @@ pub enum Action<'a> {
 }
 
 impl Action<'_> {
-    fn width(&self, s: &mut Sugarloaf) -> f32 {
+    fn kind(&self) -> ButtonKind {
         match self {
-            Action::Secondary(l) | Action::Ghost(l) => {
-                measure_ui_text(s, l, font_size::LABEL, UiWeight::Medium)
-                    + 2.0 * space::LG
-                    - 2.0
-            }
-            Action::QuietTrash => CARD_ACTION_HEIGHT,
+            Action::Secondary(_) => ButtonKind::Secondary,
+            Action::Ghost(_) => ButtonKind::Text,
+            Action::QuietTrash => ButtonKind::Quiet,
         }
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Action::Secondary(l) | Action::Ghost(l) => l,
+            Action::QuietTrash => "Delete",
+        }
+    }
+
+    fn icon(&self) -> Option<Icon> {
+        matches!(self, Action::QuietTrash).then_some(Icon::Trash2)
+    }
+
+    fn spec(&self, s: &mut Sugarloaf, origin: (f32, f32)) -> ButtonSpec {
+        match self {
+            Action::QuietTrash => {
+                ButtonSpec::icon_only(origin, self.kind(), ButtonSize::Medium)
+            }
+            _ => label_spec(
+                s,
+                origin,
+                self.kind(),
+                ButtonSize::Medium,
+                self.label(),
+                false,
+            ),
+        }
+    }
+
+    fn width(&self, s: &mut Sugarloaf) -> f32 {
+        self.spec(s, (0.0, 0.0)).width()
     }
 }
 
-fn paint_action(
-    s: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    r: &Rect,
-    a: &Action,
-    under: [f32; 4],
-) {
-    match a {
-        Action::Secondary(label) | Action::Ghost(label) => {
-            let (fg, secondary) = match a {
-                Action::Secondary(_) => (theme.text, true),
-                _ => (terminus_ui::theme::text_color(theme.accent), false),
-            };
-            if secondary {
-                rrect(s, r, theme.raised, radius::SMALL, D_CTRL);
-            }
-            let w = measure_ui_text(s, label, font_size::LABEL, UiWeight::Medium);
-            draw_ui_text(
-                s,
-                r.x + (r.width - w) / 2.0,
-                text_top(r.y + r.height / 2.0, font_size::LABEL),
-                label,
-                font_size::LABEL,
-                fg,
-                UiWeight::Medium,
-            );
-        }
-        Action::QuietTrash => {
-            let c = theme.text_muted;
-            let col = [
-                c[0] as f32 / 255.0,
-                c[1] as f32 / 255.0,
-                c[2] as f32 / 255.0,
-                1.0,
-            ];
-            let (cx, cy) = (r.x + r.width / 2.0, r.y + r.height / 2.0);
-            // lid, handle, body (Lucide "trash", drawn with primitives
-            // because the generated icon set has no trash glyph yet).
-            paint_flat(
-                s,
-                &Rect::new(cx - 7.0, cy - 5.5, 14.0, 1.5),
-                col,
-                D_GLYPH,
-                0,
-            );
-            paint_flat(s, &Rect::new(cx - 2.5, cy - 8.0, 5.0, 1.5), col, D_GLYPH, 0);
-            ring(
-                s,
-                &Rect::new(cx - 5.5, cy - 5.0, 11.0, 12.5),
-                under,
-                col,
-                2.0,
-                1.5,
-                D_GLYPH,
-            );
-        }
-    }
+fn paint_action(s: &mut Sugarloaf, theme: &ChromeTheme, r: &Rect, a: &Action) {
+    let spec = a.spec(s, (r.x, r.y));
+    paint_button(s, theme, &spec, ButtonState::Default, a.label(), a.icon());
 }
 
 // ---------------------------------------------------------------------
@@ -231,7 +197,7 @@ pub fn paint_card(
     );
     for (slot, action) in l.actions.iter().zip(content.actions) {
         if let Some(r) = slot {
-            paint_action(s, theme, r, action, bg);
+            paint_action(s, theme, r, action);
         }
     }
     l
@@ -276,18 +242,13 @@ pub fn paint_file_row(
             theme.info,
             s.scale_factor(),
         ),
-        FileKind::File => {
-            // Lucide "file" outline in the faint colour (no generated glyph).
-            let f = theme.text_faint;
-            let col = [
-                f[0] as f32 / 255.0,
-                f[1] as f32 / 255.0,
-                f[2] as f32 / 255.0,
-                1.0,
-            ];
-            let body = Rect::new(l.icon.x + 2.0, l.icon.y, 11.0, 15.0);
-            ring(s, &body, fill, col, 2.0, 1.5, D_GLYPH);
-        }
+        FileKind::File => draw_icon(
+            s,
+            Icon::File,
+            IconPlacement::new(l.icon.x, l.icon.y, FILE_ICON_SIZE),
+            terminus_ui::theme::unit_color(theme.text_faint),
+            s.scale_factor(),
+        ),
     }
     let cy = rect.y + rect.height / 2.0;
     let ty = text_top(cy, font_size::LABEL);
@@ -383,7 +344,7 @@ pub fn paint_history_row(
         UiWeight::Regular,
     );
     if let (Some(r), Some(a)) = (l.action, action) {
-        paint_action(s, theme, &r, a, theme.canvas);
+        paint_action(s, theme, &r, a);
     }
     paint_flat(s, &l.divider, theme.divider, D_ROW, 0);
     l

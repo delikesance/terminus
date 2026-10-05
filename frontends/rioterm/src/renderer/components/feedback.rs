@@ -418,7 +418,7 @@ pub fn paint_gallery(
         width,
         "Connection steps",
         "Four nodes on a line: Local -> Network -> Handshake -> Shell.",
-        16.0 + 12.0 + STEP_NODE + 24.0 + 20.0 + 2.0 * (STEP_NODE + 40.0) + 12.0,
+        16.0 + 12.0 + STEP_NODE + 24.0 + 20.0 + 2.0 * (STEP_NODE + 60.0) + 12.0,
         |sl, (x, y), w| {
             let col = (w - 3.0 * CELL_GAP) / 4.0;
             for (i, (name, state, n)) in step_cases.iter().enumerate() {
@@ -437,9 +437,9 @@ pub fn paint_gallery(
             for (name, active, failed) in [("In progress", 2, false), ("Failed", 2, true)]
             {
                 caption(sl, theme, x, ly, name);
-                let line = StepLine::evenly(x, w.min(520.0), ly + 28.0 + STEP_NODE * 0.5);
+                let line = StepLine::evenly(x, w.min(520.0), ly + 20.0 + STEP_NODE * 0.5);
                 paint_step_line(sl, theme, &line, &steps_at(active, failed), true);
-                ly += STEP_NODE + 48.0;
+                ly += STEP_NODE + 60.0;
             }
         },
     );
