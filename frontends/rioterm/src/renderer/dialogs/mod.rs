@@ -8,21 +8,18 @@
 //! are pinned to the gallery's own order).
 
 use rio_backend::sugarloaf::Sugarloaf;
-use terminus_ui::components::button::{
-    colors, ButtonKind, ButtonSize, ButtonState, FOCUS_GAP, FOCUS_RING,
-};
-use terminus_ui::components::selection::{
-    CHECKBOX_BORDER, CHECKBOX_LABEL_GAP, CHECKBOX_MARK, CHECKBOX_RADIUS, CHECKBOX_SIZE,
-};
+use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonSpec, ButtonState};
+use terminus_ui::components::selection::ControlState;
 use terminus_ui::geom::Rect;
-use terminus_ui::icons::{Icon, IconPlacement};
-use terminus_ui::theme::{text_color, ChromeTheme};
+use terminus_ui::theme::ChromeTheme;
 
-use crate::renderer::chrome::{draw_icon, paint_surface_stroke};
-use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
+use crate::renderer::components::button::paint_button_on;
+use crate::renderer::components::selection::paint_checkbox_on;
+use crate::renderer::components::Layer;
 
 pub mod confirm;
 pub mod conflict;
+pub mod context_menu;
 
 /// Draw order of every re-skinned modal (above the chrome's own dialogs).
 pub const ORDER: u8 = 30;
@@ -55,7 +52,8 @@ pub fn paint_shadow(sugarloaf: &mut Sugarloaf, r: &Rect, rad: f32, depth: f32) {
     }
 }
 
-/// Paint a button into `rect` (the layout's rect, not a measured one).
+/// Paint a button whose width came from `terminus_ui::confirm` (an
+/// estimate, shared with hit-testing) through the shared Button painter.
 ///
 /// `backdrop` is the colour behind the button, used for the focus ring gap.
 #[allow(clippy::too_many_arguments)]
@@ -70,63 +68,21 @@ pub fn paint_button_rect(
     backdrop: [f32; 4],
     depth: f32,
 ) {
-    let opacity = state.opacity();
-    let c = colors(theme, kind, state);
-    let fade = |col: [f32; 4]| [col[0], col[1], col[2], col[3] * opacity];
-    let radius = size.radius();
-    if state.shows_focus_ring() {
-        let g = FOCUS_GAP + FOCUS_RING;
-        sugarloaf.rounded_rect(
-            None,
-            rect.x - g,
-            rect.y - g,
-            rect.width + 2.0 * g,
-            rect.height + 2.0 * g,
-            theme.accent,
-            depth,
-            radius + g,
-            ORDER,
-        );
-        sugarloaf.rounded_rect(
-            None,
-            rect.x - FOCUS_GAP,
-            rect.y - FOCUS_GAP,
-            rect.width + 2.0 * FOCUS_GAP,
-            rect.height + 2.0 * FOCUS_GAP,
-            backdrop,
-            depth + 0.001,
-            radius + FOCUS_GAP,
-            ORDER,
-        );
-    }
-    if let Some(fill) = c.fill {
-        sugarloaf.rounded_rect(
-            None,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            fade(fill),
-            depth + 0.002,
-            radius,
-            ORDER,
-        );
-    }
-    let weight = if kind.semibold() {
-        UiWeight::SemiBold
-    } else {
-        UiWeight::Medium
-    };
-    let fs = size.font_size();
-    let w = measure_ui_text(sugarloaf, label, fs, weight);
-    draw_ui_text(
+    // Same width the layout used, so the spec rect equals the hit rect.
+    let label_w = rect.width - 2.0 * size.padding_x();
+    let spec = ButtonSpec::label((rect.x, rect.y), kind, size, label_w, false);
+    paint_button_on(
         sugarloaf,
-        rect.x + (rect.width - w) / 2.0,
-        text_y(rect, fs),
+        theme,
+        &spec,
+        state,
         label,
-        fs,
-        text_color(fade(c.fg)),
-        weight,
+        None,
+        Layer {
+            order: ORDER,
+            depth,
+            backdrop,
+        },
     );
 }
 
@@ -144,41 +100,17 @@ pub fn paint_checkbox_row(
     checked: bool,
     depth: f32,
 ) {
-    let b = Rect::new(row.x, row.y, CHECKBOX_SIZE, CHECKBOX_SIZE);
-    let (bg, border) = if checked {
-        (theme.accent, theme.accent)
-    } else {
-        (theme.field, theme.line)
-    };
-    paint_surface_stroke(
+    paint_checkbox_on(
         sugarloaf,
-        &b,
-        bg,
-        Some(border),
-        CHECKBOX_RADIUS,
-        CHECKBOX_BORDER,
-        depth,
-        ORDER,
-        false,
-    );
-    if checked {
-        let o = (CHECKBOX_SIZE - CHECKBOX_MARK) * 0.5;
-        let scale = sugarloaf.scale_factor();
-        draw_icon(
-            sugarloaf,
-            Icon::Check,
-            IconPlacement::new(b.x + o, b.y + o, CHECKBOX_MARK),
-            theme.on_accent,
-            scale,
-        );
-    }
-    draw_ui_text(
-        sugarloaf,
-        b.right() + CHECKBOX_LABEL_GAP,
-        text_y(&b, 14.0),
+        theme,
+        (row.x, row.y),
         label,
-        14.0,
-        theme.text,
-        UiWeight::Regular,
+        checked,
+        ControlState::Default,
+        Layer {
+            order: ORDER,
+            depth,
+            backdrop: theme.dialog,
+        },
     );
 }

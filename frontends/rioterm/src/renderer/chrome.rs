@@ -4732,91 +4732,9 @@ fn render_context_menu(
     sugarloaf: &mut Sugarloaf,
     menu: &ContextMenu,
     theme: &ChromeTheme,
-    device_scale: f32,
+    _device_scale: f32,
 ) {
-    let rect = menu.rect();
-
-    // Quad shell still helps under terminal cells; the late UI-text pass
-    // is what actually covers host labels/icons.
-    paint_surface(
-        sugarloaf,
-        &rect,
-        theme.button_bg,
-        Some(theme.panel_border),
-        MENU_RADIUS,
-        DEPTH_DIALOG,
-        ORDER_GHOST,
-        false,
-    );
-
-    let scale = device_scale.max(1.0);
-    let content_w = (rect.width * scale).round().max(1.0);
-    let content_h = (rect.height * scale).round().max(1.0);
-    // Atlas masks are square; side must cover the content. Artwork ids must
-    // also encode content_w/content_h — otherwise a wider-than-tall host menu
-    // and a shorter group menu share one cache slot and the taller fill sticks.
-    let side = (content_w.max(content_h).ceil() as u16).max(1);
-    let bg_id = ctx_menu_mask_id(CTX_MENU_BG_KIND, content_w, content_h);
-    let border_id = ctx_menu_mask_id(CTX_MENU_BORDER_KIND, content_w, content_h);
-
-    let bg = color_from_f32(theme.button_bg);
-    let border = color_from_f32(theme.panel_border);
-    let radius_px = MENU_RADIUS * scale;
-
-    sugarloaf
-        .text_mut()
-        .draw_mask_late(rect.x, rect.y, bg_id, side, bg, move |size| {
-            rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, false)
-        });
-    sugarloaf.text_mut().draw_mask_late(
-        rect.x,
-        rect.y,
-        border_id,
-        side,
-        border,
-        move |size| {
-            rasterize_rounded_rect_mask(size, content_w, content_h, radius_px, true)
-        },
-    );
-
-    for (i, item) in menu.items.iter().enumerate() {
-        let Some(row) = menu.item_rect(i) else {
-            continue;
-        };
-        let hovered = menu.hover == Some(i);
-        if hovered {
-            let fill = if item.danger {
-                [theme.danger[0], theme.danger[1], theme.danger[2], 48]
-            } else {
-                color_from_f32(theme.item_hover)
-            };
-            let rw = (row.width * scale).round().max(1.0);
-            let rh = (row.height * scale).round().max(1.0);
-            let row_side = (rw.max(rh).ceil() as u16).max(1);
-            let hover_id =
-                ctx_menu_mask_id(CTX_MENU_HOVER_KIND.wrapping_add(i as u32), rw, rh);
-            sugarloaf.text_mut().draw_mask_late(
-                row.x,
-                row.y,
-                hover_id,
-                row_side,
-                fill,
-                move |size| rasterize_rounded_rect_mask(size, rw, rh, 6.0 * scale, false),
-            );
-        }
-        let color = if item.danger {
-            theme.danger
-        } else {
-            theme.text
-        };
-        let text_y = row.y + (CTX_ITEM_HEIGHT - ROW_SUB_SIZE) * 0.5;
-        sugarloaf.text_mut().draw_late(
-            row.x + MENU_PAD_X + 4.0,
-            text_y,
-            &item.label,
-            &opts(ROW_SUB_SIZE, color, false),
-        );
-    }
+    super::dialogs::context_menu::paint_context_menu(sugarloaf, menu, theme);
 }
 
 /// Name of the hovered rail icon, drawn in the late pass like the context
