@@ -430,6 +430,10 @@ impl KeysState {
 
     fn finish_delete(&mut self, confirmed: bool) -> Option<SettingsAction> {
         let p = self.pending_delete.take()?;
+        if confirmed {
+            // "Copied the public key of …" may name the key going away.
+            self.notice = None;
+        }
         confirmed.then_some(SettingsAction::DeleteKey { id: p.id })
     }
 
@@ -692,6 +696,23 @@ mod tests {
             Some(SettingsAction::CopyPublicKey { id: "k2".into() })
         );
         assert!(s.notice.as_deref().unwrap().contains("work"));
+    }
+
+    #[test]
+    fn deleting_a_key_drops_the_copy_notice_about_it() {
+        let mut s = state();
+        let l = s.layout(CONTENT, &mut test_measure);
+        let (x, y) = center(l.rows[1].card.actions[0].unwrap());
+        s.press(CONTENT, &mut test_measure, x, y);
+        assert!(s.notice.is_some());
+        let (x, y) = center(l.rows[1].card.actions[1].unwrap());
+        s.press(CONTENT, &mut test_measure, x, y);
+        s.key(Key::Tab);
+        assert_eq!(
+            s.key(Key::Enter),
+            Some(SettingsAction::DeleteKey { id: "k2".into() })
+        );
+        assert_eq!(s.notice, None);
     }
 
     #[test]
