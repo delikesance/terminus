@@ -138,6 +138,12 @@ pub struct Screen<'screen> {
     /// transfers go on), back in `sftp` when their machine is selected.
     pub sftp_parked:
         terminus_ui::screens::files::MachineSessions<crate::sftp_ui::ActiveSftp>,
+    /// Machine ids of the open tabs at the last pump: a machine that
+    /// drops out of it lost its last tab, and its browser is closed.
+    pub sftp_tab_hosts: Vec<String>,
+    /// SFTP browsers waiting for their credentials from the host store:
+    /// `(host id, other pane, machine selected when asked)`.
+    pub sftp_pending: Vec<(String, bool, String)>,
     /// Hover / dialog focus of the Files view (the rest is `sftp.state`).
     pub files_view: crate::renderer::views::files::FilesView,
     /// Wake the event loop when the SFTP worker emits (same as host_store).
@@ -468,6 +474,8 @@ impl Screen<'_> {
             grid_rasterizer: rio_grid::GridGlyphRasterizer::new(),
             sftp: None,
             sftp_parked: Default::default(),
+            sftp_tab_hosts: Vec::new(),
+            sftp_pending: Vec::new(),
             files_view: Default::default(),
             sftp_wake,
             settings_view,

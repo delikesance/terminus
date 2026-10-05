@@ -31,11 +31,17 @@ pub enum FilesAction {
 #[derive(Debug)]
 pub struct MachineSessions<T> {
     parked: Vec<(String, T)>,
+    /// Machines whose last tab closed while their browser was busy (or
+    /// not yet reaped).
+    closing: Vec<String>,
 }
 
 impl<T> Default for MachineSessions<T> {
     fn default() -> Self {
-        Self { parked: Vec::new() }
+        Self {
+            parked: Vec::new(),
+            closing: Vec::new(),
+        }
     }
 }
 
@@ -95,6 +101,76 @@ impl<T> MachineSessions<T> {
     pub fn is_empty(&self) -> bool {
         self.parked.is_empty()
     }
+
+    /// Note which machines lost their last tab (`before` → `after` are
+    /// the machine ids of the open tabs). Their browsers are closed by
+    /// [`Self::reap`] once idle; a machine that gets a tab back first is
+    /// spared.
+    pub fn tabs_changed(&mut self, before: &[String], after: &[String]) {
+        for id in before {
+            if !after.contains(id) && !self.closing.contains(id) {
+                self.closing.push(id.clone());
+            }
+        }
+        self.closing.retain(|id| !after.contains(id));
+    }
+
+    /// Hand back (for the caller to close) the browsers of machines that
+    /// lost their last tab and are not `busy` (a transfer or a conflict
+    /// prompt in flight). A busy one is kept and retried on a later
+    /// call, so it closes when its transfer ends.
+    pub fn reap(
+        &mut self,
+        active: &mut Option<T>,
+        owner: impl Fn(&T) -> &str,
+        busy: impl Fn(&T) -> bool,
+    ) -> Vec<T> {
+        let mut out = Vec::new();
+        let closing = std::mem::take(&mut self.closing);
+        for id in closing {
+            let in_active = active.as_ref().is_some_and(|s| owner(s) == id);
+            let session = if in_active {
+                active.as_ref()
+            } else {
+                self.parked.iter().find(|(m, _)| *m == id).map(|(_, s)| s)
+            };
+            match session {
+                Some(s) if busy(s) => self.closing.push(id),
+                Some(_) if in_active => out.extend(active.take()),
+                Some(_) => out.extend(self.take(&id)),
+                None => {}
+            }
+        }
+        out
+    }
+
+    /// Hand back (for the caller to close) every browser, shown or
+    /// parked, that `stale` matches — its host was deleted or its
+    /// connection settings changed — busy or not.
+    pub fn retire_where(
+        &mut self,
+        active: &mut Option<T>,
+        owner: impl Fn(&T) -> &str,
+        stale: impl Fn(&T) -> bool,
+    ) -> Vec<T> {
+        let mut out = Vec::new();
+        if active.as_ref().is_some_and(&stale) {
+            let s = active.take().expect("checked");
+            self.closing.retain(|id| id != owner(&s));
+            out.push(s);
+        }
+        let mut i = 0;
+        while i < self.parked.len() {
+            if stale(&self.parked[i].1) {
+                let (id, s) = self.parked.remove(i);
+                self.closing.retain(|c| *c != id);
+                out.push(s);
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -116,6 +192,8 @@ pub struct FilesState {
     pub error: Option<String>,
     /// Machine the browser was already opened for while Files stays shown.
     auto_opened: Option<String>,
+    /// Machines whose browser waits for its credentials (key read).
+    connecting: Vec<String>,
 }
 
 impl FilesState {
@@ -142,6 +220,7 @@ impl FilesState {
         }
         if !self.can_browse
             || self.session_open
+            || self.is_connecting()
             || self.error.is_some()
             || self.auto_opened.as_deref() == Some(self.machine_id.as_str())
         {
@@ -151,8 +230,31 @@ impl FilesState {
         true
     }
 
+    /// `machine`'s browser waits for its credentials: Files shows
+    /// "Connecting to …" without a button until it opens or fails.
+    pub fn begin_connecting(&mut self, machine: &str) {
+        if !self.connecting.iter().any(|m| m == machine) {
+            self.connecting.push(machine.to_string());
+        }
+        if self.machine_id == machine {
+            self.error = None;
+        }
+    }
+
+    /// `machine`'s wait is over (browser opened, or the read failed).
+    pub fn end_connecting(&mut self, machine: &str) {
+        self.connecting.retain(|m| m != machine);
+    }
+
+    /// Whether the selected machine's browser is waiting to open.
+    pub fn is_connecting(&self) -> bool {
+        self.connecting.iter().any(|m| *m == self.machine_id)
+    }
+
     /// The browser could not be opened (or its connection failed).
     pub fn fail(&mut self, message: String) {
+        let machine = self.machine_id.clone();
+        self.end_connecting(&machine);
         self.error = Some(message);
     }
 
@@ -166,7 +268,9 @@ impl FilesState {
     }
 
     pub fn body(&self) -> String {
-        if let Some(err) = &self.error {
+        if self.is_connecting() {
+            format!("Connecting to {}…", self.machine_name)
+        } else if let Some(err) = &self.error {
             let err = crate::components::list::elide_end(err.trim(), 96);
             format!("Couldn't open files on {}: {err}", self.machine_name)
         } else if self.can_browse {
@@ -178,7 +282,7 @@ impl FilesState {
 
     /// The call-to-action button, when it is shown.
     pub fn cta_rect(&self, content: Rect) -> Option<Rect> {
-        if !self.can_browse || self.session_open {
+        if !self.can_browse || self.session_open || self.is_connecting() {
             return None;
         }
         let measured = if self.error.is_some() {
@@ -271,8 +375,116 @@ mod tests {
         assert_eq!(shelf.take("a"), None);
     }
 
+    /// A transfer is running while progress is strictly between 0 and 100.
+    fn busy(s: &Sess) -> bool {
+        (1..100).contains(&s.1)
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_last_tab_closing_closes_an_idle_parked_browser() {
+        let mut shelf = MachineSessions::default();
+        let mut active = Some(Sess("b", 0));
+        shelf.park(Sess("a", 0), owner);
+        // A's last tab closes; B still has one.
+        shelf.tabs_changed(&ids(&["a", "b"]), &ids(&["b"]));
+        let closed = shelf.reap(&mut active, owner, busy);
+        assert_eq!(closed, vec![Sess("a", 0)]);
+        assert!(!shelf.contains("a"));
+        assert_eq!(active, Some(Sess("b", 0)), "B's browser is untouched");
+        // Nothing left to do on the next pump.
+        assert!(shelf.reap(&mut active, owner, busy).is_empty());
+    }
+
+    #[test]
+    fn a_running_transfer_keeps_the_browser_until_it_ends() {
+        let mut shelf = MachineSessions::default();
+        let mut active: Option<Sess> = None;
+        shelf.park(Sess("a", 40), owner);
+        shelf.tabs_changed(&ids(&["a"]), &ids(&[]));
+        assert!(shelf.reap(&mut active, owner, busy).is_empty());
+        assert!(shelf.contains("a"), "never cancel a transfer silently");
+        // The transfer finishes: the next pump closes the browser.
+        shelf.iter_mut().for_each(|s| s.1 = 100);
+        assert_eq!(shelf.reap(&mut active, owner, busy), vec![Sess("a", 100)]);
+    }
+
+    #[test]
+    fn a_tab_reopened_before_the_transfer_ends_keeps_the_browser() {
+        let mut shelf = MachineSessions::default();
+        let mut active: Option<Sess> = None;
+        shelf.park(Sess("a", 40), owner);
+        shelf.tabs_changed(&ids(&["a"]), &ids(&[]));
+        shelf.tabs_changed(&ids(&[]), &ids(&["a"]));
+        shelf.iter_mut().for_each(|s| s.1 = 100);
+        assert!(shelf.reap(&mut active, owner, busy).is_empty());
+        assert!(shelf.contains("a"));
+    }
+
+    #[test]
+    fn the_shown_browser_is_closed_too_when_its_machine_lost_its_tabs() {
+        let mut shelf: MachineSessions<Sess> = MachineSessions::default();
+        let mut active = Some(Sess("a", 0));
+        shelf.tabs_changed(&ids(&["a"]), &ids(&[]));
+        assert_eq!(shelf.reap(&mut active, owner, busy), vec![Sess("a", 0)]);
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn a_browser_parked_before_any_tab_is_not_reaped() {
+        // "Files on X is ready: select it in the sidebar" parks a browser
+        // for a machine that never had a tab: no tab closed, no reaping.
+        let mut shelf = MachineSessions::default();
+        let mut active: Option<Sess> = None;
+        shelf.park(Sess("x", 0), owner);
+        shelf.tabs_changed(&ids(&["b"]), &ids(&["b"]));
+        assert!(shelf.reap(&mut active, owner, busy).is_empty());
+        assert!(shelf.contains("x"));
+    }
+
+    #[test]
+    fn retiring_closes_matching_browsers_wherever_they_are() {
+        let mut shelf = MachineSessions::default();
+        let mut active = Some(Sess("a", 40));
+        shelf.park(Sess("b", 0), owner);
+        shelf.park(Sess("c", 0), owner);
+        // Host A edited (busy or not: its connection is stale), C deleted.
+        let closed = shelf.retire_where(&mut active, owner, |s| s.0 != "b");
+        assert_eq!(closed, vec![Sess("a", 40), Sess("c", 0)]);
+        assert!(active.is_none());
+        assert!(shelf.contains("b") && shelf.len() == 1);
+    }
+
     fn content() -> Rect {
         Rect::new(260.0, 104.0, 1172.0, 788.0)
+    }
+
+    #[test]
+    fn waiting_for_the_key_shows_connecting_without_a_button() {
+        let mut s = FilesState::default();
+        s.set_machine("a", "e2e local", true);
+        s.begin_connecting("a");
+        assert!(s.is_connecting());
+        assert_eq!(s.body(), "Connecting to e2e local…");
+        assert!(s.cta_rect(content()).is_none(), "no Browse button meanwhile");
+        assert!(!s.take_auto_open(true), "no second request while waiting");
+
+        // Another machine selected: its own state, not A's wait.
+        s.set_machine("b", "box", true);
+        assert!(!s.is_connecting());
+        s.set_machine("a", "e2e local", true);
+        assert!(s.is_connecting(), "A is still waiting for its key");
+
+        // The browser opened, or the key read failed: the wait is over.
+        s.end_connecting("a");
+        assert!(!s.is_connecting());
+        s.begin_connecting("a");
+        s.fail("No SSH key".into());
+        assert!(!s.is_connecting());
+        assert!(s.body().contains("No SSH key"));
     }
 
     #[test]

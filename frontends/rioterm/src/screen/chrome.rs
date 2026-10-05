@@ -20,6 +20,7 @@ impl Screen<'_> {
     pub fn pump_chrome(&mut self) -> bool {
         let update_changed = self.pump_updater();
         let store_changed = self.host_store.drain() || update_changed;
+        let store_changed = self.settle_sftp_auth() || store_changed;
         // Apply the initial collapsed-groups seed from the DB exactly once.
         if let Some(seed) = self.host_store.take_collapsed_groups_seed() {
             self.chrome.panel.collapsed_groups = seed;
@@ -40,6 +41,7 @@ impl Screen<'_> {
             .iter()
             .filter_map(|tab| tab.current().host_id.clone())
             .collect();
+        let store_changed = self.retire_sftp_browsers(&open_host_ids) || store_changed;
         let current = self.context_manager.current_index();
         let len = self.context_manager.len();
         let sessions: Vec<hosts::OpenSession> = (0..len)
@@ -389,6 +391,43 @@ impl Screen<'_> {
     pub fn chrome_wheel(&mut self, x: f32, y: f32, lines: f32) -> bool {
         let (_, height) = self.chrome_viewport();
         self.chrome.handle_wheel(height, x, y, lines)
+    }
+
+    /// Close the SFTP browsers that must go: their host was deleted or
+    /// its connection changed (address, port, user, key), or their
+    /// machine lost its last tab — once its transfer, if any, ended.
+    /// Returns whether one was closed.
+    fn retire_sftp_browsers(&mut self, open_host_ids: &[String]) -> bool {
+        let owner = crate::sftp_ui::ActiveSftp::owner;
+        let before = std::mem::replace(&mut self.sftp_tab_hosts, open_host_ids.to_vec());
+        self.sftp_parked.tabs_changed(&before, open_host_ids);
+        let mut closed =
+            self.sftp_parked
+                .reap(&mut self.sftp, owner, crate::sftp_ui::ActiveSftp::busy);
+        if !self.host_store.loading() {
+            let hosts = self.host_store.hosts();
+            closed.extend(self.sftp_parked.retire_where(&mut self.sftp, owner, |s| {
+                s.machine_id != hosts::LOCAL_ID
+                    && !s.machine_id.starts_with(hosts::WSL_PREFIX)
+                    && hosts::sftp_connection_stale(
+                        hosts,
+                        &s.machine_id,
+                        &s.connection_key,
+                    )
+            }));
+        }
+        let any = !closed.is_empty();
+        for session in closed {
+            tracing::info!("closing the SFTP browser of {}", session.machine_id);
+            session.close();
+        }
+        if any {
+            // The Files view of the selected machine may have lost its
+            // browser: show its empty state ("Browse files") again.
+            self.chrome.screens.files.session_open = self.sftp.is_some();
+            self.mark_dirty();
+        }
+        any
     }
 
     /// Route a pixel wheel delta (touchpad). Returns whether the chrome

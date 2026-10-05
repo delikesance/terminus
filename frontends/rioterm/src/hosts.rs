@@ -95,6 +95,39 @@ pub fn data_dir() -> PathBuf {
     base.join("terminus")
 }
 
+/// SFTP credentials for a host: `(password, (private key PEM, passphrase))`.
+pub type SftpAuth = (Option<String>, Option<(String, Option<String>)>);
+
+/// SFTP credentials for `auth_method`, reading only what it needs: the
+/// sealed password for `password`, the managed key for `key`, nothing for
+/// `gssapi`. A missing one is an error the user can act on.
+pub fn sftp_auth_for(
+    auth_method: &str,
+    password: impl FnOnce() -> Result<Option<String>, String>,
+    identity: impl FnOnce() -> Result<Option<(String, Option<String>)>, String>,
+) -> Result<SftpAuth, String> {
+    let password = if auth_method == "password" {
+        Some(password()?.ok_or_else(|| msg::NO_PASSWORD.to_string())?)
+    } else {
+        None
+    };
+    let identity = if auth_method == "password" || auth_method == "gssapi" {
+        None
+    } else {
+        Some(identity()?.ok_or_else(|| msg::NO_SSH_KEY.to_string())?)
+    };
+    Ok((password, identity))
+}
+
+/// Whether an SFTP browser opened on host `id` with connection `key` must
+/// be closed: the host was deleted or its connection settings changed.
+pub fn sftp_connection_stale(hosts: &[HostRow], id: &str, key: &str) -> bool {
+    hosts
+        .iter()
+        .find(|h| h.id == id)
+        .is_none_or(|h| h.connection_key() != key)
+}
+
 /// A host as the sidebar needs it — no secrets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRow {
@@ -117,6 +150,19 @@ pub struct HostRow {
 }
 
 impl HostRow {
+    /// What an open SFTP connection to this host depends on: address,
+    /// port, user, auth method and key. A change makes it stale.
+    pub fn connection_key(&self) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            self.hostname,
+            self.port,
+            self.username,
+            self.auth_method,
+            self.identity_id.as_deref().unwrap_or("")
+        )
+    }
+
     fn from_host(host: &Host) -> Self {
         Self {
             id: host.id.to_string(),
@@ -767,6 +813,12 @@ enum Command {
         id: String,
         reply: Sender<Result<Option<(String, Option<String>)>, String>>,
     },
+    /// SFTP credentials for a host, answered as [`HostEvent::SftpAuth`]
+    /// (the UI thread never waits for them).
+    ResolveSftpAuth {
+        id: String,
+        auth_method: String,
+    },
     /// After SSH connect: probe remote OS and persist `os_id` for the sidebar icon.
     DetectOs {
         id: String,
@@ -787,6 +839,11 @@ enum Command {
 /// Answers coming back from the worker.
 #[derive(Debug)]
 enum HostEvent {
+    /// Answer to [`Command::ResolveSftpAuth`].
+    SftpAuth {
+        id: String,
+        result: Result<SftpAuth, String>,
+    },
     SnippetsLoaded(Vec<terminus_ui::snippets::SnippetItem>),
     Loaded(Vec<HostRow>),
     GroupsLoaded(Vec<(String, String, i64)>),
@@ -853,6 +910,8 @@ pub struct HostRepository {
     collapsed_groups_seed: Option<HashSet<String>>,
     /// True after the first `CollapsedGroupsLoaded` has been applied.
     pub(crate) collapsed_groups_seeded: bool,
+    /// SFTP credentials answered by the worker, not yet taken.
+    pub(crate) sftp_auth_replies: Vec<(String, Result<SftpAuth, String>)>,
 }
 
 impl HostRepository {
@@ -893,6 +952,7 @@ impl HostRepository {
             sync_status_is_error: false,
             collapsed_groups_seed: None,
             collapsed_groups_seeded: false,
+            sftp_auth_replies: Vec::new(),
         }
     }
 
@@ -1087,6 +1147,29 @@ impl HostRepository {
             .map_err(|_| "Timed out reading the stored password".to_string())?
     }
 
+    /// Ask the worker for `host_id`'s SFTP credentials without waiting:
+    /// they arrive through [`Self::drain`], see
+    /// [`Self::take_sftp_auth_replies`].
+    pub fn request_sftp_auth(&mut self, host_id: &str, auth_method: &str) {
+        // Not `send`: no busy indicator for a read.
+        if self
+            .commands
+            .send(Command::ResolveSftpAuth {
+                id: host_id.to_string(),
+                auth_method: auth_method.to_string(),
+            })
+            .is_err()
+        {
+            self.sftp_auth_replies
+                .push((host_id.to_string(), Err("Host store is unavailable".into())));
+        }
+    }
+
+    /// SFTP credentials answered since the last call, `(host id, result)`.
+    pub fn take_sftp_auth_replies(&mut self) -> Vec<(String, Result<SftpAuth, String>)> {
+        std::mem::take(&mut self.sftp_auth_replies)
+    }
+
     /// Load the managed OpenSSH private key for `host_id` (PEM + optional passphrase).
     ///
     /// Returns `Ok(None)` when the host is not key-auth or has no identity.
@@ -1273,6 +1356,10 @@ impl HostRepository {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.notice = Some(label);
                     self.error = None;
+                    changed = true;
+                }
+                Ok(HostEvent::SftpAuth { id, result }) => {
+                    self.sftp_auth_replies.push((id, result));
                     changed = true;
                 }
                 Ok(HostEvent::Failed(message)) => {
@@ -1793,6 +1880,14 @@ fn worker(
             Command::ResolveHostIdentity { id, reply } => {
                 let result = resolve_host_identity(&runtime, &store, vault.as_ref(), &id);
                 let _ = reply.send(result);
+            }
+            Command::ResolveSftpAuth { id, auth_method } => {
+                let result = sftp_auth_for(
+                    &auth_method,
+                    || resolve_host_password(&runtime, &store, vault.as_ref(), &id),
+                    || resolve_host_identity(&runtime, &store, vault.as_ref(), &id),
+                );
+                let _ = events.send(HostEvent::SftpAuth { id, result });
             }
             Command::DetectOs { id } => {
                 match prepare_os_probe(&runtime, &store, vault.as_ref(), &id) {
@@ -2982,6 +3077,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_browser_is_stale_when_its_host_is_gone_or_its_connection_changed() {
+        let host = host_row("a", "alpha");
+        let key = host.connection_key();
+        let hosts = vec![host.clone(), host_row("b", "beta")];
+        assert!(!sftp_connection_stale(&hosts, "a", &key));
+        // Renamed, regrouped, re-noted: the same connection.
+        let mut renamed = host.clone();
+        renamed.name = "Alpha prod".into();
+        renamed.group_id = Some("g".into());
+        renamed.notes = "x".into();
+        assert!(!sftp_connection_stale(&[renamed], "a", &key));
+        // Deleted.
+        assert!(sftp_connection_stale(&hosts[1..], "a", &key));
+        // Address, port, user, key or auth method changed.
+        type Edit = fn(&mut HostRow);
+        let edits: [Edit; 5] = [
+            |h| h.hostname = "other.internal".into(),
+            |h| h.port = 2222,
+            |h| h.username = "deploy".into(),
+            |h| h.identity_id = Some("k2".into()),
+            |h| h.auth_method = "password".into(),
+        ];
+        for edit in edits {
+            let mut edited = host.clone();
+            edit(&mut edited);
+            assert!(sftp_connection_stale(&[edited], "a", &key));
+        }
+    }
+
     fn hosts_of(rows: &[Row]) -> Vec<&HostItem> {
         rows.iter().filter_map(Row::host).collect()
     }
@@ -3769,6 +3894,111 @@ mod tests {
 
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The SFTP open path asked for the key with a blocking 5 s
+    /// `recv_timeout` on the UI thread: behind a slow probe or sync on
+    /// the worker loop the window froze, then failed. The request must
+    /// return at once and the credentials arrive later through `drain`.
+    #[test]
+    fn sftp_credentials_arrive_later_while_the_worker_is_busy() {
+        // Accepts TCP but never speaks SSH: a probe waits its timeout.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = silent.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for conn in silent.incoming() {
+                held.push(conn);
+            }
+        });
+
+        let dir = temp_dir("sftp-auth-async");
+        let (host_id, ident_id) = {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let store = rt.block_on(Store::open(dir.clone())).unwrap();
+            let ident = terminus_core::generate_ed25519_identity("e2e").unwrap();
+            rt.block_on(store.upsert_identity(&ident)).unwrap();
+            let host = host_from_draft(&HostDraft {
+                name: "e2e local".into(),
+                hostname: "127.0.0.1".into(),
+                username: "nixos".into(),
+                auth_method: "key".into(),
+                identity_id: Some(ident.id.to_string()),
+                ..HostDraft::default()
+            });
+            rt.block_on(store.upsert_host(&host)).unwrap();
+            (host.id.to_string(), ident.id.to_string())
+        };
+
+        let mut repo = HostRepository::spawn(dir.clone(), None);
+        assert!(drain_until(&mut repo, Duration::from_secs(10), |repo| {
+            !repo.loading()
+        }));
+        // Occupy the worker loop with a probe that hangs.
+        repo.probe_and_create(&HostDraft {
+            name: "slow".into(),
+            hostname: "127.0.0.1".into(),
+            port: port.to_string(),
+            username: "nixos".into(),
+            auth_method: "key".into(),
+            identity_id: Some(ident_id),
+            ..HostDraft::default()
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+
+        let started = Instant::now();
+        repo.request_sftp_auth(&host_id, "key");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "the request must not wait for the worker"
+        );
+        assert!(repo.take_sftp_auth_replies().is_empty());
+
+        assert!(drain_until(&mut repo, Duration::from_secs(40), |repo| {
+            !repo.sftp_auth_replies.is_empty()
+        }));
+        let replies = repo.take_sftp_auth_replies();
+        assert_eq!(replies.len(), 1);
+        let (id, auth) = &replies[0];
+        assert_eq!(id, &host_id);
+        assert!(
+            matches!(auth, Ok((None, Some(_)))),
+            "key auth: no password, the key: {auth:?}"
+        );
+
+        drop(repo);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sftp_auth_reads_only_what_the_auth_method_needs() {
+        let pw = || Ok(Some("pw".to_string()));
+        let key = || Ok(Some(("PEM".to_string(), None)));
+        assert_eq!(
+            sftp_auth_for("password", pw, key),
+            Ok((Some("pw".into()), None))
+        );
+        assert_eq!(
+            sftp_auth_for("key", || panic!("no password read"), key),
+            Ok((None, Some(("PEM".into(), None))))
+        );
+        assert_eq!(
+            sftp_auth_for("gssapi", || panic!(), || panic!()),
+            Ok((None, None))
+        );
+        assert_eq!(
+            sftp_auth_for("password", || Ok(None), key),
+            Err(msg::NO_PASSWORD.to_string())
+        );
+        assert_eq!(
+            sftp_auth_for("key", pw, || Ok(None)),
+            Err(msg::NO_SSH_KEY.to_string())
+        );
+        assert_eq!(
+            sftp_auth_for("key", pw, || Err("Unlock the vault".into())),
+            Err("Unlock the vault".to_string())
+        );
     }
 
     /// Poll a `HostPersistHandle` for its outcome until `timeout` elapses.
