@@ -1368,6 +1368,20 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Pressed
+                    && button == MouseButton::Left
+                    && route.window.screen.renderer.confirm_quit.is_active()
+                {
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    let size = route.window.screen.sugarloaf.window_size();
+                    let win = (size.width / scale, size.height / scale);
+                    let mouse = &route.window.screen.mouse;
+                    let (x, y) = (mouse.x as f32 / scale, mouse.y as f32 / scale);
+                    let outcome =
+                        route.window.screen.renderer.confirm_quit.press(win, x, y);
+                    route.apply_quit_outcome(outcome);
+                    return;
+                }
                 if route.path != RoutePath::Terminal
                     || route.window.screen.renderer.confirm_quit.is_active()
                 {
@@ -2596,9 +2610,33 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 route.window.screen.mouse.y = y;
                 route.window.screen.mouse.raw_y = position.y;
 
-                if route.path != RoutePath::Terminal
-                    || route.window.screen.renderer.confirm_quit.is_active()
-                {
+                if route.window.screen.renderer.confirm_quit.is_active() {
+                    let scale = route.window.screen.sugarloaf.scale_factor();
+                    let win = (layout.width / scale, layout.height / scale);
+                    let (lx, ly) = (x as f32 / scale, y as f32 / scale);
+                    if route
+                        .window
+                        .screen
+                        .renderer
+                        .confirm_quit
+                        .hover_at(win, lx, ly)
+                    {
+                        route.request_overlay_redraw();
+                    }
+                    let on_button = route
+                        .window
+                        .screen
+                        .renderer
+                        .confirm_quit
+                        .over_button(win, lx, ly);
+                    route.window.winit_window.set_cursor(if on_button {
+                        CursorIcon::Pointer
+                    } else {
+                        CursorIcon::Default
+                    });
+                    return;
+                }
+                if route.path != RoutePath::Terminal {
                     route.window.winit_window.set_cursor(CursorIcon::Default);
                     return;
                 }

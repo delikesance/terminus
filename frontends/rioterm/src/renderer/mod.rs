@@ -24,6 +24,7 @@ pub mod chrome;
 pub mod components;
 pub mod command_palette;
 pub mod confirm_quit;
+pub mod dialogs;
 pub mod custom_cursor;
 pub mod helpers;
 pub mod island;
@@ -972,11 +973,6 @@ impl Renderer {
             (window_size.width, window_size.height, scale_factor),
         );
 
-        self.confirm_quit.render(
-            sugarloaf,
-            (window_size.width, window_size.height, scale_factor),
-        );
-
         if let Some((state, bounds)) = sftp {
             crate::renderer::sftp_pane::paint(
                 sugarloaf,
@@ -1000,6 +996,13 @@ impl Renderer {
             window_size.height / scale_factor,
             scale_factor,
             connecting_phase,
+        );
+
+        // Above the chrome's own dialogs (it can be raised over any of them).
+        self.confirm_quit.render(
+            sugarloaf,
+            &self.chrome_theme,
+            (window_size.width, window_size.height, scale_factor),
         );
 
         // Render scrollbars for each panel

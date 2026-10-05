@@ -225,6 +225,15 @@ fn paint_modal_stack(
                     paint_glyphs,
                 );
             }
+            terminus_ui::ModalPaintLayer::Confirm => {
+                super::dialogs::confirm::paint_chrome_confirm(
+                    sugarloaf,
+                    chrome,
+                    theme,
+                    (window_width, window_height),
+                    paint_glyphs,
+                );
+            }
             terminus_ui::ModalPaintLayer::VaultUnlock => {
                 render_vault_unlock(
                     sugarloaf,

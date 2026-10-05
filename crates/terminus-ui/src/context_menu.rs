@@ -102,8 +102,6 @@ pub struct ContextMenu {
     pub hover: Option<usize>,
     /// Measured (or estimated) width of the widest label.
     width: f32,
-    /// Destructive row waiting for its confirming second click.
-    armed: Option<usize>,
 }
 
 impl ContextMenu {
@@ -121,7 +119,6 @@ impl ContextMenu {
             items,
             hover: None,
             width,
-            armed: None,
         })
     }
 
@@ -324,27 +321,6 @@ impl ContextMenu {
             self.width = self.width.max(needed);
         }
     }
-
-    /// Whether a click on `index` should act now.
-    ///
-    /// Deleting a stored host or group cannot be undone, so the first click
-    /// only arms the row ("Click again to delete") and a second click on the
-    /// same row confirms. Every other item acts on the first click.
-    pub fn confirm(&mut self, index: usize) -> bool {
-        let Some(item) = self.items.get_mut(index) else {
-            return false;
-        };
-        let destructive = matches!(
-            item.action,
-            ContextAction::DeleteHost(_) | ContextAction::DeleteGroup(_)
-        );
-        if !destructive || self.armed == Some(index) {
-            return true;
-        }
-        self.armed = Some(index);
-        self.set_label(index, "Click again to delete");
-        false
-    }
 }
 
 #[cfg(test)]
@@ -356,26 +332,6 @@ mod tests {
         let menu = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
         assert_eq!(menu.items[0].label, "New session");
         assert!(menu.items.iter().any(|i| i.label == "Copy SSH command"));
-    }
-
-    #[test]
-    fn delete_host_needs_a_second_click() {
-        let mut menu = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
-        let del = menu
-            .items
-            .iter()
-            .position(|i| matches!(i.action, ContextAction::DeleteHost(_)))
-            .unwrap();
-        assert!(!menu.confirm(del), "first click must only arm");
-        assert!(menu.items[del].label.contains("again"));
-        assert!(menu.confirm(del), "second click confirms");
-        // Non-destructive items act on the first click.
-        let edit = menu
-            .items
-            .iter()
-            .position(|i| matches!(i.action, ContextAction::EditHost(_)))
-            .unwrap();
-        assert!(menu.confirm(edit));
     }
 
     #[test]
