@@ -136,7 +136,7 @@ impl Screen<'_> {
                 })
                 .collect();
             self.chrome.settings.set_keys(key_items.clone());
-            self.chrome.activity.cloud_sync_active = self.host_store.sync_connected();
+            self.chrome.shell.sync_ok = self.host_store.sync_connected();
             self.chrome
                 .form
                 .set_identities(key_items.into_iter().map(|k| (k.id, k.name)).collect());
@@ -342,11 +342,15 @@ impl Screen<'_> {
     pub fn reapply_chrome_inset(&mut self) {
         let scale = self.sugarloaf.scale_factor();
         let left = (self.renderer.margin.left + self.chrome.reserved_width()) * scale;
+        let right = crate::renderer::utils::padding_right_from_config(
+            &self.renderer.navigation,
+            self.renderer.margin.right,
+        ) * scale;
         for context_grid in self.context_manager.contexts_mut() {
             let margin = context_grid.scaled_margin;
             context_grid.update_scaled_margin(Margin::new(
                 margin.top,
-                margin.right,
+                right,
                 margin.bottom,
                 left,
             ));
@@ -374,9 +378,11 @@ impl Screen<'_> {
     pub fn chrome_cursor_at(&self, x: f32, y: f32) -> Option<CursorIcon> {
         let (width, height) = self.chrome_viewport();
         let over_modal = self.chrome_overlay_dialog_open();
-        let over_rail =
-            !self.chrome.activity.collapsed && x < self.chrome.reserved_width();
-        if !over_modal && !over_rail {
+        let shell = &self.chrome.shell;
+        let over_shell = shell.layout().sidebar.contains(x, y)
+            || shell.hit_test(x, y).is_some()
+            || self.view_owns(x, y);
+        if !over_modal && !over_shell {
             return None;
         }
         Some(match self.chrome.cursor_at(width, height, x, y) {
@@ -416,6 +422,45 @@ impl Screen<'_> {
         });
         if self.allow_manual_dragging {
             self.start_window_drag(window);
+        }
+    }
+
+    /// Press on the empty header: window drag, double-click maximizes.
+    pub fn on_header_press(
+        &mut self,
+        window: &rio_window::window::Window,
+        prev: Option<ChromePress>,
+    ) {
+        self.on_chrome_press(window, prev);
+    }
+
+    /// Header min / max / close (painted where the app draws its own
+    /// caption buttons).
+    pub fn apply_header_control(
+        &mut self,
+        window: &rio_window::window::Window,
+        button: terminus_ui::shell::WindowButton,
+    ) {
+        use terminus_ui::shell::WindowButton;
+        #[cfg(target_os = "windows")]
+        {
+            use crate::renderer::window_controls::WindowControl;
+            let control = match button {
+                WindowButton::Minimize => WindowControl::Minimize,
+                WindowButton::Maximize => WindowControl::Maximize,
+                WindowButton::Close => WindowControl::Close,
+            };
+            self.apply_window_control(window, control);
+        }
+        #[cfg(not(target_os = "windows"))]
+        match button {
+            WindowButton::Minimize => window.set_minimized(true),
+            WindowButton::Maximize => {
+                let next = !window.is_maximized();
+                window.set_maximized(next);
+                self.window_maximized = next;
+            }
+            WindowButton::Close => self.context_manager.quit(),
         }
     }
 

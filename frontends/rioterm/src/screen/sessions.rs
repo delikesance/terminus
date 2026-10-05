@@ -687,7 +687,10 @@ impl Screen<'_> {
             num_tabs,
             self.renderer.macos_use_unified_titlebar,
         );
-        let padding_y_bottom = self.renderer.margin.bottom;
+        let padding_y_bottom = crate::renderer::utils::padding_bottom_from_config(
+            &self.renderer.navigation,
+            self.renderer.margin.bottom,
+        );
 
         // Keep the rail/drawer under the tab strip. Stale top_inset lets the
         // panel eat clicks on the islands (close / switch).

@@ -15,7 +15,6 @@
 //! focus model here means they can be tested without a window, a GPU or
 //! a database.
 
-pub mod activity_bar;
 pub mod add_host;
 pub mod add_snippet;
 pub mod anim;
@@ -30,7 +29,9 @@ pub mod icons;
 pub mod loading;
 pub mod os_icons;
 pub mod overlap;
+pub mod screens;
 pub mod settings;
+pub mod shell;
 pub mod sftp_pane;
 pub mod sidebar;
 pub mod snippets;
@@ -39,9 +40,6 @@ pub mod theme;
 pub mod tokens;
 pub mod vault_unlock;
 
-pub use activity_bar::{
-    ActivityBarState, RailAction, RailHit, Section, SECTIONS, TOP_SECTIONS,
-};
 pub use add_host::{
     auth_method_label, AddHostForm, AddHostHit, AddHostLayout, AddHostStep, Field,
     FormInput, FormOutcome, HostFormValues, AUTH_METHODS, BASE_FIELDS, STEPS,

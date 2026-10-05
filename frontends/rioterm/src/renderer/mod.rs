@@ -28,7 +28,9 @@ pub mod custom_cursor;
 pub mod helpers;
 pub mod island;
 pub mod scrollbar;
+pub mod screens;
 pub mod search;
+pub mod shell;
 pub mod sftp_pane;
 pub mod trail_cursor;
 pub mod ui_text;
@@ -152,75 +154,6 @@ fn draw_hint_tooltip(
         &label,
         &opts,
     );
-}
-
-/// Title-bar text: `● <host> · <session>`. Stored hosts are keyed by an
-/// opaque UUID, so they show their endpoint label, never the id.
-fn context_bar_label(
-    host_id: Option<&str>,
-    host_label: Option<&str>,
-    session: &str,
-) -> String {
-    let host = match (host_id, host_label) {
-        (None, _) => crate::hosts::LOCAL_ID,
-        (Some(id), _) if id == crate::hosts::LOCAL_ID => crate::hosts::LOCAL_ID,
-        (Some(_), Some(label)) if !label.is_empty() => label,
-        (Some(_), _) => "remote",
-    };
-    format!("● {host} · {session}")
-}
-
-/// Thin top band: host · session title (no horizontal tab pills).
-fn render_context_bar<T: rio_backend::event::EventListener + Clone + Send + 'static>(
-    sugarloaf: &mut Sugarloaf,
-    dimensions: (f32, f32, f32),
-    context_manager: &ContextManager<T>,
-    _bg: [f32; 4],
-    window_maximized: bool,
-) {
-    use crate::renderer::island::CONTEXT_BAR_HEIGHT;
-
-    let (window_width, _window_height, scale_factor) = dimensions;
-    let logical_w = window_width / scale_factor;
-
-    crate::renderer::chrome::paint_title_strip(sugarloaf, logical_w, CONTEXT_BAR_HEIGHT);
-
-    let idx = context_manager.current_index();
-    let current = context_manager.current();
-    let session = context_manager
-        .custom_title(idx)
-        .map(str::to_string)
-        .or_else(|| context_manager.title(idx).map(|t| t.content.clone()))
-        .unwrap_or_else(|| "Terminal".to_string());
-    let label = context_bar_label(
-        current.host_id.as_deref(),
-        current.host_label.as_deref(),
-        &session,
-    );
-    let opts = DrawOpts {
-        font_size: 12.0,
-        color: [0xed, 0xed, 0xed, 0xff],
-        ..DrawOpts::default()
-    };
-    let text_y = (CONTEXT_BAR_HEIGHT - 12.0) * 0.5;
-    sugarloaf.text_mut().draw(16.0, text_y, &label, &opts);
-
-    #[cfg(target_os = "windows")]
-    {
-        let _ = window_maximized;
-        crate::renderer::window_controls::render(
-            sugarloaf,
-            logical_w,
-            scale_factor,
-            window_maximized,
-            None,
-            [0.9, 0.9, 0.9, 1.0],
-        );
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = window_maximized;
-    }
 }
 
 /// The window-bg clear alpha that flows into sugarloaf's
@@ -872,7 +805,8 @@ impl Renderer {
         // `unfocused_split_fill` (falling back to the terminal background)
         // and its strength is `1.0 - unfocused_split_opacity`. Skipped
         // entirely when the feature is disabled.
-        if self.unfocused_split_opacity < 1.0 {
+        let grid_visible = chrome.shell.view().shows_terminal();
+        if grid_visible && self.unfocused_split_opacity < 1.0 {
             let tint = self
                 .unfocused_split_fill
                 .unwrap_or(self.dynamic_background.0);
@@ -915,27 +849,21 @@ impl Renderer {
             }
         }
 
-        if let Some(island) = &mut self.island {
-            let island_bg = self
+        // Terminus shell: frame, sidebar, header, pills and (off the
+        // Terminal view) the view that covers the grid.
+        {
+            let card = self
                 .last_window_bg
                 .map(|c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32])
                 .unwrap_or(self.named_colors.background.0);
-            island.render(
+            let _ = window_maximized;
+            shell::paint(
                 sugarloaf,
-                (window_size.width, window_size.height, scale_factor),
-                context_manager,
-                island_bg,
-                window_maximized,
-            );
-        } else if self.navigation.is_enabled() {
-            render_context_bar(
-                sugarloaf,
-                (window_size.width, window_size.height, scale_factor),
-                context_manager,
-                self.last_window_bg
-                    .map(|c| [c.r as f32, c.g as f32, c.b as f32, c.a as f32])
-                    .unwrap_or(self.named_colors.background.0),
-                window_maximized,
+                chrome,
+                &self.chrome_theme,
+                scale_factor,
+                card,
+                connecting_phase,
             );
         }
 
@@ -1005,7 +933,11 @@ impl Renderer {
         // Render scrollbars for each panel
         let grid_scaled_margin_sb = context_manager.get_current_grid_scaled_margin();
         let grid_margin_sb = (grid_scaled_margin_sb.left, grid_scaled_margin_sb.top);
-        let panel_count = self.scrollbar.panel_states().len();
+        let panel_count = if grid_visible {
+            self.scrollbar.panel_states().len()
+        } else {
+            0
+        };
         for i in 0..panel_count {
             let state = self.scrollbar.panel_states()[i];
             self.scrollbar.render(
@@ -1025,7 +957,11 @@ impl Renderer {
         // (Rect / Quad / RichText) was only ever populated with the
         // Rect variant, so the dispatch is direct now.
         let grid_scaled_margin = context_manager.get_current_grid_scaled_margin();
-        for rect in context_manager.get_panel_borders() {
+        for rect in context_manager
+            .get_panel_borders()
+            .into_iter()
+            .filter(|_| grid_visible)
+        {
             let x = (rect.x + grid_scaled_margin.left) / scale_factor;
             let y = (rect.y + grid_scaled_margin.top) / scale_factor;
             let width = rect.width / scale_factor;
@@ -1605,21 +1541,3 @@ mod grid_cell_bg_tests {
     }
 }
 
-#[cfg(test)]
-mod context_bar_tests {
-    use super::context_bar_label;
-
-    #[test]
-    fn title_bar_never_shows_a_host_uuid() {
-        let id = "a2d52fbe-3280-4175-8fd7-089a10088574";
-        assert_eq!(
-            context_bar_label(Some(id), Some("tuser@127.0.0.1:2222"), "local-pw"),
-            "● tuser@127.0.0.1:2222 · local-pw"
-        );
-        assert!(!context_bar_label(Some(id), None, "x").contains(id));
-        assert_eq!(
-            context_bar_label(None, None, "This computer"),
-            format!("● {} · This computer", crate::hosts::LOCAL_ID)
-        );
-    }
-}
