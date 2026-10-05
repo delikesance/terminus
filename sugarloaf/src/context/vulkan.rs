@@ -15,6 +15,7 @@
 //! `ash-window` buys us ~30 lines of glue per platform that we'd rather
 //! own.
 
+use super::pipeline_cache::{self, DeviceId};
 use crate::sugarloaf::{Colorspace, SugarloafWindow, SugarloafWindowSize};
 use ash::khr;
 use ash::vk;
@@ -154,10 +155,12 @@ pub struct VulkanContext {
     shared: Arc<VkShared>,
 
     /// Pipeline cache shared by every `create_graphics_pipelines`
-    /// call. Loaded from `~/.cache/rio/sugarloaf-vulkan.cache` (best
-    /// effort) at startup and serialised back on `Drop`. Saves
+    /// call. Loaded from `~/.cache/rio/terminus-sugarloaf-vulkan.cache`
+    /// (best effort, rejected unless intact and made for this GPU) at startup and serialised back on `Drop`. Saves
     /// ~10–50ms of pipeline build time on subsequent launches.
     pipeline_cache: vk::PipelineCache,
+    /// GPU the pipeline cache belongs to; keys the on-disk copy.
+    pipeline_cache_id: DeviceId,
 
     // Instance-level state — held last so it outlives everything above in
     // the Drop impl (drop order = declaration order).
@@ -233,7 +236,8 @@ impl VulkanContext {
 
         let device = create_device(&instance, physical_device, queue_family_index);
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
-        let pipeline_cache = create_pipeline_cache(&device);
+        let pipeline_cache_id = device_id(&instance, physical_device);
+        let pipeline_cache = create_pipeline_cache(&device, &pipeline_cache_id);
 
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
 
@@ -301,6 +305,7 @@ impl VulkanContext {
             queue_family_index,
             shared,
             pipeline_cache,
+            pipeline_cache_id,
             surface,
             surface_loader,
             _debug_messenger,
@@ -1016,7 +1021,11 @@ impl Drop for VulkanContext {
             // Best-effort: serialize the pipeline cache to disk
             // before destroying it. Failure (no XDG_CACHE_HOME, no
             // write perms, etc) is logged but not fatal.
-            save_pipeline_cache(&self.shared.raw, self.pipeline_cache);
+            save_pipeline_cache(
+                &self.shared.raw,
+                self.pipeline_cache,
+                &self.pipeline_cache_id,
+            );
             self.shared
                 .destroy_pipeline_cache(self.pipeline_cache, None);
 
@@ -1059,12 +1068,32 @@ fn pipeline_cache_path() -> Option<std::path::PathBuf> {
     } else {
         return None;
     };
-    Some(dir.join("rio").join("sugarloaf-vulkan.cache"))
+    // Not `sugarloaf-vulkan.cache`: that raw file is shared with upstream rio
+    // and may be damaged; this one is a checked container (`pipeline_cache`).
+    Some(dir.join("rio").join("terminus-sugarloaf-vulkan.cache"))
 }
 
-fn create_pipeline_cache(device: &Device) -> vk::PipelineCache {
+fn device_id(instance: &Instance, physical_device: vk::PhysicalDevice) -> DeviceId {
+    let props = unsafe { instance.get_physical_device_properties(physical_device) };
+    DeviceId {
+        vendor_id: props.vendor_id,
+        device_id: props.device_id,
+        cache_uuid: props.pipeline_cache_uuid,
+    }
+}
+
+fn create_pipeline_cache(device: &Device, id: &DeviceId) -> vk::PipelineCache {
     let initial_data: Vec<u8> = pipeline_cache_path()
-        .and_then(|p| std::fs::read(&p).ok())
+        .and_then(|p| match std::fs::read(&p) {
+            Ok(file) => {
+                let blob = pipeline_cache::decode(&file, id).map(<[u8]>::to_vec);
+                if blob.is_none() {
+                    tracing::warn!("ignoring Vulkan pipeline cache {:?}: unusable", p);
+                }
+                blob
+            }
+            Err(_) => None,
+        })
         .unwrap_or_default();
     if !initial_data.is_empty() {
         tracing::info!("loaded Vulkan pipeline cache: {} bytes", initial_data.len());
@@ -1077,7 +1106,7 @@ fn create_pipeline_cache(device: &Device) -> vk::PipelineCache {
     }
 }
 
-fn save_pipeline_cache(device: &Device, cache: vk::PipelineCache) {
+fn save_pipeline_cache(device: &Device, cache: vk::PipelineCache, id: &DeviceId) {
     let Some(path) = pipeline_cache_path() else {
         return;
     };
@@ -1097,7 +1126,9 @@ fn save_pipeline_cache(device: &Device, cache: vk::PipelineCache) {
             return;
         }
     }
-    if let Err(e) = std::fs::write(&path, &data) {
+    if let Err(e) =
+        pipeline_cache::write_atomic(&path, &pipeline_cache::encode(&data, id))
+    {
         tracing::warn!("pipeline cache write {:?} failed: {}", path, e);
     } else {
         tracing::info!(
