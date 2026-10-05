@@ -11,6 +11,9 @@
 # TERMINUS_SIGNING_KEY          minisign secret key (default ~/.minisign/terminus.key)
 # TERMINUS_UPDATE_PUBKEY_FILE   committed public key (default: the file above)
 # TERMINUS_RELEASE_TAG          tag recorded in the signature's trusted comment
+# TERMINUS_SIGNING_PASSPHRASE   key passphrase, fed to minisign on stdin so a
+#                               release can be signed without a terminal
+#                               (read from the untracked <repo>/.env if unset)
 #
 # While no public key is committed, releases stay unsigned and the app only
 # announces updates. Once one is committed, signing is mandatory and the
@@ -19,6 +22,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="${1:?usage: sign-release.sh <dist dir>}"
+if [[ -z "${TERMINUS_SIGNING_PASSPHRASE:-}" && -f "$ROOT/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$ROOT/.env"
+    set +a
+fi
 PUBKEY_FILE="${TERMINUS_UPDATE_PUBKEY_FILE:-$ROOT/crates/terminus-update/update-public-key.txt}"
 SECRET_KEY="${TERMINUS_SIGNING_KEY:-$HOME/.minisign/terminus.key}"
 CHECKSUMS="$DIST/checksums.txt"
@@ -48,8 +57,15 @@ fi
 # The key file may hold the whole minisign .pub file or just its key line.
 PUBKEY="$(grep -v '^untrusted comment:' "$PUBKEY_FILE" | grep -m 1 '[^[:space:]]' | tr -d '[:space:]')"
 
-minisign -S -s "$SECRET_KEY" -m "$CHECKSUMS" -x "$SIGNATURE" \
-    -t "terminus ${TERMINUS_RELEASE_TAG:-release} checksums"
+sign() {
+    minisign -S -s "$SECRET_KEY" -m "$CHECKSUMS" -x "$SIGNATURE" \
+        -t "terminus ${TERMINUS_RELEASE_TAG:-release} checksums"
+}
+if [[ -n "${TERMINUS_SIGNING_PASSPHRASE:-}" ]]; then
+    printf '%s\n' "$TERMINUS_SIGNING_PASSPHRASE" | sign
+else
+    sign
+fi
 if ! minisign -V -q -P "$PUBKEY" -m "$CHECKSUMS" -x "$SIGNATURE"; then
     rm -f "$SIGNATURE"
     echo "sign-release.sh: $SECRET_KEY does not match the public key in $PUBKEY_FILE" >&2
