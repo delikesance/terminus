@@ -348,6 +348,55 @@ impl SettingsView {
         }
     }
 
+    /// Pointer shape at `(x, y)`: a hand over whatever a press acts on,
+    /// an I-beam over text fields (same hit tests as [`Self::press`]).
+    pub fn cursor_at(
+        &self,
+        content: Rect,
+        m: Measure,
+        x: f32,
+        y: f32,
+    ) -> crate::chrome::ChromeCursor {
+        use crate::chrome::ChromeCursor;
+        let hand = |on: bool| {
+            if on {
+                ChromeCursor::Pointer
+            } else {
+                ChromeCursor::Default
+            }
+        };
+        match self.page {
+            Page::Keys => {
+                let l = self.keys.layout(content, m);
+                if let Some(cl) = &l.confirm {
+                    return hand(matches!(
+                        cl.dialog.hit_test(x, y),
+                        DialogHit::Confirm | DialogHit::Cancel
+                    ));
+                }
+                match self.keys.hit(&l, x, y) {
+                    Some(keys::KeysTarget::Field(_)) => ChromeCursor::Text,
+                    t => hand(t.is_some()),
+                }
+            }
+            Page::Sync => {
+                let l = self.sync.layout(content, m);
+                match self.sync.hit(&l, x, y) {
+                    Some(sync::SyncTarget::Field) => ChromeCursor::Text,
+                    t => hand(t.is_some()),
+                }
+            }
+            Page::Appearance => {
+                let l = self.appearance.layout(content, m);
+                hand(self.appearance.hit(&l, x, y).is_some())
+            }
+            Page::Updates => {
+                let l = self.updates.layout(content, m);
+                hand(self.updates.hit(&l, x, y).is_some())
+            }
+        }
+    }
+
     /// Wheel (`dy` > 0 scrolls down); true when something moved.
     pub fn wheel(&mut self, content: Rect, m: Measure, x: f32, y: f32, dy: f32) -> bool {
         match self.page {
@@ -451,5 +500,127 @@ mod tests {
         let cf = l.dialog.confirm;
         assert_eq!(confirm_hit(&l, cf.x + 2.0, cf.y + 2.0), ConfirmHit::Confirm);
         assert_eq!(c.focus, DialogFocus::Cancel);
+    }
+
+    #[test]
+    fn the_pointer_is_a_hand_over_what_a_press_acts_on() {
+        use crate::chrome::ChromeCursor;
+        let content = Rect::new(260.0, 96.0, 1180.0, 804.0);
+        let mut v = SettingsView::new("1.0.0");
+        v.keys.set_keys(vec![crate::settings::SshKeyItem {
+            id: "k1".into(),
+            name: "id_ed25519".into(),
+            fingerprint: "SHA256:k1".into(),
+            created: "2026-01-02".into(),
+            public_key: "ssh-ed25519 AAAA".into(),
+        }]);
+        let mid = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+
+        // Keys: header buttons are hands, the empty corner is not.
+        let l = v.keys.layout(content, &mut test_measure);
+        let (x, y) = mid(l.generate);
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, x, y),
+            ChromeCursor::Pointer
+        );
+        let (x, y) = mid(l.import);
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, x, y),
+            ChromeCursor::Pointer
+        );
+        assert_eq!(
+            v.cursor_at(
+                content,
+                &mut test_measure,
+                content.x + 2.0,
+                content.bottom() - 2.0
+            ),
+            ChromeCursor::Default
+        );
+        // A draft's text fields show the I-beam.
+        let _ = v.press(
+            content,
+            &mut test_measure,
+            mid(l.generate).0,
+            mid(l.generate).1,
+        );
+        let l = v.keys.layout(content, &mut test_measure);
+        let (_, field) = &l.draft.as_ref().unwrap().fields[0];
+        let (x, y) = mid(field.box_rect);
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, x, y),
+            ChromeCursor::Text
+        );
+
+        // Sync: engine segments and Save are hands, the URI field is text.
+        v.set_page(Page::Sync);
+        let l = v.sync.layout(content, &mut test_measure);
+        let (x, y) = mid(l.save);
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, x, y),
+            ChromeCursor::Pointer
+        );
+        let (x, y) = mid(l.field.box_rect);
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, x, y),
+            ChromeCursor::Text
+        );
+
+        // Updates: the whole toggle row is a hand.
+        v.set_page(Page::Updates);
+        let l = v.updates.layout(content, &mut test_measure);
+        let (x, y) = mid(l.check.card);
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, x, y),
+            ChromeCursor::Pointer
+        );
+
+        // Appearance: the size steppers are hands.
+        v.set_page(Page::Appearance);
+        let l = v.appearance.layout(content, &mut test_measure);
+        let (x, y) = mid(l.size_plus);
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, x, y),
+            ChromeCursor::Pointer
+        );
+    }
+
+    #[test]
+    fn the_delete_confirm_buttons_are_hands() {
+        use crate::chrome::ChromeCursor;
+        let content = Rect::new(260.0, 96.0, 1180.0, 804.0);
+        let mut v = SettingsView::new("1.0.0");
+        v.keys.set_keys(vec![crate::settings::SshKeyItem {
+            id: "k1".into(),
+            name: "id_ed25519".into(),
+            fingerprint: "SHA256:k1".into(),
+            created: "2026-01-02".into(),
+            public_key: "ssh-ed25519 AAAA".into(),
+        }]);
+        let l = v.keys.layout(content, &mut test_measure);
+        let row = &l.rows[0];
+        // Trash is the last action on the card.
+        let trash = crate::components::list::card_layout(
+            row.card.rect,
+            &crate::components::list::CardSpec {
+                has_dot: false,
+                meta_width: row.meta_width,
+                action_widths: &[row.copy_width, row.trash_width],
+            },
+        )
+        .actions[1]
+            .expect("trash slot");
+        let _ = v.press(
+            content,
+            &mut test_measure,
+            trash.x + trash.width / 2.0,
+            trash.y + trash.height / 2.0,
+        );
+        let l = v.keys.layout(content, &mut test_measure);
+        let cf = l.confirm.as_ref().expect("confirm open").dialog.confirm;
+        assert_eq!(
+            v.cursor_at(content, &mut test_measure, cf.x + 2.0, cf.y + 2.0),
+            ChromeCursor::Pointer
+        );
     }
 }
