@@ -25,6 +25,9 @@ use crate::hosts::HostRow;
 pub struct ActiveSftp {
     /// Sidebar id of the machine this browser belongs to (its right pane).
     pub machine_id: String,
+    /// [`HostRow::connection_key`] of that machine when the browser was
+    /// opened: a change (or the host's deletion) closes the browser.
+    pub connection_key: String,
     pub state: SftpPaneState,
     pub worker: SftpWorker,
     last_click: Option<(SftpHit, std::time::Instant)>,
@@ -36,6 +39,12 @@ impl ActiveSftp {
     /// Key of [`terminus_ui::screens::files::MachineSessions`].
     pub fn owner(&self) -> &str {
         &self.machine_id
+    }
+
+    /// A transfer (or its conflict prompt) is in flight: closing now
+    /// would cancel it.
+    pub fn busy(&self) -> bool {
+        self.state.transfer.is_some() || self.state.conflict.is_some()
     }
 
     /// Left = local, right = `host`. Connects right and lists both sides.
@@ -68,6 +77,7 @@ impl ActiveSftp {
 
         Ok(Self {
             machine_id: host.id.clone(),
+            connection_key: host.connection_key(),
             state,
             worker,
             last_click: None,
@@ -98,6 +108,7 @@ impl ActiveSftp {
         });
         Self {
             machine_id: crate::hosts::LOCAL_ID.to_string(),
+            connection_key: String::new(),
             state,
             worker,
             last_click: None,
