@@ -201,6 +201,88 @@ pub struct SftpRow {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Last modification time, Unix seconds (UTC), when the backend reports it.
+    pub modified: Option<i64>,
+}
+
+/// Progress of the transfer in flight (drives the Files view's transfer bar).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SftpTransfer {
+    pub label: String,
+    pub done: u64,
+    /// `0` while the size is not known yet (indeterminate bar).
+    pub total: u64,
+}
+
+impl SftpTransfer {
+    /// Completed fraction in `0..=1` (`0` while the total is unknown).
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 {
+            0.0
+        } else {
+            (self.done as f64 / self.total as f64).clamp(0.0, 1.0) as f32
+        }
+    }
+
+    /// `"62 % · 11 of 18 MB"`; just the byte count while the total is unknown.
+    pub fn caption(&self) -> String {
+        if self.total == 0 {
+            return if self.done == 0 {
+                String::new()
+            } else {
+                format_bytes(self.done)
+            };
+        }
+        let pct = (self.fraction() * 100.0).floor() as u32;
+        let (done, total) = bytes_pair(self.done.min(self.total), self.total);
+        format!("{pct} % \u{b7} {done} of {total}")
+    }
+}
+
+/// Human size with the largest whole unit: `"18 MB"`, `"4 KB"`, `"12 B"`.
+pub fn format_bytes(bytes: u64) -> String {
+    let (n, unit) = unit_for(bytes);
+    unit_text(bytes, n, unit)
+}
+
+fn unit_for(bytes: u64) -> (f64, &'static str) {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= KB * KB * KB {
+        (b / (KB * KB * KB), "GB")
+    } else if b >= KB * KB {
+        (b / (KB * KB), "MB")
+    } else if b >= KB {
+        (b / KB, "KB")
+    } else {
+        (b, "B")
+    }
+}
+
+fn unit_text(bytes: u64, n: f64, unit: &str) -> String {
+    if unit == "B" {
+        format!("{bytes} B")
+    } else if n >= 100.0 || (n - n.round()).abs() < 0.05 {
+        format!("{} {unit}", n.round() as u64)
+    } else {
+        format!("{n:.1} {unit}")
+    }
+}
+
+/// `(done, total)` as `("11", "18 MB")`: both in the unit of `total`, the
+/// unit written once.
+fn bytes_pair(done: u64, total: u64) -> (String, String) {
+    let (t, unit) = unit_for(total);
+    let scale = if t > 0.0 { total as f64 / t } else { 1.0 };
+    let d = done as f64 / scale;
+    let done_text = if unit == "B" {
+        format!("{done}")
+    } else if (d - d.round()).abs() < 0.05 || d >= 100.0 {
+        format!("{}", d.round() as u64)
+    } else {
+        format!("{d:.1}")
+    };
+    (done_text, unit_text(total, t, unit))
 }
 
 /// Hit-test result inside the SFTP pane.
@@ -267,6 +349,8 @@ pub struct SftpPaneState {
     pub conflict: Option<SftpConflictPrompt>,
     /// Active drag ghost (file being dragged between panes).
     pub drag: Option<SftpDrag>,
+    /// Transfer in flight, when any.
+    pub transfer: Option<SftpTransfer>,
 }
 
 impl Default for SftpPaneState {
@@ -282,6 +366,7 @@ impl Default for SftpPaneState {
             name_edit: None,
             conflict: None,
             drag: None,
+            transfer: None,
         }
     }
 }
@@ -316,6 +401,7 @@ impl SftpPaneState {
             name_edit: None,
             conflict: None,
             drag: None,
+            transfer: None,
         }
     }
 
@@ -459,6 +545,19 @@ impl SftpPaneState {
         });
         self.status = "Resolve the conflict to continue…".into();
         self.error = None;
+    }
+
+    /// Record worker progress for the transfer bar.
+    pub fn set_transfer(&mut self, label: impl Into<String>, done: u64, total: u64) {
+        self.transfer = Some(SftpTransfer {
+            label: label.into(),
+            done,
+            total,
+        });
+    }
+
+    pub fn clear_transfer(&mut self) {
+        self.transfer = None;
     }
 
     pub fn clear_conflict(&mut self) {
@@ -894,6 +993,55 @@ mod tests {
         assert_eq!(state.footer_text(), state.status);
     }
 
+    #[test]
+    fn transfer_fraction_and_caption() {
+        let t = SftpTransfer {
+            label: "Uploading build.tar.gz".into(),
+            done: 11 * 1024 * 1024,
+            total: 18 * 1024 * 1024,
+        };
+        assert!((t.fraction() - 11.0 / 18.0).abs() < 1e-6);
+        assert_eq!(t.caption(), "61 % \u{b7} 11 of 18 MB");
+        let unknown = SftpTransfer {
+            label: "x".into(),
+            done: 0,
+            total: 0,
+        };
+        assert_eq!(unknown.fraction(), 0.0);
+        assert_eq!(unknown.caption(), "");
+        let kb = SftpTransfer {
+            label: "x".into(),
+            done: 512,
+            total: 2048,
+        };
+        assert_eq!(kb.caption(), "25 % \u{b7} 0.5 of 2 KB");
+        let over = SftpTransfer {
+            label: "x".into(),
+            done: 99,
+            total: 10,
+        };
+        assert_eq!(over.fraction(), 1.0);
+    }
+
+    #[test]
+    fn format_bytes_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(900), "900 B");
+        assert_eq!(format_bytes(4096), "4 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(18 * 1024 * 1024), "18 MB");
+    }
+
+    #[test]
+    fn set_and_clear_transfer() {
+        let mut st = SftpPaneState::new_local_local("/a", "/b");
+        assert!(st.transfer.is_none());
+        st.set_transfer("Copy a", 1, 2);
+        assert_eq!(st.transfer.as_ref().unwrap().total, 2);
+        st.clear_transfer();
+        assert!(st.transfer.is_none());
+    }
+
     fn sample_state() -> SftpPaneState {
         let mut state = SftpPaneState::new_local_remote("/home/user", "h1", "demo");
         state.set_listed(
@@ -905,12 +1053,14 @@ mod tests {
                     path: "/home/user/docs".into(),
                     is_dir: true,
                     size: 0,
+                    modified: None,
                 },
                 SftpRow {
                     name: "a.txt".into(),
                     path: "/home/user/a.txt".into(),
                     is_dir: false,
                     size: 12,
+                    modified: None,
                 },
             ],
         );
@@ -922,6 +1072,7 @@ mod tests {
                 path: "/var/log".into(),
                 is_dir: true,
                 size: 0,
+                modified: None,
             }],
         );
         state
