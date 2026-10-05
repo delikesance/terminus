@@ -20,6 +20,7 @@ use crate::renderer::components::Layer;
 pub mod confirm;
 pub mod conflict;
 pub mod context_menu;
+pub mod vault;
 
 /// Draw order of every re-skinned modal (above the chrome's own dialogs).
 pub const ORDER: u8 = 30;
@@ -113,4 +114,92 @@ pub fn paint_checkbox_row(
             backdrop: theme.dialog,
         },
     );
+}
+
+/// Input box in the Input component's look (46px field: fill, border,
+/// focus ring, 15px value, caret), at the dialog order.
+///
+/// `caret_prefix` is the text before the caret (already masked); `None`
+/// hides the caret. `trailing` reserves room on the right (eye button).
+#[allow(clippy::too_many_arguments)]
+pub fn paint_text_field(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    rect: &Rect,
+    value: &str,
+    placeholder: bool,
+    focused: bool,
+    caret_prefix: Option<&str>,
+    trailing: f32,
+    depth: f32,
+) {
+    use terminus_ui::components::input as ui;
+    use terminus_ui::tokens::radius;
+
+    use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
+    use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
+
+    if focused {
+        let g = ui::FOCUS_RING;
+        let c = theme.accent;
+        let ring = [
+            c[0] * ui::FOCUS_RING_ALPHA + theme.dialog[0] * (1.0 - ui::FOCUS_RING_ALPHA),
+            c[1] * ui::FOCUS_RING_ALPHA + theme.dialog[1] * (1.0 - ui::FOCUS_RING_ALPHA),
+            c[2] * ui::FOCUS_RING_ALPHA + theme.dialog[2] * (1.0 - ui::FOCUS_RING_ALPHA),
+            1.0,
+        ];
+        paint_surface_stroke(
+            sugarloaf,
+            &Rect::new(
+                rect.x - g,
+                rect.y - g,
+                rect.width + 2.0 * g,
+                rect.height + 2.0 * g,
+            ),
+            ring,
+            None,
+            radius::CONTROL + g,
+            0.0,
+            depth,
+            ORDER,
+            false,
+        );
+    }
+    paint_surface_stroke(
+        sugarloaf,
+        rect,
+        theme.field,
+        Some(if focused { theme.accent } else { theme.line }),
+        radius::CONTROL,
+        1.0,
+        depth + 0.01,
+        ORDER,
+        false,
+    );
+    let font = ui::SANS_VALUE_FONT;
+    let tx = rect.x + ui::PAD_LEFT;
+    let ty = rect.y + (rect.height - font * 1.25) / 2.0;
+    let color = if placeholder {
+        theme.text_faint
+    } else {
+        theme.text
+    };
+    draw_ui_text(sugarloaf, tx, ty, value, font, color, UiWeight::Regular);
+    let _ = trailing;
+    if let Some(prefix) = caret_prefix {
+        let w = measure_ui_text(sugarloaf, prefix, font, UiWeight::Regular);
+        let max_x = rect.right() - trailing - ui::PAD_RIGHT;
+        paint_flat(
+            sugarloaf,
+            &Rect::new(
+                (tx + w).min(max_x),
+                ty,
+                ui::CARET_WIDTH,
+                (font * 1.25).round(),
+            ),
+            theme.accent,
+            depth + 0.03,
+            ORDER,
+        );
+    }
 }

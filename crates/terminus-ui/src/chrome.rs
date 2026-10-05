@@ -339,7 +339,23 @@ impl Chrome {
 
     /// Ask for the vault passphrase, then retry `pending` after unlock.
     pub fn open_vault_unlock(&mut self, pending: PendingVaultAction) {
+        let host_id = match &pending {
+            PendingVaultAction::OpenHost(id) | PendingVaultAction::AddHostSession(id) => {
+                Some(id.clone())
+            }
+            PendingVaultAction::OpenSftp { host_id, .. } => Some(host_id.clone()),
+            _ => None,
+        };
         self.vault_unlock.open(pending);
+        let label = host_id.and_then(|id| {
+            self.panel
+                .rows
+                .iter()
+                .filter_map(Row::host)
+                .find(|h| h.id == id)
+                .map(|h| h.name.clone())
+        });
+        self.vault_unlock.set_host_label(label);
         self.vault_unlock.set_creating(!self.vault_configured);
     }
 
@@ -617,7 +633,7 @@ impl Chrome {
                 window_height,
                 &self.vault_unlock,
             );
-            return match layout.hit_test(x, y) {
+            return match layout.hit_test_labels(x, y, self.vault_unlock.action_label()) {
                 VaultUnlockHit::Field => {
                     self.vault_unlock.focus_passphrase();
                     ChromeAction::Consumed
@@ -1223,7 +1239,7 @@ impl Chrome {
                 window_height,
                 &self.vault_unlock,
             );
-            return match layout.hit_test(x, y) {
+            return match layout.hit_test_labels(x, y, self.vault_unlock.action_label()) {
                 VaultUnlockHit::Field | VaultUnlockHit::ConfirmField => {
                     ChromeCursor::Text
                 }
