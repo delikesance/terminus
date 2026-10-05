@@ -24,7 +24,6 @@ mod sessions;
 mod sftp;
 mod workspace;
 mod shell;
-mod snippet_view_actions;
 pub mod touch;
 
 use crate::bindings::MouseBinding;
@@ -133,6 +132,8 @@ pub struct Screen<'screen> {
     pub grid_rasterizer: rio_grid::GridGlyphRasterizer,
     /// Active dual-pane SFTP browser (replaces terminal paint on the current leaf).
     pub sftp: Option<crate::sftp_ui::ActiveSftp>,
+    /// Hover / dialog focus of the Files view (the rest is `sftp.state`).
+    pub files_view: crate::renderer::views::files::FilesView,
     /// Wake the event loop when the SFTP worker emits (same as host_store).
     sftp_wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
@@ -442,6 +443,7 @@ impl Screen<'_> {
             grids: rustc_hash::FxHashMap::default(),
             grid_rasterizer: rio_grid::GridGlyphRasterizer::new(),
             sftp: None,
+            files_view: Default::default(),
             sftp_wake,
         })
     }

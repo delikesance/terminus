@@ -473,7 +473,11 @@ impl Renderer {
         connecting_phase: Option<f32>,
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         window_maximized: bool,
-        sftp: Option<(&terminus_ui::SftpPaneState, terminus_ui::Rect)>,
+        sftp: Option<(
+            &terminus_ui::SftpPaneState,
+            &crate::renderer::views::files::FilesView,
+            terminus_ui::Rect,
+        )>,
     ) -> (Option<crate::context::renderable::WindowUpdate>, bool) {
         let mut any_panel_dirty = false;
         let grid = context_manager.current_grid_mut();
@@ -906,12 +910,13 @@ impl Renderer {
             (window_size.width, window_size.height, scale_factor),
         );
 
-        if let Some((state, bounds)) = sftp {
-            crate::renderer::sftp_pane::paint(
+        if let Some((state, view, content)) = sftp {
+            crate::renderer::views::files::paint(
                 sugarloaf,
-                state,
-                bounds,
                 &self.chrome_theme,
+                content,
+                state,
+                view,
             );
         }
 

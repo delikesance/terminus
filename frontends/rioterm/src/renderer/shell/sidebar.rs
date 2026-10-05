@@ -23,16 +23,6 @@ use crate::renderer::ui_text::{
     draw_mono_text, draw_ui_text, measure_mono_text, measure_ui_text, UiWeight,
 };
 
-/// Shortcut hint on the command bar: the palette's real binding
-/// (Ctrl+Shift+P). The mock's "Ctrl K" would steal readline's kill-line.
-fn palette_hint() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "⌘⇧P"
-    } else {
-        "Ctrl⇧P"
-    }
-}
-
 pub(super) fn paint(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
@@ -81,7 +71,10 @@ pub(super) fn paint(
         theme.text_muted,
         UiWeight::Regular,
     );
-    let hint = palette_hint();
+    let hint = terminus_ui::shell::sidebar::palette_hint(
+        chrome.shell.view().shows_terminal(),
+        cfg!(target_os = "macos"),
+    );
     let hw =
         measure_mono_text(sugarloaf, hint, geo::COMMAND_HINT_SIZE, UiWeight::Regular);
     draw_mono_text(

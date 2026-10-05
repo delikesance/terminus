@@ -96,9 +96,12 @@ impl Screen<'_> {
         self.sync_shell();
         crate::renderer::shell::measure(&mut self.sugarloaf, &mut self.chrome);
 
-        let sftp_paint = self.sftp.as_ref().and_then(|session| {
-            self.sftp_bounds().map(|bounds| (&session.state, bounds))
-        });
+        let sftp_bounds = self.sftp_bounds();
+        let sftp_paint = self
+            .sftp
+            .as_ref()
+            .zip(sftp_bounds)
+            .map(|(session, bounds)| (&session.state, &self.files_view, bounds));
 
         let (window_update, any_panel_dirty) = self.renderer.run(
             &mut self.sugarloaf,
@@ -119,7 +122,8 @@ impl Screen<'_> {
             );
         }
 
-        if self.renderer.trail_cursor_enabled && self.chrome.shell.view().shows_terminal() {
+        if self.renderer.trail_cursor_enabled && self.chrome.shell.view().shows_terminal()
+        {
             let current_grid = self.context_manager.current_grid();
             let scaled_margin = current_grid.get_scaled_margin();
 

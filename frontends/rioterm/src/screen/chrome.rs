@@ -300,30 +300,23 @@ impl Screen<'_> {
         action
     }
 
-    /// Right-click inside the SFTP pane: open a file/folder context menu.
+    /// Right-click inside the Files view: open a file/folder context menu.
     pub fn handle_sftp_context_press(&mut self, x: f32, y: f32) -> bool {
-        let Some(bounds) = self.sftp_bounds() else {
+        let Some(content) = self.sftp_bounds() else {
             return false;
         };
         let (width, height) = self.chrome_viewport();
         let Some(session) = self.sftp.as_mut() else {
             return false;
         };
-        let layout = terminus_ui::SftpPaneLayout::from_state(bounds, &session.state);
-        let hit = layout.hit_test(&session.state, x, y);
-        if matches!(hit, terminus_ui::SftpHit::Miss) {
-            return false;
+        match crate::renderer::views::files::context_menu(session, content, x, y) {
+            crate::renderer::views::files::FilesAction::ContextMenu(menu) => {
+                self.chrome.context_menu = Some(menu.clamped(width, height));
+            }
+            _ => self.chrome.close_context_menu(),
         }
-
-        let menu = session.context_menu_for_hit(&layout, hit, x, y);
-        if let Some(menu) = menu {
-            self.chrome.context_menu = Some(menu.clamped(width, height));
-            self.mark_dirty();
-            true
-        } else {
-            self.chrome.close_context_menu();
-            true // consume right-click over SFTP chrome even without a menu
-        }
+        self.mark_dirty();
+        true // consume right-clicks over the view even without a menu
     }
 
     /// Update host→group drag while the left button is held.

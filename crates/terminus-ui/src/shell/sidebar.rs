@@ -36,6 +36,25 @@ pub const FOOT_SIZE: f32 = 14.0;
 /// "Synced" word on the Settings button.
 pub const SYNCED_SIZE: f32 = 12.0;
 
+/// Whether Ctrl K opens the palette: only while a non-terminal view owns
+/// the keyboard (in the terminal it stays readline's kill-line) and not on
+/// macOS, where Cmd K already clears the scrollback.
+pub fn ctrl_k_opens_palette(shows_terminal: bool, macos: bool) -> bool {
+    !shows_terminal && !macos
+}
+
+/// Shortcut hint on the command bar: the binding that opens the palette
+/// from where the user is ("Ctrl K" off the terminal, else Ctrl+Shift+P).
+pub fn palette_hint(shows_terminal: bool, macos: bool) -> &'static str {
+    if macos {
+        "⌘⇧P"
+    } else if ctrl_k_opens_palette(shows_terminal, macos) {
+        "Ctrl K"
+    } else {
+        "Ctrl Shift P"
+    }
+}
+
 fn inner_width() -> f32 {
     SIDEBAR_WIDTH - 2.0 * PAD_X
 }
@@ -96,6 +115,24 @@ pub fn lead_icon_rect(button: &Rect, pad_x: f32, size: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_hint_shows_ctrl_k_where_it_works() {
+        // Off the terminal, Ctrl K opens the palette (the view owns keys).
+        assert_eq!(palette_hint(false, false), "Ctrl K");
+        // In the terminal Ctrl K stays readline's kill-line.
+        assert_eq!(palette_hint(true, false), "Ctrl Shift P");
+        // macOS: Cmd K already clears the scrollback.
+        assert_eq!(palette_hint(false, true), "⌘⇧P");
+        assert_eq!(palette_hint(true, true), "⌘⇧P");
+    }
+
+    #[test]
+    fn ctrl_k_opens_the_palette_only_off_the_terminal() {
+        assert!(ctrl_k_opens_palette(false, false));
+        assert!(!ctrl_k_opens_palette(true, false));
+        assert!(!ctrl_k_opens_palette(false, true));
+    }
 
     #[test]
     fn top_blocks_follow_the_mock_rhythm() {

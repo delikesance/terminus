@@ -16,7 +16,6 @@ pub mod files;
 pub mod history;
 pub mod home;
 pub mod settings;
-pub mod snippets;
 pub mod tunnels;
 
 use rio_backend::sugarloaf::Sugarloaf;
@@ -47,9 +46,13 @@ pub fn paint(
         WorkspaceView::Tunnels => {
             tunnels::paint(sugarloaf, theme, content, &s.tunnels, device_scale)
         }
-        WorkspaceView::Snippets => {
-            snippets::paint(sugarloaf, theme, content, &s.snippets, device_scale)
-        }
+        WorkspaceView::Snippets => crate::renderer::views::snippets::paint_measured(
+            sugarloaf,
+            theme,
+            content,
+            &s.snippets,
+            device_scale,
+        ),
         WorkspaceView::History => {
             history::paint(sugarloaf, theme, content, &s.history, device_scale)
         }
@@ -67,7 +70,7 @@ pub fn measure(sugarloaf: &mut Sugarloaf, chrome: &mut Chrome) {
     let view = chrome.shell.view();
     let s = &mut chrome.screens;
     files::measure(sugarloaf, &mut s.files);
-    snippets::measure(sugarloaf, &mut s.snippets);
+    s.snippets.labels = crate::renderer::views::snippets::measure_labels(sugarloaf);
     home::measure(sugarloaf, &mut s.home);
     if let WorkspaceView::Settings(page) = view {
         settings::measure(sugarloaf, page, &mut s.settings);
