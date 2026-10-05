@@ -281,3 +281,81 @@ async fn history_is_listed_per_machine_newest_first() {
     let limited = store.list_history_for_machine("local", 1).await.unwrap();
     assert_eq!(limited.len(), 1);
 }
+
+/// Create `terminus.db` in `dir` with a `hosts` table from before the given
+/// columns existed, holding one old row.
+async fn seed_old_hosts_db(dir: &std::path::Path, columns: &str) {
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::ConnectOptions;
+
+    std::fs::create_dir_all(dir).unwrap();
+    let mut conn = SqliteConnectOptions::new()
+        .filename(dir.join("terminus.db"))
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap();
+    sqlx::query(&format!("CREATE TABLE hosts ({columns})"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO hosts (id, name, hostname, port, username, auth_method, tags, notes, created_at, updated_at) \
+         VALUES (?, 'old', 'old.example.com', 22, 'root', 'password', '[]', '', '2026-09-14T00:00:00Z', '2026-09-14T00:00:00Z')",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .execute(&mut conn)
+    .await
+    .unwrap();
+}
+
+const HOSTS_WITHOUT_OS_ID: &str = "id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL, \
+    port INTEGER NOT NULL DEFAULT 22, username TEXT NOT NULL, \
+    auth_method TEXT NOT NULL DEFAULT 'password', password TEXT, identity_id TEXT, \
+    group_id TEXT, tags TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '', \
+    sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, \
+    updated_at TEXT NOT NULL, deleted_at TEXT";
+
+#[tokio::test]
+async fn open_adds_os_id_to_a_hosts_table_that_predates_it() {
+    // "table hosts has no column named os_id" when saving a host.
+    let dir = temp_dir("no-os-id");
+    seed_old_hosts_db(&dir, HOSTS_WITHOUT_OS_ID).await;
+
+    let store = Store::open(dir).await.expect("open upgrades the schema");
+    store
+        .upsert_host(&sample_host("new"))
+        .await
+        .expect("saving a host works on the upgraded table");
+
+    let names: Vec<String> = store
+        .list_hosts()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|h| h.name)
+        .collect();
+    assert!(names.contains(&"old".to_string()), "old rows survive: {names:?}");
+    assert!(names.contains(&"new".to_string()), "{names:?}");
+}
+
+#[tokio::test]
+async fn open_adds_every_column_a_very_old_hosts_table_lacks() {
+    let dir = temp_dir("bare-hosts");
+    seed_old_hosts_db(
+        &dir,
+        "id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL, \
+         port INTEGER NOT NULL DEFAULT 22, username TEXT NOT NULL, \
+         auth_method TEXT NOT NULL DEFAULT 'password', \
+         tags TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '', \
+         created_at TEXT NOT NULL, updated_at TEXT NOT NULL",
+    )
+    .await;
+
+    let store = Store::open(dir).await.expect("open upgrades the schema");
+    store
+        .upsert_host(&sample_host("new"))
+        .await
+        .expect("saving a host works on the upgraded table");
+    assert_eq!(store.list_hosts().await.unwrap().len(), 2);
+}
