@@ -25,6 +25,7 @@ mod router;
 mod scheduler;
 mod screen;
 mod sftp_ui;
+mod tunnel_worker;
 mod updater;
 mod vault_remember;
 mod watcher;
