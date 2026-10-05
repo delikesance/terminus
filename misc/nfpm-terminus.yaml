@@ -58,7 +58,8 @@ overrides:
       - libXi
       - libXrandr
       - libxcb
-      - wayland-libs
+      - libwayland-client
+      - libwayland-cursor
 rpm:
   group: Applications/System
   compression: xz
