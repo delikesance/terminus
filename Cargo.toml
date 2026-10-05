@@ -25,7 +25,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.7.6"
+version = "0.7.7"
 authors = ["Raphael Amorim <rapha850@gmail.com>"]
 edition = "2021"
 license = "MIT"
@@ -37,18 +37,18 @@ documentation = "https://github.com/delikesance/terminus#readme"
 readme = "README.md"
 
 [workspace.dependencies]
-teletypewriter = { path = "teletypewriter", version = "0.7.6" }
-rio-backend = { path = "rio-backend", version = "0.7.6" }
-rio-window = { path = "rio-window", version = "0.7.6", default-features = false }
-rio-notifier = { path = "rio-notifier", version = "0.7.6" }
-rio-grapheme-width = { path = "rio-grapheme-width", version = "0.7.6" }
-sugarloaf = { path = "sugarloaf", version = "0.7.6" }
-corcovado = { path = "corcovado", version = "0.7.6" }
-rio-graphics = { path = "rio-graphics", version = "0.7.6" }
-rio-fonts = { path = "rio-fonts", version = "0.7.6" }
-rio-vt = { path = "rio-vt", version = "0.7.6" }
-rio-grid = { path = "rio-grid", version = "0.7.6" }
-rio-unicode = { path = "rio-unicode", version = "0.7.6" }
+teletypewriter = { path = "teletypewriter", version = "0.7.7" }
+rio-backend = { path = "rio-backend", version = "0.7.7" }
+rio-window = { path = "rio-window", version = "0.7.7", default-features = false }
+rio-notifier = { path = "rio-notifier", version = "0.7.7" }
+rio-grapheme-width = { path = "rio-grapheme-width", version = "0.7.7" }
+sugarloaf = { path = "sugarloaf", version = "0.7.7" }
+corcovado = { path = "corcovado", version = "0.7.7" }
+rio-graphics = { path = "rio-graphics", version = "0.7.7" }
+rio-fonts = { path = "rio-fonts", version = "0.7.7" }
+rio-vt = { path = "rio-vt", version = "0.7.7" }
+rio-grid = { path = "rio-grid", version = "0.7.7" }
+rio-unicode = { path = "rio-unicode", version = "0.7.7" }
 terminus-core = { path = "crates/terminus-core", version = "0.1.0" }
 terminus-bridge = { path = "crates/terminus-bridge", version = "0.1.0" }
 terminus-ui = { path = "crates/terminus-ui", version = "0.1.0" }
