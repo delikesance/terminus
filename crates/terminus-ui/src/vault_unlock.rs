@@ -44,6 +44,8 @@ pub enum PendingVaultAction {
     SaveSshKey,
     /// Settings → Unlock Vault with no vault yet: just create it.
     CreateVault,
+    /// Settings → Unlock Vault over an existing vault: just unlock it.
+    UnlockVault,
     /// Retry opening SFTP for a host (`other_pane`: the left side).
     OpenSftp {
         host_id: String,
@@ -64,6 +66,19 @@ impl PendingVaultAction {
                 "Enter your vault passphrase to encrypt and save the key."
             }
             Self::CreateVault => "Choose a passphrase for the new vault.",
+            Self::UnlockVault => {
+                "Enter your vault passphrase to use saved passwords and keys."
+            }
+        }
+    }
+
+    /// What Settings → Unlock vault asks for: unlock the vault when one
+    /// exists, create it otherwise.
+    pub fn settings_unlock(vault_configured: bool) -> Self {
+        if vault_configured {
+            Self::UnlockVault
+        } else {
+            Self::CreateVault
         }
     }
 }
@@ -633,6 +648,25 @@ impl VaultUnlockLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_unlock_vault_unlocks_an_existing_vault_and_creates_a_missing_one() {
+        let unlock = PendingVaultAction::settings_unlock(true);
+        assert_eq!(unlock, PendingVaultAction::UnlockVault);
+        assert!(!unlock.subtitle().contains("new vault"));
+        assert_eq!(
+            PendingVaultAction::settings_unlock(false),
+            PendingVaultAction::CreateVault
+        );
+
+        // Opened over an existing vault, the prompt reads as an unlock.
+        let mut p = VaultUnlockPrompt::default();
+        p.open(PendingVaultAction::settings_unlock(true));
+        p.set_creating(false);
+        assert_eq!(p.title(), "Unlock your vault");
+        assert_eq!(p.action_label(), "Unlock");
+        assert!(!p.subtitle().contains("new vault"), "{}", p.subtitle());
+    }
 
     #[test]
     fn hit_test_finds_unlock_eye_and_remember() {

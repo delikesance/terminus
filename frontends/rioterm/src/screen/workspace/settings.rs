@@ -175,7 +175,11 @@ impl Screen<'_> {
                 self.host_store.test_sync(&uri)
             }
             SettingsAction::UnlockVault => {
-                self.open_vault_unlock_for(terminus_ui::PendingVaultAction::CreateVault)
+                let configured = self.host_store.vault_configured();
+                self.chrome.vault_configured = configured;
+                self.open_vault_unlock_for(
+                    terminus_ui::PendingVaultAction::settings_unlock(configured),
+                )
             }
             SettingsAction::SetFont(_)
             | SettingsAction::SetFontSize(_)
