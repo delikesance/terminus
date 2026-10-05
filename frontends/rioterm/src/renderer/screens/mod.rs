@@ -8,7 +8,10 @@
 //! text widths its layout needs. State, layout and input live in
 //! `terminus_ui::screens::<view>`; actions are carried out in
 //! `crate::screen::workspace::<view>`.
+//!
+//! `add_server` is the Add a server dialog painter (wizard), not a view.
 
+pub mod add_server;
 pub mod files;
 pub mod history;
 pub mod home;
