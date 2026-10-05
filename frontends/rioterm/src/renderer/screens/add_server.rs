@@ -528,7 +528,10 @@ fn paint_footer(
     } else {
         AddHostHit::Next
     };
-    for (rect, kind, label, hit) in [
+    let copy = layout
+        .copy_error_rect(form)
+        .map(|rect| (rect, ButtonKind::Secondary, "Copy", AddHostHit::CopyError));
+    for (rect, kind, label, hit) in copy.into_iter().chain([
         (
             layout.secondary_button_rect(form),
             ButtonKind::Secondary,
@@ -541,7 +544,7 @@ fn paint_footer(
             form.primary_label(),
             primary_hit,
         ),
-    ] {
+    ]) {
         let pad = ButtonSize::Large.padding_x();
         let spec = ButtonSpec::label(
             (rect.x, rect.y),
