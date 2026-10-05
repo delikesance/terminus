@@ -461,6 +461,9 @@ impl Screen<'_> {
             auth_method: values.auth_method,
             identity_id: values.identity_id,
             password: values.password,
+            group_id: values.group_id,
+            tags: crate::hosts::parse_tags(&values.tags),
+            notes: values.notes,
         };
         let result = if let Some(id) = editing_id.as_deref() {
             self.host_store.probe_and_update(id, &draft)

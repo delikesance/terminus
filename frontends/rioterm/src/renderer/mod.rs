@@ -28,6 +28,7 @@ pub mod dialogs;
 pub mod custom_cursor;
 pub mod helpers;
 pub mod island;
+pub mod screens;
 pub mod scrollbar;
 pub mod search;
 pub mod sftp_pane;
