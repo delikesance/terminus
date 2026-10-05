@@ -7,12 +7,12 @@
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <!-- Per-user, like the NSIS setup: no admin prompt, and Terminus can
-           replace its own terminus.exe when it updates itself. -->
+           replace its own tmnx.exe when it updates itself. -->
       <Directory Id="LocalAppDataFolder">
         <Directory Id="LocalPrograms" Name="Programs">
           <Directory Id="APPLICATIONFOLDER" Name="Terminus">
             <Component Id="MainExecutable" Guid="*">
-              <File Id="TerminusExe" Source="${EXEPATH}" KeyPath="yes" />
+              <File Id="TerminusExe" Name="tmnx.exe" Source="${EXEPATH}" KeyPath="yes" />
               <Environment Id="PathEnv" Value="[APPLICATIONFOLDER]" Name="PATH" Permanent="no" Part="last" Action="set" System="no" />
               <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
             </Component>
@@ -22,7 +22,7 @@
       <Directory Id="ProgramMenuFolder">
         <Directory Id="ApplicationProgramsFolder" Name="Terminus">
           <Component Id="ApplicationShortcut" Guid="aa36e61a-23cd-4383-b744-2f78e912f0dc">
-            <Shortcut Id="ApplicationStartMenuShortcut" Name="Terminus" Description="A modern hardware-accelerated GPU terminal emulator" Target="[APPLICATIONFOLDER]terminus.exe" WorkingDirectory="APPLICATIONFOLDER" />
+            <Shortcut Id="ApplicationStartMenuShortcut" Name="Terminus" Description="A modern hardware-accelerated GPU terminal emulator" Target="[APPLICATIONFOLDER]tmnx.exe" WorkingDirectory="APPLICATIONFOLDER" />
             <RemoveFolder Id="CleanUpShortCut" On="uninstall" />
             <RegistryValue Root="HKCU" Key="Software\\Terminus" Name="installed" Type="integer" Value="1" KeyPath="yes" />
           </Component>
