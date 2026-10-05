@@ -55,6 +55,10 @@ impl Screen<'_> {
         // rest of the config instead of waiting for a new window.
         self.bindings = crate::bindings::default_key_bindings(config);
 
+        // Settings > Updates switches write `[updates]`: the worker
+        // follows them without a restart.
+        self.updater.apply_settings(config.updates.into());
+
         // Preserve existing Island (tab state) and update its colors
         let old_island = self.renderer.island.take();
         let was_focused = self.renderer.is_window_focused;
