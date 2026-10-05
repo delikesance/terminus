@@ -25,6 +25,10 @@ impl Screen<'_> {
             self.chrome.panel.collapsed_groups = seed;
         }
         let sftp_changed = self.sftp.as_mut().is_some_and(|s| s.pump());
+        // Parked browsers (other machines) keep draining their workers.
+        for parked in self.sftp_parked.iter_mut() {
+            parked.pump();
+        }
         if sftp_changed {
             self.settle_failed_files_browser();
         }

@@ -100,6 +100,17 @@ impl Screen<'_> {
         shell.sync_ok = self.host_store.sync_connected();
         shell.machine = Some(machine.clone());
 
+        // Files follows the selected machine: each one keeps its own
+        // browser (parked ones keep running).
+        if self.sftp_parked.follow(
+            &mut self.sftp,
+            crate::sftp_ui::ActiveSftp::owner,
+            &machine.id,
+        ) {
+            self.settle_failed_files_browser();
+            self.mark_dirty();
+        }
+
         let s = &mut self.chrome.screens;
         s.files.set_machine(&machine.id, &machine.name, can_browse);
         s.files.session_open = self.sftp.is_some();

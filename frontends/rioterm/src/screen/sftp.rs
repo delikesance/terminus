@@ -81,19 +81,65 @@ impl Screen<'_> {
             return Ok(());
         };
         let wake = self.sftp_wake.clone();
+        let owner = crate::sftp_ui::ActiveSftp::owner;
 
-        if let Some(prev) = self.sftp.take() {
-            prev.close();
+        // One browser per machine: the one on screen is parked (never
+        // closed: its transfers go on), and a machine that already has a
+        // browser gets it back instead of a new connection.
+        self.sftp_parked.follow(&mut self.sftp, owner, host_id);
+        if self.sftp.is_none() {
+            let session =
+                crate::sftp_ui::ActiveSftp::start(&host, password, identity, wake)?;
+            self.sftp = Some(session);
         }
 
-        let session = crate::sftp_ui::ActiveSftp::start(&host, password, identity, wake)?;
-
-        // The browser lives in the Files view now; the terminal pane stays
-        // a terminal underneath.
-        self.sftp = Some(session);
+        // The browser lives in the Files view of its machine: bring that
+        // machine forward when it has a tab; otherwise the browser waits,
+        // parked, until the machine is selected.
+        if !self.focus_machine_tab(host_id) {
+            if let Some(session) = self.sftp.take() {
+                if let Some(old) = self.sftp_parked.park(session, owner) {
+                    old.close();
+                }
+            }
+            self.chrome.panel.notice = Some(format!(
+                "Files on {} is ready: select it in the sidebar",
+                host.name
+            ));
+            self.mark_dirty();
+            return Ok(());
+        }
         self.show_view(terminus_ui::shell::WorkspaceView::Files);
         self.mark_dirty();
         Ok(())
+    }
+
+    /// Make `host_id` the selected machine by bringing one of its tabs
+    /// forward. Returns false when it has no open tab.
+    fn focus_machine_tab(&mut self, host_id: &str) -> bool {
+        let current = self.context_manager.current_index();
+        let tab_host = |screen: &mut Self, i: usize| {
+            screen
+                .context_manager
+                .contexts_mut()
+                .get(i)
+                .and_then(|g| g.current().host_id.clone())
+                .unwrap_or_else(|| hosts::LOCAL_ID.to_string())
+        };
+        if tab_host(self, current) == host_id {
+            return true;
+        }
+        let Some(idx) =
+            (0..self.context_manager.len()).rfind(|&i| tab_host(self, i) == host_id)
+        else {
+            return false;
+        };
+        self.stop_hint_mode_if_active();
+        self.clear_selection();
+        self.context_manager.set_current(idx);
+        self.switch_visible_context(current, idx);
+        self.sync_sidebar_selection();
+        true
     }
 
     /// Open `host_id` on the other SFTP pane (left). Starts SFTP if none is open.

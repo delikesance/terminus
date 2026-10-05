@@ -1371,6 +1371,33 @@ impl<'a> RouteWindow<'a> {
             window_builder = window_builder.with_visible(false);
         }
 
+        // The built-in default size must fit the screen it opens on (a
+        // 1200x760 window overflows a small laptop or VM display); a size
+        // the user set is kept. The window isn't placed yet, so the
+        // primary monitor stands in for "current".
+        if !quake
+            && config.window.mode == rio_backend::config::window::WindowMode::Windowed
+            && config.window.columns.is_none()
+            && config.window.rows.is_none()
+        {
+            let monitor = event_loop
+                .primary_monitor()
+                .or_else(|| event_loop.available_monitors().next())
+                .map(|m| {
+                    let size = m.size().to_logical::<f64>(m.scale_factor());
+                    (size.width, size.height)
+                });
+            let (width, height) = config.window.initial_size(
+                monitor,
+                (
+                    DEFAULT_MINIMUM_WINDOW_WIDTH as f64,
+                    DEFAULT_MINIMUM_WINDOW_HEIGHT as f64,
+                ),
+            );
+            window_builder = window_builder
+                .with_inner_size(rio_window::dpi::LogicalSize { width, height });
+        }
+
         #[cfg(not(any(target_os = "macos", windows)))]
         if let Some(token) = event_loop.read_token_from_env() {
             tracing::debug!("Activating window with token: {token:?}");

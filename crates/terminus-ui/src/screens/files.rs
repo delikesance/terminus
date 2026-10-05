@@ -24,6 +24,79 @@ pub enum FilesAction {
     OpenBrowser,
 }
 
+/// One SFTP browser per machine. The selected machine's session is the
+/// "active" one (shown in Files, takes input); the others stay parked,
+/// still running, so their transfers go on and they come back as they
+/// were left when their machine is selected again.
+#[derive(Debug)]
+pub struct MachineSessions<T> {
+    parked: Vec<(String, T)>,
+}
+
+impl<T> Default for MachineSessions<T> {
+    fn default() -> Self {
+        Self { parked: Vec::new() }
+    }
+}
+
+impl<T> MachineSessions<T> {
+    /// Make `active` the session of `machine`: park the current one under
+    /// its own machine and bring `machine`'s back (or none). Returns
+    /// whether `active` changed.
+    pub fn follow(
+        &mut self,
+        active: &mut Option<T>,
+        owner: impl Fn(&T) -> &str,
+        machine: &str,
+    ) -> bool {
+        if active.as_ref().is_some_and(|s| owner(s) == machine) {
+            return false;
+        }
+        let mut changed = false;
+        if let Some(prev) = active.take() {
+            let id = owner(&prev).to_string();
+            self.parked.push((id, prev));
+            changed = true;
+        }
+        if let Some(next) = self.take(machine) {
+            *active = Some(next);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Park `session` under its machine; a session already parked there is
+    /// handed back (for the caller to close).
+    pub fn park(&mut self, session: T, owner: impl Fn(&T) -> &str) -> Option<T> {
+        let id = owner(&session).to_string();
+        let old = self.take(&id);
+        self.parked.push((id, session));
+        old
+    }
+
+    /// Remove and return `machine`'s parked session.
+    pub fn take(&mut self, machine: &str) -> Option<T> {
+        let i = self.parked.iter().position(|(id, _)| id == machine)?;
+        Some(self.parked.remove(i).1)
+    }
+
+    pub fn contains(&self, machine: &str) -> bool {
+        self.parked.iter().any(|(id, _)| id == machine)
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.parked.iter_mut().map(|(_, s)| s)
+    }
+
+    pub fn len(&self) -> usize {
+        self.parked.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.parked.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FilesState {
     /// Sidebar id of the selected machine.
@@ -149,6 +222,54 @@ impl FilesState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in session: (machine id, progress of a transfer).
+    #[derive(Debug, PartialEq)]
+    struct Sess(&'static str, u32);
+
+    fn owner(s: &Sess) -> &str {
+        s.0
+    }
+
+    #[test]
+    fn each_machine_keeps_its_own_browser() {
+        let mut shelf = MachineSessions::default();
+        let mut active = Some(Sess("a", 0));
+        // B selected: A's browser is parked, B has none yet.
+        assert!(shelf.follow(&mut active, owner, "b"));
+        assert!(active.is_none(), "B must not show A's browser");
+        assert_eq!(shelf.len(), 1);
+        active = Some(Sess("b", 0));
+        // Back to A: A's browser comes back intact, B's is parked.
+        shelf.iter_mut().for_each(|s| s.1 = 42);
+        assert!(shelf.follow(&mut active, owner, "a"));
+        assert_eq!(active, Some(Sess("a", 42)));
+        assert!(shelf.follow(&mut active, owner, "b"));
+        assert_eq!(active, Some(Sess("b", 0)));
+        assert_eq!(shelf.len(), 1);
+    }
+
+    #[test]
+    fn staying_on_a_machine_changes_nothing() {
+        let mut shelf = MachineSessions::default();
+        let mut active = Some(Sess("a", 1));
+        assert!(!shelf.follow(&mut active, owner, "a"));
+        assert_eq!(active, Some(Sess("a", 1)));
+        let mut none: Option<Sess> = None;
+        assert!(!shelf.follow(&mut none, owner, "local"));
+        assert!(shelf.is_empty());
+    }
+
+    #[test]
+    fn a_parked_session_is_taken_back_once() {
+        let mut shelf = MachineSessions::default();
+        assert!(shelf.park(Sess("a", 3), owner).is_none());
+        assert!(shelf.contains("a"));
+        // Parking a second one for the same machine hands the old one back.
+        assert_eq!(shelf.park(Sess("a", 4), owner), Some(Sess("a", 3)));
+        assert_eq!(shelf.take("a"), Some(Sess("a", 4)));
+        assert_eq!(shelf.take("a"), None);
+    }
 
     fn content() -> Rect {
         Rect::new(260.0, 104.0, 1172.0, 788.0)
