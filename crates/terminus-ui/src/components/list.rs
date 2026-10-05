@@ -308,6 +308,33 @@ pub struct HistoryRowLayout {
     pub divider: Rect,
 }
 
+/// `text` in at most `max_chars` characters, cut at the start with an
+/// ellipsis (paths: the end is what tells them apart).
+pub fn elide_start(text: &str, max_chars: usize) -> String {
+    let n = text.chars().count();
+    if n <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let tail: String = text.chars().skip(n - (max_chars - 1)).collect();
+    format!("\u{2026}{tail}")
+}
+
+/// `text` in at most `max_chars` characters, cut at the end with an
+/// ellipsis.
+pub fn elide_end(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let head: String = text.chars().take(max_chars - 1).collect();
+    format!("{head}\u{2026}")
+}
+
 /// `cwd_width` is the measured width of the cwd text, `action_width` the
 /// width of the trailing button (0 for none).
 pub fn history_row_layout(
@@ -333,6 +360,10 @@ pub fn history_row_layout(
         HISTORY_TIME_WIDTH,
         rect.height,
     );
+    // The cwd gets at most half of what is left of the time column, so a
+    // deep path never runs over the command (the painter elides it).
+    let room = (time.x - HISTORY_GAP - rect.x).max(0.0);
+    let cwd_width = cwd_width.min(((room - HISTORY_GAP) / 2.0).max(0.0));
     let cwd = Rect::new(
         time.x - HISTORY_GAP - cwd_width,
         rect.y,
@@ -585,6 +616,28 @@ mod tests {
         let l = history_row_layout(r, 50.0, 0.0);
         assert!(l.action.is_none());
         assert_eq!(l.time.right(), 600.0);
+    }
+
+    #[test]
+    fn a_long_cwd_never_runs_over_the_command() {
+        // 1100 px window: the row is ~770 px, the cwd a deep worktree path.
+        let r = Rect::new(288.0, 0.0, 770.0, HISTORY_ROW_HEIGHT);
+        let l = history_row_layout(r, 600.0, 90.0);
+        assert!(l.cwd.x >= l.command.right() + HISTORY_GAP - 0.01);
+        assert!(l.command.width >= l.cwd.width, "the command keeps half");
+        assert!(l.cwd.right() <= l.time.x);
+        // A short cwd keeps its measured width.
+        let short = history_row_layout(r, 60.0, 90.0);
+        assert_eq!(short.cwd.width, 60.0);
+    }
+
+    #[test]
+    fn elision_keeps_the_meaningful_end() {
+        assert_eq!(elide_start("/home/me/dev/app", 9), "\u{2026}/dev/app");
+        assert_eq!(elide_start("~/app", 9), "~/app");
+        assert_eq!(elide_end("docker compose up -d", 10), "docker co\u{2026}");
+        assert_eq!(elide_end("git pull", 10), "git pull");
+        assert_eq!(elide_end("abc", 0), "");
     }
 
     #[test]
