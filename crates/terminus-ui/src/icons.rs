@@ -63,11 +63,13 @@ pub enum Icon {
     File,
     History,
     FolderPlus,
+    ArrowBigUp,
+    Command,
 }
 
 impl Icon {
     /// Every icon, in the order the generator emits them.
-    pub const ALL: [Icon; 31] = [
+    pub const ALL: [Icon; 33] = [
         Icon::Server,
         Icon::ArrowRightLeft,
         Icon::Folder,
@@ -99,6 +101,8 @@ impl Icon {
         Icon::File,
         Icon::History,
         Icon::FolderPlus,
+        Icon::ArrowBigUp,
+        Icon::Command,
     ];
 
     /// The icon's drawing elements: one SVG `d` per shape, verbatim from
@@ -141,6 +145,8 @@ impl Icon {
             Icon::File => FILE,
             Icon::History => HISTORY,
             Icon::FolderPlus => FOLDER_PLUS,
+            Icon::ArrowBigUp => ARROW_BIG_UP,
+            Icon::Command => COMMAND,
         }
     }
 
@@ -903,6 +909,13 @@ const FOLDER_PLUS: &[&str] = &[
     "M9 13h6",
     "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
 ];
+
+/// `arrow-big-up`
+const ARROW_BIG_UP: &[&str] = &["M9 18v-6H5l7-7 7 7h-4v6H9z"];
+
+/// `command`
+const COMMAND: &[&str] =
+    &["M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"];
 
 // ---- end generated ----
 

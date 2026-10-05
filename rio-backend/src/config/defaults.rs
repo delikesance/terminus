@@ -121,13 +121,14 @@ pub fn default_editor() -> Shell {
 }
 
 #[inline]
+/// Logical width: the Terminus sidebar (260) plus a roomy terminal.
 pub fn default_window_width() -> i32 {
-    800
+    1200
 }
 
 #[inline]
 pub fn default_window_height() -> i32 {
-    490
+    760
 }
 
 #[inline]
