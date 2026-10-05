@@ -24,6 +24,7 @@ mod sessions;
 mod sftp;
 mod workspace;
 mod shell;
+mod snippet_view_actions;
 pub mod touch;
 
 use crate::bindings::MouseBinding;
