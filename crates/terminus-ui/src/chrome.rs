@@ -1,4 +1,5 @@
-//! The chrome as one object: activity rail + host panel + add-host editor.
+//! The chrome as one object: shell (sidebar chrome, header, pills, views)
+//! + host panel + dialogs.
 //!
 //! Everything the mouse and the keyboard can do to the chrome is routed
 //! through here, and everything the chrome reserves from the terminal's
@@ -6,7 +7,6 @@
 //! this state and never own any of it, so a repaint can never disagree
 //! with a hit-test.
 
-use crate::activity_bar::{self, ActivityBarState, RailAction, RailHit, Section};
 use crate::add_host::{AddHostForm, AddHostHit, FormInput, FormOutcome};
 use crate::connection::{ConnectionHit, ConnectionSequence};
 use crate::context_menu::{ContextAction, ContextMenu, ContextMenuHit};
@@ -162,12 +162,22 @@ pub enum ChromeAction {
     RunSnippet(String),
     /// Settings modal was dismissed.
     DismissSettings,
+    /// Shell: open the command palette ("Search or run…").
+    OpenPalette,
+    /// Shell: the workspace view changed (header tab, brand, Settings).
+    ViewChanged(crate::shell::WorkspaceView),
+    /// Shell: a header window control was pressed.
+    WindowControl(crate::shell::WindowButton),
+    /// Shell: press on the empty header — drag the window (double-click
+    /// maximizes).
+    WindowDrag,
+    /// Shell: split the focused session (`down` = horizontal divider).
+    Split { down: bool },
 }
 
 /// Chrome state for one window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chrome {
-    pub activity: ActivityBarState,
     pub panel: HostPanel,
     pub snippets: SnippetsPanel,
     pub settings: SettingsModal,
@@ -188,12 +198,15 @@ pub struct Chrome {
     pub panel_visible: bool,
     /// Last known window width (logical), for settings hover/cursor geometry.
     pub last_window_width: f32,
+    /// Sidebar chrome, header, pills and the workspace view.
+    pub shell: crate::shell::Shell,
+    /// State of the non-terminal views (Files, Snippets, Settings, …).
+    pub screens: crate::screens::Screens,
 }
 
 impl Default for Chrome {
     fn default() -> Self {
         Self {
-            activity: ActivityBarState::default(),
             panel: HostPanel::default(),
             snippets: SnippetsPanel::with_defaults(),
             settings: SettingsModal::default(),
@@ -206,6 +219,8 @@ impl Default for Chrome {
             top_inset: 0.0,
             panel_visible: true,
             last_window_width: 1200.0,
+            shell: crate::shell::Shell::default(),
+            screens: crate::screens::Screens::default(),
         }
     }
 }
@@ -213,38 +228,98 @@ impl Default for Chrome {
 impl Chrome {
     /// Width the chrome takes from the terminal's area, in logical
     /// pixels. This is the value the grid margin reserves.
+    /// Left grid inset: the sidebar plus the terminal's padding inside
+    /// the main card.
     pub fn reserved_width(&self) -> f32 {
-        if self.activity.collapsed {
-            return 0.0;
-        }
-        if self.panel_visible {
-            activity_bar::WIDTH + crate::sidebar::WIDTH
-        } else {
-            activity_bar::WIDTH
-        }
+        crate::shell::grid_insets().left
     }
 
-    /// Top edge of the chrome, in logical pixels.
+    /// Top edge of the sidebar: it runs the full window height.
     pub fn origin_y(&self) -> f32 {
-        self.top_inset
+        0.0
     }
 
-    /// Whether the panel's host list (rather than a placeholder) is the
-    /// thing on screen.
+    /// The machine list is always the sidebar's content.
     pub fn hosts_visible(&self) -> bool {
-        self.panel_visible && self.activity.selected == Section::Servers
+        true
     }
 
-    /// Whether the snippets drawer is showing.
+    /// The old snippets drawer is gone; snippets are the Snippets view.
     pub fn snippets_visible(&self) -> bool {
-        self.panel_visible && self.activity.selected == Section::Snippets
+        false
     }
 
-    /// Title shown in the panel header.
-    pub fn panel_title(&self) -> &'static str {
-        match self.activity.selected {
-            Section::Servers => "Servers & Hosts",
-            Section::Snippets => "Command Snippets",
+    /// Switch the workspace view. Settings pages backed by the legacy
+    /// dialog open it on their tab; leaving Settings closes it.
+    pub fn show_view(&mut self, view: crate::shell::WorkspaceView) -> bool {
+        let changed = self.shell.workspace.show(view);
+        match view {
+            crate::shell::WorkspaceView::Settings(page) => match page.legacy_tab() {
+                Some(tab) if changed || !self.settings.open => self.open_settings(tab),
+                Some(_) => {}
+                None => self.settings.close(),
+            },
+            _ => {
+                if changed && self.settings.open {
+                    self.settings.close();
+                }
+            }
+        }
+        changed
+    }
+
+    /// Route one input event to the view on screen (not the terminal).
+    /// Esc on a machine view that ignores it goes back to the terminal.
+    pub fn view_input(
+        &mut self,
+        input: &crate::screens::ViewInput,
+    ) -> crate::screens::ViewOutcome {
+        use crate::screens::{ViewInput, ViewKey, ViewOutcome};
+        let view = self.shell.view();
+        let content = self.shell.content_rect();
+        let out = self.screens.handle(view, content, input);
+        if out == ViewOutcome::Ignored
+            && view.is_machine_view()
+            && matches!(
+                input,
+                ViewInput::Key {
+                    key: ViewKey::Escape,
+                    ..
+                }
+            )
+            && self.show_view(crate::shell::WorkspaceView::Terminal)
+        {
+            return ViewOutcome::Redraw;
+        }
+        out
+    }
+
+    fn press_shell(&mut self, hit: crate::shell::ShellHit) -> ChromeAction {
+        use crate::shell::{SettingsPage, ShellHit, WorkspaceView};
+        let view = |chrome: &mut Self, v: WorkspaceView| {
+            chrome.show_view(v);
+            ChromeAction::ViewChanged(v)
+        };
+        match hit {
+            ShellHit::Brand => view(self, WorkspaceView::Home),
+            ShellHit::CommandBar => ChromeAction::OpenPalette,
+            ShellHit::AddServer => ChromeAction::AddHost,
+            ShellHit::Settings => view(self, WorkspaceView::Settings(SettingsPage::Keys)),
+            ShellHit::Tab(v) => view(self, v),
+            ShellHit::Control(b) => ChromeAction::WindowControl(b),
+            ShellHit::Pill(tab) => ChromeAction::OpenSession(tab),
+            ShellHit::PillClose(tab) => ChromeAction::CloseSession(tab),
+            ShellHit::NewSession => ChromeAction::AddHostSession(
+                self.shell
+                    .machine
+                    .as_ref()
+                    .map(|m| m.id.clone())
+                    .unwrap_or_else(|| "local".to_string()),
+            ),
+            ShellHit::SplitRight => ChromeAction::Split { down: false },
+            ShellHit::SplitDown => ChromeAction::Split { down: true },
+            ShellHit::Drag => ChromeAction::WindowDrag,
+            ShellHit::Inert => ChromeAction::Consumed,
         }
     }
 
@@ -300,8 +375,6 @@ impl Chrome {
 
     /// Open the add-host editor.
     pub fn open_add_host(&mut self) {
-        self.activity.selected = Section::Servers;
-        self.activity.collapsed = false;
         self.panel_visible = true;
         self.form.open();
     }
@@ -312,8 +385,6 @@ impl Chrome {
         values: crate::add_host::HostFormValues,
         host_id: String,
     ) {
-        self.activity.selected = Section::Servers;
-        self.activity.collapsed = false;
         self.panel_visible = true;
         self.form.open_edit(values, host_id);
     }
@@ -406,7 +477,7 @@ impl Chrome {
             self.close_context_menu();
             return ChromeAction::Ignored;
         }
-        if !self.hosts_visible() || self.activity.collapsed {
+        if !self.hosts_visible() {
             self.close_context_menu();
             return ChromeAction::Ignored;
         }
@@ -573,6 +644,16 @@ impl Chrome {
                 SettingsHit::Tab(tab) => {
                     self.settings.close_engine_menu();
                     self.settings.open_tab(tab);
+                    // Keep the Settings page header on the same section.
+                    if self.shell.view().is_settings() {
+                        let page = match tab {
+                            SettingsTab::Keys => crate::shell::SettingsPage::Keys,
+                            SettingsTab::SqlSync => crate::shell::SettingsPage::Sync,
+                        };
+                        self.shell
+                            .workspace
+                            .show(crate::shell::WorkspaceView::Settings(page));
+                    }
                     ChromeAction::Consumed
                 }
                 SettingsHit::FocusUri => {
@@ -788,41 +869,14 @@ impl Chrome {
             };
         }
 
-        if self.activity.collapsed {
-            return ChromeAction::Ignored;
+        // Sidebar chrome, header and pills come before the machine list.
+        if let Some(hit) = self.shell.hit_test(x, y) {
+            return self.press_shell(hit);
         }
 
         let origin_y = self.origin_y();
-        // Tab strip / title band live above the chrome; never steal those hits.
-        if y < origin_y {
-            return ChromeAction::Ignored;
-        }
         let chrome_height = (window_height - origin_y).max(0.0);
-        if let Some(hit) = activity_bar::hit_test(origin_y, chrome_height, x, y) {
-            self.activity.hover = None;
-            self.activity.hover_dismissed = Some(hit);
-            return match hit {
-                RailHit::Section(section) => {
-                    if section == self.activity.selected {
-                        self.panel_visible = !self.panel_visible;
-                    } else {
-                        self.activity.selected = section;
-                        self.panel_visible = true;
-                    }
-                    ChromeAction::Consumed
-                }
-                RailHit::Action(RailAction::Settings) => {
-                    self.open_settings(SettingsTab::Keys);
-                    ChromeAction::Consumed
-                }
-                RailHit::Action(RailAction::CloudSync) => {
-                    self.open_settings(SettingsTab::SqlSync);
-                    ChromeAction::Consumed
-                }
-            };
-        }
-
-        if !self.panel_visible {
+        if !self.panel.rect(origin_y, chrome_height).contains(x, y) {
             return ChromeAction::Ignored;
         }
 
@@ -1001,7 +1055,7 @@ impl Chrome {
                 .settings
                 .handle_hover(window_width, window_height, x, y);
         }
-        if self.connection.is_some() || self.activity.collapsed {
+        if self.connection.is_some() {
             return false;
         }
 
@@ -1062,62 +1116,15 @@ impl Chrome {
         }
         let origin_y = self.origin_y();
         let height = window_height - origin_y;
-        let mut rail = activity_bar::hit_test(origin_y, height, x, y);
-        if rail != self.activity.hover_dismissed {
-            self.activity.hover_dismissed = None;
-        } else {
-            rail = None;
-        }
-        let rail_changed = self.activity.hover != rail;
-        self.activity.hover = rail;
-        if self.snippets_visible() {
-            let hit = self.snippets.hit_test(origin_y, height, x, y);
-            return self.snippets.set_hover(hit) | rail_changed;
-        }
-        if !self.hosts_visible() {
-            return rail_changed;
-        }
+        let shell_changed = self.shell.set_hover(self.shell.hit_test(x, y));
         let hover = self.panel.hover_at(origin_y, height, x, y);
-        self.panel.set_hover(hover) | rail_changed
-    }
-
-    /// Name of the rail icon under the pointer, and where to draw it.
-    pub fn rail_tooltip(
-        &self,
-        window_height: f32,
-    ) -> Option<(crate::geom::Rect, String)> {
-        let dialog_open = self.context_menu.is_some()
-            || self.settings.open
-            || self.connection.is_some()
-            || self.form.is_open()
-            || self.snippet_form.is_open()
-            || self.vault_unlock.is_open();
-        if dialog_open {
-            return None;
-        }
-        let hit = self.activity.hover?;
-        let label = match hit {
-            RailHit::Section(section) => section.label().to_string(),
-            RailHit::Action(RailAction::CloudSync) => format!(
-                "{}: {}",
-                RailAction::CloudSync.label(),
-                if self.activity.cloud_sync_active {
-                    "on"
-                } else {
-                    "not set up"
-                }
-            ),
-            RailHit::Action(action) => action.label().to_string(),
-        };
-        let origin_y = self.origin_y();
-        let rect =
-            activity_bar::tooltip_rect(origin_y, window_height - origin_y, hit, &label);
-        Some((rect, label))
+        self.panel.set_hover(hover) | shell_changed
     }
 
     /// Remember the last layout width so hover/cursor can rebuild dialog rects.
-    pub fn set_window_size(&mut self, width: f32, _height: f32) {
+    pub fn set_window_size(&mut self, width: f32, height: f32) {
         self.last_window_width = width;
+        self.shell.window = (width, height);
     }
 
     /// Cursor affordance under `(x, y)`.
@@ -1208,20 +1215,22 @@ impl Chrome {
                 AddHostHit::Consume => ChromeCursor::Default,
             };
         }
-        if self.activity.collapsed {
-            return ChromeCursor::Default;
-        }
         let origin_y = self.origin_y();
         let height = (window_height - origin_y).max(0.0);
-        if activity_bar::hit_test(origin_y, height, x, y).is_some() {
-            return ChromeCursor::Pointer;
+        if let Some(hit) = self.shell.hit_test(x, y) {
+            return if hit.is_control() {
+                ChromeCursor::Pointer
+            } else {
+                ChromeCursor::Default
+            };
         }
-        if self.snippets_visible() {
-            return match self.snippets.hit_test(origin_y, height, x, y) {
-                Some(SnippetHit::Item(_))
-                | Some(SnippetHit::AddButton)
-                | Some(SnippetHit::DeleteButton(_)) => ChromeCursor::Pointer,
-                Some(SnippetHit::Background) | None => ChromeCursor::Default,
+        if self.shell.view_owns(x, y) {
+            let view = self.shell.view();
+            let content = self.shell.content_rect();
+            return if self.screens.is_clickable(view, content, x, y) {
+                ChromeCursor::Pointer
+            } else {
+                ChromeCursor::Default
             };
         }
         if self.hosts_visible() {
@@ -1406,7 +1415,7 @@ impl Chrome {
         y: f32,
         lines: f32,
     ) -> bool {
-        if self.activity.collapsed || !self.hosts_visible() {
+        if !self.hosts_visible() {
             return false;
         }
         let origin_y = self.origin_y();
@@ -1502,73 +1511,9 @@ impl Chrome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::activity_bar::RailAction;
     use crate::add_host::Field;
     use crate::settings::SettingsTab;
     use crate::sidebar::Badge;
-
-    #[test]
-    fn hovering_a_rail_icon_names_it() {
-        let mut chrome = chrome_with_hosts(2);
-        let oy = chrome.origin_y();
-        let item = activity_bar::section_rect(oy, activity_bar::Section::Snippets);
-        let (cx, cy) = (item.x + item.width / 2.0, item.y + item.height / 2.0);
-        assert!(chrome.handle_hover(800.0, cx, cy), "repaint to show it");
-        let (rect, label) = chrome.rail_tooltip(800.0).expect("tooltip");
-        assert_eq!(label, "Snippets");
-        assert!(
-            rect.x >= activity_bar::WIDTH,
-            "beside the rail, not over it"
-        );
-        assert!(rect.y <= cy && rect.bottom() >= cy, "level with the icon");
-
-        chrome.handle_hover(800.0, activity_bar::WIDTH + 100.0, cy);
-        assert!(
-            chrome.rail_tooltip(800.0).is_none(),
-            "gone once the pointer leaves"
-        );
-    }
-
-    #[test]
-    fn the_sync_icon_says_whether_sync_is_set_up() {
-        let mut chrome = Chrome::default();
-        assert!(
-            !chrome.activity.cloud_sync_active,
-            "off until a remote connects"
-        );
-        let oy = chrome.origin_y();
-        let item = activity_bar::action_rect(oy, 800.0 - oy, RailAction::CloudSync);
-        chrome.handle_hover(800.0, item.x + 20.0, item.y + 10.0);
-        assert_eq!(
-            chrome.rail_tooltip(800.0).unwrap().1,
-            "Cloud Sync: not set up"
-        );
-        chrome.activity.cloud_sync_active = true;
-        assert_eq!(chrome.rail_tooltip(800.0).unwrap().1, "Cloud Sync: on");
-    }
-
-    #[test]
-    fn clicking_a_rail_icon_hides_its_tooltip_until_the_pointer_leaves() {
-        let mut chrome = chrome_with_hosts(1);
-        let oy = chrome.origin_y();
-        let item = activity_bar::section_rect(oy, activity_bar::Section::Snippets);
-        let (cx, cy) = (item.x + item.width / 2.0, item.y + item.height / 2.0);
-        chrome.handle_hover(800.0, cx, cy);
-        assert!(chrome.rail_tooltip(800.0).is_some());
-        chrome.handle_press(1200.0, 800.0, cx, cy);
-        assert!(
-            chrome.rail_tooltip(800.0).is_none(),
-            "clicked: out of the way"
-        );
-        chrome.handle_hover(800.0, cx + 1.0, cy);
-        assert!(
-            chrome.rail_tooltip(800.0).is_none(),
-            "still on the same icon"
-        );
-        chrome.handle_hover(800.0, activity_bar::WIDTH + 50.0, cy);
-        chrome.handle_hover(800.0, cx, cy);
-        assert!(chrome.rail_tooltip(800.0).is_some(), "back after leaving");
-    }
 
     #[test]
     fn a_key_row_copies_its_public_key() {
@@ -1593,18 +1538,117 @@ mod tests {
         assert!(notice.contains("authorized_keys"), "{notice}");
     }
 
+    fn centre(r: &crate::geom::Rect) -> (f32, f32) {
+        (r.x + r.width / 2.0, r.y + r.height / 2.0)
+    }
+
     #[test]
-    fn no_rail_tooltip_over_an_open_dialog() {
-        let mut chrome = Chrome::default();
-        let oy = chrome.origin_y();
-        let item = activity_bar::action_rect(oy, 800.0 - oy, RailAction::Settings);
-        chrome.handle_hover(800.0, item.x + 20.0, item.y + 10.0);
-        assert!(chrome.rail_tooltip(800.0).is_some());
-        chrome.settings.open = true;
-        assert!(chrome.rail_tooltip(800.0).is_none());
-        chrome.settings.open = false;
-        chrome.form.open();
-        assert!(chrome.rail_tooltip(800.0).is_none());
+    fn the_reserved_width_is_the_sidebar() {
+        let chrome = chrome_with_hosts(1);
+        assert_eq!(chrome.reserved_width(), crate::shell::grid_insets().left);
+        assert!(chrome.reserved_width() > crate::shell::layout::SIDEBAR_WIDTH);
+        assert_eq!(chrome.origin_y(), 0.0);
+    }
+
+    #[test]
+    fn settings_button_opens_the_settings_page_and_its_dialog() {
+        let mut chrome = chrome_with_hosts(1);
+        let (x, y) = centre(&crate::shell::sidebar::settings_rect(800.0));
+        let action = chrome.handle_press(1200.0, 800.0, x, y);
+        let page = crate::shell::WorkspaceView::Settings(crate::shell::SettingsPage::Keys);
+        assert_eq!(action, ChromeAction::ViewChanged(page));
+        assert_eq!(chrome.shell.view(), page);
+        assert!(chrome.settings_is_open());
+        assert_eq!(chrome.settings.tab, SettingsTab::Keys);
+    }
+
+    #[test]
+    fn settings_header_tabs_follow_the_dialog_and_leaving_closes_it() {
+        use crate::shell::{SettingsPage, WorkspaceView};
+        let mut chrome = chrome_with_hosts(1);
+        chrome.show_view(WorkspaceView::Settings(SettingsPage::Sync));
+        assert_eq!(chrome.settings.tab, SettingsTab::SqlSync);
+        chrome.show_view(WorkspaceView::Settings(SettingsPage::Updates));
+        assert!(!chrome.settings_is_open(), "no legacy tab for Updates");
+        chrome.show_view(WorkspaceView::Settings(SettingsPage::Keys));
+        assert!(chrome.settings_is_open());
+        chrome.show_view(WorkspaceView::Terminal);
+        assert!(!chrome.settings_is_open());
+    }
+
+    #[test]
+    fn the_command_bar_opens_the_palette_and_brand_goes_home() {
+        let mut chrome = chrome_with_hosts(1);
+        let (x, y) = centre(&crate::shell::sidebar::command_bar_rect());
+        assert_eq!(chrome.handle_press(1200.0, 800.0, x, y), ChromeAction::OpenPalette);
+        let (x, y) = centre(&crate::shell::sidebar::brand_rect());
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::ViewChanged(crate::shell::WorkspaceView::Home)
+        );
+        assert_eq!(chrome.shell.view(), crate::shell::WorkspaceView::Home);
+    }
+
+    #[test]
+    fn header_tabs_switch_views_and_cover_the_terminal() {
+        use crate::shell::WorkspaceView;
+        let mut chrome = chrome_with_hosts(1);
+        let tab = chrome.shell.header_geom().tabs[3];
+        let (x, y) = centre(&tab);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::ViewChanged(WorkspaceView::Snippets)
+        );
+        // The content is now the view's, not the terminal's.
+        assert!(chrome.shell.view_owns(700.0, 400.0));
+        // Esc on a view that ignores it returns to the terminal.
+        let out = chrome.view_input(&crate::screens::ViewInput::Key {
+            key: crate::screens::ViewKey::Escape,
+            mods: Default::default(),
+        });
+        assert_eq!(out, crate::screens::ViewOutcome::Redraw);
+        assert_eq!(chrome.shell.view(), WorkspaceView::Terminal);
+    }
+
+    #[test]
+    fn pills_focus_close_and_add_sessions_of_the_selected_machine() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.shell.machine = Some(crate::shell::MachineInfo {
+            id: "id-0".into(),
+            name: "host-0".into(),
+            address: "root@host-0".into(),
+        });
+        chrome.shell.pills = vec![crate::shell::SessionPill {
+            tab_index: 7,
+            label: "shell".into(),
+            active: false,
+            new_output: false,
+            closable: true,
+        }];
+        let g = chrome.shell.pills_geom().unwrap();
+        let (x, y) = centre(&g.pills[0]);
+        assert_eq!(chrome.handle_press(1200.0, 800.0, x, y), ChromeAction::OpenSession(7));
+        let (x, y) = centre(&g.plus);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::AddHostSession("id-0".into())
+        );
+        let (x, y) = centre(&g.split_right);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::Split { down: false }
+        );
+        assert_eq!(chrome.handle_press(1200.0, 800.0, 900.0, 30.0), ChromeAction::WindowDrag);
+    }
+
+    #[test]
+    fn hovering_shell_controls_repaints_and_sets_the_cursor() {
+        let mut chrome = chrome_with_hosts(1);
+        let (x, y) = centre(&crate::shell::sidebar::add_server_rect(800.0));
+        assert!(chrome.handle_hover(800.0, x, y));
+        assert_eq!(chrome.shell.hover, Some(crate::shell::ShellHit::AddServer));
+        assert_eq!(chrome.cursor_at(1200.0, 800.0, x, y), ChromeCursor::Pointer);
+        assert_eq!(chrome.cursor_at(1200.0, 800.0, 900.0, 30.0), ChromeCursor::Default);
     }
 
     fn chrome_with_hosts(n: usize) -> Chrome {
@@ -1654,22 +1698,6 @@ mod tests {
     }
 
     #[test]
-    fn the_reserved_width_matches_what_the_rail_and_panel_paint() {
-        let mut chrome = chrome_with_hosts(1);
-        assert_eq!(
-            chrome.reserved_width(),
-            activity_bar::WIDTH + crate::sidebar::WIDTH
-        );
-
-        chrome.activity.collapsed = true;
-        assert_eq!(chrome.reserved_width(), 0.0);
-
-        chrome.activity.collapsed = false;
-        chrome.panel_visible = false;
-        assert_eq!(chrome.reserved_width(), activity_bar::WIDTH);
-    }
-
-    #[test]
     fn pressing_a_host_row_arms_drag_and_opens_on_release() {
         let mut chrome = chrome_with_hosts(3);
         let row = chrome.panel.item_rect(0.0, 2);
@@ -1712,9 +1740,10 @@ mod tests {
             ChromeAction::Consumed
         );
         let group = chrome.panel.card_rect(0.0, 1);
-        assert!(chrome.handle_drag_move(800.0, group.x + 20.0, group.y + 20.0));
+        let gy = group.y + group.height / 2.0;
+        assert!(chrome.handle_drag_move(800.0, group.x + 20.0, gy));
         assert!(chrome.panel.host_drag.as_ref().is_some_and(|d| d.started()));
-        let action = chrome.handle_release(800.0, group.x + 20.0, group.y + 20.0);
+        let action = chrome.handle_release(800.0, group.x + 20.0, gy);
         assert_eq!(
             action,
             ChromeAction::SetHostGroup {
@@ -1743,59 +1772,11 @@ mod tests {
             chrome.handle_press(1200.0, 800.0, 600.0, 400.0),
             ChromeAction::Ignored
         );
-        // Including the rail's own background, between its buttons.
+        // Including the sidebar list's own background, below its rows.
         assert_eq!(
-            chrome.handle_press(1200.0, 800.0, 32.0, 300.0),
-            ChromeAction::Ignored
-        );
-    }
-
-    #[test]
-    fn the_rail_switches_sections_and_toggles_the_panel() {
-        let mut chrome = chrome_with_hosts(1);
-        let snippets = activity_bar::section_rect(0.0, Section::Snippets);
-        let (x, y) = (32.0, snippets.y + 10.0);
-
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, x, y),
+            chrome.handle_press(1200.0, 800.0, 130.0, 600.0),
             ChromeAction::Consumed
         );
-        assert_eq!(chrome.activity.selected, Section::Snippets);
-        assert!(!chrome.hosts_visible());
-        assert!(chrome.snippets_visible());
-
-        // Pressing the active section collapses the panel, pressing it
-        // again brings it back.
-        chrome.handle_press(1200.0, 800.0, x, y);
-        assert!(!chrome.panel_visible);
-        chrome.handle_press(1200.0, 800.0, x, y);
-        assert!(chrome.panel_visible);
-    }
-
-    #[test]
-    fn a_host_row_is_inert_while_another_section_is_showing() {
-        let mut chrome = chrome_with_hosts(3);
-        chrome.activity.selected = Section::Snippets;
-        // Clear demo snippets so a press in the drawer body is not a RunSnippet.
-        chrome.snippets.items.clear();
-        let row = chrome.panel.item_rect(0.0, 2);
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::Consumed
-        );
-        assert_eq!(chrome.panel.selected, None);
-    }
-
-    #[test]
-    fn settings_action_opens_the_settings_modal() {
-        let mut chrome = chrome_with_hosts(1);
-        let settings = activity_bar::action_rect(0.0, 800.0, RailAction::Settings);
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, settings.x + 20.0, settings.y + 10.0),
-            ChromeAction::Consumed
-        );
-        assert!(chrome.settings_is_open());
-        assert_eq!(chrome.settings.tab, SettingsTab::Keys);
     }
 
     #[test]
@@ -1978,47 +1959,6 @@ mod tests {
         assert!(chrome.handle_hover(800.0, row.x + 20.0, row.y + 20.0));
         assert!(!chrome.panel.add_hover);
         assert_eq!(chrome.panel.hover, Some(2));
-    }
-
-    #[test]
-    fn the_client_area_excludes_the_top_inset() {
-        let mut chrome = chrome_with_hosts(20);
-        // Inset larger than one card so the same absolute Y maps to a
-        // different host once the inset is cleared.
-        chrome.top_inset = 80.0;
-        let row = chrome.panel.item_rect(80.0, 1);
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::Consumed
-        );
-        assert_eq!(
-            chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::OpenHost("id-0".to_string())
-        );
-        // Clicks in the tab strip (above the chrome) must not be swallowed —
-        // otherwise tab close / switch stop working.
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, 40.0),
-            ChromeAction::Ignored
-        );
-        chrome.top_inset = 0.0;
-        chrome.panel.selected = None;
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::Consumed
-        );
-        // After inset clear, the same absolute Y is a different host; release
-        // still opens the armed id from press (id-0 was wrong — we re-armed).
-        let armed = chrome
-            .panel
-            .host_drag
-            .as_ref()
-            .map(|d| d.host_id.clone())
-            .expect("armed");
-        assert_eq!(
-            chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::OpenHost(armed)
-        );
     }
 
     #[test]

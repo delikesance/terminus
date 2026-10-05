@@ -319,6 +319,23 @@ impl Route<'_> {
                 }
                 true
             }
+            // A view covering the terminal takes committed text (IME,
+            // dead keys) instead of the PTY. Text never triggers a view
+            // action today, so only the repaint is honoured here.
+            _ if self.window.screen.view_takes_keys() => {
+                let input = terminus_ui::screens::ViewInput::Key {
+                    key: terminus_ui::screens::ViewKey::Text(text.to_string()),
+                    mods: Default::default(),
+                };
+                if !matches!(
+                    self.window.screen.chrome.view_input(&input),
+                    terminus_ui::screens::ViewOutcome::Ignored
+                        | terminus_ui::screens::ViewOutcome::Consumed
+                ) {
+                    self.request_overlay_redraw();
+                }
+                true
+            }
             _ => false,
         }
     }

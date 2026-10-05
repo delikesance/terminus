@@ -231,9 +231,6 @@ impl Screen<'_> {
                         }
                         island::TitleBarAction::Search => {
                             self.chrome.panel.filter_focused = true;
-                            self.chrome.activity.selected = terminus_ui::Section::Servers;
-                            self.chrome.activity.collapsed = false;
-                            self.chrome.panel_visible = true;
                         }
                     }
                     self.mark_dirty();

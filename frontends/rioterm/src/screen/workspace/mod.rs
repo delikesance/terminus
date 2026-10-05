@@ -1,0 +1,213 @@
+//! `Screen` side of the workspace views: keeps the shell state (selected
+//! machine, session pills, view data) in step with the tabs and the store,
+//! routes view input, and carries out the actions views ask for.
+//!
+//! Each view's actions are handled in its own file here
+//! (`workspace/<view>.rs`), so the agents filling the views never edit this one.
+
+mod files;
+mod history;
+mod home;
+mod settings;
+mod snippets;
+mod tunnels;
+
+use super::Screen;
+use crate::hosts;
+use rio_backend::clipboard::Clipboard;
+use terminus_ui::screens::{ViewAction, ViewInput, ViewOutcome};
+use terminus_ui::shell::pills::session_label;
+use terminus_ui::shell::{MachineInfo, SessionPill, WorkspaceView};
+
+impl Screen<'_> {
+    /// Refresh the shell from the tabs and the store. Cheap; called every
+    /// frame before painting.
+    pub(crate) fn sync_shell(&mut self) {
+        let (w, h) = self.chrome_viewport();
+        self.chrome.set_window_size(w, h);
+
+        let current = self.context_manager.current_index();
+        let host_of = |screen: &mut Self, i: usize| {
+            screen
+                .context_manager
+                .contexts_mut()
+                .get(i)
+                .and_then(|g| g.current().host_id.clone())
+                .unwrap_or_else(|| hosts::LOCAL_ID.to_string())
+        };
+        let machine_id = host_of(self, current);
+        let row = self
+            .chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|h| h.id == machine_id)
+            .cloned();
+        let machine = MachineInfo {
+            id: machine_id.clone(),
+            name: row
+                .as_ref()
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| "This computer".to_string()),
+            address: row.as_ref().map(|r| r.endpoint.clone()).unwrap_or_default(),
+        };
+
+        let mut pills = Vec::new();
+        for i in 0..self.context_manager.len() {
+            if host_of(self, i) != machine_id {
+                continue;
+            }
+            let active = i == current;
+            let new_output = !active
+                && self.context_manager.contexts_mut().get(i).is_some_and(|g| {
+                    g.current().terminal.lock().peek_damage_event().is_some()
+                });
+            let label = session_label(
+                self.context_manager.custom_title(i),
+                self.context_manager.title(i).map(|t| t.content.as_str()),
+                &machine.name,
+                pills.len(),
+            );
+            pills.push(SessionPill {
+                tab_index: i,
+                label,
+                active,
+                new_output,
+                closable: !self.context_manager.is_pinned(i),
+            });
+        }
+
+        let can_browse = row.as_ref().is_some_and(|r| r.stored);
+        let shell = &mut self.chrome.shell;
+        shell.pills = pills;
+        shell.sync_ok = self.host_store.sync_connected();
+        shell.machine = Some(machine.clone());
+
+        let s = &mut self.chrome.screens;
+        s.files.machine_name = machine.name.clone();
+        s.files.can_browse = can_browse;
+        s.files.session_open = self.sftp.is_some();
+        s.tunnels.machine_name = machine.name.clone();
+        s.history.machine_name = machine.name;
+        if s.snippets.items != self.chrome.snippets.items {
+            s.snippets.items = self.chrome.snippets.items.clone();
+        }
+    }
+
+    /// Whether a pointer event at `(x, y)` belongs to the view on screen
+    /// (not the terminal, not the legacy SFTP pane bridged into Files).
+    pub fn view_owns(&self, x: f32, y: f32) -> bool {
+        self.chrome.shell.view_owns(x, y) && !self.sftp_bridged()
+    }
+
+    /// Files shows the legacy SFTP pane while a session is open.
+    pub(crate) fn sftp_bridged(&self) -> bool {
+        self.sftp.is_some() && self.chrome.shell.view() == WorkspaceView::Files
+    }
+
+    /// Switch view (header tab, palette, keyboard). Returns whether it
+    /// changed.
+    pub fn show_view(&mut self, view: WorkspaceView) -> bool {
+        let changed = self.chrome.show_view(view);
+        if changed {
+            self.clear_selection();
+            self.mark_dirty();
+        }
+        changed
+    }
+
+    /// Route one input to the view. Returns whether to repaint.
+    pub fn view_input(&mut self, input: ViewInput, clipboard: &mut Clipboard) -> bool {
+        match self.chrome.view_input(&input) {
+            ViewOutcome::Ignored | ViewOutcome::Consumed => false,
+            ViewOutcome::Redraw => true,
+            ViewOutcome::Action(action) => {
+                self.apply_view_action(action, clipboard);
+                true
+            }
+        }
+    }
+
+    pub fn apply_view_action(&mut self, action: ViewAction, clipboard: &mut Clipboard) {
+        match action {
+            ViewAction::Files(a) => self.files_view_action(a, clipboard),
+            ViewAction::Tunnels(a) => self.tunnels_view_action(a, clipboard),
+            ViewAction::Snippets(a) => self.snippets_view_action(a, clipboard),
+            ViewAction::History(a) => self.history_view_action(a, clipboard),
+            ViewAction::Settings(a) => self.settings_view_action(a, clipboard),
+            ViewAction::Home(a) => self.home_view_action(a, clipboard),
+        }
+        self.mark_dirty();
+    }
+
+    /// Keys go to the view, not the PTY: a non-terminal view is shown
+    /// (the bridged SFTP pane keeps its own key handling).
+    pub(crate) fn view_takes_keys(&self) -> bool {
+        !self.chrome.shell.view().shows_terminal() && !self.sftp_bridged()
+    }
+
+    /// Decode a key press for the view and route it.
+    pub(crate) fn view_key_input(
+        &mut self,
+        key: &rio_window::event::KeyEvent,
+        clipboard: &mut Clipboard,
+    ) {
+        use rio_window::keyboard::{Key, NamedKey};
+        use terminus_ui::screens::{ViewKey, ViewMods};
+        if key.state != rio_window::event::ElementState::Pressed {
+            return;
+        }
+        let m = self.modifiers.state();
+        let mods = ViewMods {
+            ctrl: m.control_key(),
+            shift: m.shift_key(),
+            alt: m.alt_key(),
+            logo: m.super_key(),
+        };
+        let vk = match key.logical_key.as_ref() {
+            Key::Named(NamedKey::Enter) => ViewKey::Enter,
+            Key::Named(NamedKey::Escape) => ViewKey::Escape,
+            Key::Named(NamedKey::Backspace) => ViewKey::Backspace,
+            Key::Named(NamedKey::Delete) => ViewKey::Delete,
+            Key::Named(NamedKey::Tab) => ViewKey::Tab,
+            Key::Named(NamedKey::ArrowUp) => ViewKey::Up,
+            Key::Named(NamedKey::ArrowDown) => ViewKey::Down,
+            Key::Named(NamedKey::ArrowLeft) => ViewKey::Left,
+            Key::Named(NamedKey::ArrowRight) => ViewKey::Right,
+            Key::Named(NamedKey::Home) => ViewKey::Home,
+            Key::Named(NamedKey::End) => ViewKey::End,
+            Key::Named(NamedKey::PageUp) => ViewKey::PageUp,
+            Key::Named(NamedKey::PageDown) => ViewKey::PageDown,
+            Key::Named(NamedKey::F2) => ViewKey::F2,
+            _ => match key.text.as_ref() {
+                Some(t) if crate::renderer::is_printable_text(t) => {
+                    ViewKey::Text(t.to_string())
+                }
+                _ => return,
+            },
+        };
+        if self.view_input(ViewInput::Key { key: vk, mods }, clipboard) {
+            self.mark_dirty();
+        }
+    }
+
+    /// Open the command palette ("Search or run…", Ctrl K).
+    pub fn open_palette(&mut self) {
+        if !self.renderer.command_palette.is_enabled() {
+            let hosts = self.palette_host_items();
+            self.renderer.command_palette.set_hosts(hosts);
+            let shortcuts = self.palette_shortcuts();
+            self.renderer.command_palette.set_shortcuts(shortcuts);
+            self.renderer.command_palette.set_enabled(true);
+            self.mark_dirty();
+        }
+    }
+
+    /// Open the palette on its server list.
+    pub fn open_palette_hosts(&mut self) {
+        self.open_palette();
+        let hosts = self.palette_host_items();
+        self.renderer.command_palette.enter_hosts_mode(hosts);
+    }
+}

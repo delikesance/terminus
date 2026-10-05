@@ -41,9 +41,9 @@ use uuid::Uuid;
 /// Legacy WSL section label (no longer emitted by [`sidebar_rows`]).
 pub const WSL_SECTION: &str = "Windows (WSL)";
 /// Section label above this computer and WSL distros.
-pub const LOCAL_SECTION: &str = "Local";
+pub const LOCAL_SECTION: &str = terminus_ui::sidebar::LOCAL_SECTION;
 /// Section label above the stored SSH hosts and groups.
-pub const HOSTS_SECTION: &str = "Hosts";
+pub const HOSTS_SECTION: &str = terminus_ui::sidebar::SERVERS_SECTION;
 /// The row id of the local machine, resolved by the screen when it opens.
 pub const LOCAL_ID: &str = "local";
 /// Prefix marking a row as a WSL distro; the rest is the distro's name.
@@ -269,18 +269,6 @@ fn sessions_for_host<'a>(
         .collect()
 }
 
-fn push_sessions(rows: &mut Vec<Row>, sessions: &[&OpenSession], host_id: &str) {
-    for session in sessions {
-        rows.push(Row::Session(SessionItem {
-            tab_index: session.tab_index,
-            host_id: host_id.to_string(),
-            title: session.title.clone(),
-            active: session.active,
-            closable: session.closable,
-        }));
-    }
-}
-
 /// The sidebar's list, in order:
 /// 1. `Local` — this computer + WSL distros (+ their open sessions)
 /// 2. `Hosts` — ungrouped hosts and groups interleaved by `sort_order`
@@ -313,7 +301,7 @@ pub fn sidebar_rows(
     rows.push(Row::Section(LOCAL_SECTION.to_string()));
     rows.push(Row::Host(HostItem {
         id: LOCAL_ID.to_string(),
-        name: "This computer".to_string(),
+        name: "Local".to_string(),
         endpoint: local_endpoint,
         badge: Badge::Local,
         stored: false,
@@ -322,9 +310,6 @@ pub fn sidebar_rows(
         nested: false,
         session_count: local_sessions.len(),
     }));
-    if !collapsed_hosts.contains(LOCAL_ID) {
-        push_sessions(&mut rows, &local_sessions, LOCAL_ID);
-    }
 
     for distro in &platform.distros {
         let id = format!("{WSL_PREFIX}{}", distro.name);
@@ -341,27 +326,17 @@ pub fn sidebar_rows(
             nested: false,
             session_count: distro_sessions.len(),
         }));
-        if !collapsed_hosts.contains(&id) {
-            push_sessions(&mut rows, &distro_sessions, &id);
-        }
     }
 
-    rows.push(Row::Section(HOSTS_SECTION.to_string()));
+    // Sessions are shown as pills of the selected machine, not as rows;
+    // rows only carry their count.
+    let _ = collapsed_hosts;
 
-    enum RootItem<'a> {
-        Host(&'a HostRow),
-        Group(&'a str, &'a str, Vec<&'a HostRow>),
-    }
-
-    let mut root: Vec<(i64, String, RootItem<'_>)> = Vec::new();
-    for host in hosts.iter().filter(|host| host.group_id.is_none()) {
-        root.push((
-            host.sort_order,
-            host.name.to_lowercase(),
-            RootItem::Host(host),
-        ));
-    }
-    for (group_id, group_name, group_order) in groups {
+    // One section per group (in group order), then "Servers" for the
+    // ungrouped hosts — the design's machine sections.
+    let mut ordered_groups: Vec<&(String, String, i64)> = groups.iter().collect();
+    ordered_groups.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    for (group_id, group_name, _) in ordered_groups {
         let mut group_hosts: Vec<_> = hosts
             .iter()
             .filter(|host| host.group_id.as_deref() == Some(group_id.as_str()))
@@ -372,54 +347,39 @@ pub fn sidebar_rows(
                 .then_with(|| a.updated_at.cmp(&b.updated_at))
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        root.push((
-            *group_order,
-            group_name.to_lowercase(),
-            RootItem::Group(group_id.as_str(), group_name.as_str(), group_hosts),
-        ));
-    }
-    root.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-
-    for (_, _, item) in root {
-        match item {
-            RootItem::Host(host) => {
-                let host_sessions = sessions_for_host(sessions, &host.id);
-                rows.push(Row::Host(host_item_from_row(
-                    host,
-                    open_host_ids,
-                    host_sessions.len(),
-                )));
-                if !collapsed_hosts.contains(&host.id) {
-                    push_sessions(&mut rows, &host_sessions, &host.id);
-                }
-            }
-            RootItem::Group(group_id, group_name, group_hosts) => {
-                let is_collapsed = collapsed.contains(group_id);
-                let group_session_count: usize = group_hosts
-                    .iter()
-                    .map(|h| sessions_for_host(sessions, &h.id).len())
-                    .sum();
-                rows.push(Row::Group {
-                    id: group_id.to_string(),
-                    name: group_name.to_string(),
-                    host_count: group_hosts.len(),
-                    session_count: group_session_count,
-                    collapsed: is_collapsed,
-                });
-                if !is_collapsed {
-                    for host in group_hosts {
-                        let host_sessions = sessions_for_host(sessions, &host.id);
-                        let mut item =
-                            host_item_from_row(host, open_host_ids, host_sessions.len());
-                        item.nested = true;
-                        rows.push(Row::Host(item));
-                        if !collapsed_hosts.contains(&host.id) {
-                            push_sessions(&mut rows, &host_sessions, &host.id);
-                        }
-                    }
-                }
+        let is_collapsed = collapsed.contains(group_id);
+        let group_session_count: usize = group_hosts
+            .iter()
+            .map(|h| sessions_for_host(sessions, &h.id).len())
+            .sum();
+        rows.push(Row::Group {
+            id: group_id.to_string(),
+            name: group_name.to_string(),
+            host_count: group_hosts.len(),
+            session_count: group_session_count,
+            collapsed: is_collapsed,
+        });
+        if !is_collapsed {
+            for host in group_hosts {
+                let count = sessions_for_host(sessions, &host.id).len();
+                let mut item = host_item_from_row(host, open_host_ids, count);
+                item.nested = true;
+                rows.push(Row::Host(item));
             }
         }
+    }
+
+    rows.push(Row::Section(HOSTS_SECTION.to_string()));
+    let mut ungrouped: Vec<&HostRow> =
+        hosts.iter().filter(|host| host.group_id.is_none()).collect();
+    ungrouped.sort_by(|a, b| {
+        a.sort_order
+            .cmp(&b.sort_order)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    for host in ungrouped {
+        let count = sessions_for_host(sessions, &host.id).len();
+        rows.push(Row::Host(host_item_from_row(host, open_host_ids, count)));
     }
 
     rows
@@ -2952,7 +2912,7 @@ mod tests {
 
         let local = hosts_of(&rows)[0];
         assert_eq!(local.id, LOCAL_ID);
-        assert_eq!(local.name, "This computer");
+        assert_eq!(local.name, "Local");
         assert_eq!(local.badge, Badge::Local);
         assert_eq!(local.endpoint, "nixos@NixOS · WSL");
     }
@@ -3057,7 +3017,7 @@ mod tests {
     }
 
     #[test]
-    fn ungrouped_hosts_come_before_groups() {
+    fn groups_come_before_the_servers_section() {
         let platform = PlatformFacts {
             machine: machine("NixOS", "nixos", Some("NixOS")),
             distros: Vec::new(),
@@ -3082,11 +3042,12 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(root, vec!["mainserver", "jeremy", "test"]);
+        assert_eq!(root, vec!["jeremy", "test", "mainserver"]);
+        assert_eq!(labels(&rows), vec![LOCAL_SECTION, HOSTS_SECTION]);
     }
 
     #[test]
-    fn group_can_sort_above_host_via_sort_order() {
+    fn groups_keep_their_own_sort_order() {
         let platform = PlatformFacts {
             machine: machine("NixOS", "nixos", Some("NixOS")),
             distros: Vec::new(),
@@ -3095,7 +3056,10 @@ mod tests {
         let mut host = host_row("h1", "mainserver");
         host.sort_order = 1;
         let hosts = vec![host];
-        let groups = vec![("g1".into(), "jeremy".into(), 0)];
+        let groups = vec![
+            ("g2".into(), "zeta".into(), 0),
+            ("g1".into(), "alpha".into(), 1),
+        ];
         let empty = HashSet::new();
         let rows = sidebar_rows(&platform, &hosts, &groups, &empty, &empty, &[], &[]);
 
@@ -3107,7 +3071,7 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(root, vec!["jeremy", "mainserver"]);
+        assert_eq!(root, vec!["zeta", "alpha", "mainserver"]);
     }
 
     #[test]
@@ -3140,7 +3104,7 @@ mod tests {
                 .iter()
                 .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["This computer", "Ubuntu 24.04 LTS", "Alpine", "web-01"]
+            vec!["Local", "Ubuntu 24.04 LTS", "Alpine", "web-01"]
         );
 
         // A row id is what the screen resolves a session from, so it has to
@@ -3159,7 +3123,7 @@ mod tests {
     }
 
     #[test]
-    fn open_sessions_attach_under_matching_hosts_with_local_fallback() {
+    fn open_sessions_are_counted_on_their_machine_with_local_fallback() {
         let platform = PlatformFacts {
             machine: machine("NixOS", "nixos", Some("NixOS")),
             distros: Vec::new(),
@@ -3192,21 +3156,16 @@ mod tests {
             &["local".into(), "9c1e".into()],
             &sessions,
         );
-        let session_titles: Vec<_> = rows
-            .iter()
-            .filter_map(|r| match r {
-                Row::Session(s) => {
-                    Some((s.host_id.as_str(), s.tab_index, s.title.as_str()))
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            session_titles,
-            vec![("local", 0, "This computer"), ("9c1e", 1, "web-01")]
+        assert!(
+            !rows.iter().any(|r| matches!(r, Row::Session(_))),
+            "sessions are pills now, not rows"
         );
-        let local = rows.iter().find_map(Row::host).unwrap();
-        assert_eq!(local.session_count, 1);
+        let counts: Vec<_> = rows
+            .iter()
+            .filter_map(Row::host)
+            .map(|h| (h.id.as_str(), h.session_count))
+            .collect();
+        assert_eq!(counts, vec![("local", 1), ("9c1e", 1)]);
     }
 
     #[test]

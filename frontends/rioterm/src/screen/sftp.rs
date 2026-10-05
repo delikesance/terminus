@@ -93,14 +93,10 @@ impl Screen<'_> {
 
         let session = crate::sftp_ui::ActiveSftp::start(&host, password, identity, wake)?;
 
-        {
-            let grid = self.context_manager.current_grid_mut();
-            if let Some(item) = grid.current_item_mut() {
-                item.set_pane_kind(crate::layout::PaneKind::Sftp);
-            }
-        }
-
+        // The browser lives in the Files view now; the terminal pane stays
+        // a terminal underneath.
         self.sftp = Some(session);
+        self.show_view(terminus_ui::shell::WorkspaceView::Files);
         self.mark_dirty();
         Ok(())
     }
@@ -126,28 +122,25 @@ impl Screen<'_> {
         if let Some(session) = self.sftp.take() {
             session.close();
         }
-        let grid = self.context_manager.current_grid_mut();
-        if let Some(item) = grid.current_item_mut() {
-            item.set_pane_kind(crate::layout::PaneKind::Terminal);
+        if self.chrome.shell.view() == terminus_ui::shell::WorkspaceView::Files {
+            self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
         }
         self.mark_dirty();
     }
 
-    /// Logical bounds of the current leaf for SFTP layout / hit-testing.
+    /// Logical bounds of the SFTP browser: the Files view's content rect
+    /// while a session is open and Files is shown.
     pub fn sftp_bounds(&self) -> Option<terminus_ui::Rect> {
-        let grid = self.context_manager.current_grid();
-        let item = grid.current_item()?;
-        if item.pane_kind != crate::layout::PaneKind::Sftp {
+        if !self.sftp_bridged() {
             return None;
         }
-        let scale = self.sugarloaf.scale_factor().max(1.0);
-        let margin = grid.get_scaled_margin();
-        let r = item.layout_rect;
+        let pad = terminus_ui::screens::PAD * 0.5;
+        let c = self.chrome.shell.content_rect();
         Some(terminus_ui::Rect::new(
-            (r[0] + margin.left) / scale,
-            (r[1] + margin.top) / scale,
-            r[2] / scale,
-            r[3] / scale,
+            c.x + pad,
+            c.y + pad,
+            (c.width - 2.0 * pad).max(0.0),
+            (c.height - 2.0 * pad).max(0.0),
         ))
     }
 
