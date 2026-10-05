@@ -90,6 +90,8 @@ pub struct HostRow {
     pub auth_method: String,
     pub identity_id: Option<String>,
     pub group_id: Option<String>,
+    pub tags: Vec<String>,
+    pub notes: String,
     pub os_id: Option<String>,
     /// Manual order among peers (same group / ungrouped). Lower first.
     pub sort_order: i64,
@@ -108,6 +110,8 @@ impl HostRow {
             auth_method: host.auth_method.clone(),
             identity_id: host.identity_id.map(|id| id.to_string()),
             group_id: host.group_id.map(|id| id.to_string()),
+            tags: host.tags.clone(),
+            notes: host.notes.clone(),
             os_id: host.os_id.clone(),
             sort_order: host.sort_order,
             updated_at: host.updated_at,
@@ -488,6 +492,21 @@ pub struct HostDraft {
     /// Plaintext password (memory only) when `auth_method == "password"`.
     /// Empty while editing means keep the existing sealed credential.
     pub password: String,
+    /// Group the host is filed under; `None` keeps it at the root.
+    pub group_id: Option<String>,
+    pub tags: Vec<String>,
+    pub notes: String,
+}
+
+/// Split the editor's comma separated tags: trimmed, no blanks, no repeats.
+pub fn parse_tags(text: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for tag in text.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            tags.push(tag.to_string());
+        }
+    }
+    tags
 }
 
 impl HostDraft {
@@ -563,6 +582,14 @@ impl HostDraft {
             auth_method: method.as_str().to_string(),
             identity_id,
             password,
+            group_id: self
+                .group_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+                .map(str::to_string),
+            tags: parse_tags(&self.tags.join(",")),
+            notes: self.notes.trim().to_string(),
         })
     }
 
@@ -613,9 +640,12 @@ fn host_from_draft(draft: &HostDraft) -> Host {
         auth_method: draft.auth_method.clone(),
         password: None,
         identity_id,
-        group_id: None,
-        tags: Vec::new(),
-        notes: String::new(),
+        group_id: draft
+            .group_id
+            .as_deref()
+            .and_then(|s| Uuid::parse_str(s).ok()),
+        tags: draft.tags.clone(),
+        notes: draft.notes.clone(),
         os_id: None,
         sort_order: 0,
         created_at: now,
@@ -1467,7 +1497,7 @@ fn worker(
             Command::Create(draft) => {
                 // Test / skip-probe path: no SSH round-trip.
                 let mut host = host_from_draft(&draft);
-                match runtime.block_on(store.next_host_sort_order(None)) {
+                match runtime.block_on(store.next_host_sort_order(host.group_id)) {
                     Ok(order) => host.sort_order = order,
                     Err(err) => {
                         let _ = events.send(HostEvent::Failed(format!(
@@ -1872,7 +1902,7 @@ fn probe_and_persist(
 
     let mut host = host_from_draft(&draft);
     host.sort_order = runtime
-        .block_on(store.next_host_sort_order(None))
+        .block_on(store.next_host_sort_order(host.group_id))
         .map_err(|e| format!("Could not save the host: {e}"))?;
     // Probe uses in-memory password when present.
     if method == HostAuthMethod::Password {
@@ -1979,6 +2009,19 @@ fn probe_and_update(
     existing.auth_method = draft.auth_method.clone();
     existing.identity_id = identity_id;
     existing.password = None;
+    let group_id = draft
+        .group_id
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
+    if existing.group_id != group_id {
+        // Joins the end of its new group.
+        existing.sort_order = runtime
+            .block_on(store.next_host_sort_order(group_id))
+            .map_err(|e| format!("Could not save the host: {e}"))?;
+    }
+    existing.group_id = group_id;
+    existing.tags = draft.tags.clone();
+    existing.notes = draft.notes.clone();
     existing.updated_at = Utc::now();
 
     let label = existing.name.clone();
@@ -2857,6 +2900,8 @@ mod tests {
             auth_method: "key".into(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             sort_order: 0,
             os_id: None,
             updated_at: Utc::now(),
@@ -2924,6 +2969,8 @@ mod tests {
             auth_method: "key".to_string(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),
@@ -2968,6 +3015,8 @@ mod tests {
             auth_method: "key".to_string(),
             identity_id: None,
             group_id: Some("g1".to_string()),
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),
@@ -3284,6 +3333,8 @@ mod tests {
             auth_method: "key".to_string(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),
