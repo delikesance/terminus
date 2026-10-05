@@ -68,7 +68,7 @@ impl Screen<'_> {
             return None;
         }
 
-        // Workspace view previews (TERMINUS_VIEW_PREVIEW=snippets|files).
+        // Workspace view previews (TERMINUS_VIEW_PREVIEW=snippets|files|history|settings-*).
         if crate::renderer::views::snippets::preview_selected() {
             crate::renderer::views::snippets::paint_preview(
                 &mut self.sugarloaf,
@@ -85,7 +85,14 @@ impl Screen<'_> {
             self.sugarloaf.render();
             return None;
         }
-        // Settings view preview (TERMINUS_VIEW_PREVIEW=settings-*).
+        if crate::renderer::views::history::preview_requested() {
+            crate::renderer::views::history::paint_preview(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
         if crate::renderer::views::settings::preview::paint_frame(
             &mut self.sugarloaf,
             &self.renderer.chrome_theme,
