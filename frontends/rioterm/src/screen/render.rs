@@ -68,6 +68,15 @@ impl Screen<'_> {
             return None;
         }
 
+        // Settings view preview (TERMINUS_VIEW_PREVIEW=settings-*).
+        if crate::renderer::views::settings::preview::paint_frame(
+            &mut self.sugarloaf,
+            &self.renderer.chrome_theme,
+        ) {
+            self.sugarloaf.render();
+            return None;
+        }
+
         self.tick_session_connecting();
         let host_drag_action = self.tick_host_drag_animation();
         if let Some(action) = host_drag_action {
