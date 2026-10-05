@@ -49,7 +49,18 @@ pub fn paint(
     device_scale: f32,
 ) {
     state.labels = measure_labels(s);
+    paint_measured(s, theme, content, state, device_scale);
+}
 
+/// Paint with label widths already in `state.labels` (the shell measures
+/// them in `renderer::screens::measure`, before hit-testing).
+pub fn paint_measured(
+    s: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    content: Rect,
+    state: &SnippetsView,
+    device_scale: f32,
+) {
     // Toolbar: filter field + New snippet.
     let search = state.search(content);
     paint_search(

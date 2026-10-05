@@ -3,7 +3,9 @@
 use super::Screen;
 use crate::context::renderable::Cursor;
 use crate::hosts;
+use crate::renderer::views::files::{self as files_view, FilesAction};
 use rio_window::window::CursorIcon;
+use terminus_ui::views::files::FilesHit;
 
 /// SFTP credentials for a host: `(password, (private key PEM, passphrase))`.
 pub(super) type SftpAuth = (Option<String>, Option<(String, Option<String>)>);
@@ -128,20 +130,18 @@ impl Screen<'_> {
         self.mark_dirty();
     }
 
-    /// Logical bounds of the SFTP browser: the Files view's content rect
-    /// while a session is open and Files is shown.
+    /// Logical bounds of the Files view (two SFTP panes): the content
+    /// rect while a session is open and Files is shown.
     pub fn sftp_bounds(&self) -> Option<terminus_ui::Rect> {
-        if !self.sftp_bridged() {
-            return None;
+        self.sftp_bridged()
+            .then(|| self.chrome.shell.content_rect())
+    }
+
+    fn files_redraw(&mut self, action: &FilesAction) -> bool {
+        if action.needs_redraw() {
+            self.mark_dirty();
         }
-        let pad = terminus_ui::screens::PAD * 0.5;
-        let c = self.chrome.shell.content_rect();
-        Some(terminus_ui::Rect::new(
-            c.x + pad,
-            c.y + pad,
-            (c.width - 2.0 * pad).max(0.0),
-            (c.height - 2.0 * pad).max(0.0),
-        ))
+        action.needs_redraw()
     }
 
     pub fn handle_sftp_click(
@@ -150,44 +150,42 @@ impl Screen<'_> {
         y: f32,
         double: bool,
     ) -> terminus_ui::SftpClickResult {
-        let Some(bounds) = self.sftp_bounds() else {
+        let Some(content) = self.sftp_bounds() else {
             return terminus_ui::SftpClickResult::Miss;
         };
         let Some(session) = self.sftp.as_mut() else {
             return terminus_ui::SftpClickResult::Miss;
         };
-        let layout = terminus_ui::SftpPaneLayout::from_state(bounds, &session.state);
-        let hit = layout.hit_test(&session.state, x, y);
-        let result = session.handle_click(&layout, x, y, double);
-        if matches!(result, terminus_ui::SftpClickResult::Handled) {
-            session.drag_press(hit, x, y);
+        let action = files_view::pointer_press(
+            &mut self.sugarloaf,
+            session,
+            &mut self.files_view,
+            content,
+            x,
+            y,
+            double,
+        );
+        if self.files_redraw(&action) {
+            terminus_ui::SftpClickResult::Handled
+        } else {
+            terminus_ui::SftpClickResult::Miss
         }
-        match result {
-            terminus_ui::SftpClickResult::Close => {
-                self.close_sftp_pane();
-            }
-            terminus_ui::SftpClickResult::Handled => {
-                self.mark_dirty();
-            }
-            terminus_ui::SftpClickResult::Miss => {}
-        }
-        result
     }
 
     pub fn handle_sftp_drag_move(&mut self, x: f32, y: f32) -> bool {
+        let Some(content) = self.sftp_bounds() else {
+            return false;
+        };
         let Some(session) = self.sftp.as_mut() else {
             return false;
         };
-        if session.drag_move(x, y) {
-            self.mark_dirty();
-            true
-        } else {
-            false
-        }
+        let action =
+            files_view::pointer_move(session, &mut self.files_view, content, x, y, true);
+        self.files_redraw(&action)
     }
 
     pub fn handle_sftp_drag_release(&mut self, x: f32, y: f32) -> bool {
-        let Some(bounds) = self.sftp_bounds() else {
+        let Some(content) = self.sftp_bounds() else {
             if let Some(session) = self.sftp.as_mut() {
                 session.cancel_drag();
             }
@@ -196,62 +194,64 @@ impl Screen<'_> {
         let Some(session) = self.sftp.as_mut() else {
             return false;
         };
-        let layout = terminus_ui::SftpPaneLayout::from_state(bounds, &session.state);
-        if session.drag_release(&layout, x, y) {
-            self.mark_dirty();
-            true
-        } else {
-            false
-        }
+        let action = files_view::pointer_release(session, content, x, y);
+        self.files_redraw(&action)
     }
 
     pub fn handle_sftp_hover(&mut self, x: f32, y: f32) -> bool {
-        let Some(bounds) = self.sftp_bounds() else {
+        let Some(content) = self.sftp_bounds() else {
             return false;
         };
         let Some(session) = self.sftp.as_mut() else {
             return false;
         };
-        let layout = terminus_ui::SftpPaneLayout::from_state(bounds, &session.state);
-        if session.handle_hover(&layout, x, y) {
-            self.mark_dirty();
-            true
-        } else {
-            false
-        }
+        let action =
+            files_view::pointer_move(session, &mut self.files_view, content, x, y, false);
+        self.files_redraw(&action)
     }
 
-    /// Cursor over the SFTP pane. `None` when the pointer is outside it.
+    /// Cursor over the Files view. `None` when the pointer is outside it.
     pub fn sftp_cursor_at(&self, x: f32, y: f32) -> Option<CursorIcon> {
-        let bounds = self.sftp_bounds()?;
+        let content = self.sftp_bounds()?;
         let session = self.sftp.as_ref()?;
-        let layout = terminus_ui::SftpPaneLayout::from_state(bounds, &session.state);
-        let hit = layout.hit_test(&session.state, x, y);
-        if matches!(hit, terminus_ui::SftpHit::Miss) {
-            return None;
+        if session.state.conflict.is_some() {
+            return Some(CursorIcon::Default);
         }
-        if terminus_ui::hit_is_text(&hit) {
-            Some(CursorIcon::Text)
-        } else if terminus_ui::hit_is_clickable(&hit) {
-            Some(CursorIcon::Pointer)
-        } else {
-            Some(CursorIcon::Default)
+        match files_view::hit_at(content, &session.state, x, y) {
+            FilesHit::Miss => None,
+            hit if hit.is_clickable() => Some(CursorIcon::Pointer),
+            _ => Some(CursorIcon::Default),
         }
     }
 
-    pub fn handle_sftp_scroll(&mut self, x: f32, y: f32, delta_y: f32) -> bool {
-        let Some(bounds) = self.sftp_bounds() else {
+    /// Wheel over the Files view; `lines` as winit reports them (positive
+    /// = towards the top).
+    pub fn handle_sftp_scroll(&mut self, x: f32, y: f32, lines: f32) -> bool {
+        let Some(content) = self.sftp_bounds() else {
             return false;
         };
         let Some(session) = self.sftp.as_mut() else {
             return false;
         };
-        let layout = terminus_ui::SftpPaneLayout::from_state(bounds, &session.state);
-        if session.scroll(&layout, x, y, delta_y) {
-            self.mark_dirty();
-            true
-        } else {
-            false
+        let action = files_view::wheel(session, content, x, y, -lines);
+        self.files_redraw(&action)
+    }
+
+    /// Key for the conflict dialog, when one is pending. Returns whether
+    /// it was consumed.
+    pub(super) fn sftp_conflict_key(
+        &mut self,
+        key: terminus_ui::components::overlay::DialogKey,
+    ) -> bool {
+        let Some(session) = self.sftp.as_mut() else {
+            return false;
+        };
+        match files_view::conflict_key(session, &mut self.files_view, key) {
+            Some(action) => {
+                self.files_redraw(&action);
+                true
+            }
+            None => false,
         }
     }
 }

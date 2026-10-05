@@ -90,8 +90,11 @@ impl Screen<'_> {
         s.files.session_open = self.sftp.is_some();
         s.tunnels.machine_name = machine.name.clone();
         s.history.machine_name = machine.name;
-        if s.snippets.items != self.chrome.snippets.items {
-            s.snippets.items = self.chrome.snippets.items.clone();
+        if s.snippets.items != self.host_store.snippet_items {
+            s.snippets.items = self.host_store.snippet_items.clone();
+            s.snippets.hover = None;
+            let content = self.chrome.shell.content_rect();
+            s.snippets.scroll = s.snippets.scroll.min(s.snippets.max_scroll(content));
         }
     }
 
@@ -141,10 +144,12 @@ impl Screen<'_> {
         self.mark_dirty();
     }
 
-    /// Keys go to the view, not the PTY: a non-terminal view is shown
-    /// (the bridged SFTP pane keeps its own key handling).
+    /// Keys go to the view, not the PTY: a non-terminal view is shown.
+    /// (Files with an open SFTP session handles its keys first in
+    /// `process_key_event`; what it leaves is dropped here, never typed
+    /// into the terminal.)
     pub(crate) fn view_takes_keys(&self) -> bool {
-        !self.chrome.shell.view().shows_terminal() && !self.sftp_bridged()
+        !self.chrome.shell.view().shows_terminal()
     }
 
     /// Decode a key press for the view and route it.
@@ -165,6 +170,22 @@ impl Screen<'_> {
             alt: m.alt_key(),
             logo: m.super_key(),
         };
+        // Ctrl K: the mock's palette shortcut, live while a view owns keys.
+        if mods.ctrl
+            && !mods.shift
+            && !mods.alt
+            && terminus_ui::shell::sidebar::ctrl_k_opens_palette(
+                self.chrome.shell.view().shows_terminal(),
+                cfg!(target_os = "macos"),
+            )
+            && matches!(key.logical_key.as_ref(), Key::Character(c) if c.eq_ignore_ascii_case("k"))
+        {
+            self.open_palette();
+            return;
+        }
+        if self.sftp_bridged() {
+            return;
+        }
         let vk = match key.logical_key.as_ref() {
             Key::Named(NamedKey::Enter) => ViewKey::Enter,
             Key::Named(NamedKey::Escape) => ViewKey::Escape,
