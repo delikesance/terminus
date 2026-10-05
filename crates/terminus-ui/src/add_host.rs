@@ -307,6 +307,7 @@ pub const LABEL_CANCEL: f32 = 47.0;
 pub const LABEL_BACK: f32 = 33.0;
 pub const LABEL_CONTINUE: f32 = 67.0;
 pub const LABEL_SAVE: f32 = 82.0;
+pub const LABEL_COPY: f32 = 34.0;
 /// Where the "Generate one" link starts / how wide it is on the hint line
 /// ("No key yet? " then the link, Sora 13).
 pub const HINT_LINK_X: f32 = 76.0;
@@ -339,6 +340,8 @@ pub enum AddHostHit {
     Cancel,
     /// Go back to the previous step.
     Back,
+    /// "Copy" beside the footer error: put the full message on the clipboard.
+    CopyError,
     /// Continue to the next step.
     Next,
     /// Persist the draft (same as Enter on the last step).
@@ -1696,13 +1699,29 @@ impl AddHostLayout {
         Rect::new(primary.x - BUTTON_GAP - w, primary.y, w, BUTTON_HEIGHT)
     }
 
+    /// "Copy" beside Back / Cancel, only while an error is shown.
+    pub fn copy_error_rect(&self, form: &AddHostForm) -> Option<Rect> {
+        form.error()?;
+        let secondary = self.secondary_button_rect(form);
+        let w = Self::button_width(LABEL_COPY);
+        Some(Rect::new(
+            secondary.x - BUTTON_GAP - w,
+            secondary.y,
+            w,
+            BUTTON_HEIGHT,
+        ))
+    }
+
     /// "Step n of 3" / validation message, left of the buttons.
     pub fn footer_text_rect(&self, form: &AddHostForm) -> Rect {
-        let secondary = self.secondary_button_rect(form);
+        let buttons_left = self
+            .copy_error_rect(form)
+            .unwrap_or_else(|| self.secondary_button_rect(form))
+            .x;
         Rect::new(
             self.inner_x(),
-            secondary.y,
-            (secondary.x - FOOTER_TEXT_GAP - self.inner_x()).max(0.0),
+            self.secondary_button_rect(form).y,
+            (buttons_left - FOOTER_TEXT_GAP - self.inner_x()).max(0.0),
             BUTTON_HEIGHT,
         )
     }
@@ -1737,6 +1756,9 @@ impl AddHostLayout {
             if self.step_rect(step).contains(x, y) {
                 return AddHostHit::StepPill(step);
             }
+        }
+        if self.copy_error_rect(form).is_some_and(|r| r.contains(x, y)) {
+            return AddHostHit::CopyError;
         }
         if self.secondary_button_rect(form).contains(x, y) {
             return if form.step() == AddHostStep::Target {
@@ -2136,6 +2158,46 @@ mod tests {
         assert_eq!(
             form.handle_input(FormInput::Text, "\u{7f}"),
             FormOutcome::Consumed
+        );
+    }
+
+    // -------------------------------------------------------- copy error
+
+    #[test]
+    fn copy_button_only_exists_while_an_error_is_shown() {
+        let mut form = open_form();
+        let layout = layout_for(&form);
+        assert_eq!(layout.copy_error_rect(&form), None);
+
+        form.set_error("Could not save the host: Database error");
+        let copy = layout.copy_error_rect(&form).expect("copy button");
+        let secondary = layout.secondary_button_rect(&form);
+        assert!(copy.right() <= secondary.x, "left of Back/Cancel");
+        assert_eq!(copy.y, secondary.y);
+    }
+
+    #[test]
+    fn footer_text_stops_before_the_copy_button() {
+        let mut form = open_form();
+        let layout = layout_for(&form);
+        let without = layout.footer_text_rect(&form);
+
+        form.set_error("Could not save the host: Database error");
+        let with = layout.footer_text_rect(&form);
+        let copy = layout.copy_error_rect(&form).unwrap();
+        assert!(with.right() <= copy.x, "text never runs under the button");
+        assert!(with.width < without.width);
+    }
+
+    #[test]
+    fn pressing_copy_hits_copy_error() {
+        let mut form = open_form();
+        form.set_error("boom");
+        let layout = layout_for(&form);
+        let copy = layout.copy_error_rect(&form).unwrap();
+        assert_eq!(
+            layout.hit_test(&form, copy.x + 2.0, copy.y + 2.0),
+            AddHostHit::CopyError
         );
     }
 
