@@ -11,8 +11,8 @@ use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::views::settings::appearance::{
-    AppearanceLayout, AppearanceState, AppearanceTarget, CursorStyle, ThemeChoice,
-    MENU_ROW_H, THEME_NOTE,
+    fit_segments, AppearanceLayout, AppearanceState, AppearanceTarget, CursorStyle,
+    ThemeChoice, MENU_ROW_H, THEME_NOTE,
 };
 
 use super::keys::text_top;
@@ -236,31 +236,38 @@ fn paint_preview(
     let line = (size * 1.7).round();
     let x = r.x + 22.0;
     let mut y = r.y + 22.0;
-    let prompt = "delikesance@DELIKESANCE:~$ ";
-    let pw = draw_mono_text(
-        sugarloaf,
-        x,
-        y,
-        &format!("{prompt}ls"),
-        size,
-        PREVIEW_FG,
-        UiWeight::Regular,
-    );
-    let _ = pw;
-    y += line;
-    let mut cx = x;
-    for (text, color) in [
-        ("development", PREVIEW_BLUE),
-        ("  ", PREVIEW_FG),
-        ("notes.md", PREVIEW_GREEN),
-        ("  ", PREVIEW_FG),
-        ("build.tar.gz", PREVIEW_LILAC),
-    ] {
-        cx += draw_mono_text(sugarloaf, cx, y, text, size, color, UiWeight::Regular);
-    }
-    y += line;
-    let pw = draw_mono_text(sugarloaf, x, y, prompt, size, PREVIEW_FG, UiWeight::Regular);
     let cw = measure_mono_text(sugarloaf, "M", size, UiWeight::Regular);
+    // Columns that fit inside the card (22 px padding each side); a
+    // narrow window cuts the lines instead of running past the card.
+    let cols = if cw > 0.0 {
+        ((r.width - 44.0) / cw).floor().max(0.0) as usize
+    } else {
+        usize::MAX
+    };
+    let prompt = "delikesance@DELIKESANCE:~$ ";
+    let draw_line = |sugarloaf: &mut Sugarloaf, y: f32, segs: &[(&str, [u8; 4])]| {
+        let texts: Vec<&str> = segs.iter().map(|(t, _)| *t).collect();
+        let mut cx = x;
+        for (text, (_, color)) in fit_segments(&texts, cols).iter().zip(segs) {
+            cx += draw_mono_text(sugarloaf, cx, y, text, size, *color, UiWeight::Regular);
+        }
+        cx - x
+    };
+    draw_line(sugarloaf, y, &[(prompt, PREVIEW_FG), ("ls", PREVIEW_FG)]);
+    y += line;
+    draw_line(
+        sugarloaf,
+        y,
+        &[
+            ("development", PREVIEW_BLUE),
+            ("  ", PREVIEW_FG),
+            ("notes.md", PREVIEW_GREEN),
+            ("  ", PREVIEW_FG),
+            ("build.tar.gz", PREVIEW_LILAC),
+        ],
+    );
+    y += line;
+    let pw = draw_line(sugarloaf, y, &[(prompt, PREVIEW_FG)]);
     let cell_h = (size * 1.35).round();
     let top = y - size * 0.12;
     let cursor_x = x + pw;

@@ -496,6 +496,34 @@ impl AppearanceState {
     }
 }
 
+/// The preview's coloured segments cut to `max_chars` columns: what does
+/// not fit ends in an ellipsis and later segments are dropped, so a narrow
+/// card never has text running past it. Segment `i` of the result is a
+/// prefix of segment `i` of the input.
+pub fn fit_segments(segments: &[&str], max_chars: usize) -> Vec<String> {
+    let total: usize = segments.iter().map(|s| s.chars().count()).sum();
+    if total <= max_chars {
+        return segments.iter().map(|s| s.to_string()).collect();
+    }
+    let mut left = max_chars.saturating_sub(1);
+    let mut out = Vec::new();
+    if max_chars == 0 {
+        return out;
+    }
+    for seg in segments {
+        let n = seg.chars().count();
+        if n <= left {
+            out.push(seg.to_string());
+            left -= n;
+        } else {
+            let head: String = seg.chars().take(left).collect();
+            out.push(format!("{head}\u{2026}"));
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_measure;
@@ -632,6 +660,20 @@ mod tests {
         assert_eq!(s.key(Key::Escape), None);
         assert!(!s.font_menu_open);
         assert_eq!(s.key(Key::Down), None, "closed menu ignores keys");
+    }
+
+    #[test]
+    fn preview_lines_are_cut_to_the_card_not_past_it() {
+        let segs = ["development", "  ", "notes.md", "  ", "build.tar.gz"];
+        // Fits: untouched.
+        assert_eq!(fit_segments(&segs, 40), segs.map(String::from).to_vec());
+        // 31 columns: the last name is cut with an ellipsis, nothing after.
+        let cut = fit_segments(&segs, 31);
+        assert_eq!(cut.concat(), "development  notes.md  build.t\u{2026}");
+        assert_eq!(cut.concat().chars().count(), 31);
+        // Cut inside an earlier segment: the rest disappears.
+        assert_eq!(fit_segments(&segs, 5).concat(), "deve\u{2026}");
+        assert_eq!(fit_segments(&segs, 0).concat(), "");
     }
 
     #[test]
