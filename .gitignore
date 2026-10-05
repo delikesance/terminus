@@ -37,3 +37,6 @@ sugarloaf/src/**/*.spv
 # Local dev-loop state (generated): config playground, logs, pid, watch stamps
 .dev/
 Terminus/
+
+# Local secrets (release signing passphrase); never commit
+.env

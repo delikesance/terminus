@@ -136,6 +136,8 @@ pub struct SftpListEntry {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Last modification time, Unix seconds (UTC), when known.
+    pub modified: Option<i64>,
 }
 
 impl From<LocalEntry> for SftpListEntry {
@@ -145,6 +147,7 @@ impl From<LocalEntry> for SftpListEntry {
             path: entry.path.to_string_lossy().into_owned(),
             is_dir: entry.is_dir,
             size: entry.size,
+            modified: entry.modified.map(|t| t.timestamp()),
         }
     }
 }
@@ -156,6 +159,7 @@ impl From<SftpEntry> for SftpListEntry {
             path: entry.path,
             is_dir: entry.is_dir,
             size: entry.size,
+            modified: entry.modified.map(|t| t.timestamp()),
         }
     }
 }

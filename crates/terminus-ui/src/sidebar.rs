@@ -1,4 +1,11 @@
-//! Sidebar: the host list, its scroll viewport and the add-host row.
+//! Sidebar machine list: sections ("This computer", one per group,
+//! "Servers"), machine rows, the optional filter field, the scroll
+//! viewport, drag & drop and inline rename.
+//!
+//! Layout follows the violet-ink shell (`App.dc.html`): the list runs
+//! between the command bar and the Add server / Settings buttons owned by
+//! [`crate::shell::sidebar`]; rows are Navigation server rows (44px, 2px
+//! apart) and section / group headers are 12px labels.
 //!
 //! Geometry lives here so the painter and the mouse agree by
 //! construction: both walk the same `*_rect` methods, and the wheel
@@ -16,8 +23,8 @@ use crate::geom::Rect;
 use crate::icons::Icon;
 use crate::os_icons::HostStatus;
 
-/// Panel width, in logical pixels (`w-72` = 288).
-pub const WIDTH: f32 = 288.0;
+/// Sidebar width, in logical pixels.
+pub const WIDTH: f32 = crate::shell::layout::SIDEBAR_WIDTH;
 /// Title band font size.
 pub const TITLE_FONT_SIZE: f32 = 12.0;
 /// Row title font size.
@@ -32,19 +39,26 @@ pub const ADD_LABEL_FONT_SIZE: f32 = 12.0;
 pub const TITLE_HEIGHT: f32 = 44.0;
 /// Search field band under the title — mock `p-3` band.
 pub const SEARCH_BAND_HEIGHT: f32 = 52.0;
-/// Combined header (title + search) for geometry that still expects one band.
-pub const HEADER_HEIGHT: f32 = TITLE_HEIGHT + SEARCH_BAND_HEIGHT;
-/// Painted height of one host card (compact two-line + soft pad).
-pub const ITEM_HEIGHT: f32 = 56.0;
-/// Vertical gap between floating host cards (breathing, not cramped).
-pub const CARD_GAP: f32 = 10.0;
-/// Vertical gap after a section label before the first row under it.
-pub const SECTION_GAP: f32 = 10.0;
-/// Height of a section label row ("Local" / "Hosts").
-pub const SECTION_HEIGHT: f32 = 22.0;
+/// Fixed chrome above the list: brand + command bar (see
+/// [`crate::shell::sidebar::list_top`]).
+pub const HEADER_HEIGHT: f32 = 116.0;
+/// Filter field band, shown only while filtering.
+pub const FILTER_BAND_HEIGHT: f32 = SEARCH_HEIGHT + 8.0;
+/// Machine row height (Navigation server row).
+pub const ITEM_HEIGHT: f32 = crate::components::navigation::server_row::HEIGHT;
+/// Gap between machine rows.
+pub const CARD_GAP: f32 = 2.0;
+/// Space above a section / group header that is not the first row.
+pub const SECTION_GAP: f32 = 16.0;
+/// Section / group header label box: 15px line + 6px under it.
+pub const SECTION_HEIGHT: f32 = 21.0;
+/// Rendered section names.
+pub const LOCAL_SECTION: &str = "This computer";
+pub const SERVERS_SECTION: &str = "Servers";
 
-pub fn section_label_y(row_rect: Rect) -> f32 {
-    row_rect.y + (SECTION_HEIGHT - SECTION_LABEL_FONT_SIZE) * 0.5
+/// Top of the 12px label inside a header card rect.
+pub fn section_label_y(card: Rect) -> f32 {
+    card.y + (SECTION_HEIGHT - 6.0 - 12.0) * 0.5
 }
 
 /// Painted separator line Y position below a host card.
@@ -89,15 +103,24 @@ pub const CTA_HEIGHT: f32 = 60.0;
 pub const CTA_TOP_GAP: f32 = 12.0;
 /// Gap under the New Host CTA before the first section.
 pub const CTA_GAP: f32 = 8.0;
-/// Footer reserved height (mock has no footer).
+/// Footer reserved height (the Add server / Settings block lives in the
+/// shell; the list stops above it).
 pub const FOOTER_HEIGHT: f32 = 0.0;
 /// Inline "New group" form height under the Hosts section header.
 pub const NEW_GROUP_FORM_HEIGHT: f32 = 40.0;
-/// Approximate width of the "+ New group" text button on the Hosts header.
-pub const NEW_GROUP_BUTTON_WIDTH: f32 = 88.0;
+/// Approximate width of the "New group" text action on the Servers header.
+pub const NEW_GROUP_BUTTON_WIDTH: f32 = 72.0;
 /// Alias kept for callers that shared the dual-action header width.
 pub const HOSTS_HEADER_ACTION_WIDTH: f32 = NEW_GROUP_BUTTON_WIDTH;
 /// Gap above the empty-list hint.
+/// Machine-list scroll thumb: shortest length, width, inset from the
+/// sidebar's right edge (inside its 12 px padding).
+pub const SCROLL_THUMB_MIN: f32 = 24.0;
+pub const SCROLL_THUMB_WIDTH: f32 = 3.0;
+pub const SCROLL_THUMB_INSET: f32 = 4.0;
+/// Host drag auto-scroll: edge band height and top speed (px/s).
+pub const DRAG_AUTOSCROLL_ZONE: f32 = 36.0;
+pub const DRAG_AUTOSCROLL_SPEED: f32 = 420.0;
 pub const EMPTY_HINT_GAP: f32 = 6.0;
 /// Empty-list hint height: a title and up to two wrapped lines.
 pub const EMPTY_HINT_HEIGHT: f32 = 56.0;
@@ -121,8 +144,8 @@ pub const NOTICE_MAX_LINES: usize = 3;
 pub const ERROR_BANNER_HEIGHT: f32 = 64.0;
 /// Inset of the sticky notice/error card from the panel edges.
 pub const NOTICE_MARGIN: f32 = 10.0;
-/// Horizontal inset of cards inside the drawer.
-pub const PAD_X: f32 = 10.0;
+/// Horizontal inset of rows inside the sidebar (`aside` padding).
+pub const PAD_X: f32 = crate::shell::sidebar::PAD_X;
 /// Inner padding inside a card (icon/text inset).
 pub const CARD_PAD: f32 = 12.0;
 /// Search field inset inside the search band.
@@ -143,8 +166,8 @@ pub const CONNECTING_SLOT: f32 = 18.0;
 pub const WHEEL_ROWS: f32 = 3.0;
 /// Card corner radius — soft, not bubble.
 pub const CARD_RADIUS: f32 = 8.0;
-/// Left inset of the panel, i.e. the width of the rail beside it.
-pub const ORIGIN_X: f32 = crate::activity_bar::WIDTH;
+/// Left edge of the panel (the sidebar starts at the window edge).
+pub const ORIGIN_X: f32 = 0.0;
 
 /// What a row opens, and therefore which glyph it carries.
 ///
@@ -275,10 +298,10 @@ pub enum Row {
 impl Row {
     pub fn height(&self) -> f32 {
         match self {
-            // Label row + breathing room before the first card under it.
-            Row::Section(_) => SECTION_HEIGHT + SECTION_GAP,
-            // Group headers share the host-card footprint (Apple HIG cards).
-            Row::Group { .. } | Row::Host(_) => ITEM_HEIGHT + CARD_GAP,
+            // Gap above + label box (the first visible header drops the gap,
+            // see [`HostPanel::row_slot_height`]).
+            Row::Section(_) | Row::Group { .. } => SECTION_GAP + SECTION_HEIGHT,
+            Row::Host(_) => ITEM_HEIGHT + CARD_GAP,
             // Mid-sibling default; [`HostPanel::row_slot_height`] widens after
             // the last session under a host.
             Row::Session(_) => SESSION_HEIGHT + SESSION_GAP,
@@ -288,8 +311,8 @@ impl Row {
     /// Painted card height inside the row slot (excludes the trailing gap).
     pub fn card_height(&self) -> f32 {
         match self {
-            Row::Section(_) => SECTION_HEIGHT,
-            Row::Group { .. } | Row::Host(_) => ITEM_HEIGHT,
+            Row::Section(_) | Row::Group { .. } => SECTION_HEIGHT,
+            Row::Host(_) => ITEM_HEIGHT,
             Row::Session(_) => SESSION_HEIGHT,
         }
     }
@@ -780,6 +803,9 @@ pub struct HostPanel {
     pub error: Option<String>,
     /// Armed / active host→group drag, when the pointer is down on a stored host.
     pub host_drag: Option<HostDrag>,
+    /// Legacy per-row "+" / chevron controls (off: sessions live in the
+    /// pills row). Kept for the session-row model and its tests.
+    pub row_controls: bool,
 }
 
 impl HostPanel {
@@ -788,8 +814,15 @@ impl HostPanel {
         Rect::new(ORIGIN_X, origin_y, WIDTH, height)
     }
 
+    /// Fixed chrome above the list (brand + command bar, painted by the
+    /// shell).
     pub fn header_rect(&self, origin_y: f32) -> Rect {
-        Rect::new(ORIGIN_X, origin_y, WIDTH, TITLE_HEIGHT)
+        Rect::new(ORIGIN_X, origin_y, WIDTH, HEADER_HEIGHT)
+    }
+
+    /// Whether the filter field is on screen: while focused or non-empty.
+    pub fn filter_visible(&self) -> bool {
+        self.filter_focused || !self.filter.is_empty()
     }
 
     /// Title-only band ("SERVERS & HOSTS").
@@ -797,20 +830,23 @@ impl HostPanel {
         self.header_rect(origin_y)
     }
 
-    /// Search band under the title.
+    /// Filter band at the top of the list (zero height when hidden).
     pub fn search_band_rect(&self, origin_y: f32) -> Rect {
-        Rect::new(ORIGIN_X, origin_y + TITLE_HEIGHT, WIDTH, SEARCH_BAND_HEIGHT)
+        let h = if self.filter_visible() {
+            FILTER_BAND_HEIGHT
+        } else {
+            0.0
+        };
+        Rect::new(ORIGIN_X, origin_y + HEADER_HEIGHT, WIDTH, h)
     }
 
-    /// The search field inset inside the search band.
+    /// The filter field (empty rect when hidden).
     pub fn search_rect(&self, origin_y: f32) -> Rect {
+        if !self.filter_visible() {
+            return Rect::new(0.0, 0.0, 0.0, 0.0);
+        }
         let band = self.search_band_rect(origin_y);
-        Rect::new(
-            band.x + SEARCH_INSET_X,
-            band.y + (SEARCH_BAND_HEIGHT - SEARCH_HEIGHT) / 2.0,
-            band.width - 2.0 * SEARCH_INSET_X,
-            SEARCH_HEIGHT,
-        )
+        Rect::new(band.x + PAD_X, band.y, band.width - 2.0 * PAD_X, SEARCH_HEIGHT)
     }
 
     /// Height reserved for a sticky notice/error card, including margin.
@@ -845,12 +881,12 @@ impl HostPanel {
         };
         // Never climb into the sticky header when the panel is shorter than
         // header + notice (tiny windows / tests).
-        let y = (origin_y + height - NOTICE_MARGIN - banner_h)
+        let y = (self.list_bottom(origin_y, height) - banner_h)
             .max(self.content_top(origin_y));
         Some(Rect::new(
-            ORIGIN_X + NOTICE_MARGIN,
+            ORIGIN_X + PAD_X,
             y,
-            WIDTH - 2.0 * NOTICE_MARGIN,
+            WIDTH - 2.0 * PAD_X,
             banner_h,
         ))
     }
@@ -863,27 +899,44 @@ impl HostPanel {
         Rect::new(ORIGIN_X, top, WIDTH, bottom - top)
     }
 
+    /// Bottom of the scroll viewport, above the Add server / Settings block.
+    pub fn list_bottom(&self, origin_y: f32, height: f32) -> f32 {
+        crate::shell::sidebar::list_bottom(origin_y + height)
+            .max(self.content_top(origin_y))
+    }
+
+    /// Everything under the list: notice card (when any) and the shell's
+    /// bottom buttons.
     pub fn footer_rect(&self, origin_y: f32, height: f32) -> Rect {
-        let reserve = FOOTER_HEIGHT + self.notice_reserve();
-        let top = (origin_y + height - reserve).max(self.content_top(origin_y));
+        let top = (self.list_bottom(origin_y, height) - self.notice_reserve())
+            .max(self.content_top(origin_y));
         Rect::new(ORIGIN_X, top, WIDTH, (origin_y + height - top).max(0.0))
     }
 
-    /// Dashed New Host CTA at the top of the scrollable content.
-    pub fn add_button_rect(&self, origin_y: f32, _height: f32) -> Rect {
-        Rect::new(
-            ORIGIN_X + PAD_X,
-            self.content_top(origin_y) + CTA_TOP_GAP - self.scroll,
-            WIDTH - 2.0 * PAD_X,
-            CTA_HEIGHT,
-        )
+    /// The "Add server" button (bottom of the sidebar).
+    pub fn add_button_rect(&self, origin_y: f32, height: f32) -> Rect {
+        crate::shell::sidebar::add_server_rect(origin_y + height)
     }
 
-    /// Index of the `Hosts` section row, if present.
+    /// Index of the `Servers` section row (ungrouped stored hosts), if
+    /// present. `Hosts` is accepted for older row sets.
     pub fn hosts_section_index(&self) -> Option<usize> {
-        self.rows
+        self.rows.iter().position(|row| {
+            matches!(row.label(), Some(SERVERS_SECTION) | Some("Hosts"))
+        })
+    }
+
+    /// First row of the user's stored machines: the first group header,
+    /// or the Servers section when there is no group before it.
+    pub fn stored_area_index(&self) -> Option<usize> {
+        let first_group = self
+            .rows
             .iter()
-            .position(|row| row.label() == Some("Hosts"))
+            .position(|row| matches!(row, Row::Group { .. }));
+        match (first_group, self.hosts_section_index()) {
+            (Some(g), Some(h)) => Some(g.min(h)),
+            (g, h) => g.or(h),
+        }
     }
 
     /// Retired dual-header "+ New host" — use [`Self::add_button_rect`].
@@ -892,17 +945,19 @@ impl HostPanel {
     }
 
     /// "+ New group" control on the right of the Hosts section label.
-    pub fn new_group_button_rect(&self, origin_y: f32, _height: f32) -> Rect {
+    pub fn new_group_button_rect(&self, origin_y: f32, height: f32) -> Rect {
         let Some(index) = self.hosts_section_index() else {
             return Rect::new(0.0, 0.0, 0.0, 0.0);
         };
-        if !self.visible_row_indices().contains(&index) {
+        // Scrolled out of the viewport: not drawn, so not clickable.
+        if !self.visible_row_indices().contains(&index)
+            || !self.row_painted(origin_y, height, index)
+        {
             return Rect::new(0.0, 0.0, 0.0, 0.0);
         }
-        let row = self.item_rect(origin_y, index);
+        let header = self.card_rect(origin_y, index);
         let w = NEW_GROUP_BUTTON_WIDTH;
-        let h = 22.0;
-        Rect::new(row.right() - w, row.y + (SECTION_HEIGHT - h) * 0.5, w, h)
+        Rect::new(header.right() - w, header.y, w, SECTION_HEIGHT)
     }
 
     /// Inline new-group form under the Hosts section (only when drafting).
@@ -914,10 +969,10 @@ impl HostPanel {
         if !self.visible_row_indices().contains(&index) {
             return None;
         }
-        let section = self.item_rect(origin_y, index);
+        let section = self.card_rect(origin_y, index);
         Some(Rect::new(
             ORIGIN_X + PAD_X,
-            section.y + SECTION_HEIGHT + 2.0,
+            section.bottom() + 2.0,
             WIDTH - 2.0 * PAD_X,
             NEW_GROUP_FORM_HEIGHT,
         ))
@@ -1089,8 +1144,11 @@ impl HostPanel {
             .get(index)
             .map(Row::card_height)
             .unwrap_or(ITEM_HEIGHT);
+        // Headers sit at the bottom of their slot, under the top gap.
+        if matches!(self.rows.get(index), Some(Row::Section(_) | Row::Group { .. })) {
+            return Rect::new(slot.x, slot.bottom() - h, slot.width, h);
+        }
         let (nest_left, nest_right) = match self.rows.get(index) {
-            Some(Row::Host(host)) if host.nested => (CARD_PAD, CARD_PAD),
             Some(Row::Session(session)) => {
                 let parent_nested = self
                     .rows
@@ -1126,6 +1184,10 @@ impl HostPanel {
 
     /// "+" add-session hit box on a host row (left of trailing chevron).
     pub fn host_add_session_rect(&self, origin_y: f32, index: usize) -> Option<Rect> {
+        // Sessions moved to the pills row; rows carry no "+" any more.
+        if !self.row_controls {
+            return None;
+        }
         let host = self.rows.get(index)?.host()?;
         let card = self.card_rect(origin_y, index);
         let s = HOST_ADD_HIT;
@@ -1144,6 +1206,9 @@ impl HostPanel {
 
     /// Chevron hit box on a host that has sessions (trailing twistie).
     pub fn host_chevron_rect(&self, origin_y: f32, index: usize) -> Option<Rect> {
+        if !self.row_controls {
+            return None;
+        }
         let host = self.rows.get(index)?.host()?;
         if host.session_count == 0 {
             return None;
@@ -1193,7 +1258,8 @@ impl HostPanel {
         // Inner pad under the last child — same as the side gutters ([`CARD_PAD`]).
         // The last nested row's slot also reserves [`CARD_GAP`] *below* this pad so
         // the gap from tray edge to the next root card matches collapsed groups.
-        let pad_bottom = if has_children { CARD_PAD } else { 0.0 };
+        let _ = has_children;
+        let pad_bottom = 0.0;
         Some(Rect::new(
             header.x,
             header.y,
@@ -1368,7 +1434,7 @@ impl HostPanel {
                     last.bottom() + CARD_GAP * 0.5 - BAR_H * 0.5
                 } else {
                     let hosts_idx = self.hosts_section_index()?;
-                    self.item_rect(origin_y, hosts_idx).bottom() + 4.0
+                    self.card_rect(origin_y, hosts_idx).bottom() + 4.0
                 };
                 Some(crate::geom::Rect::new(x, y, width, BAR_H))
             }
@@ -1390,14 +1456,14 @@ impl HostPanel {
     }
 
     fn point_in_hosts_section(&self, origin_y: f32, height: f32, y: f32) -> bool {
-        let Some(hosts_idx) = self.hosts_section_index() else {
+        let Some(first) = self.stored_area_index() else {
             return false;
         };
         let body = self.body_rect(origin_y, height);
         if y < body.y || y > body.bottom() {
             return false;
         }
-        let hosts_top = self.item_rect(origin_y, hosts_idx).y;
+        let hosts_top = self.item_rect(origin_y, first).y;
         y >= hosts_top
     }
 
@@ -1467,6 +1533,14 @@ impl HostPanel {
             return ITEM_HEIGHT + CARD_GAP;
         };
         match row {
+            Row::Section(_) | Row::Group { .. } => {
+                let first = self.visible_row_indices().first() == Some(&index);
+                if first {
+                    SECTION_HEIGHT
+                } else {
+                    SECTION_GAP + SECTION_HEIGHT
+                }
+            }
             Row::Session(session) => {
                 let visible = self.visible_row_indices();
                 let pos = visible.iter().position(|&i| i == index);
@@ -1500,36 +1574,18 @@ impl HostPanel {
                 };
                 SESSION_HEIGHT + gap
             }
-            Row::Host(host) if host.nested => {
-                let visible = self.visible_row_indices();
-                let pos = visible.iter().position(|&i| i == index);
-                let next = pos.and_then(|p| visible.get(p + 1).copied());
-                let next_is_nested_continuation = next.is_some_and(|n| {
-                    matches!(
-                        self.rows.get(n),
-                        Some(Row::Host(h)) if h.nested
-                    ) || matches!(self.rows.get(n), Some(Row::Session(_)))
-                });
-                if next_is_nested_continuation {
-                    ITEM_HEIGHT + CARD_GAP
-                } else {
-                    // Last nested host in the tray: inner CARD_PAD + outer CARD_GAP
-                    // so tray→next-root spacing matches collapsed group→group.
-                    ITEM_HEIGHT + CARD_PAD + CARD_GAP
-                }
-            }
             _ => row.height(),
         }
     }
 
     /// Unscrolled top of the scrollable content (below the sticky header).
     fn content_top(&self, origin_y: f32) -> f32 {
-        origin_y + HEADER_HEIGHT
+        origin_y + HEADER_HEIGHT + self.search_band_rect(origin_y).height
     }
 
-    /// Row 0's unscrolled top edge: below the New Host CTA.
+    /// Row 0's unscrolled top edge.
     fn rows_top(&self, origin_y: f32) -> f32 {
-        self.content_top(origin_y) + CTA_TOP_GAP + CTA_HEIGHT + CTA_GAP
+        self.content_top(origin_y)
     }
 
     /// Scrolled offset of row `index` from row 0's top edge (visible rows only).
@@ -1572,11 +1628,8 @@ impl HostPanel {
                     let mut j = i + 1;
                     while j < self.rows.len() {
                         match &self.rows[j] {
-                            Row::Section(_) => break,
-                            Row::Group { .. } => {
-                                any = true;
-                                break;
-                            }
+                            // A group header starts its own section.
+                            Row::Section(_) | Row::Group { .. } => break,
                             Row::Host(host) => {
                                 if host_visible(host) {
                                     any = true;
@@ -1728,7 +1781,7 @@ impl HostPanel {
         }
         (self.host_count() == 0).then(|| EmptyHint {
             title: "No saved hosts yet",
-            body: "Click New Host above and paste user@host to connect.".to_string(),
+            body: "Click Add server below and paste user@host to connect.".to_string(),
         })
     }
 
@@ -1759,10 +1812,7 @@ impl HostPanel {
     pub fn content_height(&self) -> f32 {
         let hosts_idx = self.hosts_section_index();
         let form_extra = self.new_group_form_slot_height();
-        CTA_TOP_GAP
-            + CTA_HEIGHT
-            + CTA_GAP
-            + self
+        self
                 .visible_row_indices()
                 .into_iter()
                 .map(|index| {
@@ -1813,6 +1863,78 @@ impl HostPanel {
     pub fn scroll_by(&mut self, delta: f32, origin_y: f32, height: f32) {
         self.scroll += delta;
         self.clamp_scroll(origin_y, height);
+    }
+
+    /// Whether row `index` is drawn: its card lies wholly inside the
+    /// scroll viewport. UI text cannot be clipped, so a row the viewport
+    /// cuts is skipped — and, to keep hit-testing in sync with the
+    /// pixels, its visible sliver is not clickable either.
+    pub fn row_painted(&self, origin_y: f32, height: f32, index: usize) -> bool {
+        let body = self.body_rect(origin_y, height);
+        let card = self.card_rect(origin_y, index);
+        card.y >= body.y - 0.5 && card.bottom() <= body.bottom() + 0.5
+    }
+
+    /// The scroll affordance: a thin thumb on the sidebar's right edge,
+    /// sized and placed like a scrollbar over the viewport. `None` while
+    /// the whole list fits.
+    pub fn scroll_thumb(&self, origin_y: f32, height: f32) -> Option<Rect> {
+        let max = self.max_scroll(origin_y, height);
+        if max <= 0.5 {
+            return None;
+        }
+        let body = self.body_rect(origin_y, height);
+        let content = self.content_height().max(1.0);
+        let thumb_h = (body.height * body.height / content)
+            .clamp(SCROLL_THUMB_MIN.min(body.height), body.height);
+        let progress = (self.scroll / max).clamp(0.0, 1.0);
+        Some(Rect::new(
+            ORIGIN_X + WIDTH - SCROLL_THUMB_INSET - SCROLL_THUMB_WIDTH,
+            body.y + (body.height - thumb_h) * progress,
+            SCROLL_THUMB_WIDTH,
+            thumb_h,
+        ))
+    }
+
+    /// Scroll the least needed for row `index` to be fully on screen.
+    /// Returns whether the scroll changed.
+    pub fn reveal_row(&mut self, index: usize, origin_y: f32, height: f32) -> bool {
+        if index >= self.rows.len() || self.row_painted(origin_y, height, index) {
+            return false;
+        }
+        let body = self.body_rect(origin_y, height);
+        let card = self.card_rect(origin_y, index);
+        let before = self.scroll;
+        if card.y < body.y {
+            self.scroll -= body.y - card.y;
+        } else if card.bottom() > body.bottom() {
+            self.scroll += card.bottom() - body.bottom();
+        }
+        self.clamp_scroll(origin_y, height);
+        (self.scroll - before).abs() > f32::EPSILON
+    }
+
+    /// Auto-scroll speed (px/s, negative = up) for a host dragged at
+    /// pointer `y`: zero away from the viewport's edges, faster nearer
+    /// them, and zero when there is nothing to scroll.
+    pub fn drag_autoscroll_speed(&self, origin_y: f32, height: f32, y: f32) -> f32 {
+        if self.max_scroll(origin_y, height) <= 0.0 {
+            return 0.0;
+        }
+        let body = self.body_rect(origin_y, height);
+        let zone = DRAG_AUTOSCROLL_ZONE.min(body.height / 3.0);
+        if zone <= 0.0 {
+            return 0.0;
+        }
+        let into_top = body.y + zone - y;
+        let into_bottom = y - (body.bottom() - zone);
+        if into_bottom > 0.0 {
+            DRAG_AUTOSCROLL_SPEED * (into_bottom / zone).min(1.0)
+        } else if into_top > 0.0 {
+            -DRAG_AUTOSCROLL_SPEED * (into_top / zone).min(1.0)
+        } else {
+            0.0
+        }
     }
 
     /// Scroll by whole wheel notches.
@@ -1924,63 +2046,34 @@ impl HostPanel {
         }
     }
 
-    /// Which host row is under `(x, y)`, if any.
-    fn item_at(&self, origin_y: f32, height: f32, x: f32, y: f32) -> Option<usize> {
+    /// The visible row whose painted card holds `(x, y)`, inside the
+    /// scroll viewport.
+    fn row_at(&self, origin_y: f32, height: f32, x: f32, y: f32) -> Option<usize> {
         let body = self.body_rect(origin_y, height);
         if !body.contains(x, y) {
             return None;
         }
-        let mut top = self.rows_top(origin_y) - self.scroll;
-        for index in self.visible_row_indices() {
-            let row = &self.rows[index];
-            let slot_h = self.row_slot_height(index);
-            let card_h = row.card_height();
-            if y >= top && y < top + card_h {
-                return row.host().map(|_| index);
-            }
-            top += slot_h;
-        }
-        None
+        self.visible_row_indices().into_iter().find(|&index| {
+            self.card_rect(origin_y, index).contains(x, y)
+                && self.row_painted(origin_y, height, index)
+        })
+    }
+
+    /// Which host row is under `(x, y)`, if any.
+    fn item_at(&self, origin_y: f32, height: f32, x: f32, y: f32) -> Option<usize> {
+        self.row_at(origin_y, height, x, y)
+            .filter(|&i| self.rows[i].host().is_some())
     }
 
     fn session_at(&self, origin_y: f32, height: f32, x: f32, y: f32) -> Option<usize> {
-        let body = self.body_rect(origin_y, height);
-        if !body.contains(x, y) {
-            return None;
-        }
-        let mut top = self.rows_top(origin_y) - self.scroll;
-        for index in self.visible_row_indices() {
-            let row = &self.rows[index];
-            let slot_h = self.row_slot_height(index);
-            let card_h = row.card_height();
-            if y >= top && y < top + card_h {
-                return row.session().map(|_| index);
-            }
-            top += slot_h;
-        }
-        None
+        self.row_at(origin_y, height, x, y)
+            .filter(|&i| self.rows[i].session().is_some())
     }
 
     /// Which group header row is under `(x, y)`, if any.
     fn group_at(&self, origin_y: f32, height: f32, x: f32, y: f32) -> Option<usize> {
-        let body = self.body_rect(origin_y, height);
-        if !body.contains(x, y) {
-            return None;
-        }
-        let mut top = self.rows_top(origin_y) - self.scroll;
-        for index in self.visible_row_indices() {
-            let row = &self.rows[index];
-            let slot_h = self.row_slot_height(index);
-            let card_h = row.card_height();
-            if y >= top && y < top + card_h {
-                if row.group().is_some() {
-                    return Some(index);
-                }
-                return None;
-            }
-            top += slot_h;
-        }
-        None
+        self.row_at(origin_y, height, x, y)
+            .filter(|&i| self.rows[i].group().is_some())
     }
 
     /// What is under `(x, y)`.
@@ -2104,13 +2197,14 @@ mod tests {
     fn section_label_and_geometry_helpers_are_consistent() {
         let (oy, _) = tall();
         let rect = Rect::new(0.0, 100.0, 100.0, SECTION_HEIGHT);
-        assert_eq!(section_label_y(rect), 100.0 + (22.0 - 10.0) * 0.5);
-        
+        // 12px label centred in the 15px line above the 6px gap.
+        assert_eq!(section_label_y(rect), 100.0 + 1.5);
+
         let card = Rect::new(0.0, 100.0, 100.0, ITEM_HEIGHT);
-        assert_eq!(host_item_separator_y(card), 100.0 + 56.0 - 1.0);
-        
+        assert_eq!(host_item_separator_y(card), 100.0 + 44.0 - 1.0);
+
         let badge = host_badge_rect(card);
-        assert_eq!(badge.y, 100.0 + (56.0 - 28.0) / 2.0);
+        assert_eq!(badge.y, 100.0 + (44.0 - 28.0) / 2.0);
     }
 
     fn items(n: usize) -> Vec<HostItem> {
@@ -2171,29 +2265,16 @@ mod tests {
     }
 
     #[test]
-    fn mock_layout_constants_match_apple_hig_mock() {
-        assert_eq!(WIDTH, 288.0); // w-72
-        assert_eq!(ORIGIN_X, 64.0); // rail w-16
-        assert_eq!(CARD_GAP, 10.0);
-        assert_eq!(CTA_GAP, 8.0);
-        assert_eq!(CTA_TOP_GAP, 12.0);
-        assert_eq!(PAD_X, 10.0);
-        assert_eq!(CARD_PAD, 12.0);
-        assert_eq!(CARD_RADIUS, 8.0);
-        assert_eq!(BADGE_TILE, 32.0); // w-8 h-8 (New Host CTA)
-        assert_eq!(HOST_BADGE_TILE, 28.0); // p-1.5 + 16px glyph
-        assert_eq!(ITEM_HEIGHT, 56.0);
-        assert!(CTA_HEIGHT >= 56.0);
-        assert_eq!(SESSION_HEIGHT, 28.0);
-        assert_eq!(SESSION_GAP, 6.0);
-        assert_eq!(SESSION_AFTER_GAP, 18.0);
-        assert_eq!(SESSION_INDENT, 16.0);
-        assert_eq!(SESSION_RADIUS, 6.0);
-        assert_eq!(SESSION_ACCENT, 0.0);
-        assert_eq!(SESSION_CONTENT_PAD, 10.0);
-        assert_eq!(SECTION_GAP, 10.0);
-        assert_eq!(STATUS_DOT, 6.0);
-        assert_eq!(SECTION_HEIGHT, 22.0);
+    fn layout_constants_match_the_violet_ink_shell() {
+        assert_eq!(WIDTH, 260.0);
+        assert_eq!(ORIGIN_X, 0.0);
+        assert_eq!(PAD_X, 12.0);
+        assert_eq!(ITEM_HEIGHT, 44.0);
+        assert_eq!(CARD_GAP, 2.0);
+        assert_eq!(SECTION_GAP, 16.0);
+        assert_eq!(SECTION_HEIGHT, 21.0);
+        assert_eq!(HEADER_HEIGHT, crate::shell::sidebar::list_top());
+        assert_eq!(HOST_BADGE_TILE, 28.0);
     }
 
     #[test]
@@ -2259,7 +2340,7 @@ mod tests {
         assert_eq!(panel.scroll, 0.0);
         assert_eq!(panel.max_scroll(oy, h), 0.0);
         assert_eq!(
-            panel.hit_test(oy, h, ORIGIN_X + 10.0, panel.item_rect(oy, 0).y + 2.0),
+            panel.hit_test(oy, h, ORIGIN_X + PAD_X + 10.0, panel.item_rect(oy, 0).y + 2.0),
             Some(PanelHit::Item(0))
         );
     }
@@ -2414,7 +2495,7 @@ mod tests {
         ]);
         let (oy, h) = tall();
         assert_eq!(panel.visible_row_indices(), vec![0, 1, 2]);
-        let session = panel.item_rect(oy, 1);
+        let session = panel.card_rect(oy, 1);
         assert_eq!(
             panel.hit_test(oy, h, session.x + 10.0, session.y + 4.0),
             Some(PanelHit::Session(1))
@@ -2456,15 +2537,15 @@ mod tests {
 
         let banner = panel.notice_rect(oy, h).expect("error banner");
         assert!(
-            (banner.bottom() - (oy + h - NOTICE_MARGIN)).abs() < 0.01,
-            "banner should hug the panel bottom"
+            (banner.bottom() - panel.list_bottom(oy, h)).abs() < 0.01,
+            "banner should hug the bottom of the list"
         );
         assert!((banner.height - ERROR_BANNER_HEIGHT).abs() < 0.01);
         assert!(panel.body_rect(oy, h).bottom() <= banner.y + 0.01);
 
         let row = panel.item_rect(oy, 0);
         assert_eq!(
-            panel.hit_test(oy, h, ORIGIN_X + 4.0, row.y + 2.0),
+            panel.hit_test(oy, h, ORIGIN_X + PAD_X + 4.0, row.y + 2.0),
             Some(PanelHit::Item(0))
         );
     }
@@ -2513,7 +2594,7 @@ mod tests {
         let empty = panel(0);
         let hint = empty.empty_hint().expect("hint");
         assert_eq!(hint.title, "No saved hosts yet");
-        assert!(hint.body.contains("New Host"), "{}", hint.body);
+        assert!(hint.body.contains("Add server"), "{}", hint.body);
         assert!(panel(2).empty_hint().is_none());
     }
 
@@ -2679,13 +2760,10 @@ mod tests {
         panel.set_rows(grouped());
         let (oy, h) = tall();
 
+        // First header drops its top gap.
         assert_eq!(
             panel.content_height(),
-            CTA_TOP_GAP
-                + CTA_HEIGHT
-                + CTA_GAP
-                + 2.0 * (SECTION_HEIGHT + SECTION_GAP)
-                + 4.0 * (ITEM_HEIGHT + CARD_GAP)
+            SECTION_HEIGHT + (SECTION_GAP + SECTION_HEIGHT) + 4.0 * (ITEM_HEIGHT + CARD_GAP)
         );
         // Local + two platform hosts + Hosts + two stored hosts.
         assert_eq!(panel.rows.len(), 6);
@@ -2694,10 +2772,11 @@ mod tests {
 
         // Rows stack in order: Local, local, wsl, Hosts, then stored hosts.
         assert_eq!(panel.item_rect(oy, 1).y, panel.item_rect(oy, 0).bottom());
+        assert_eq!(panel.item_rect(oy, 0).height, SECTION_HEIGHT, "first header");
         assert_eq!(
-            panel.item_rect(oy, 0).height,
-            SECTION_HEIGHT + SECTION_GAP,
-            "a label row includes breathing room before the next card"
+            panel.item_rect(oy, 3).height,
+            SECTION_GAP + SECTION_HEIGHT,
+            "later headers carry the gap above them"
         );
         assert_eq!(
             panel.item_rect(oy, 4).y,
@@ -2706,9 +2785,9 @@ mod tests {
         );
 
         // A press on a label (left side) is background, not a host.
-        let label = panel.item_rect(oy, 3);
+        let label = panel.card_rect(oy, 3);
         assert_eq!(
-            panel.hit_test(oy, h, ORIGIN_X + 10.0, label.y + label.height / 2.0),
+            panel.hit_test(oy, h, ORIGIN_X + PAD_X + 10.0, label.y + label.height / 2.0),
             Some(PanelHit::Background)
         );
         // The New group control sits on the Hosts header's trailing edge.
@@ -2833,19 +2912,9 @@ mod tests {
             tray.bottom() < solo.y,
             "tray must not swallow the next ungrouped host"
         );
-        // Nested host must keep CARD_PAD gutter on both sides of the tray.
-        assert!(
-            (nested.x - tray.x - CARD_PAD).abs() < 0.5,
-            "left nest pad: nested.x={} tray.x={}",
-            nested.x,
-            tray.x
-        );
-        assert!(
-            (tray.right() - nested.right() - CARD_PAD).abs() < 0.5,
-            "right nest pad: tray.right={} nested.right={}",
-            tray.right(),
-            nested.right()
-        );
+        // Grouped hosts line up with every other row (no indent).
+        assert_eq!(nested.x, tray.x);
+        assert_eq!(nested.right(), tray.right());
         assert_eq!(panel.group_nested_host_indices(0), vec![1]);
 
         // Tray bottom + CARD_GAP must land on the next root card (same as
@@ -2865,9 +2934,11 @@ mod tests {
         // visible indices change offset. card_rect uses offset_of which uses
         // visible rows — solo should move up.
         let gap_after_closed = solo_after.y - collapsed.bottom();
+        // A collapsed group is just its header label; the next row
+        // follows straight under it, like rows under a section label.
         assert!(
-            (gap_after_closed - CARD_GAP).abs() < 0.5,
-            "closed-group→next gap={gap_after_closed}, want CARD_GAP={CARD_GAP}"
+            gap_after_closed.abs() < 0.5,
+            "closed-group→next gap={gap_after_closed}"
         );
     }
 
@@ -3034,6 +3105,7 @@ mod tests {
                 closable: true,
             }),
         ]);
+        p.row_controls = true;
         p
     }
 
@@ -3204,5 +3276,234 @@ mod tests {
             panel.resolve_intent(hit.unwrap()),
             Some(SidebarIntent::ToggleGroup { group_id: "grp-1".into() })
         );
+    }
+
+    fn host(id: &str, nested: bool, stored: bool) -> Row {
+        Row::Host(HostItem {
+            id: id.into(),
+            name: id.into(),
+            endpoint: format!("root@{id}"),
+            badge: if stored { Badge::Ssh } else { Badge::Local },
+            stored,
+            os_id: None,
+            status: HostStatus::Idle,
+            nested,
+            session_count: 0,
+        })
+    }
+
+    fn shell_rows() -> Vec<Row> {
+        vec![
+            Row::Section(LOCAL_SECTION.into()),
+            host("local", false, false),
+            Row::Group {
+                id: "g1".into(),
+                name: "jeremy".into(),
+                host_count: 1,
+                session_count: 0,
+                collapsed: false,
+            },
+            host("prod", true, true),
+            Row::Section(SERVERS_SECTION.into()),
+            host("h2", false, true),
+        ]
+    }
+
+    #[test]
+    fn groups_above_servers_are_part_of_the_stored_area() {
+        let mut panel = HostPanel::default();
+        panel.set_rows(shell_rows());
+        assert_eq!(panel.hosts_section_index(), Some(4));
+        assert_eq!(panel.stored_area_index(), Some(2));
+        let (oy, h) = tall();
+        let h2 = panel.card_rect(oy, 5);
+        panel.host_drag = Some(HostDrag {
+            host_id: "h2".into(),
+            host_name: "h2".into(),
+            endpoint: String::new(),
+            kind: HostDragKind::Host,
+            row_index: 5,
+            press_x: h2.x,
+            press_y: h2.y,
+            current_x: h2.x,
+            current_y: h2.y,
+            grab_dx: 0.0,
+            grab_dy: 0.0,
+            source_rect: h2,
+            ghost_rect: h2,
+            phase: HostDragPhase::Dragging,
+            drop_target: None,
+        });
+        // Onto the grouped host: join the group.
+        let prod = panel.card_rect(oy, 3);
+        assert_eq!(
+            panel.drop_target_at(oy, h, prod.x + 10.0, prod.y + 10.0),
+            Some(HostDropTarget::Group("g1".into()))
+        );
+        // Onto the top of the group header: reorder before it.
+        let g = panel.card_rect(oy, 2);
+        assert_eq!(
+            panel.drop_target_at(oy, h, g.x + 10.0, g.y + 2.0),
+            Some(HostDropTarget::BeforeGroup("g1".into()))
+        );
+        // The local machines above are not a drop zone.
+        let local = panel.card_rect(oy, 1);
+        assert_eq!(panel.drop_target_at(oy, h, local.x + 10.0, local.y + 10.0), None);
+    }
+
+    #[test]
+    fn headers_and_rows_follow_the_shell_rhythm() {
+        let mut panel = HostPanel::default();
+        panel.set_rows(shell_rows());
+        let oy = 0.0;
+        let first = panel.card_rect(oy, 0);
+        assert_eq!(first.y, crate::shell::sidebar::list_top());
+        assert_eq!(first.height, SECTION_HEIGHT);
+        let local = panel.card_rect(oy, 1);
+        assert_eq!(local.y, first.bottom());
+        assert_eq!((local.x, local.width, local.height), (12.0, 236.0, 44.0));
+        let group = panel.card_rect(oy, 2);
+        assert_eq!(group.y, local.bottom() + CARD_GAP + SECTION_GAP);
+        // The New group action rides the Servers header.
+        let action = panel.new_group_button_rect(oy, 900.0);
+        let servers = panel.card_rect(oy, 4);
+        assert_eq!(action.right(), servers.right());
+        assert_eq!(action.y, servers.y);
+    }
+
+    #[test]
+    fn the_filter_field_only_takes_room_while_filtering() {
+        let mut panel = HostPanel::default();
+        panel.set_rows(shell_rows());
+        let (oy, h) = tall();
+        let y0 = panel.card_rect(oy, 0).y;
+        assert_eq!(panel.search_rect(oy).width, 0.0);
+        panel.filter_focused = true;
+        let field = panel.search_rect(oy);
+        assert!(field.width > 0.0);
+        assert_eq!(panel.card_rect(oy, 0).y, y0 + FILTER_BAND_HEIGHT);
+        assert_eq!(
+            panel.hit_test(oy, h, field.x + 5.0, field.y + 5.0),
+            Some(PanelHit::Search)
+        );
+        panel.filter_focused = false;
+        panel.filter = "prod".into();
+        assert!(panel.filter_visible(), "a live filter stays visible");
+        panel.escape_filter();
+        assert!(!panel.filter_visible());
+    }
+
+    #[test]
+    fn rows_have_no_per_row_session_controls() {
+        let mut panel = HostPanel::default();
+        let mut rows = shell_rows();
+        if let Row::Host(h) = &mut rows[5] {
+            h.session_count = 2;
+        }
+        panel.set_rows(rows);
+        assert!(panel.host_add_session_rect(0.0, 5).is_none());
+        assert!(panel.host_chevron_rect(0.0, 5).is_none());
+    }
+
+    #[test]
+    fn filtering_hides_a_section_whose_own_rows_do_not_match() {
+        let mut panel = HostPanel::default();
+        panel.set_rows(shell_rows());
+        panel.filter = "prod".into();
+        // "This computer" (local only) is hidden; the group with prod stays.
+        assert_eq!(panel.visible_row_indices(), vec![2, 3]);
+    }
+
+    // ---- Polish 4: overflowing list (many hosts / small window) ----
+
+    /// 922x630: the default window clamped to a 1024x700 screen.
+    const SMALL_H: f32 = 630.0;
+
+    #[test]
+    fn a_row_cut_by_the_viewport_is_neither_painted_nor_hit() {
+        let panel = panel(30);
+        let (oy, h) = (0.0, SMALL_H);
+        let body = panel.body_rect(oy, h);
+        let cut = panel
+            .visible_row_indices()
+            .into_iter()
+            .find(|&i| {
+                let c = panel.card_rect(oy, i);
+                c.y < body.bottom() && c.bottom() > body.bottom()
+            })
+            .expect("30 rows overflow a 630 px window");
+        assert!(!panel.row_painted(oy, h, cut));
+        let card = panel.card_rect(oy, cut);
+        assert_eq!(
+            panel.hit_test(oy, h, card.x + 10.0, card.y + 2.0),
+            Some(PanelHit::Background),
+            "the visible sliver of an unpainted row must not be clickable"
+        );
+        assert!(panel.row_painted(oy, h, 0));
+    }
+
+    #[test]
+    fn the_scroll_thumb_shows_only_when_the_list_overflows() {
+        let (oy, h) = (0.0, SMALL_H);
+        assert_eq!(panel(3).scroll_thumb(oy, h), None);
+
+        let mut panel = panel(30);
+        let body = panel.body_rect(oy, h);
+        let top = panel.scroll_thumb(oy, h).expect("overflowing list");
+        assert!((top.y - body.y).abs() < 0.01, "at the top when unscrolled");
+        assert!(top.height < body.height && top.height >= SCROLL_THUMB_MIN);
+        assert!(top.right() <= ORIGIN_X + WIDTH && top.x > ORIGIN_X + WIDTH - PAD_X);
+        // Thumb share of the track = viewport share of the content.
+        let share = body.height / panel.content_height();
+        assert!((top.height - body.height * share).abs() < 0.5);
+
+        panel.scroll = panel.max_scroll(oy, h);
+        let bottom = panel.scroll_thumb(oy, h).unwrap();
+        assert!((bottom.bottom() - body.bottom()).abs() < 0.01, "at the end");
+    }
+
+    #[test]
+    fn reveal_scrolls_a_hidden_row_fully_into_view_and_leaves_visible_ones() {
+        let (oy, h) = (0.0, SMALL_H);
+        let mut panel = panel(30);
+        let body = panel.body_rect(oy, h);
+
+        assert!(!panel.reveal_row(2, oy, h), "already visible: no scroll");
+        assert_eq!(panel.scroll, 0.0);
+
+        assert!(panel.reveal_row(25, oy, h));
+        let card = panel.card_rect(oy, 25);
+        assert!(panel.row_painted(oy, h, 25));
+        assert!((card.bottom() - body.bottom()).abs() < 0.01, "lands at the bottom");
+
+        assert!(panel.reveal_row(0, oy, h));
+        assert_eq!(panel.scroll, 0.0);
+
+        // The last row of all: never scrolls past the clamp.
+        assert!(panel.reveal_row(29, oy, h));
+        // (the slot's trailing card gap may stay below the fold)
+        assert!(panel.max_scroll(oy, h) - panel.scroll <= CARD_GAP + 0.01);
+        assert!(panel.row_painted(oy, h, 29));
+    }
+
+    #[test]
+    fn a_drag_near_the_list_edges_asks_for_auto_scroll() {
+        let (oy, h) = (0.0, SMALL_H);
+        let panel = panel(30);
+        let body = panel.body_rect(oy, h);
+        assert!(panel.drag_autoscroll_speed(oy, h, body.bottom() - 4.0) > 0.0);
+        assert!(panel.drag_autoscroll_speed(oy, h, body.y + 4.0) < 0.0);
+        assert_eq!(panel.drag_autoscroll_speed(oy, h, body.y + body.height / 2.0), 0.0);
+        // Nearer the edge scrolls faster.
+        assert!(
+            panel.drag_autoscroll_speed(oy, h, body.bottom() - 2.0)
+                > panel.drag_autoscroll_speed(oy, h, body.bottom() - 20.0)
+        );
+        // Nothing to scroll: no auto-scroll.
+        assert_eq!(panel_fit().drag_autoscroll_speed(oy, h, body.bottom() - 4.0), 0.0);
+    }
+
+    fn panel_fit() -> HostPanel {
+        panel(2)
     }
 }

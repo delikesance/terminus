@@ -57,11 +57,19 @@ pub enum Icon {
     ChevronDown,
     Eye,
     EyeOff,
+    Columns2,
+    Rows2,
+    Trash2,
+    File,
+    History,
+    FolderPlus,
+    ArrowBigUp,
+    Command,
 }
 
 impl Icon {
     /// Every icon, in the order the generator emits them.
-    pub const ALL: [Icon; 25] = [
+    pub const ALL: [Icon; 33] = [
         Icon::Server,
         Icon::ArrowRightLeft,
         Icon::Folder,
@@ -87,6 +95,14 @@ impl Icon {
         Icon::ChevronDown,
         Icon::Eye,
         Icon::EyeOff,
+        Icon::Columns2,
+        Icon::Rows2,
+        Icon::Trash2,
+        Icon::File,
+        Icon::History,
+        Icon::FolderPlus,
+        Icon::ArrowBigUp,
+        Icon::Command,
     ];
 
     /// The icon's drawing elements: one SVG `d` per shape, verbatim from
@@ -123,6 +139,14 @@ impl Icon {
             Icon::ChevronDown => CHEVRON_DOWN,
             Icon::Eye => EYE,
             Icon::EyeOff => EYE_OFF,
+            Icon::Columns2 => COLUMNS_2,
+            Icon::Rows2 => ROWS_2,
+            Icon::Trash2 => TRASH_2,
+            Icon::File => FILE,
+            Icon::History => HISTORY,
+            Icon::FolderPlus => FOLDER_PLUS,
+            Icon::ArrowBigUp => ARROW_BIG_UP,
+            Icon::Command => COMMAND,
         }
     }
 
@@ -844,6 +868,54 @@ const EYE_OFF: &[&str] = &[
     "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143",
     "m2 2 20 20",
 ];
+
+/// `columns-2`
+const COLUMNS_2: &[&str] = &[
+    "M5 3H19A2 2 0 0 1 21 5V19A2 2 0 0 1 19 21H5A2 2 0 0 1 3 19V5A2 2 0 0 1 5 3Z",
+    "M12 3v18",
+];
+
+/// `rows-2`
+const ROWS_2: &[&str] = &[
+    "M5 3H19A2 2 0 0 1 21 5V19A2 2 0 0 1 19 21H5A2 2 0 0 1 3 19V5A2 2 0 0 1 5 3Z",
+    "M3 12h18",
+];
+
+/// `trash-2`
+const TRASH_2: &[&str] = &[
+    "M10 11v6",
+    "M14 11v6",
+    "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6",
+    "M3 6h18",
+    "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+];
+
+/// `file`
+const FILE: &[&str] = &[
+    "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z",
+    "M14 2v5a1 1 0 0 0 1 1h5",
+];
+
+/// `history`
+const HISTORY: &[&str] = &[
+    "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8",
+    "M3 3v5h5",
+    "M12 7v5l4 2",
+];
+
+/// `folder-plus`
+const FOLDER_PLUS: &[&str] = &[
+    "M12 10v6",
+    "M9 13h6",
+    "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+];
+
+/// `arrow-big-up`
+const ARROW_BIG_UP: &[&str] = &["M9 18v-6H5l7-7 7 7h-4v6H9z"];
+
+/// `command`
+const COMMAND: &[&str] =
+    &["M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"];
 
 // ---- end generated ----
 

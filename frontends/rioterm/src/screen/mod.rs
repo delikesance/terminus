@@ -12,6 +12,7 @@ mod clipboard;
 mod config;
 pub mod hint;
 mod hint_actions;
+mod history;
 mod island;
 mod keys;
 mod mouse;
@@ -22,7 +23,9 @@ mod search;
 mod selection;
 mod sessions;
 mod sftp;
+mod workspace;
 mod shell;
+mod tunnels;
 pub mod touch;
 
 use crate::bindings::MouseBinding;
@@ -131,8 +134,30 @@ pub struct Screen<'screen> {
     pub grid_rasterizer: rio_grid::GridGlyphRasterizer,
     /// Active dual-pane SFTP browser (replaces terminal paint on the current leaf).
     pub sftp: Option<crate::sftp_ui::ActiveSftp>,
+    /// SFTP browsers of the machines not selected: still running (their
+    /// transfers go on), back in `sftp` when their machine is selected.
+    pub sftp_parked:
+        terminus_ui::screens::files::MachineSessions<crate::sftp_ui::ActiveSftp>,
+    /// Machine ids of the open tabs at the last pump: a machine that
+    /// drops out of it lost its last tab, and its browser is closed.
+    pub sftp_tab_hosts: Vec<String>,
+    /// SFTP browsers waiting for their credentials from the host store:
+    /// `(host id, other pane, machine selected when asked)`.
+    pub sftp_pending: Vec<(String, bool, String)>,
+    /// Hover / dialog focus of the Files view (the rest is `sftp.state`).
+    pub files_view: crate::renderer::views::files::FilesView,
     /// Wake the event loop when the SFTP worker emits (same as host_store).
     sftp_wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Settings page state (SSH keys, Sync, Appearance, Updates).
+    pub settings_view: terminus_ui::views::settings::SettingsView,
+    /// History view state, and the machine its rows were loaded for.
+    pub history_view: terminus_ui::views::history::HistoryState,
+    pub(crate) history_for: Option<String>,
+    /// Tunnels of the selected machine and their `ssh -N` processes
+    /// (`None` only while borrowed by `with_tunnels`).
+    pub tunnels: Option<crate::tunnel_worker::TunnelController>,
+    /// When the pending "tunnel settled" wake-up fires.
+    pub(crate) tunnel_wake_at: Option<std::time::Instant>,
 }
 
 pub struct ChromePress {
@@ -184,7 +209,10 @@ impl Screen<'_> {
             config.window.macos_use_unified_titlebar,
         );
 
-        let padding_y_bottom = config.margin.bottom;
+        let padding_y_bottom = crate::renderer::utils::padding_bottom_from_config(
+            &config.navigation,
+            config.margin.bottom,
+        );
         let sugarloaf_layout =
             RootStyle::new(scale as f32, config.fonts.size, config.line_height);
 
@@ -328,15 +356,19 @@ impl Screen<'_> {
         };
         let chrome_left = chrome.reserved_width();
 
+        let padding_right = crate::renderer::utils::padding_right_from_config(
+            &config.navigation,
+            config.margin.right,
+        );
         let margin = Margin::new(
             padding_y_top,
-            config.margin.right,
+            padding_right,
             padding_y_bottom,
             config.margin.left + chrome_left,
         );
         let scaled_margin = Margin::new(
             padding_y_top * scale as f32,
-            config.margin.right * scale as f32,
+            padding_right * scale as f32,
             padding_y_bottom * scale as f32,
             (config.margin.left + chrome_left) * scale as f32,
         );
@@ -387,6 +419,10 @@ impl Screen<'_> {
             sugarloaf.clear_background_image();
         }
 
+        let mut settings_view =
+            terminus_ui::views::settings::SettingsView::new(env!("CARGO_PKG_VERSION"));
+        crate::renderer::views::settings::load_config(&mut settings_view, config);
+
         Ok(Screen {
             search_state: SearchState::default(),
             hint_state: HintState::new(config.hints.alphabet.clone()),
@@ -411,6 +447,10 @@ impl Screen<'_> {
                 config.updates.into(),
                 host_wake.clone(),
             ),
+            tunnels: Some(crate::tunnel_worker::TunnelController::spawn(
+                crate::hosts::data_dir(),
+                host_wake.clone(),
+            )),
             host_store: crate::hosts::HostRepository::spawn(
                 crate::hosts::data_dir(),
                 host_wake,
@@ -433,7 +473,18 @@ impl Screen<'_> {
             grids: rustc_hash::FxHashMap::default(),
             grid_rasterizer: rio_grid::GridGlyphRasterizer::new(),
             sftp: None,
+            sftp_parked: Default::default(),
+            sftp_tab_hosts: Vec::new(),
+            sftp_pending: Vec::new(),
+            files_view: Default::default(),
             sftp_wake,
+            settings_view,
+            history_view: terminus_ui::views::history::HistoryState::new(
+                Vec::new(),
+                crate::history_worker::env_recording_enabled(),
+            ),
+            history_for: None,
+            tunnel_wake_at: None,
         })
     }
 
@@ -554,6 +605,8 @@ mod tests {
             auth_method: auth_method.into(),
             identity_id: None,
             group_id: None,
+            tags: Vec::new(),
+            notes: String::new(),
             os_id: None,
             sort_order: 0,
             updated_at: Utc::now(),

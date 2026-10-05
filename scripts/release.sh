@@ -175,7 +175,8 @@ if [[ "$LINUX_ONLY" == "0" ]]; then
         exit 1
     fi
     # Zip the in-app updater installs from (per-user and portable copies
-    # replace their own terminus.exe; see crates/terminus-update).
+    # replace their own executable; the entry stays terminus.exe, see
+    # WINDOWS_BINARY in crates/terminus-update).
     WIN_STAGE="$(mktemp -d)"
     cp "$WIN_BIN" "$WIN_STAGE/terminus.exe"
     rm -f "$DIST_DIR/terminus-windows-x86_64.zip"

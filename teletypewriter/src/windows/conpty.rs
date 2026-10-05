@@ -285,8 +285,15 @@ pub fn new(
 
 impl Conpty {
     pub fn on_resize(&mut self, window_size: Winsize) {
+        // ConPTY rejects zero-sized consoles, and the pipe may already be
+        // closed when the child exited (0x800700E8): neither may crash the app.
+        let mut window_size = window_size;
+        window_size.ws_col = window_size.ws_col.max(1);
+        window_size.ws_row = window_size.ws_row.max(1);
         let result = unsafe { (self.api.resize)(self.handle, window_size.into()) };
-        assert_eq!(result, S_OK);
+        if result != S_OK {
+            tracing::warn!("ResizePseudoConsole failed: {result:#x}");
+        }
     }
 }
 

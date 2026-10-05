@@ -206,6 +206,23 @@ impl ConnectionSequence {
         )
     }
 
+    /// The card centred in `area` (the shell's content rect), in window
+    /// coordinates.
+    pub fn dialog_rect_in(&self, area: Rect) -> Rect {
+        let local = self.dialog_rect(area.width, area.height);
+        Rect::new(
+            area.x + local.x,
+            area.y + local.y,
+            local.width,
+            local.height,
+        )
+    }
+
+    /// [`Self::hit_test`] for the card centred in `area`.
+    pub fn hit_test_in(&self, area: Rect, x: f32, y: f32) -> ConnectionHit {
+        self.hit_test(area.width, area.height, x - area.x, y - area.y)
+    }
+
     pub fn header_icon_rect(&self, dialog: Rect) -> Rect {
         Rect::new(dialog.x + DIALOG_PAD, dialog.y + DIALOG_PAD, 44.0, 44.0)
     }
@@ -336,14 +353,9 @@ impl ConnectionSequence {
         }
     }
 
+    /// Label under each node: Local, Network, Handshake, Shell.
     pub fn step_label(&self, index: usize) -> &str {
-        match (self.kind, index) {
-            (_, 0) => "Local",
-            (ConnectKind::Ssh, 1) => "DNS",
-            (ConnectKind::Wsl, 1) => "Windows",
-            (_, 2) => "Handshake",
-            _ => self.title.as_str(),
-        }
+        crate::components::feedback::STEP_LABELS[index.min(STEP_COUNT - 1)]
     }
 
     pub fn hit_test(
@@ -361,6 +373,45 @@ impl ConnectionSequence {
             return ConnectionHit::Close;
         }
         ConnectionHit::Consume
+    }
+
+    /// Whether the session is up. `printed`: the session's terminal shows
+    /// something; `last_step_held`: the step timer sat on the last node
+    /// for a full step. Only a WSL shell (slow to paint, and local) may be
+    /// called up on the timer; an SSH session is up when it prints.
+    pub fn is_ready(&self, printed: bool, last_step_held: bool) -> bool {
+        printed || (self.kind == ConnectKind::Wsl && last_step_held)
+    }
+
+    /// How long the progress waits before it gives up. SSH waits out its
+    /// own connect timeout (the kernel's TCP one is about two minutes), so
+    /// its error reaches the sidebar; the card offers Cancel meanwhile.
+    pub fn give_up_after(&self) -> std::time::Duration {
+        match self.kind {
+            ConnectKind::Ssh => std::time::Duration::from_secs(180),
+            ConnectKind::Wsl => std::time::Duration::from_secs(20),
+        }
+    }
+
+    /// What the sidebar says when the session exits before it is up.
+    /// `output` is what the session printed, top to bottom: the first
+    /// non-empty line is the reason (`ssh:` lines keep only their last
+    /// clause, "Connection timed out").
+    pub fn failure_message(&self, output: &[String]) -> String {
+        let verb = match self.kind {
+            ConnectKind::Ssh => "connect to",
+            ConnectKind::Wsl => "open",
+        };
+        let reason = output
+            .iter()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .map(|line| match line.strip_prefix("ssh:") {
+                Some(rest) => rest.rsplit(": ").next().unwrap_or(rest).trim(),
+                None => line,
+            })
+            .unwrap_or("the session ended");
+        format!("Couldn't {verb} {}: {reason}", self.title)
     }
 
     pub fn toggle_logs(&mut self) {
@@ -445,6 +496,57 @@ impl ConnectionSequence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_is_up_only_once_the_session_prints_wsl_also_on_the_timer() {
+        let ssh = ConnectionSequence::start_ssh("h", "jerem prod", "SSH ubuntu@1.2.3.4");
+        // The step timer reaching the last node says nothing about the
+        // network: an unreachable server must not read as connected.
+        assert!(!ssh.is_ready(false, true));
+        assert!(ssh.is_ready(true, false));
+        // ssh times out on its own (ConnectTimeout / TCP); keep the card
+        // (and its Cancel) up at least that long.
+        assert!(ssh.give_up_after() >= std::time::Duration::from_secs(150));
+
+        let wsl = ConnectionSequence::start_wsl("wsl:U", "Ubuntu", "WSL");
+        assert!(wsl.is_ready(false, true));
+        assert!(!wsl.is_ready(false, false));
+        assert_eq!(wsl.give_up_after(), std::time::Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_session_that_dies_while_connecting_says_why() {
+        let ssh = ConnectionSequence::start_ssh("h", "jerem prod", "SSH ubuntu@1.2.3.4");
+        assert_eq!(
+            ssh.failure_message(&[
+                "".to_string(),
+                "ssh: connect to host 1.2.3.4 port 22: Connection timed out".to_string(),
+            ]),
+            "Couldn't connect to jerem prod: Connection timed out"
+        );
+        assert_eq!(
+            ssh.failure_message(&[]),
+            "Couldn't connect to jerem prod: the session ended"
+        );
+        let wsl = ConnectionSequence::start_wsl("wsl:U", "Ubuntu 24.04 LTS", "WSL");
+        assert_eq!(
+            wsl.failure_message(&[
+                "There is no distribution with the supplied name.".to_string(),
+                "Error code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND".to_string(),
+            ]),
+            "Couldn't open Ubuntu 24.04 LTS: There is no distribution with the supplied name."
+        );
+    }
+
+    #[test]
+    fn step_labels_follow_the_design_line() {
+        let ssh = ConnectionSequence::start_ssh("h", "jerem prod", "ubuntu@1.2.3.4");
+        let wsl = ConnectionSequence::start_wsl("w", "Ubuntu", "WSL");
+        for seq in [&ssh, &wsl] {
+            let labels: Vec<&str> = (0..STEP_COUNT).map(|i| seq.step_label(i)).collect();
+            assert_eq!(labels, ["Local", "Network", "Handshake", "Shell"]);
+        }
+    }
 
     #[test]
     fn progress_hits_the_four_stops() {

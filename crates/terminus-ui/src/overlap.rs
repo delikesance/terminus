@@ -124,17 +124,16 @@ pub fn assert_panel_no_overlaps(
             | Some(crate::sidebar::Row::Group { .. }) => {
                 stack.push(("card", panel.card_rect(origin_y, index)));
             }
-            Some(crate::sidebar::Row::Section(label))
-                if label.eq_ignore_ascii_case("Hosts") =>
+            Some(crate::sidebar::Row::Section(_))
+                if panel.hosts_section_index() == Some(index) =>
             {
                 let action = panel.new_group_button_rect(origin_y, height);
                 if action.width > 0.0 {
                     // Action must stay inside the section row band.
-                    let section = panel.item_rect(origin_y, index);
+                    let section = panel.card_rect(origin_y, index);
                     assert!(
                         action.y >= section.y - 0.5
-                            && action.bottom()
-                                <= section.y + crate::sidebar::SECTION_HEIGHT + 0.5,
+                            && action.bottom() <= section.bottom() + 0.5,
                         "new group action escapes Hosts header"
                     );
                 }

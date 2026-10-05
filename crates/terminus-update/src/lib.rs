@@ -45,7 +45,10 @@ pub const LINUX_TARBALL: &str = "terminus-linux-x86_64.tar.gz";
 pub const LINUX_BINARY: &str = "terminus";
 /// Windows zip the app updates itself from (`terminus.exe` inside).
 pub const WINDOWS_ZIP: &str = "terminus-windows-x86_64.zip";
-/// Binary name inside [`WINDOWS_ZIP`].
+/// Entry name inside [`WINDOWS_ZIP`]. A label only: the update replaces the
+/// running executable under whatever name it has on disk (`tmnx.exe` for
+/// installs since 0.7.1, `terminus.exe` before), and published clients look
+/// for this entry, so it must not change.
 pub const WINDOWS_BINARY: &str = "terminus.exe";
 /// NSIS setup wizard.
 pub const WINDOWS_SETUP: &str = "terminus-setup-x86_64.exe";

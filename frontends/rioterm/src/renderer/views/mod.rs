@@ -1,0 +1,7 @@
+//! Workspace view painters (one module per view).
+
+pub mod files;
+pub mod history;
+pub mod settings;
+pub mod snippets;
+pub mod tunnels;

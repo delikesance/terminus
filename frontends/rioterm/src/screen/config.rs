@@ -26,7 +26,10 @@ impl Screen<'_> {
             num_tabs,
             config.window.macos_use_unified_titlebar,
         );
-        let padding_y_bottom = config.margin.bottom;
+        let padding_y_bottom = crate::renderer::utils::padding_bottom_from_config(
+            &config.navigation,
+            config.margin.bottom,
+        );
         self.chrome.top_inset = padding_y_top;
 
         if should_update_font_library {
@@ -52,6 +55,10 @@ impl Screen<'_> {
         // rest of the config instead of waiting for a new window.
         self.bindings = crate::bindings::default_key_bindings(config);
 
+        // Settings > Updates switches write `[updates]`: the worker
+        // follows them without a restart.
+        self.updater.apply_settings(config.updates.into());
+
         // Preserve existing Island (tab state) and update its colors
         let old_island = self.renderer.island.take();
         let was_focused = self.renderer.is_window_focused;
@@ -69,7 +76,10 @@ impl Screen<'_> {
 
             context_grid.update_scaled_margin(Margin::new(
                 padding_y_top * scale,
-                config.margin.right * scale,
+                crate::renderer::utils::padding_right_from_config(
+                    &config.navigation,
+                    config.margin.right,
+                ) * scale,
                 padding_y_bottom * scale,
                 (config.margin.left + self.chrome.reserved_width()) * scale,
             ));
@@ -202,7 +212,12 @@ impl Screen<'_> {
         new_size: rio_window::dpi::PhysicalSize<u32>,
     ) -> &mut Self {
         self.sugarloaf.rescale(new_scale);
-        self.sugarloaf.resize(new_size.width, new_size.height);
+        // A minimized window reports a 0x0 inner size; keep the last real
+        // surface and grid size instead of collapsing them (see `Resized`).
+        let has_size = new_size.width > 0 && new_size.height > 0;
+        if has_size {
+            self.sugarloaf.resize(new_size.width, new_size.height);
+        }
 
         for context_grid in self.context_manager.contexts_mut() {
             let old_scale = context_grid.current().dimension.dimension.scale.max(1.0);
@@ -237,11 +252,13 @@ impl Screen<'_> {
             context_grid.update_dimensions(&mut self.sugarloaf);
         }
 
-        let width = new_size.width as f32;
-        let height = new_size.height as f32;
+        if has_size {
+            let width = new_size.width as f32;
+            let height = new_size.height as f32;
 
-        self.context_manager
-            .resize_all_grids(width, height, &mut self.sugarloaf);
+            self.context_manager
+                .resize_all_grids(width, height, &mut self.sugarloaf);
+        }
         self.mark_dirty();
         // Rescaled cursor displacement is layout, not travel.
         self.renderer.trail_cursor.snap();

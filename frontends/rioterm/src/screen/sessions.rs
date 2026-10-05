@@ -189,6 +189,9 @@ impl Screen<'_> {
         id: &str,
         clipboard: &mut Clipboard,
     ) -> Result<(), String> {
+        // Picking a machine brings its terminal forward (design: a sidebar
+        // row always lands on Terminal).
+        self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
         // If this host already has open sessions, focus the last one (else first).
         {
             let len = self.context_manager.len();
@@ -320,7 +323,12 @@ impl Screen<'_> {
         let (title, endpoint, kind) = match host {
             Some(item) if item.badge == Badge::Wsl => (
                 item.name.clone(),
-                format!("WSL · {}", item.endpoint),
+                // Distro rows already read "WSL · running · default".
+                if item.endpoint.starts_with("WSL") {
+                    item.endpoint.clone()
+                } else {
+                    format!("WSL · {}", item.endpoint)
+                },
                 terminus_ui::ConnectKind::Wsl,
             ),
             Some(item) => (
@@ -358,6 +366,36 @@ impl Screen<'_> {
         self.connecting_success_at = None;
     }
 
+    /// A session's process exited (`RioEvent::CloseTerminal`). When it
+    /// was still coming up — the connection progress is for its machine —
+    /// the tab would just vanish: retire the progress and say why in the
+    /// sidebar, with the first line the session printed (ssh's or
+    /// wsl.exe's own error).
+    pub fn note_session_exit(&mut self, route_id: usize) {
+        let Some(host) = self.chrome.connection.as_ref().map(|c| c.host_id.clone())
+        else {
+            return;
+        };
+        let Some(item) = self.context_manager.get_by_route_id(route_id) else {
+            return;
+        };
+        let ctx = item.context();
+        if ctx.host_id.as_deref() != Some(host.as_str()) {
+            return;
+        }
+        let output = printable_lines(ctx);
+        let Some(message) = self
+            .chrome
+            .connection
+            .as_ref()
+            .map(|c| c.failure_message(&output))
+        else {
+            return;
+        };
+        self.end_session_connecting();
+        self.chrome.panel.error = Some(message);
+    }
+
     /// Public dismiss from the connection modal's Close button.
     pub fn force_end_connecting(&mut self) {
         self.end_session_connecting();
@@ -378,14 +416,19 @@ impl Screen<'_> {
         let elapsed = started.elapsed();
         const STEP_MS: std::time::Duration = std::time::Duration::from_millis(850);
         const SUCCESS_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
-        const MAX: std::time::Duration = std::time::Duration::from_secs(20);
 
         // User closed the modal.
         if self.chrome.connection.is_none() {
             return false;
         }
 
-        if elapsed >= MAX {
+        let give_up = self
+            .chrome
+            .connection
+            .as_ref()
+            .map(terminus_ui::ConnectionSequence::give_up_after)
+            .unwrap_or_default();
+        if elapsed >= give_up {
             self.end_session_connecting();
             return false;
         }
@@ -422,15 +465,20 @@ impl Screen<'_> {
             }
         }
 
-        // Ready when the PTY has spoken, or we've finished the last step
-        // and waited a beat for WSL shells that are slow to paint.
+        // Ready when the PTY has spoken, or (WSL shells, slow to paint)
+        // the last step has been held for a beat.
         let on_last = self
             .chrome
             .connection
             .as_ref()
             .is_some_and(|c| c.step + 1 >= terminus_ui::STEP_COUNT);
-        let ready = terminal_has_printable_output(ctx)
-            || (on_last && step_at.elapsed() >= STEP_MS);
+        let printed = terminal_has_printable_output(ctx);
+        let held = on_last && step_at.elapsed() >= STEP_MS;
+        let ready = self
+            .chrome
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.is_ready(printed, held));
 
         if ready {
             if let Some(conn) = self.chrome.connection.as_mut() {
@@ -465,7 +513,8 @@ impl Screen<'_> {
         self.chrome.panel.follow_session(tab_index, &id);
     }
 
-    /// Advance host→group snap tween; returns a persist action when done.
+    /// Advance a host drag (edge auto-scroll; legacy snap tween); returns
+    /// a persist action when done.
     pub(super) fn tick_host_drag_animation(
         &mut self,
     ) -> Option<terminus_ui::chrome::ChromeAction> {
@@ -474,7 +523,7 @@ impl Screen<'_> {
             .panel
             .host_drag
             .as_ref()
-            .is_some_and(|d| d.is_snapping())
+            .is_some_and(|d| d.is_snapping() || d.started())
         {
             self.host_drag_anim_at = None;
             return None;
@@ -644,6 +693,9 @@ impl Screen<'_> {
                 self.close_tab_at(index, clipboard);
             }
         }
+        if let Some(tunnels) = self.tunnels.as_mut() {
+            tunnels.host_deleted(id);
+        }
         self.host_store.delete_host(id);
     }
 
@@ -687,7 +739,10 @@ impl Screen<'_> {
             num_tabs,
             self.renderer.macos_use_unified_titlebar,
         );
-        let padding_y_bottom = self.renderer.margin.bottom;
+        let padding_y_bottom = crate::renderer::utils::padding_bottom_from_config(
+            &self.renderer.navigation,
+            self.renderer.margin.bottom,
+        );
 
         // Keep the rail/drawer under the tab strip. Stale top_inset lets the
         // panel eat clicks on the islands (close / switch).
@@ -732,6 +787,26 @@ impl Screen<'_> {
         // reflow is not covered by the route-switch teleport.
         self.renderer.trail_cursor.snap();
     }
+}
+
+/// The session's visible lines, top to bottom, trailing blanks trimmed.
+fn printable_lines(ctx: &context::Context<EventProxy>) -> Vec<String> {
+    use crate::crosswords::pos::{Column, Line};
+    let terminal = ctx.terminal.lock();
+    let lines = terminal.screen_lines().min(16);
+    let cols = terminal.columns().min(200);
+    (0..lines)
+        .map(|row| {
+            let line = Line(row as i32);
+            let text: String = (0..cols)
+                .map(|col| match terminal.grid[line][Column(col)].c() {
+                    '\0' => ' ',
+                    c => c,
+                })
+                .collect();
+            text.trim_end().to_string()
+        })
+        .collect()
 }
 
 /// True when the session's grid already shows something other than blank
