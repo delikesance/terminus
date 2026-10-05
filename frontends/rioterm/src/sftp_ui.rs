@@ -734,6 +734,20 @@ impl ActiveSftp {
         }
     }
 
+    /// Keyboard on the name-conflict dialog. True when the key was consumed.
+    pub fn conflict_key(&mut self, key: terminus_ui::components::overlay::DialogKey) -> bool {
+        use terminus_ui::SftpConflictKey;
+        let Some(prompt) = self.state.conflict.as_mut() else {
+            return false;
+        };
+        match prompt.key(key) {
+            SftpConflictKey::Changed => {}
+            SftpConflictKey::Overwrite => self.resolve_conflict(ConflictAction::Overwrite),
+            SftpConflictKey::Keep => self.resolve_conflict(ConflictAction::Keep),
+        }
+        true
+    }
+
     fn resolve_conflict(&mut self, action: ConflictAction) {
         let Some(prompt) = self.state.conflict.take() else {
             return;
