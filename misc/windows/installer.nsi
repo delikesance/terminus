@@ -9,7 +9,7 @@
 !define PRODUCT_NAME "Terminus"
 !define PRODUCT_PUBLISHER "Terminus"
 !define PRODUCT_WEB_SITE "https://github.com/delikesance/terminus"
-!define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\terminus.exe"
+!define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\tmnx.exe"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Terminus"
 
 SetCompressor /SOLID lzma
@@ -17,7 +17,7 @@ SetCompressor /SOLID lzma
 Name "${PRODUCT_NAME} ${VERSION}"
 OutFile "${OUTFILE}"
 ; Per-user install: no admin prompt, and Terminus can replace its own
-; terminus.exe when it updates itself (see crates/terminus-update).
+; tmnx.exe when it updates itself (see crates/terminus-update).
 InstallDir "$LOCALAPPDATA\Programs\Terminus"
 InstallDirRegKey HKCU "${PRODUCT_DIR_REGKEY}" ""
 RequestExecutionLevel user
@@ -34,7 +34,7 @@ RequestExecutionLevel user
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 
-!define MUI_FINISHPAGE_RUN "$INSTDIR\terminus.exe"
+!define MUI_FINISHPAGE_RUN "$INSTDIR\tmnx.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch Terminus"
 !insertmacro MUI_PAGE_FINISH
 
@@ -194,11 +194,15 @@ Section "!Terminus (required)" SEC_CORE
   SectionIn RO
   SetOutPath "$INSTDIR"
   SetOverwrite on
-  File "/oname=terminus.exe" "${EXEPATH}"
+  ; Installed under a custom name: "terminus.exe" is also the name of a game,
+  ; and Discord attaches its game overlay to executables it recognises.
+  File "/oname=tmnx.exe" "${EXEPATH}"
+  ; Older installs shipped terminus.exe; do not leave it behind.
+  Delete "$INSTDIR\terminus.exe"
   File "/oname=terminus.ico" "${SRCDIR}\misc\windows\rio.ico"
 
   ; App Paths (allows Win+R > terminus)
-  WriteRegStr HKCU "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\terminus.exe"
+  WriteRegStr HKCU "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\tmnx.exe"
   WriteRegStr HKCU "${PRODUCT_DIR_REGKEY}" "Path" "$INSTDIR"
 
   ; Add/Remove Programs entry
@@ -206,7 +210,7 @@ Section "!Terminus (required)" SEC_CORE
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
-  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\terminus.exe,0"
+  WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayIcon" "$INSTDIR\tmnx.exe,0"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "QuietUninstallString" "$INSTDIR\Uninstall.exe /S"
   WriteRegDWORD HKCU "${PRODUCT_UNINST_KEY}" "NoModify" 1
@@ -217,12 +221,12 @@ SectionEnd
 
 Section "Start Menu Shortcut" SEC_STARTMENU
   CreateDirectory "$SMPROGRAMS\Terminus"
-  CreateShortcut "$SMPROGRAMS\Terminus\Terminus.lnk" "$INSTDIR\terminus.exe" "" "$INSTDIR\terminus.ico"
+  CreateShortcut "$SMPROGRAMS\Terminus\Terminus.lnk" "$INSTDIR\tmnx.exe" "" "$INSTDIR\terminus.ico"
   CreateShortcut "$SMPROGRAMS\Terminus\Uninstall Terminus.lnk" "$INSTDIR\Uninstall.exe"
 SectionEnd
 
 Section "Desktop Shortcut" SEC_DESKTOP
-  CreateShortcut "$DESKTOP\Terminus.lnk" "$INSTDIR\terminus.exe" "" "$INSTDIR\terminus.ico"
+  CreateShortcut "$DESKTOP\Terminus.lnk" "$INSTDIR\tmnx.exe" "" "$INSTDIR\terminus.ico"
 SectionEnd
 
 Section "Add to PATH" SEC_PATH
@@ -233,13 +237,13 @@ SectionEnd
 Section "Open in Terminus context menu" SEC_CONTEXT
   ; Background context menu (right-click inside a folder)
   WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus" "" "Open in Terminus"
-  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus" "Icon" "$INSTDIR\terminus.exe"
-  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus\command" "" '"$INSTDIR\terminus.exe" --working-dir "%V"'
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus" "Icon" "$INSTDIR\tmnx.exe"
+  WriteRegStr HKCU "Software\Classes\Directory\Background\shell\Terminus\command" "" '"$INSTDIR\tmnx.exe" --working-dir "%V"'
 
   ; Directory context menu (right-click on a folder)
   WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus" "" "Open in Terminus"
-  WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus" "Icon" "$INSTDIR\terminus.exe"
-  WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus\command" "" '"$INSTDIR\terminus.exe" --working-dir "%1"'
+  WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus" "Icon" "$INSTDIR\tmnx.exe"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\Terminus\command" "" '"$INSTDIR\tmnx.exe" --working-dir "%1"'
 SectionEnd
 
 ; Section descriptions
@@ -272,6 +276,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\Terminus"
 
   ; Remove files and directory
+  Delete "$INSTDIR\tmnx.exe"
   Delete "$INSTDIR\terminus.exe"
   Delete "$INSTDIR\terminus.ico"
   Delete "$INSTDIR\Uninstall.exe"
