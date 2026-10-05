@@ -157,9 +157,11 @@ impl ActiveSftp {
                 } => {
                     let rows = entries.into_iter().map(row_from_list_entry).collect();
                     self.state.set_listed(focus_from_side(side), path, rows);
+                    self.state.clear_transfer();
                     self.state.status = "Ready".into();
                 }
                 SftpEvent::TransferProgress { label, done, total } => {
+                    self.state.set_transfer(label.clone(), done, total);
                     if total == 0 {
                         self.state.status = label;
                     } else {
@@ -191,6 +193,7 @@ impl ActiveSftp {
                 SftpEvent::Failed(msg) => {
                     self.state.loading = false;
                     self.state.conflict = None;
+                    self.state.clear_transfer();
                     self.state.error = Some(msg);
                 }
                 SftpEvent::Conflict {
@@ -208,6 +211,7 @@ impl ActiveSftp {
                 SftpEvent::Closed => {
                     self.state.status = "Disconnected".into();
                     self.state.conflict = None;
+                    self.state.clear_transfer();
                 }
             }
         }
@@ -222,6 +226,12 @@ impl ActiveSftp {
         double: bool,
     ) -> SftpClickResult {
         let hit = layout.hit_test(&self.state, x, y);
+        self.handle_hit(hit, double)
+    }
+
+    /// Activate an already hit-tested target (shared by the classic pane and
+    /// the Files view, which hit-tests with its own geometry).
+    pub fn handle_hit(&mut self, hit: SftpHit, double: bool) -> SftpClickResult {
         if matches!(hit, SftpHit::Miss) {
             return SftpClickResult::Miss;
         }
@@ -312,9 +322,7 @@ impl ActiveSftp {
                 let _ = self.state.toggle_conflict_apply_all();
             }
             SftpHit::ConflictCancel => {
-                self.worker.send(SftpCommand::CancelTransfer);
-                self.state.clear_conflict();
-                self.state.status = "Transfer cancelled".into();
+                self.cancel_transfer();
             }
             SftpHit::Footer | SftpHit::Consume => {}
             SftpHit::Close | SftpHit::Miss => unreachable!("handled above"),
@@ -383,16 +391,26 @@ impl ActiveSftp {
 
     /// Release: drop onto the other pane list → Transfer. Returns true if handled.
     pub fn drag_release(&mut self, layout: &SftpPaneLayout, x: f32, y: f32) -> bool {
+        self.drag_release_to(layout.focus_at_list(x, y), None)
+    }
+
+    /// Release a drag over pane `target` (`None` = outside both panes).
+    /// `into` is a folder entry of `target` to drop into instead of its cwd.
+    pub fn drag_release_to(
+        &mut self,
+        target: Option<SftpFocus>,
+        into: Option<usize>,
+    ) -> bool {
         self.drag_armed = None;
         let Some(drag) = self.state.drag.take() else {
             return false;
         };
         if drag.is_dir {
-            let to = match layout.focus_at_list(x, y) {
+            let to = match target {
                 Some(to) if to != drag.from => to,
                 _ => return true,
             };
-            let to_cwd = self.state.side(to).cwd.clone();
+            let to_cwd = self.drop_cwd(to, into);
             self.state.status = format!("Transferring folder {}…", drag.name);
             self.state.error = None;
             self.worker.send(SftpCommand::TransferFolder {
@@ -404,13 +422,13 @@ impl ActiveSftp {
             });
             return true;
         }
-        let Some(to) = layout.focus_at_list(x, y) else {
+        let Some(to) = target else {
             return true;
         };
         if to == drag.from {
             return true;
         }
-        let to_cwd = self.state.side(to).cwd.clone();
+        let to_cwd = self.drop_cwd(to, into);
         self.state.status = format!("Transferring {}…", drag.name);
         self.state.error = None;
         self.worker.send(SftpCommand::Transfer {
@@ -423,12 +441,40 @@ impl ActiveSftp {
         true
     }
 
+    /// Destination directory of a drop on `to` (a folder row, else its cwd).
+    fn drop_cwd(&self, to: SftpFocus, into: Option<usize>) -> String {
+        let side = self.state.side(to);
+        into.and_then(|i| side.entries.get(i))
+            .filter(|r| r.is_dir)
+            .map(|r| r.path.clone())
+            .unwrap_or_else(|| side.cwd.clone())
+    }
+
     /// Build a context menu for a right-click hit inside the SFTP pane.
     /// Selects the row under the cursor when applicable.
     pub fn context_menu_for_hit(
         &mut self,
         layout: &SftpPaneLayout,
         hit: SftpHit,
+        x: f32,
+        y: f32,
+    ) -> Option<terminus_ui::ContextMenu> {
+        let blank = if layout.left_list.contains(x, y) || layout.left.contains(x, y) {
+            Some(SftpFocus::Left)
+        } else if layout.right_list.contains(x, y) || layout.right.contains(x, y) {
+            Some(SftpFocus::Right)
+        } else {
+            None
+        };
+        self.context_menu_for(hit, blank, x, y)
+    }
+
+    /// Context menu for `hit`; `blank_pane` is the pane under the pointer when
+    /// the hit is empty space (Files view passes its own geometry's answer).
+    pub fn context_menu_for(
+        &mut self,
+        hit: SftpHit,
+        blank_pane: Option<SftpFocus>,
         x: f32,
         y: f32,
     ) -> Option<terminus_ui::ContextMenu> {
@@ -470,15 +516,9 @@ impl ActiveSftp {
                 terminus_ui::ContextMenu::for_sftp_empty(x, y)
             }
             SftpHit::Consume => {
-                if layout.left_list.contains(x, y) || layout.left.contains(x, y) {
-                    self.state.focus = SftpFocus::Left;
-                    return terminus_ui::ContextMenu::for_sftp_empty(x, y);
-                }
-                if layout.right_list.contains(x, y) || layout.right.contains(x, y) {
-                    self.state.focus = SftpFocus::Right;
-                    return terminus_ui::ContextMenu::for_sftp_empty(x, y);
-                }
-                None
+                let pane = blank_pane?;
+                self.state.focus = pane;
+                terminus_ui::ContextMenu::for_sftp_empty(x, y)
             }
             SftpHit::Footer
             | SftpHit::Close
@@ -589,6 +629,33 @@ impl ActiveSftp {
         } else {
             false
         }
+    }
+
+    /// Scroll `pane` by `delta_px` (positive = further down), clamped to
+    /// `0..=max`.
+    pub fn scroll_pane(&mut self, pane: SftpFocus, delta_px: f32, max: f32) -> bool {
+        let side = self.state.side_mut(pane);
+        let next = (side.scroll + delta_px).clamp(0.0, max.max(0.0));
+        let changed = (next - side.scroll).abs() > f32::EPSILON;
+        side.scroll = next;
+        changed
+    }
+
+    /// Abort the transfer in flight (and any conflict waiting on it).
+    pub fn cancel_transfer(&mut self) {
+        self.worker.send(SftpCommand::CancelTransfer);
+        self.state.clear_conflict();
+        self.state.clear_transfer();
+        self.state.status = "Transfer cancelled".into();
+    }
+
+    /// Resolve the pending conflict: replace (`true`) or keep the existing one.
+    pub fn answer_conflict(&mut self, replace: bool) {
+        self.resolve_conflict(if replace {
+            ConflictAction::Overwrite
+        } else {
+            ConflictAction::Keep
+        });
     }
 
     fn cd(&mut self, focus: SftpFocus, path: String) {
@@ -874,6 +941,7 @@ fn row_from_list_entry(entry: SftpListEntry) -> SftpRow {
         path: entry.path,
         is_dir: entry.is_dir,
         size: entry.size,
+        modified: entry.modified,
     }
 }
 
