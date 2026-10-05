@@ -13,22 +13,12 @@ use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::ChromeTheme;
 
+use super::Layer;
 use crate::renderer::chrome::{draw_icon, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
 const DEPTH: f32 = 0.06;
 const ORDER: u8 = 7;
-
-const fn hex(r: u8, g: u8, b: u8) -> [f32; 4] {
-    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
-}
-
-/// Choice-card hover border (`#463C5E`).
-const CHOICE_HOVER_LINE: [f32; 4] = hex(0x46, 0x3c, 0x5e);
-/// Selected choice-card background (`#251E3A`).
-const CHOICE_SELECTED_BG: [f32; 4] = hex(0x25, 0x1e, 0x3a);
-/// Selected choice-card subtitle (`#CFC4E6`).
-const CHOICE_SELECTED_SUB: [u8; 4] = [0xcf, 0xc4, 0xe6, 255];
 
 /// Blend `c` toward `backdrop` so a disabled control reads as 40% opaque
 /// without translucent layers showing the border through the fill.
@@ -135,11 +125,34 @@ pub fn paint_checkbox(
     checked: bool,
     state: ControlState,
 ) -> CheckboxLayout {
+    let layer = Layer {
+        order: ORDER,
+        depth: DEPTH,
+        backdrop: theme.canvas,
+    };
+    paint_checkbox_on(sugarloaf, theme, origin, label, checked, state, layer)
+}
+
+/// [`paint_checkbox`] on an explicit [`Layer`] (e.g. inside a dialog).
+pub fn paint_checkbox_on(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    origin: (f32, f32),
+    label: &str,
+    checked: bool,
+    state: ControlState,
+    layer: Layer,
+) -> CheckboxLayout {
     let label_w = measure_ui_text(sugarloaf, label, 14.0, UiWeight::Regular);
     let l = CheckboxLayout::new(origin.0, origin.1, label_w);
     let b = l.box_rect;
     if state == ControlState::Focus {
-        paint_ring(sugarloaf, theme, &b, CHECKBOX_RADIUS);
+        let (inner, outer) = focus_ring_rects(&b);
+        let ring = |s: &mut Sugarloaf, r: &Rect, c: [f32; 4], rad: f32, d: f32| {
+            s.rounded_rect(None, r.x, r.y, r.width, r.height, c, layer.depth + d, rad, layer.order)
+        };
+        ring(sugarloaf, &outer, theme.accent, CHECKBOX_RADIUS + 4.0, 0.0);
+        ring(sugarloaf, &inner, layer.backdrop, CHECKBOX_RADIUS + 2.0, 0.01);
     }
     let (bg, border) = if checked {
         (theme.accent, theme.accent)
@@ -151,12 +164,12 @@ pub fn paint_checkbox(
     paint_surface_stroke(
         sugarloaf,
         &b,
-        fade(bg, theme.canvas, state),
-        Some(fade(border, theme.canvas, state)),
+        fade(bg, layer.backdrop, state),
+        Some(fade(border, layer.backdrop, state)),
         CHECKBOX_RADIUS,
         CHECKBOX_BORDER,
-        DEPTH + 0.02,
-        ORDER,
+        layer.depth + 0.02,
+        layer.order,
         false,
     );
     if checked {
@@ -165,7 +178,7 @@ pub fn paint_checkbox(
             sugarloaf,
             Icon::Check,
             IconPlacement::new(m.x, m.y, m.width),
-            fade(theme.on_accent, theme.canvas, state),
+            fade(theme.on_accent, layer.backdrop, state),
             sugarloaf.scale_factor(),
         );
     }
@@ -194,12 +207,12 @@ pub fn paint_choice(
     let border = if selected {
         theme.accent
     } else if state == ControlState::Hover {
-        CHOICE_HOVER_LINE
+        theme.hover_border
     } else {
         theme.line
     };
     let bg = if selected {
-        CHOICE_SELECTED_BG
+        theme.choice_selected_bg
     } else if state == ControlState::Hover {
         theme.surface
     } else {
@@ -225,7 +238,7 @@ pub fn paint_choice(
         fade_text(theme.text, state),
         UiWeight::Medium,
     );
-    let sub_color = if selected { CHOICE_SELECTED_SUB } else { theme.text_muted };
+    let sub_color = if selected { theme.selected_subtle_text } else { theme.text_muted };
     draw_ui_text(
         sugarloaf,
         rect.x + CHOICE_PAD,

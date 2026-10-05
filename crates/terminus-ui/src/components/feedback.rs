@@ -15,13 +15,6 @@ pub const DOT_SIZE: f32 = 8.0;
 pub const DOT_LABEL_GAP: f32 = 10.0;
 /// Stroke of the hollow "idle" ring.
 pub const IDLE_RING_WIDTH: f32 = 1.5;
-/// Idle ring colour `#776E8C`.
-pub const IDLE_RING: [f32; 4] = [
-    0x77 as f32 / 255.0,
-    0x6E as f32 / 255.0,
-    0x8C as f32 / 255.0,
-    1.0,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusKind {
@@ -54,7 +47,7 @@ pub fn status_dot_paint(kind: StatusKind, theme: &ChromeTheme) -> DotPaint {
         StatusKind::Running => DotPaint::Fill(theme.success),
         StatusKind::Connected => DotPaint::Fill(theme.accent),
         StatusKind::Idle => DotPaint::Ring {
-            color: IDLE_RING,
+            color: theme.idle_ring,
             width: IDLE_RING_WIDTH,
         },
         StatusKind::Warning => DotPaint::Fill(theme.warning),
@@ -80,19 +73,6 @@ pub const STEP_HALO: f32 = 6.0;
 /// Alpha of the halo (accent at 20 %).
 pub const STEP_HALO_ALPHA: f32 = 0.2;
 pub const STEP_LABELS: [&str; STEP_COUNT] = ["Local", "Network", "Handshake", "Shell"];
-/// Done node fill `#213A33` and failed node fill `#3A1C22`.
-pub const STEP_DONE_BG: [f32; 4] = [
-    0x21 as f32 / 255.0,
-    0x3A as f32 / 255.0,
-    0x33 as f32 / 255.0,
-    1.0,
-];
-pub const STEP_FAILED_BG: [f32; 4] = [
-    0x3A as f32 / 255.0,
-    0x1C as f32 / 255.0,
-    0x22 as f32 / 255.0,
-    1.0,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepState {
@@ -138,12 +118,12 @@ pub fn step_paint(state: StepState, theme: &ChromeTheme) -> StepPaint {
             ]),
         },
         StepState::Done => StepPaint {
-            fill: STEP_DONE_BG,
+            fill: theme.step_done_bg,
             glyph: theme.success,
             halo: None,
         },
         StepState::Failed => StepPaint {
-            fill: STEP_FAILED_BG,
+            fill: theme.step_failed_bg,
             glyph: theme.danger_text.map(|c| c as f32 / 255.0),
             halo: None,
         },
@@ -627,7 +607,7 @@ mod tests {
         assert_eq!(
             status_dot_paint(StatusKind::Idle, &t),
             DotPaint::Ring {
-                color: IDLE_RING,
+                color: t.idle_ring,
                 width: 1.5
             }
         );
@@ -657,9 +637,9 @@ mod tests {
         assert_eq!(a.fill, t.accent);
         assert_eq!(a.glyph, t.on_accent);
         assert_eq!(a.halo.unwrap()[3], 0.2);
-        assert_eq!(step_paint(StepState::Done, &t).fill, STEP_DONE_BG);
+        assert_eq!(step_paint(StepState::Done, &t).fill, t.step_done_bg);
         assert_eq!(step_paint(StepState::Done, &t).glyph, t.success);
-        assert_eq!(step_paint(StepState::Failed, &t).fill, STEP_FAILED_BG);
+        assert_eq!(step_paint(StepState::Failed, &t).fill, t.step_failed_bg);
         assert!(step_paint(StepState::Pending, &t).halo.is_none());
     }
 

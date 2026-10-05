@@ -100,8 +100,6 @@ pub mod server_row {
     pub const GAP: f32 = 12.0;
     pub const NAME_SIZE: f32 = 14.0;
     pub const META_SIZE: f32 = 12.0;
-    /// Meta colour on a selected row (`#CFC4E6`).
-    pub const META_ON_SELECTED: [u8; 4] = [0xCF, 0xC4, 0xE6, 255];
     /// Focus ring: canvas-coloured gap then accent band, 2px each.
     pub const RING_GAP: f32 = 2.0;
     pub const RING_WIDTH: f32 = 2.0;
@@ -151,7 +149,7 @@ pub mod server_row {
     pub fn meta_color(theme: &ChromeTheme, tone: MetaTone, state: RowState) -> [u8; 4] {
         match tone {
             MetaTone::Success => text_color(theme.success),
-            MetaTone::Muted if state == RowState::Selected => META_ON_SELECTED,
+            MetaTone::Muted if state == RowState::Selected => theme.selected_subtle_text,
             MetaTone::Muted => theme.text_muted,
         }
     }
@@ -456,7 +454,7 @@ mod tests {
         );
         assert_eq!(
             server_row::meta_color(&t, MetaTone::Muted, RowState::Selected),
-            server_row::META_ON_SELECTED
+            t.selected_subtle_text
         );
     }
 

@@ -109,10 +109,10 @@ fn board_fill(brand: SimpleBrand) -> Option<u32> {
         AlpineLinux => 0x568BA5,
         OpenSuse => 0x73BA25,
         RedHat => 0xF12626,
-        CentOs => 0x7D7CAD,
+        CentOs => 0xC2C1F2,
         RockyLinux => 0x10B981,
         LinuxMint => 0x86BE43,
-        KaliLinux => 0x5E8399,
+        KaliLinux => 0x9BCBE8,
         Gentoo => 0x877FA2,
         VoidLinux => 0x598D71,
         Apple => 0xE4DEEF,
@@ -303,6 +303,9 @@ pub const HEADER_TAB_H: f32 = 34.0;
 /// Gap between view tabs.
 pub const HEADER_TAB_GAP: f32 = 22.0;
 pub const HEADER_BORDER: f32 = 1.0;
+/// Text line box is 1.25 x font size; the mock's name uses `line-height: 1`,
+/// so the title is drawn this much higher than its rect top.
+pub const HEADER_TITLE_INK_DY: f32 = -HEADER_TITLE_SIZE * 0.25 / 2.0;
 
 /// Header rects. The tabs row sits on the bottom border.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -374,6 +377,20 @@ mod tests {
     }
 
     #[test]
+    fn centos_and_kali_marks_read_on_their_tint() {
+        assert!(relative_luminance(brand_fill(CentOs)) >= 0.5);
+        assert!(relative_luminance(brand_fill(KaliLinux)) >= 0.5);
+    }
+
+    #[test]
+    fn header_title_is_lifted_to_a_line_height_one_box() {
+        assert_eq!(HEADER_TITLE_INK_DY, -3.5);
+        // address sits 4px under the 28px title box
+        let h = header_rects(0.0, 0.0, 800.0, true, 100.0, 200.0);
+        assert_eq!(h.address.unwrap().y - h.title.bottom(), 4.0);
+    }
+
+    #[test]
     fn radius_is_29_percent_min_6() {
         assert_eq!(tile_radius(28.0), 8.0);
         assert_eq!(tile_radius(36.0), 10.0);
@@ -412,7 +429,7 @@ mod tests {
         };
         assert_eq!(hex(brand_fill(Debian)), "C26170");
         assert_eq!(hex(brand_fill(AlpineLinux)), "568BA5");
-        assert_eq!(hex(brand_fill(CentOs)), "7D7CAD");
+        assert_eq!(hex(brand_fill(CentOs)), "C2C1F2");
         assert_eq!(hex(brand_fill(Gentoo)), "877FA2");
         assert_eq!(hex(brand_fill(Apple)), "E4DEEF");
         let (bg, _) = tile_style(TileGlyph::Os(Apple), false);

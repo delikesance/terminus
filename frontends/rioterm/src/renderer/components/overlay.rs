@@ -2,9 +2,8 @@
 //! command palette, plus the `overlay` gallery section.
 //!
 //! Geometry comes from `terminus_ui::components::overlay`; this file only
-//! walks those rects. Buttons and the checkbox are LOCAL STAND-INS (the
-//! button/selection agents own the real ones): after merge, switch
-//! [`paint_action`] and [`paint_option`] to the shared components.
+//! walks those rects. Dialog buttons are Button components (large) and the
+//! option row is the Selection checkbox, both painted on the dialog layer.
 //! Known gap: the title's -2% letter spacing has no sugarloaf API, so the
 //! title is drawn with default tracking.
 
@@ -14,17 +13,22 @@ use terminus_ui::components::overlay::{
     DialogKind, DialogLayout, Menu, MenuEntry, MenuVisual, Palette, PaletteGroup,
     PaletteItem, PaletteLayout, PaletteRow,
 };
+use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonSpec, ButtonState};
+use terminus_ui::components::selection::ControlState;
 use terminus_ui::geom::Rect;
+
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::{text_color, ChromeTheme};
 use terminus_ui::tokens::{font_size, radius};
 
+use super::button::{label_spec, paint_button_on};
+use super::selection::paint_checkbox_on;
+use super::Layer;
 use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
 const ORDER: u8 = 30;
 const DEPTH: f32 = 0.1;
-const DANGER_ON: [f32; 4] = [0x1A as f32 / 255.0, 0x0B as f32 / 255.0, 0x08 as f32 / 255.0, 1.0];
 
 fn rgba8(c: [u8; 4]) -> [f32; 4] {
     c.map(|v| v as f32 / 255.0)
@@ -70,70 +74,46 @@ pub fn dialog_layout_for(
     let lines = wrap_text(spec.body, inner, |s| {
         measure_ui_text(sugarloaf, s, font_size::BODY_SM, UiWeight::Regular)
     });
-    let cancel_w = ov::action_width(measure_ui_text(sugarloaf, spec.cancel, 14.0, UiWeight::Medium));
-    let confirm_w = ov::action_width(measure_ui_text(sugarloaf, spec.confirm, 14.0, UiWeight::SemiBold));
+    let (cancel_w, confirm_w) = action_widths(sugarloaf, spec);
     let layout = dialog_layout_at(at.0, at.1, spec.kind, lines.len(), cancel_w, confirm_w, window);
     (layout, lines)
 }
 
-/// Stand-in button (secondary / primary / danger).
-fn paint_action(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    rect: &Rect,
-    label: &str,
-    kind: ActionKind,
-    focused: bool,
-    depth: f32,
-) {
-    let (bg, fg, weight) = match kind {
-        ActionKind::Secondary => (theme.raised, theme.text, UiWeight::Medium),
-        ActionKind::Primary => (theme.accent, text_color(theme.on_accent), UiWeight::SemiBold),
-        ActionKind::Danger => (theme.danger_fill, text_color(DANGER_ON), UiWeight::SemiBold),
+/// Button kinds of a dialog's (cancel, confirm) actions.
+fn action_kinds(kind: DialogKind) -> (ButtonKind, ButtonKind) {
+    let confirm = if kind == DialogKind::Destructive {
+        ButtonKind::Danger
+    } else {
+        ButtonKind::Primary
     };
-    let border = focused.then_some(theme.accent);
-    paint_surface_stroke(sugarloaf, rect, bg, border, radius::CONTROL, 2.0, depth, ORDER, false);
-    let w = measure_ui_text(sugarloaf, label, 14.0, weight);
-    draw_ui_text(
-        sugarloaf,
-        rect.x + (rect.width - w) / 2.0,
-        text_y(rect, 14.0),
-        label,
-        14.0,
-        fg,
-        weight,
-    );
+    (ButtonKind::Secondary, confirm)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ActionKind {
-    Secondary,
-    Primary,
-    Danger,
-}
-
-/// Stand-in checkbox row.
-fn paint_option(
+fn action_spec(
     sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    row: &Rect,
+    rect: &Rect,
+    kind: ButtonKind,
     label: &str,
-    checked: bool,
-    depth: f32,
-) {
-    let boxr = Rect::new(row.x, row.y, 20.0, 20.0);
-    let (bg, border) = if checked { (theme.accent, theme.accent) } else { (theme.field, theme.line) };
-    paint_surface_stroke(sugarloaf, &boxr, bg, Some(border), 6.0, 1.5, depth, ORDER, false);
-    if checked {
-        draw_icon(
-            sugarloaf,
-            Icon::Check,
-            IconPlacement::new(boxr.x + 3.5, boxr.y + 3.5, 13.0),
-            theme.on_accent,
-            sugarloaf.scale_factor(),
-        );
+) -> ButtonSpec {
+    label_spec(sugarloaf, (rect.x, rect.y), kind, ButtonSize::Large, label, false)
+}
+
+/// Widths of the (cancel, confirm) buttons, measured as Button components.
+fn action_widths(sugarloaf: &mut Sugarloaf, spec: &DialogSpec) -> (f32, f32) {
+    let (ck, fk) = action_kinds(spec.kind);
+    let origin = Rect::new(0.0, 0.0, 0.0, 0.0);
+    (
+        action_spec(sugarloaf, &origin, ck, spec.cancel).width(),
+        action_spec(sugarloaf, &origin, fk, spec.confirm).width(),
+    )
+}
+
+fn dialog_layer(theme: &ChromeTheme, depth: f32) -> Layer {
+    Layer {
+        order: ORDER,
+        depth,
+        backdrop: theme.dialog,
     }
-    draw_ui_text(sugarloaf, row.x + 30.0, text_y(row, 14.0), label, 14.0, theme.text, UiWeight::Regular);
 }
 
 /// Paint one dialog (no scrim). `focus` draws a focus ring on that button.
@@ -166,20 +146,34 @@ pub fn paint_dialog(
         );
     }
     if let (Some(row), Some(label)) = (layout.option.as_ref(), spec.option) {
-        paint_option(sugarloaf, theme, row, label, spec.option_checked, DEPTH + 0.05);
+        paint_checkbox_on(
+            sugarloaf,
+            theme,
+            (row.x, row.y),
+            label,
+            spec.option_checked,
+            ControlState::Default,
+            dialog_layer(theme, DEPTH + 0.05),
+        );
     }
-    let confirm_kind = if spec.kind == DialogKind::Destructive { ActionKind::Danger } else { ActionKind::Primary };
-    paint_action(
-        sugarloaf, theme, &layout.cancel, spec.cancel, ActionKind::Secondary,
-        focus == Some(DialogFocus::Cancel), DEPTH + 0.05,
-    );
-    paint_action(
-        sugarloaf, theme, &layout.confirm, spec.confirm, confirm_kind,
-        focus == Some(DialogFocus::Confirm), DEPTH + 0.05,
-    );
+    let (cancel_kind, confirm_kind) = action_kinds(spec.kind);
+    let layer = dialog_layer(theme, DEPTH + 0.05);
+    for (rect, kind, label, which) in [
+        (&layout.cancel, cancel_kind, spec.cancel, DialogFocus::Cancel),
+        (&layout.confirm, confirm_kind, spec.confirm, DialogFocus::Confirm),
+    ] {
+        let button = action_spec(sugarloaf, rect, kind, label);
+        let state = if focus == Some(which) {
+            ButtonState::Focus
+        } else {
+            ButtonState::Default
+        };
+        paint_button_on(sugarloaf, theme, &button, state, label, None, layer);
+    }
 }
 
 /// Full-window scrim, then the dialog centred over it.
+#[allow(dead_code)]
 pub fn paint_modal_dialog(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -190,8 +184,7 @@ pub fn paint_modal_dialog(
     let lines = wrap_text(spec.body, ov::DIALOG_WIDTH - 2.0 * ov::DIALOG_PAD, |s| {
         measure_ui_text(sugarloaf, s, font_size::BODY_SM, UiWeight::Regular)
     });
-    let cancel_w = ov::action_width(measure_ui_text(sugarloaf, spec.cancel, 14.0, UiWeight::Medium));
-    let confirm_w = ov::action_width(measure_ui_text(sugarloaf, spec.confirm, 14.0, UiWeight::SemiBold));
+    let (cancel_w, confirm_w) = action_widths(sugarloaf, spec);
     let layout = ov::dialog_layout(window, spec.kind, lines.len(), cancel_w, confirm_w);
     paint_flat(sugarloaf, &layout.scrim, ov::SCRIM, DEPTH - 0.02, ORDER);
     paint_dialog(sugarloaf, theme, spec, &layout, &lines, Some(focus));
