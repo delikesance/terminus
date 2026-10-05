@@ -234,8 +234,9 @@ fn paint_list(
     for index in panel.visible_row_indices() {
         let card = panel.card_rect(origin_y, index);
         // UI text cannot be clipped: rows half outside the viewport are
-        // skipped rather than drawn over the command bar or footer.
-        if card.y < body.y - 0.5 || card.bottom() > body.bottom() + 0.5 {
+        // skipped rather than drawn over the command bar or footer (and
+        // are not hit-tested either, see HostPanel::row_painted).
+        if !panel.row_painted(origin_y, height, index) {
             continue;
         }
         match &panel.rows[index] {
@@ -371,6 +372,17 @@ fn paint_list(
             // Sessions are pills now; legacy session rows are not drawn.
             Row::Session(_) => {}
         }
+    }
+
+    // Scroll affordance: a thin thumb on the sidebar's right edge while
+    // the list overflows; brighter while the pointer is on the list.
+    if let Some(thumb) = panel.scroll_thumb(origin_y, height) {
+        let color = if panel.hover.is_some() || drag.is_some() {
+            theme.hover_border
+        } else {
+            theme.line
+        };
+        fill(sugarloaf, &thumb, color, thumb.width * 0.5);
     }
 
     crate::renderer::chrome::render_empty_hint(

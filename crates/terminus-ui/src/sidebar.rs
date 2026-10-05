@@ -113,6 +113,14 @@ pub const NEW_GROUP_BUTTON_WIDTH: f32 = 72.0;
 /// Alias kept for callers that shared the dual-action header width.
 pub const HOSTS_HEADER_ACTION_WIDTH: f32 = NEW_GROUP_BUTTON_WIDTH;
 /// Gap above the empty-list hint.
+/// Machine-list scroll thumb: shortest length, width, inset from the
+/// sidebar's right edge (inside its 12 px padding).
+pub const SCROLL_THUMB_MIN: f32 = 24.0;
+pub const SCROLL_THUMB_WIDTH: f32 = 3.0;
+pub const SCROLL_THUMB_INSET: f32 = 4.0;
+/// Host drag auto-scroll: edge band height and top speed (px/s).
+pub const DRAG_AUTOSCROLL_ZONE: f32 = 36.0;
+pub const DRAG_AUTOSCROLL_SPEED: f32 = 420.0;
 pub const EMPTY_HINT_GAP: f32 = 6.0;
 /// Empty-list hint height: a title and up to two wrapped lines.
 pub const EMPTY_HINT_HEIGHT: f32 = 56.0;
@@ -937,11 +945,14 @@ impl HostPanel {
     }
 
     /// "+ New group" control on the right of the Hosts section label.
-    pub fn new_group_button_rect(&self, origin_y: f32, _height: f32) -> Rect {
+    pub fn new_group_button_rect(&self, origin_y: f32, height: f32) -> Rect {
         let Some(index) = self.hosts_section_index() else {
             return Rect::new(0.0, 0.0, 0.0, 0.0);
         };
-        if !self.visible_row_indices().contains(&index) {
+        // Scrolled out of the viewport: not drawn, so not clickable.
+        if !self.visible_row_indices().contains(&index)
+            || !self.row_painted(origin_y, height, index)
+        {
             return Rect::new(0.0, 0.0, 0.0, 0.0);
         }
         let header = self.card_rect(origin_y, index);
@@ -1854,6 +1865,78 @@ impl HostPanel {
         self.clamp_scroll(origin_y, height);
     }
 
+    /// Whether row `index` is drawn: its card lies wholly inside the
+    /// scroll viewport. UI text cannot be clipped, so a row the viewport
+    /// cuts is skipped — and, to keep hit-testing in sync with the
+    /// pixels, its visible sliver is not clickable either.
+    pub fn row_painted(&self, origin_y: f32, height: f32, index: usize) -> bool {
+        let body = self.body_rect(origin_y, height);
+        let card = self.card_rect(origin_y, index);
+        card.y >= body.y - 0.5 && card.bottom() <= body.bottom() + 0.5
+    }
+
+    /// The scroll affordance: a thin thumb on the sidebar's right edge,
+    /// sized and placed like a scrollbar over the viewport. `None` while
+    /// the whole list fits.
+    pub fn scroll_thumb(&self, origin_y: f32, height: f32) -> Option<Rect> {
+        let max = self.max_scroll(origin_y, height);
+        if max <= 0.5 {
+            return None;
+        }
+        let body = self.body_rect(origin_y, height);
+        let content = self.content_height().max(1.0);
+        let thumb_h = (body.height * body.height / content)
+            .clamp(SCROLL_THUMB_MIN.min(body.height), body.height);
+        let progress = (self.scroll / max).clamp(0.0, 1.0);
+        Some(Rect::new(
+            ORIGIN_X + WIDTH - SCROLL_THUMB_INSET - SCROLL_THUMB_WIDTH,
+            body.y + (body.height - thumb_h) * progress,
+            SCROLL_THUMB_WIDTH,
+            thumb_h,
+        ))
+    }
+
+    /// Scroll the least needed for row `index` to be fully on screen.
+    /// Returns whether the scroll changed.
+    pub fn reveal_row(&mut self, index: usize, origin_y: f32, height: f32) -> bool {
+        if index >= self.rows.len() || self.row_painted(origin_y, height, index) {
+            return false;
+        }
+        let body = self.body_rect(origin_y, height);
+        let card = self.card_rect(origin_y, index);
+        let before = self.scroll;
+        if card.y < body.y {
+            self.scroll -= body.y - card.y;
+        } else if card.bottom() > body.bottom() {
+            self.scroll += card.bottom() - body.bottom();
+        }
+        self.clamp_scroll(origin_y, height);
+        (self.scroll - before).abs() > f32::EPSILON
+    }
+
+    /// Auto-scroll speed (px/s, negative = up) for a host dragged at
+    /// pointer `y`: zero away from the viewport's edges, faster nearer
+    /// them, and zero when there is nothing to scroll.
+    pub fn drag_autoscroll_speed(&self, origin_y: f32, height: f32, y: f32) -> f32 {
+        if self.max_scroll(origin_y, height) <= 0.0 {
+            return 0.0;
+        }
+        let body = self.body_rect(origin_y, height);
+        let zone = DRAG_AUTOSCROLL_ZONE.min(body.height / 3.0);
+        if zone <= 0.0 {
+            return 0.0;
+        }
+        let into_top = body.y + zone - y;
+        let into_bottom = y - (body.bottom() - zone);
+        if into_bottom > 0.0 {
+            DRAG_AUTOSCROLL_SPEED * (into_bottom / zone).min(1.0)
+        } else if into_top > 0.0 {
+            -DRAG_AUTOSCROLL_SPEED * (into_top / zone).min(1.0)
+        } else {
+            0.0
+        }
+    }
+
     /// Scroll by whole wheel notches.
     pub fn scroll_rows(&mut self, rows: f32, origin_y: f32, height: f32) {
         self.scroll_by(rows * (ITEM_HEIGHT + CARD_GAP), origin_y, height);
@@ -1970,9 +2053,10 @@ impl HostPanel {
         if !body.contains(x, y) {
             return None;
         }
-        self.visible_row_indices()
-            .into_iter()
-            .find(|&index| self.card_rect(origin_y, index).contains(x, y))
+        self.visible_row_indices().into_iter().find(|&index| {
+            self.card_rect(origin_y, index).contains(x, y)
+                && self.row_painted(origin_y, height, index)
+        })
     }
 
     /// Which host row is under `(x, y)`, if any.
@@ -3328,5 +3412,98 @@ mod tests {
         panel.filter = "prod".into();
         // "This computer" (local only) is hidden; the group with prod stays.
         assert_eq!(panel.visible_row_indices(), vec![2, 3]);
+    }
+
+    // ---- Polish 4: overflowing list (many hosts / small window) ----
+
+    /// 922x630: the default window clamped to a 1024x700 screen.
+    const SMALL_H: f32 = 630.0;
+
+    #[test]
+    fn a_row_cut_by_the_viewport_is_neither_painted_nor_hit() {
+        let panel = panel(30);
+        let (oy, h) = (0.0, SMALL_H);
+        let body = panel.body_rect(oy, h);
+        let cut = panel
+            .visible_row_indices()
+            .into_iter()
+            .find(|&i| {
+                let c = panel.card_rect(oy, i);
+                c.y < body.bottom() && c.bottom() > body.bottom()
+            })
+            .expect("30 rows overflow a 630 px window");
+        assert!(!panel.row_painted(oy, h, cut));
+        let card = panel.card_rect(oy, cut);
+        assert_eq!(
+            panel.hit_test(oy, h, card.x + 10.0, card.y + 2.0),
+            Some(PanelHit::Background),
+            "the visible sliver of an unpainted row must not be clickable"
+        );
+        assert!(panel.row_painted(oy, h, 0));
+    }
+
+    #[test]
+    fn the_scroll_thumb_shows_only_when_the_list_overflows() {
+        let (oy, h) = (0.0, SMALL_H);
+        assert_eq!(panel(3).scroll_thumb(oy, h), None);
+
+        let mut panel = panel(30);
+        let body = panel.body_rect(oy, h);
+        let top = panel.scroll_thumb(oy, h).expect("overflowing list");
+        assert!((top.y - body.y).abs() < 0.01, "at the top when unscrolled");
+        assert!(top.height < body.height && top.height >= SCROLL_THUMB_MIN);
+        assert!(top.right() <= ORIGIN_X + WIDTH && top.x > ORIGIN_X + WIDTH - PAD_X);
+        // Thumb share of the track = viewport share of the content.
+        let share = body.height / panel.content_height();
+        assert!((top.height - body.height * share).abs() < 0.5);
+
+        panel.scroll = panel.max_scroll(oy, h);
+        let bottom = panel.scroll_thumb(oy, h).unwrap();
+        assert!((bottom.bottom() - body.bottom()).abs() < 0.01, "at the end");
+    }
+
+    #[test]
+    fn reveal_scrolls_a_hidden_row_fully_into_view_and_leaves_visible_ones() {
+        let (oy, h) = (0.0, SMALL_H);
+        let mut panel = panel(30);
+        let body = panel.body_rect(oy, h);
+
+        assert!(!panel.reveal_row(2, oy, h), "already visible: no scroll");
+        assert_eq!(panel.scroll, 0.0);
+
+        assert!(panel.reveal_row(25, oy, h));
+        let card = panel.card_rect(oy, 25);
+        assert!(panel.row_painted(oy, h, 25));
+        assert!((card.bottom() - body.bottom()).abs() < 0.01, "lands at the bottom");
+
+        assert!(panel.reveal_row(0, oy, h));
+        assert_eq!(panel.scroll, 0.0);
+
+        // The last row of all: never scrolls past the clamp.
+        assert!(panel.reveal_row(29, oy, h));
+        // (the slot's trailing card gap may stay below the fold)
+        assert!(panel.max_scroll(oy, h) - panel.scroll <= CARD_GAP + 0.01);
+        assert!(panel.row_painted(oy, h, 29));
+    }
+
+    #[test]
+    fn a_drag_near_the_list_edges_asks_for_auto_scroll() {
+        let (oy, h) = (0.0, SMALL_H);
+        let panel = panel(30);
+        let body = panel.body_rect(oy, h);
+        assert!(panel.drag_autoscroll_speed(oy, h, body.bottom() - 4.0) > 0.0);
+        assert!(panel.drag_autoscroll_speed(oy, h, body.y + 4.0) < 0.0);
+        assert_eq!(panel.drag_autoscroll_speed(oy, h, body.y + body.height / 2.0), 0.0);
+        // Nearer the edge scrolls faster.
+        assert!(
+            panel.drag_autoscroll_speed(oy, h, body.bottom() - 2.0)
+                > panel.drag_autoscroll_speed(oy, h, body.bottom() - 20.0)
+        );
+        // Nothing to scroll: no auto-scroll.
+        assert_eq!(panel_fit().drag_autoscroll_speed(oy, h, body.bottom() - 4.0), 0.0);
+    }
+
+    fn panel_fit() -> HostPanel {
+        panel(2)
     }
 }
