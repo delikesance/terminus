@@ -16,6 +16,17 @@ pub mod feedback;
 pub mod overlay;
 pub mod identity;
 
+/// Where a component paints when it is embedded in another surface (a
+/// dialog, a menu) instead of the gallery wells: the sugarloaf `order`
+/// (layer group), the base `depth`, and the opaque colour behind it (used
+/// for focus-ring gaps and disabled fading).
+#[derive(Debug, Clone, Copy)]
+pub struct Layer {
+    pub order: u8,
+    pub depth: f32,
+    pub backdrop: [f32; 4],
+}
+
 /// Section names accepted by `TERMINUS_COMPONENT_GALLERY`.
 pub const SECTIONS: [&str; 8] = [
     "button",
