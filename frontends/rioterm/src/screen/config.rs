@@ -212,7 +212,12 @@ impl Screen<'_> {
         new_size: rio_window::dpi::PhysicalSize<u32>,
     ) -> &mut Self {
         self.sugarloaf.rescale(new_scale);
-        self.sugarloaf.resize(new_size.width, new_size.height);
+        // A minimized window reports a 0x0 inner size; keep the last real
+        // surface and grid size instead of collapsing them (see `Resized`).
+        let has_size = new_size.width > 0 && new_size.height > 0;
+        if has_size {
+            self.sugarloaf.resize(new_size.width, new_size.height);
+        }
 
         for context_grid in self.context_manager.contexts_mut() {
             let old_scale = context_grid.current().dimension.dimension.scale.max(1.0);
@@ -247,11 +252,13 @@ impl Screen<'_> {
             context_grid.update_dimensions(&mut self.sugarloaf);
         }
 
-        let width = new_size.width as f32;
-        let height = new_size.height as f32;
+        if has_size {
+            let width = new_size.width as f32;
+            let height = new_size.height as f32;
 
-        self.context_manager
-            .resize_all_grids(width, height, &mut self.sugarloaf);
+            self.context_manager
+                .resize_all_grids(width, height, &mut self.sugarloaf);
+        }
         self.mark_dirty();
         // Rescaled cursor displacement is layout, not travel.
         self.renderer.trail_cursor.snap();
