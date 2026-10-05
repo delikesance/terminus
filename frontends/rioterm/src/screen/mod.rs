@@ -462,6 +462,19 @@ impl Screen<'_> {
         &mut self.context_manager
     }
 
+    /// After sleep/hibernate the GPU can hand back blank textures while the
+    /// CPU-side caches still believe their glyphs are uploaded (boxes
+    /// instead of text). Forget every cached glyph so the next frame
+    /// re-rasterizes and re-uploads.
+    pub fn on_system_resume(&mut self) {
+        self.sugarloaf.invalidate_gpu_caches();
+        self.grid_rasterizer.clear_font_caches();
+        for grid in self.grids.values_mut() {
+            grid.clear_atlas();
+        }
+        self.mark_dirty();
+    }
+
     #[inline]
     pub fn mark_dirty(&mut self) {
         self.context_manager
