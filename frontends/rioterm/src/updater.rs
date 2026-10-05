@@ -283,6 +283,8 @@ impl From<rio_backend::config::Updates> for UpdateSettings {
 enum Command {
     Check,
     Install,
+    /// `[updates]` changed (Settings > Updates writes the config file).
+    Settings(UpdateSettings),
 }
 
 /// UI-side handle to the update worker.
@@ -400,6 +402,11 @@ impl Updater {
         let _ = self.commands.send(Command::Check);
     }
 
+    /// The `[updates]` config changed: the worker follows it live.
+    pub fn apply_settings(&self, settings: UpdateSettings) {
+        let _ = self.commands.send(Command::Settings(settings));
+    }
+
     /// Install the found update (palette "Install Update").
     pub fn install(&self) {
         let _ = self.commands.send(Command::Install);
@@ -497,6 +504,9 @@ impl Worker {
             match commands.recv_timeout(wait) {
                 Ok(Command::Check) => self.check(true),
                 Ok(Command::Install) => self.install(),
+                Ok(Command::Settings(settings)) => {
+                    self.apply_settings(settings, &mut next_check, Instant::now())
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     if next_check.is_some_and(|at| Instant::now() >= at) {
                         self.check(false);
@@ -506,6 +516,23 @@ impl Worker {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
+    }
+
+    /// Follow a settings change: auto-install decides what the next found
+    /// update does; turning checks off drops the scheduled one, turning
+    /// them on schedules it again.
+    fn apply_settings(
+        &mut self,
+        settings: UpdateSettings,
+        next_check: &mut Option<Instant>,
+        now: Instant,
+    ) {
+        if !settings.check {
+            *next_check = None;
+        } else if next_check.is_none() {
+            *next_check = Some(now + CHECK_INTERVAL);
+        }
+        self.settings = settings;
     }
 
     fn emit(&self, state: UpdateState, manual: bool) {
@@ -765,6 +792,46 @@ mod tests {
             startup_phase(false, &downloading, (5, 10)),
             StartupPhase::None
         );
+    }
+
+    #[test]
+    fn settings_changed_in_the_app_reach_the_worker() {
+        let (events, _rx) = channel();
+        let mut w = Worker {
+            settings: UpdateSettings {
+                check: true,
+                auto_install: true,
+            },
+            exe: None,
+            events,
+            wake: None,
+            found: None,
+            install_first: false,
+            progress: Arc::new([AtomicU64::new(0), AtomicU64::new(0)]),
+        };
+        let now = Instant::now();
+        let mut next = Some(now);
+        // Settings > Updates: both switches off.
+        w.apply_settings(
+            UpdateSettings {
+                check: false,
+                auto_install: false,
+            },
+            &mut next,
+            now,
+        );
+        assert!(!w.settings.auto_install, "a found update must not install");
+        assert_eq!(next, None, "no more background checks");
+        // Checks back on: the next one is scheduled again.
+        w.apply_settings(
+            UpdateSettings {
+                check: true,
+                auto_install: false,
+            },
+            &mut next,
+            now,
+        );
+        assert_eq!(next, Some(now + CHECK_INTERVAL));
     }
 
     #[test]
