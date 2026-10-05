@@ -26,6 +26,7 @@
 #   --text TEXT         type TEXT without pressing Return, for filling form
 #                       fields one Tab at a time
 #   --click X,Y         move the pointer to X,Y (window-relative) and click
+#   --rclick X,Y        same, with the right button (context menus)
 #   --move X,Y          move the pointer without clicking, to capture a
 #                       hover state
 #
@@ -33,7 +34,8 @@
 # write them, so a --click that opens a dialog can precede the --text that
 # fills it.
 #   --no-resize         keep the window at its configured size
-#   --hot-config TEXT   add TEXT to .dev/config/config.toml, wait, capture again
+#   --hot-config TEXT   add TEXT to the run's copy of .dev/config/config.toml,
+#                       wait, capture again
 #   --keep              leave Xvfb + the app running after the capture
 #   -- <args>           pass the rest through to rio
 #
@@ -43,7 +45,10 @@
 # window.
 #
 # Env: TERMINUS_SCREENSHOT_DISPLAY (default :99), TERMINUS_DEV_NO_NIX=1 to skip
-# the devshell re-exec.
+# the devshell re-exec, CARGO_TARGET_DIR / TERMINUS_BIN to pick the binary
+# (default $CARGO_TARGET_DIR|target/debug/terminus), and
+# TERMINUS_COMPONENT_GALLERY=<all|button|...> to capture the component
+# gallery instead of the normal UI (inherited by the app).
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,12 +79,13 @@ while [[ $# -gt 0 ]]; do
         --type) INPUT+=(type "$2"); shift 2 ;;
         --text) INPUT+=(text "$2"); shift 2 ;;
         --click) INPUT+=(click "$2"); shift 2 ;;
+        --rclick) INPUT+=(rclick "$2"); shift 2 ;;
         --move) INPUT+=(move "$2"); shift 2 ;;
         --no-resize) RESIZE=0; shift ;;
         --hot-config) HOT_CONFIG="$2"; shift 2 ;;
         --keep) KEEP=1; shift ;;
         --) shift; APP_ARGS=("$@"); break ;;
-        -h|--help) sed -n '2,52p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,53p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "screenshot.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
@@ -141,7 +147,10 @@ mkdir -p "$SHOT_DIR" "$CONFIG_DIR"
 # shellcheck disable=SC1091
 [[ -s "$DEV_DIR/gpu-env.sh" ]] && . "$DEV_DIR/gpu-env.sh"
 
-BIN="$ROOT/target/debug/terminus"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+BIN="${TERMINUS_BIN:-$TARGET_DIR/debug/terminus}"
+[[ -x "$BIN" ]] || BIN="$TARGET_DIR/debug/rio"
+echo "screenshot.sh: using $BIN" >&2
 if [[ ! -x "$BIN" ]]; then
     echo "screenshot.sh: $BIN missing — run scripts/dev.sh --once first" >&2
     exit 1
@@ -149,6 +158,28 @@ fi
 
 if [[ ! -f "$CONFIG_FILE" && "$USE_CONFIG" == "1" && -f "$ROOT/dev/config/config.toml" ]]; then
     cp "$ROOT/dev/config/config.toml" "$CONFIG_FILE"
+fi
+
+# Open the window at the capture size instead of resizing it once the shell
+# is up. A resize that unwraps a coloured prompt the shell already printed
+# leaves bash's readline with stale prompt bookkeeping (its invisible-char
+# count is computed for the old wrap), so the first command line is redrawn
+# shifted and the History row read from it is wrong. Every terminal shows
+# that after a live resize; a capture must not start from it. The app gets
+# a per-run copy of the config with [window] width/height set; --hot-config
+# edits that copy, so .dev/config/config.toml itself is never changed.
+if [[ "$USE_CONFIG" == "1" && "$RESIZE" == "1" && -f "$CONFIG_FILE" ]]; then
+    RUN_CONFIG_DIR="$DEV_DIR/run-config/${DISP#:}"
+    mkdir -p "$RUN_CONFIG_DIR"
+    awk -v w="${SIZE%x*}" -v h="${SIZE#*x}" '
+        /^[[:space:]]*\[/ { in_window = ($0 ~ /^[[:space:]]*\[window\][[:space:]]*$/) }
+        in_window && /^[[:space:]]*(width|height)[[:space:]]*=/ { next }
+        { print }
+        /^[[:space:]]*\[window\][[:space:]]*$/ { print "width = " w; print "height = " h; seen = 1 }
+        END { if (!seen) { print ""; print "[window]"; print "width = " w; print "height = " h } }
+    ' "$CONFIG_FILE" >"$RUN_CONFIG_DIR/config.toml"
+    CONFIG_DIR="$RUN_CONFIG_DIR"
+    CONFIG_FILE="$RUN_CONFIG_DIR/config.toml"
 fi
 
 pick_window() {
@@ -173,7 +204,13 @@ capture() { # capture <path> — grab the app window, fall back to the whole roo
 rm -f "/tmp/.X${DISP#:}-lock"
 Xvfb "$DISP" -screen 0 "${SIZE}x24" -nolisten tcp >"$DEV_DIR/logs/xvfb.log" 2>&1 &
 XVFB_PID=$!
-sleep 2
+# Wait for the X socket instead of a fixed sleep: under load Xvfb needs more
+# than 2s, and the app dies with XOpenDisplayFailed if it starts first.
+for _ in $(seq 1 100); do
+    [[ -S "/tmp/.X11-unix/X${DISP#:}" ]] && break
+    sleep 0.2
+done
+sleep 1
 
 # xwininfo/xwd/xdotool all need the display. Export it for this shell too, not
 # just for the app: without it every window lookup silently finds nothing.
@@ -196,7 +233,9 @@ find_readline_shell() {
     return 1
 }
 
-app_env=(DISPLAY="$DISP" TERMINUS_LOG_LEVEL="${TERMINUS_LOG_LEVEL:-info}")
+# Never self-update during a capture: the updater swaps in the released build
+# and the screenshot would show that instead of the working tree.
+app_env=(DISPLAY="$DISP" TERMINUS_LOG_LEVEL="${TERMINUS_LOG_LEVEL:-info}" TERMINUS_NO_UPDATE_CHECK=1)
 [[ "$USE_CONFIG" == "1" ]] && app_env+=(TERMINUS_CONFIG_HOME="$CONFIG_DIR")
 if shell_bin="$(find_readline_shell)"; then
     app_env+=(SHELL="$shell_bin")
@@ -272,6 +311,13 @@ if [[ ${#INPUT[@]} -gt 0 ]]; then
                     sleep 0.3
                     xdotool click 1 2>/dev/null || true
                     echo "  clicked: $value"
+                    sleep 1.5
+                    ;;
+                rclick)
+                    xdotool mousemove --window "$win" "${value%,*}" "${value#*,}" 2>/dev/null || true
+                    sleep 0.3
+                    xdotool click 3 2>/dev/null || true
+                    echo "  right-clicked: $value"
                     sleep 1.5
                     ;;
                 move)

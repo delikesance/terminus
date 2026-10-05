@@ -69,6 +69,66 @@ pub(super) fn parse_semantic_prompt(
     }
 }
 
+/// Parse the command-boundary subcommands of OSC 133: `B` ends the prompt
+/// (the command line starts at the cursor), `C` is emitted right after the
+/// command line is submitted and before its output.
+pub(super) fn parse_prompt_phase(params: &[&[u8]]) -> Option<super::handler::PromptPhase> {
+    use super::handler::PromptPhase;
+    match *params.get(1)?.first()? {
+        b'B' => Some(PromptPhase::CommandStart),
+        b'C' => Some(PromptPhase::CommandExecuted),
+        _ => None,
+    }
+}
+
+/// Parse `OSC 633 ; E ; <command line> [; nonce]` (VS Code's explicit
+/// command line). The shell escapes `\` as `\\`, and `;` plus control
+/// characters as `\xNN`; any other byte passes through. An invalid escape
+/// is kept literally. Empty text is `None`.
+///
+/// Also reads `OSC 133 ; C ; … cmdline_url=<percent-encoded>` (fish 4 and
+/// kitty send the command line that way).
+pub(super) fn parse_command_line(params: &[&[u8]]) -> Option<String> {
+    match (params.first().copied(), params.get(1).copied()) {
+        (Some(b"633"), Some(b"E")) => {}
+        (Some(b"133"), Some(b"C")) => {
+            let url = params[2..]
+                .iter()
+                .find_map(|p| p.strip_prefix(b"cmdline_url="))?;
+            let text = percent_decode(std::str::from_utf8(url).ok()?)?;
+            return (!text.is_empty()).then_some(text);
+        }
+        _ => return None,
+    }
+    let raw = params.get(2)?;
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'\\' {
+            if raw.get(i + 1) == Some(&b'\\') {
+                out.push(b'\\');
+                i += 2;
+                continue;
+            }
+            if raw.get(i + 1) == Some(&b'x') {
+                if let (Some(h), Some(l)) = (
+                    raw.get(i + 2).copied().and_then(hex),
+                    raw.get(i + 3).copied().and_then(hex),
+                ) {
+                    out.push(h << 4 | l);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    let text = String::from_utf8_lossy(&out).into_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 /// Parse `OSC 1337 ; SetUserVar=name=<base64 value>`. The value is
 /// base64 per iTerm2's spec; anything undecodable is dropped.
 pub(super) fn parse_set_user_var(params: &[&[u8]]) -> Option<(String, String)> {

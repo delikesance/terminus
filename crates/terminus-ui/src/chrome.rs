@@ -1,4 +1,5 @@
-//! The chrome as one object: activity rail + host panel + add-host editor.
+//! The chrome as one object: shell (sidebar chrome, header, pills, views)
+//! + host panel + dialogs.
 //!
 //! Everything the mouse and the keyboard can do to the chrome is routed
 //! through here, and everything the chrome reserves from the terminal's
@@ -6,8 +7,9 @@
 //! this state and never own any of it, so a repaint can never disagree
 //! with a hit-test.
 
-use crate::activity_bar::{self, ActivityBarState, RailAction, RailHit, Section};
 use crate::add_host::{AddHostForm, AddHostHit, FormInput, FormOutcome};
+use crate::components::overlay::DialogKey;
+use crate::confirm::{ConfirmAction, ConfirmOutcome, ConfirmPrompt};
 use crate::connection::{ConnectionHit, ConnectionSequence};
 use crate::context_menu::{ContextAction, ContextMenu, ContextMenuHit};
 use crate::settings::{SettingsHit, SettingsModal, SettingsTab};
@@ -25,11 +27,12 @@ use crate::vault_unlock::{
 /// Painters must emit glyphs only for [`Chrome::top_modal_paint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalPaintLayer {
-    Connection,
     HostEditor,
     AddSnippet,
     Settings,
     VaultUnlock,
+    /// Delete-host / delete-group confirmation (above everything).
+    Confirm,
 }
 
 /// Mouse cursor affordance for chrome hit targets.
@@ -93,6 +96,8 @@ pub enum ChromeAction {
     CopyPublicKey(String),
     /// Put this stored host's `ssh …` command on the clipboard.
     CopySshCommand(String),
+    /// Put this text (an error message, say) on the clipboard.
+    CopyText(String),
     /// Soft-delete a stored host (context menu).
     DeleteHost(String),
     /// Soft-delete a host group (context menu).
@@ -162,12 +167,22 @@ pub enum ChromeAction {
     RunSnippet(String),
     /// Settings modal was dismissed.
     DismissSettings,
+    /// Shell: open the command palette ("Search or run…").
+    OpenPalette,
+    /// Shell: the workspace view changed (header tab, brand, Settings).
+    ViewChanged(crate::shell::WorkspaceView),
+    /// Shell: a header window control was pressed.
+    WindowControl(crate::shell::WindowButton),
+    /// Shell: press on the empty header — drag the window (double-click
+    /// maximizes).
+    WindowDrag,
+    /// Shell: split the focused session (`down` = horizontal divider).
+    Split { down: bool },
 }
 
 /// Chrome state for one window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chrome {
-    pub activity: ActivityBarState,
     pub panel: HostPanel,
     pub snippets: SnippetsPanel,
     pub settings: SettingsModal,
@@ -175,6 +190,8 @@ pub struct Chrome {
     pub snippet_form: crate::add_snippet::AddSnippetForm,
     /// Prompt when a sealed secret is needed and the vault is locked.
     pub vault_unlock: VaultUnlockPrompt,
+    /// Destructive-action confirmation (delete host / group), when open.
+    pub confirm: Option<ConfirmPrompt>,
     /// Whether a vault already exists; when not, the prompt creates one.
     pub vault_configured: bool,
     /// Live SSH/WSL connecting modal, when a session is starting.
@@ -188,24 +205,33 @@ pub struct Chrome {
     pub panel_visible: bool,
     /// Last known window width (logical), for settings hover/cursor geometry.
     pub last_window_width: f32,
+    /// Sidebar chrome, header, pills and the workspace view.
+    pub shell: crate::shell::Shell,
+    /// State of the non-terminal views (Files, Snippets, Settings, …).
+    pub screens: crate::screens::Screens,
+    /// Machine id last scrolled into view by [`Self::reveal_machine`].
+    pub revealed_machine: Option<String>,
 }
 
 impl Default for Chrome {
     fn default() -> Self {
         Self {
-            activity: ActivityBarState::default(),
             panel: HostPanel::default(),
             snippets: SnippetsPanel::with_defaults(),
             settings: SettingsModal::default(),
             form: AddHostForm::default(),
             snippet_form: crate::add_snippet::AddSnippetForm::default(),
             vault_unlock: VaultUnlockPrompt::default(),
+            confirm: None,
             vault_configured: true,
             connection: None,
             context_menu: None,
             top_inset: 0.0,
             panel_visible: true,
             last_window_width: 1200.0,
+            shell: crate::shell::Shell::default(),
+            screens: crate::screens::Screens::default(),
+            revealed_machine: None,
         }
     }
 }
@@ -213,38 +239,89 @@ impl Default for Chrome {
 impl Chrome {
     /// Width the chrome takes from the terminal's area, in logical
     /// pixels. This is the value the grid margin reserves.
+    /// Left grid inset: the sidebar plus the terminal's padding inside
+    /// the main card.
     pub fn reserved_width(&self) -> f32 {
-        if self.activity.collapsed {
-            return 0.0;
-        }
-        if self.panel_visible {
-            activity_bar::WIDTH + crate::sidebar::WIDTH
-        } else {
-            activity_bar::WIDTH
-        }
+        crate::shell::grid_insets().left
     }
 
-    /// Top edge of the chrome, in logical pixels.
+    /// Top edge of the sidebar: it runs the full window height.
     pub fn origin_y(&self) -> f32 {
-        self.top_inset
+        0.0
     }
 
-    /// Whether the panel's host list (rather than a placeholder) is the
-    /// thing on screen.
+    /// The machine list is always the sidebar's content.
     pub fn hosts_visible(&self) -> bool {
-        self.panel_visible && self.activity.selected == Section::Servers
+        true
     }
 
-    /// Whether the snippets drawer is showing.
+    /// The old snippets drawer is gone; snippets are the Snippets view.
     pub fn snippets_visible(&self) -> bool {
-        self.panel_visible && self.activity.selected == Section::Snippets
+        false
     }
 
-    /// Title shown in the panel header.
-    pub fn panel_title(&self) -> &'static str {
-        match self.activity.selected {
-            Section::Servers => "Servers & Hosts",
-            Section::Snippets => "Command Snippets",
+    /// Switch the workspace view. The Settings page replaces the legacy
+    /// settings dialog: switching view closes it if something opened it.
+    pub fn show_view(&mut self, view: crate::shell::WorkspaceView) -> bool {
+        let changed = self.shell.workspace.show(view);
+        if changed && self.settings.open {
+            self.settings.close();
+        }
+        changed
+    }
+
+    /// Route one input event to the view on screen (not the terminal).
+    /// Esc on a machine view that ignores it goes back to the terminal.
+    pub fn view_input(
+        &mut self,
+        input: &crate::screens::ViewInput,
+    ) -> crate::screens::ViewOutcome {
+        use crate::screens::{ViewInput, ViewKey, ViewOutcome};
+        let view = self.shell.view();
+        let content = self.shell.content_rect();
+        let out = self.screens.handle(view, content, input);
+        if out == ViewOutcome::Ignored
+            && view.is_machine_view()
+            && matches!(
+                input,
+                ViewInput::Key {
+                    key: ViewKey::Escape,
+                    ..
+                }
+            )
+            && self.show_view(crate::shell::WorkspaceView::Terminal)
+        {
+            return ViewOutcome::Redraw;
+        }
+        out
+    }
+
+    fn press_shell(&mut self, hit: crate::shell::ShellHit) -> ChromeAction {
+        use crate::shell::{SettingsPage, ShellHit, WorkspaceView};
+        let view = |chrome: &mut Self, v: WorkspaceView| {
+            chrome.show_view(v);
+            ChromeAction::ViewChanged(v)
+        };
+        match hit {
+            ShellHit::Brand => view(self, WorkspaceView::Home),
+            ShellHit::CommandBar => ChromeAction::OpenPalette,
+            ShellHit::AddServer => ChromeAction::AddHost,
+            ShellHit::Settings => view(self, WorkspaceView::Settings(SettingsPage::Keys)),
+            ShellHit::Tab(v) => view(self, v),
+            ShellHit::Control(b) => ChromeAction::WindowControl(b),
+            ShellHit::Pill(tab) => ChromeAction::OpenSession(tab),
+            ShellHit::PillClose(tab) => ChromeAction::CloseSession(tab),
+            ShellHit::NewSession => ChromeAction::AddHostSession(
+                self.shell
+                    .machine
+                    .as_ref()
+                    .map(|m| m.id.clone())
+                    .unwrap_or_else(|| "local".to_string()),
+            ),
+            ShellHit::SplitRight => ChromeAction::Split { down: false },
+            ShellHit::SplitDown => ChromeAction::Split { down: true },
+            ShellHit::Drag => ChromeAction::WindowDrag,
+            ShellHit::Inert => ChromeAction::Consumed,
         }
     }
 
@@ -268,10 +345,9 @@ impl Chrome {
     /// layer as (all quads) → (all text), so only the **front** entry may
     /// emit glyphs; lower entries paint shell/scrim quads only.
     pub fn modal_paint_stack(&self) -> Vec<ModalPaintLayer> {
+        // Connection progress is not here: the shell paints it inside the
+        // Terminal content (see [`Self::connection_area`]).
         let mut stack = Vec::new();
-        if self.connection.is_some() {
-            stack.push(ModalPaintLayer::Connection);
-        }
         if self.form.is_open() {
             stack.push(ModalPaintLayer::HostEditor);
         }
@@ -284,6 +360,9 @@ impl Chrome {
         if self.vault_unlock.is_open() {
             stack.push(ModalPaintLayer::VaultUnlock);
         }
+        if self.confirm.is_some() {
+            stack.push(ModalPaintLayer::Confirm);
+        }
         stack
     }
 
@@ -292,16 +371,83 @@ impl Chrome {
         self.modal_paint_stack().last().copied()
     }
 
+    pub fn confirm_is_open(&self) -> bool {
+        self.confirm.is_some()
+    }
+
+    /// Show a confirmation dialog; its action runs only on Confirm.
+    pub fn open_confirm(&mut self, prompt: ConfirmPrompt) {
+        self.context_menu = None;
+        self.confirm = Some(prompt);
+    }
+
+    fn confirm_action(action: ConfirmAction) -> ChromeAction {
+        match action {
+            ConfirmAction::DeleteHost(id) => ChromeAction::DeleteHost(id),
+            ConfirmAction::DeleteGroup(id) => ChromeAction::DeleteGroup(id),
+            ConfirmAction::Quit => ChromeAction::Consumed,
+        }
+    }
+
+    /// Keyboard on the confirmation dialog: `Some` when it is open (the
+    /// action is `Consumed` unless the user confirmed), `None` otherwise.
+    pub fn handle_confirm_key(&mut self, key: DialogKey) -> Option<ChromeAction> {
+        let prompt = self.confirm.as_mut()?;
+        Some(match prompt.key(key) {
+            ConfirmOutcome::Confirm => {
+                let action = self.confirm.take()?.action;
+                Self::confirm_action(action)
+            }
+            ConfirmOutcome::Cancel => {
+                self.confirm = None;
+                ChromeAction::Consumed
+            }
+            ConfirmOutcome::Idle | ConfirmOutcome::Changed => ChromeAction::Consumed,
+        })
+    }
+
     /// Ask for the vault passphrase, then retry `pending` after unlock.
     pub fn open_vault_unlock(&mut self, pending: PendingVaultAction) {
+        let host_id = match &pending {
+            PendingVaultAction::OpenHost(id) | PendingVaultAction::AddHostSession(id) => {
+                Some(id.clone())
+            }
+            PendingVaultAction::OpenSftp { host_id, .. } => Some(host_id.clone()),
+            _ => None,
+        };
         self.vault_unlock.open(pending);
+        let label = host_id.and_then(|id| {
+            self.panel
+                .rows
+                .iter()
+                .filter_map(Row::host)
+                .find(|h| h.id == id)
+                .map(|h| h.name.clone())
+        });
+        self.vault_unlock.set_host_label(label);
         self.vault_unlock.set_creating(!self.vault_configured);
+    }
+
+    /// Where connection progress is shown: the shell's content rect (the
+    /// Terminal view's area, under the session pills).
+    pub fn connection_area(&self) -> crate::geom::Rect {
+        self.shell.content_rect()
+    }
+
+    /// What a pointer at `(x, y)` hits on the connection progress, or
+    /// `None` when there is none or the pointer is outside its area.
+    fn connection_hit(&self, x: f32, y: f32) -> Option<ConnectionHit> {
+        let conn = self.connection.as_ref()?;
+        // Painted on the Terminal view only; other views keep their input.
+        if !self.shell.view().shows_terminal() {
+            return None;
+        }
+        let area = self.connection_area();
+        area.contains(x, y).then(|| conn.hit_test_in(area, x, y))
     }
 
     /// Open the add-host editor.
     pub fn open_add_host(&mut self) {
-        self.activity.selected = Section::Servers;
-        self.activity.collapsed = false;
         self.panel_visible = true;
         self.form.open();
     }
@@ -312,8 +458,6 @@ impl Chrome {
         values: crate::add_host::HostFormValues,
         host_id: String,
     ) {
-        self.activity.selected = Section::Servers;
-        self.activity.collapsed = false;
         self.panel_visible = true;
         self.form.open_edit(values, host_id);
     }
@@ -398,15 +542,16 @@ impl Chrome {
     ) -> ChromeAction {
         // Modals / overlays own the pointer; don't open under them.
         if self.settings.open
-            || self.connection.is_some()
+            || self.connection_hit(x, y).is_some()
             || self.form.is_open()
             || self.snippet_form.is_open()
             || self.vault_unlock.is_open()
+            || self.confirm.is_some()
         {
             self.close_context_menu();
             return ChromeAction::Ignored;
         }
-        if !self.hosts_visible() || self.activity.collapsed {
+        if !self.hosts_visible() {
             self.close_context_menu();
             return ChromeAction::Ignored;
         }
@@ -451,6 +596,38 @@ impl Chrome {
         self.context_menu = None;
     }
 
+    /// The confirmation a context-menu row raises, if it is destructive.
+    fn delete_prompt_for(&self, index: usize) -> Option<ConfirmPrompt> {
+        let action = self.context_menu.as_ref()?.take_action(index)?;
+        match action {
+            ContextAction::DeleteHost(id) => {
+                let host = self
+                    .panel
+                    .rows
+                    .iter()
+                    .filter_map(Row::host)
+                    .find(|h| h.id == id);
+                let name = host.map_or("this server", |h| h.name.as_str());
+                let sessions = host.map_or(0, |h| h.session_count);
+                Some(ConfirmPrompt::delete_host(&id, name, sessions))
+            }
+            ContextAction::DeleteGroup(id) => {
+                let group = self.panel.rows.iter().find_map(|r| match r {
+                    Row::Group {
+                        id: gid,
+                        name,
+                        host_count,
+                        ..
+                    } if *gid == id => Some((name.as_str(), *host_count)),
+                    _ => None,
+                });
+                let (name, hosts) = group.unwrap_or(("this group", 0));
+                Some(ConfirmPrompt::delete_group(&id, name, hosts))
+            }
+            _ => None,
+        }
+    }
+
     fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
         let Some(menu) = self.context_menu.as_mut() else {
             return None;
@@ -463,27 +640,14 @@ impl Chrome {
             }
             ContextMenuHit::Consume => Some(ChromeAction::Consumed),
             ContextMenuHit::Item(index) => {
-                if !menu.confirm(index) {
-                    // Destructive item armed; wait for the second click. Say
-                    // so when deleting a host also closes its open sessions.
-                    if let Some(ContextAction::DeleteHost(id)) = menu.take_action(index) {
-                        let sessions = self
-                            .panel
-                            .rows
-                            .iter()
-                            .filter_map(crate::sidebar::Row::host)
-                            .find(|h| h.id == id)
-                            .map_or(0, |h| h.session_count);
-                        if sessions > 0 {
-                            let plural = if sessions == 1 { "" } else { "s" };
-                            menu.set_label(
-                                index,
-                                format!("Click again: delete, close {sessions} session{plural}"),
-                            );
-                        }
-                    }
+                // Deleting a host or group cannot be undone: ask first.
+                if let Some(prompt) = self.delete_prompt_for(index) {
+                    self.open_confirm(prompt);
                     return Some(ChromeAction::Consumed);
                 }
+                let Some(menu) = self.context_menu.as_mut() else {
+                    return Some(ChromeAction::Consumed);
+                };
                 let action = menu.take_action(index);
                 self.close_context_menu();
                 Some(match action {
@@ -524,6 +688,21 @@ impl Chrome {
         x: f32,
         y: f32,
     ) -> ChromeAction {
+        // A confirmation sits above every other dialog.
+        if let Some(prompt) = self.confirm.as_mut() {
+            return match prompt.press((window_width, window_height), x, y) {
+                ConfirmOutcome::Confirm => match self.confirm.take() {
+                    Some(p) => Self::confirm_action(p.action),
+                    None => ChromeAction::Consumed,
+                },
+                ConfirmOutcome::Cancel => {
+                    self.confirm = None;
+                    ChromeAction::Consumed
+                }
+                ConfirmOutcome::Idle | ConfirmOutcome::Changed => ChromeAction::Consumed,
+            };
+        }
+
         // An open context menu eats the next left click: select or dismiss.
         if let Some(action) = self.route_context_menu_press(x, y) {
             return action;
@@ -537,7 +716,7 @@ impl Chrome {
                 window_height,
                 &self.vault_unlock,
             );
-            return match layout.hit_test(x, y) {
+            return match layout.hit_test_labels(x, y, self.vault_unlock.action_label()) {
                 VaultUnlockHit::Field => {
                     self.vault_unlock.focus_passphrase();
                     ChromeAction::Consumed
@@ -573,6 +752,16 @@ impl Chrome {
                 SettingsHit::Tab(tab) => {
                     self.settings.close_engine_menu();
                     self.settings.open_tab(tab);
+                    // Keep the Settings page header on the same section.
+                    if self.shell.view().is_settings() {
+                        let page = match tab {
+                            SettingsTab::Keys => crate::shell::SettingsPage::Keys,
+                            SettingsTab::SqlSync => crate::shell::SettingsPage::Sync,
+                        };
+                        self.shell
+                            .workspace
+                            .show(crate::shell::WorkspaceView::Settings(page));
+                    }
                     ChromeAction::Consumed
                 }
                 SettingsHit::FocusUri => {
@@ -660,15 +849,10 @@ impl Chrome {
             };
         }
 
-        // The connection modal sits above everything else: clicks never
-        // fall through to the terminal or the add-host form behind it.
-        if self.connection.is_some() {
-            let hit = self.connection.as_ref().unwrap().hit_test(
-                window_width,
-                window_height,
-                x,
-                y,
-            );
+        // Connection progress owns the Terminal content: clicks there never
+        // fall through to the terminal behind it. The sidebar and header
+        // stay live.
+        if let Some(hit) = self.connection_hit(x, y) {
             return match hit {
                 ConnectionHit::ToggleLogs => {
                     if let Some(conn) = self.connection.as_mut() {
@@ -711,16 +895,11 @@ impl Chrome {
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
-            let dialog = layout.rect();
-            let on_auth_menu = self.form.auth_menu_open()
-                && layout
-                    .auth_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            let on_identity_menu = self.form.identity_menu_open()
-                && layout
-                    .identity_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            if !dialog.contains(x, y) && !on_auth_menu && !on_identity_menu {
+            let dialog = layout.rect(self.form.height());
+            let on_menu = layout
+                .menu_rect(&self.form)
+                .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_menu {
                 self.form.close();
                 return ChromeAction::Consumed;
             }
@@ -743,10 +922,6 @@ impl Chrome {
                     }
                     ChromeAction::Consumed
                 }
-                AddHostHit::ToggleAuthMenu => {
-                    self.form.toggle_auth_menu();
-                    ChromeAction::Consumed
-                }
                 AddHostHit::SelectAuth(index) => {
                     self.form.select_auth_method(index);
                     ChromeAction::Consumed
@@ -759,6 +934,21 @@ impl Chrome {
                     self.form.select_identity(index);
                     ChromeAction::Consumed
                 }
+                AddHostHit::ToggleGroupMenu => {
+                    self.form.toggle_group_menu();
+                    ChromeAction::Consumed
+                }
+                AddHostHit::SelectGroup(index) => {
+                    self.form.select_group(index);
+                    ChromeAction::Consumed
+                }
+                AddHostHit::GenerateKey => {
+                    // The key draft opens over the wizard; a new key shows
+                    // up in the select as soon as the store reports it.
+                    self.open_settings(SettingsTab::Keys);
+                    self.settings.open_key_draft();
+                    ChromeAction::FocusKeyDraft
+                }
                 AddHostHit::TogglePasswordVisible => {
                     self.form.toggle_password_visible();
                     ChromeAction::Consumed
@@ -767,62 +957,34 @@ impl Chrome {
                     self.form.prev_step();
                     ChromeAction::Consumed
                 }
+                AddHostHit::CopyError => match self.form.error() {
+                    Some(error) => ChromeAction::CopyText(error.to_string()),
+                    None => ChromeAction::Consumed,
+                },
                 AddHostHit::Next => {
                     self.form.next_step();
                     ChromeAction::Consumed
                 }
-                AddHostHit::Cancel => {
+                AddHostHit::Cancel | AddHostHit::Close => {
                     self.form.close();
                     ChromeAction::Consumed
                 }
                 AddHostHit::Connect => ChromeAction::SubmitHostForm,
                 AddHostHit::Consume => {
-                    if self.form.auth_menu_open() {
-                        self.form.close_auth_menu();
-                    }
-                    if self.form.identity_menu_open() {
-                        self.form.close_identity_menu();
-                    }
+                    self.form.close_menu();
                     ChromeAction::Consumed
                 }
             };
         }
 
-        if self.activity.collapsed {
-            return ChromeAction::Ignored;
+        // Sidebar chrome, header and pills come before the machine list.
+        if let Some(hit) = self.shell.hit_test(x, y) {
+            return self.press_shell(hit);
         }
 
         let origin_y = self.origin_y();
-        // Tab strip / title band live above the chrome; never steal those hits.
-        if y < origin_y {
-            return ChromeAction::Ignored;
-        }
         let chrome_height = (window_height - origin_y).max(0.0);
-        if let Some(hit) = activity_bar::hit_test(origin_y, chrome_height, x, y) {
-            self.activity.hover = None;
-            self.activity.hover_dismissed = Some(hit);
-            return match hit {
-                RailHit::Section(section) => {
-                    if section == self.activity.selected {
-                        self.panel_visible = !self.panel_visible;
-                    } else {
-                        self.activity.selected = section;
-                        self.panel_visible = true;
-                    }
-                    ChromeAction::Consumed
-                }
-                RailHit::Action(RailAction::Settings) => {
-                    self.open_settings(SettingsTab::Keys);
-                    ChromeAction::Consumed
-                }
-                RailHit::Action(RailAction::CloudSync) => {
-                    self.open_settings(SettingsTab::SqlSync);
-                    ChromeAction::Consumed
-                }
-            };
-        }
-
-        if !self.panel_visible {
+        if !self.panel.rect(origin_y, chrome_height).contains(x, y) {
             return ChromeAction::Ignored;
         }
 
@@ -993,6 +1155,9 @@ impl Chrome {
     /// Route a mouse move; returns whether anything needs repainting.
     pub fn handle_hover(&mut self, window_height: f32, x: f32, y: f32) -> bool {
         let window_width = { self.last_window_width };
+        if let Some(prompt) = self.confirm.as_mut() {
+            return prompt.hover_at((window_width, window_height), x, y);
+        }
         if let Some(menu) = self.context_menu.as_mut() {
             return menu.hover_at(x, y);
         }
@@ -1001,7 +1166,7 @@ impl Chrome {
                 .settings
                 .handle_hover(window_width, window_height, x, y);
         }
-        if self.connection.is_some() || self.activity.collapsed {
+        if self.connection_hit(x, y).is_some() {
             return false;
         }
 
@@ -1030,94 +1195,34 @@ impl Chrome {
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
             let mut changed = false;
-            if self.form.auth_menu_open() {
-                let mut hover = None;
-                for i in 0..crate::add_host::AUTH_METHODS.len() {
-                    if let Some(opt) = layout.auth_option_rect(&self.form, i) {
-                        if opt.contains(x, y) {
-                            hover = Some(i);
-                            break;
-                        }
-                    }
-                }
-                changed |= self.form.set_auth_menu_hover(hover);
+            if self.form.menu().is_some() {
+                let hover = (0..self.form.menu_len()).find(|&i| {
+                    layout
+                        .menu_option_rect(&self.form, i)
+                        .is_some_and(|opt| opt.contains(x, y))
+                });
+                changed |= self.form.set_menu_hover(hover);
             } else {
-                changed |= self.form.set_auth_menu_hover(None);
+                changed |= self.form.set_menu_hover(None);
             }
-            if self.form.identity_menu_open() {
-                let mut hover = None;
-                for i in 0..self.form.identities().len() {
-                    if let Some(opt) = layout.identity_option_rect(&self.form, i) {
-                        if opt.contains(x, y) {
-                            hover = Some(i);
-                            break;
-                        }
-                    }
-                }
-                changed |= self.form.set_identity_menu_hover(hover);
-            } else {
-                changed |= self.form.set_identity_menu_hover(None);
-            }
+            let target = match layout.hit_test(&self.form, x, y) {
+                AddHostHit::Consume | AddHostHit::Field(_) => None,
+                other => Some(other),
+            };
+            changed |= self.form.set_hover(target);
             return changed;
         }
         let origin_y = self.origin_y();
         let height = window_height - origin_y;
-        let mut rail = activity_bar::hit_test(origin_y, height, x, y);
-        if rail != self.activity.hover_dismissed {
-            self.activity.hover_dismissed = None;
-        } else {
-            rail = None;
-        }
-        let rail_changed = self.activity.hover != rail;
-        self.activity.hover = rail;
-        if self.snippets_visible() {
-            let hit = self.snippets.hit_test(origin_y, height, x, y);
-            return self.snippets.set_hover(hit) | rail_changed;
-        }
-        if !self.hosts_visible() {
-            return rail_changed;
-        }
+        let shell_changed = self.shell.set_hover(self.shell.hit_test(x, y));
         let hover = self.panel.hover_at(origin_y, height, x, y);
-        self.panel.set_hover(hover) | rail_changed
-    }
-
-    /// Name of the rail icon under the pointer, and where to draw it.
-    pub fn rail_tooltip(
-        &self,
-        window_height: f32,
-    ) -> Option<(crate::geom::Rect, String)> {
-        let dialog_open = self.context_menu.is_some()
-            || self.settings.open
-            || self.connection.is_some()
-            || self.form.is_open()
-            || self.snippet_form.is_open()
-            || self.vault_unlock.is_open();
-        if dialog_open {
-            return None;
-        }
-        let hit = self.activity.hover?;
-        let label = match hit {
-            RailHit::Section(section) => section.label().to_string(),
-            RailHit::Action(RailAction::CloudSync) => format!(
-                "{}: {}",
-                RailAction::CloudSync.label(),
-                if self.activity.cloud_sync_active {
-                    "on"
-                } else {
-                    "not set up"
-                }
-            ),
-            RailHit::Action(action) => action.label().to_string(),
-        };
-        let origin_y = self.origin_y();
-        let rect =
-            activity_bar::tooltip_rect(origin_y, window_height - origin_y, hit, &label);
-        Some((rect, label))
+        self.panel.set_hover(hover) | shell_changed
     }
 
     /// Remember the last layout width so hover/cursor can rebuild dialog rects.
-    pub fn set_window_size(&mut self, width: f32, _height: f32) {
+    pub fn set_window_size(&mut self, width: f32, height: f32) {
         self.last_window_width = width;
+        self.shell.window = (width, height);
     }
 
     /// Cursor affordance under `(x, y)`.
@@ -1128,6 +1233,15 @@ impl Chrome {
         x: f32,
         y: f32,
     ) -> ChromeCursor {
+        if let Some(prompt) = self.confirm.as_ref() {
+            use crate::components::overlay::DialogHit;
+            return match prompt.layout((window_width, window_height)).hit_test(x, y) {
+                DialogHit::Confirm | DialogHit::Cancel | DialogHit::Option => {
+                    ChromeCursor::Pointer
+                }
+                DialogHit::Inside | DialogHit::Scrim => ChromeCursor::Default,
+            };
+        }
         if let Some(menu) = self.context_menu.as_ref() {
             return match menu.hit_test(x, y) {
                 ContextMenuHit::Item(_) => ChromeCursor::Pointer,
@@ -1142,7 +1256,7 @@ impl Chrome {
                 window_height,
                 &self.vault_unlock,
             );
-            return match layout.hit_test(x, y) {
+            return match layout.hit_test_labels(x, y, self.vault_unlock.action_label()) {
                 VaultUnlockHit::Field | VaultUnlockHit::ConfirmField => {
                     ChromeCursor::Text
                 }
@@ -1156,8 +1270,8 @@ impl Chrome {
         if self.settings.open {
             return self.settings.cursor_at(window_width, window_height, x, y);
         }
-        if let Some(conn) = self.connection.as_ref() {
-            return match conn.hit_test(window_width, window_height, x, y) {
+        if let Some(hit) = self.connection_hit(x, y) {
+            return match hit {
                 ConnectionHit::Close | ConnectionHit::ToggleLogs => ChromeCursor::Pointer,
                 ConnectionHit::Consume => ChromeCursor::Default,
             };
@@ -1181,47 +1295,48 @@ impl Chrome {
 
         if self.form.is_open() {
             let layout = self.dialog_layout(window_width, window_height);
-            let dialog = layout.rect();
-            let on_auth_menu = self.form.auth_menu_open()
-                && layout
-                    .auth_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            let on_identity_menu = self.form.identity_menu_open()
-                && layout
-                    .identity_menu_rect(&self.form)
-                    .is_some_and(|m| m.contains(x, y));
-            if !dialog.contains(x, y) && !on_auth_menu && !on_identity_menu {
+            let dialog = layout.rect(self.form.height());
+            let on_menu = layout
+                .menu_rect(&self.form)
+                .is_some_and(|m| m.contains(x, y));
+            if !dialog.contains(x, y) && !on_menu {
                 return ChromeCursor::Pointer; // scrim dismiss
             }
             return match layout.hit_test(&self.form, x, y) {
                 AddHostHit::Field(_) => ChromeCursor::Text,
                 AddHostHit::StepPill(_)
                 | AddHostHit::Back
+                | AddHostHit::CopyError
                 | AddHostHit::Next
-                | AddHostHit::ToggleAuthMenu
                 | AddHostHit::SelectAuth(_)
                 | AddHostHit::ToggleIdentityMenu
                 | AddHostHit::SelectIdentity(_)
+                | AddHostHit::ToggleGroupMenu
+                | AddHostHit::SelectGroup(_)
                 | AddHostHit::TogglePasswordVisible
+                | AddHostHit::GenerateKey
+                | AddHostHit::Close
                 | AddHostHit::Connect
                 | AddHostHit::Cancel => ChromeCursor::Pointer,
                 AddHostHit::Consume => ChromeCursor::Default,
             };
         }
-        if self.activity.collapsed {
-            return ChromeCursor::Default;
-        }
         let origin_y = self.origin_y();
         let height = (window_height - origin_y).max(0.0);
-        if activity_bar::hit_test(origin_y, height, x, y).is_some() {
-            return ChromeCursor::Pointer;
+        if let Some(hit) = self.shell.hit_test(x, y) {
+            return if hit.is_control() {
+                ChromeCursor::Pointer
+            } else {
+                ChromeCursor::Default
+            };
         }
-        if self.snippets_visible() {
-            return match self.snippets.hit_test(origin_y, height, x, y) {
-                Some(SnippetHit::Item(_))
-                | Some(SnippetHit::AddButton)
-                | Some(SnippetHit::DeleteButton(_)) => ChromeCursor::Pointer,
-                Some(SnippetHit::Background) | None => ChromeCursor::Default,
+        if self.shell.view_owns(x, y) {
+            let view = self.shell.view();
+            let content = self.shell.content_rect();
+            return if self.screens.is_clickable(view, content, x, y) {
+                ChromeCursor::Pointer
+            } else {
+                ChromeCursor::Default
             };
         }
         if self.hosts_visible() {
@@ -1383,8 +1498,33 @@ impl Chrome {
         }
     }
 
-    /// Kept for the animation loop; host-drag no longer uses a snap tween.
-    pub fn tick_host_drag(&mut self, _dt: f32) -> Option<ChromeAction> {
+    /// Per-frame drag tick: while a host is dragged near the top or
+    /// bottom edge of the machine list, scroll the list and retarget the
+    /// drop under the (still) pointer. Never produces an action.
+    pub fn tick_host_drag(&mut self, dt: f32) -> Option<ChromeAction> {
+        let Some(drag) = self.panel.host_drag.as_ref() else {
+            return None;
+        };
+        if !matches!(drag.phase, crate::sidebar::HostDragPhase::Dragging) {
+            return None;
+        }
+        let (x, y) = (drag.current_x, drag.current_y);
+        // The frontend keeps the window size current every frame.
+        let window_height = self.shell.window.1;
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        let speed = self.panel.drag_autoscroll_speed(origin_y, height, y);
+        if speed == 0.0 {
+            return None;
+        }
+        let before = self.panel.scroll;
+        self.panel.scroll_by(speed * dt, origin_y, height);
+        if self.panel.scroll != before {
+            let target = self.panel.drop_target_at(origin_y, height, x, y);
+            if let Some(drag) = self.panel.host_drag.as_mut() {
+                drag.drop_target = target;
+            }
+        }
         None
     }
 
@@ -1398,6 +1538,44 @@ impl Chrome {
                 .is_some_and(|d| d.started() && !d.is_snapping())
     }
 
+    /// Scroll the selected machine's row into view when the selection
+    /// changed (palette, tab switch, a new session). Only once per
+    /// change: the user may then scroll the list away freely. An id
+    /// without a row (yet) is retried on the next call.
+    pub fn reveal_machine(&mut self, id: &str, window_height: f32) -> bool {
+        if self.revealed_machine.as_deref() == Some(id) {
+            return false;
+        }
+        let Some(index) = self.panel.row_of_host(id) else {
+            return false;
+        };
+        if !self.panel.visible_row_indices().contains(&index) {
+            return false;
+        }
+        self.revealed_machine = Some(id.to_string());
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        self.panel.reveal_row(index, origin_y, height)
+    }
+
+    /// Route a pixel wheel delta (touchpads; positive = content moves
+    /// down, i.e. scroll toward the top) over the panel.
+    pub fn handle_wheel_pixels(
+        &mut self,
+        window_height: f32,
+        x: f32,
+        y: f32,
+        dy: f32,
+    ) -> bool {
+        let origin_y = self.origin_y();
+        let height = (window_height - origin_y).max(0.0);
+        if !self.panel.rect(origin_y, height).contains(x, y) {
+            return false;
+        }
+        let before = self.panel.scroll;
+        self.panel.scroll_by(-dy, origin_y, height);
+        self.panel.scroll != before || self.panel.content_height() == 0.0
+    }
     /// Route a wheel notch over the panel; returns whether it was consumed.
     pub fn handle_wheel(
         &mut self,
@@ -1406,7 +1584,7 @@ impl Chrome {
         y: f32,
         lines: f32,
     ) -> bool {
-        if self.activity.collapsed || !self.hosts_visible() {
+        if !self.hosts_visible() {
             return false;
         }
         let origin_y = self.origin_y();
@@ -1491,80 +1669,20 @@ impl Chrome {
         window_width: f32,
         window_height: f32,
     ) -> crate::add_host::AddHostLayout {
-        crate::add_host::AddHostLayout::compute(&self.form, window_width, window_height)
+        crate::add_host::AddHostLayout::centered(
+            window_width,
+            window_height,
+            self.form.anchor_height(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::activity_bar::RailAction;
     use crate::add_host::Field;
     use crate::settings::SettingsTab;
     use crate::sidebar::Badge;
-
-    #[test]
-    fn hovering_a_rail_icon_names_it() {
-        let mut chrome = chrome_with_hosts(2);
-        let oy = chrome.origin_y();
-        let item = activity_bar::section_rect(oy, activity_bar::Section::Snippets);
-        let (cx, cy) = (item.x + item.width / 2.0, item.y + item.height / 2.0);
-        assert!(chrome.handle_hover(800.0, cx, cy), "repaint to show it");
-        let (rect, label) = chrome.rail_tooltip(800.0).expect("tooltip");
-        assert_eq!(label, "Snippets");
-        assert!(
-            rect.x >= activity_bar::WIDTH,
-            "beside the rail, not over it"
-        );
-        assert!(rect.y <= cy && rect.bottom() >= cy, "level with the icon");
-
-        chrome.handle_hover(800.0, activity_bar::WIDTH + 100.0, cy);
-        assert!(
-            chrome.rail_tooltip(800.0).is_none(),
-            "gone once the pointer leaves"
-        );
-    }
-
-    #[test]
-    fn the_sync_icon_says_whether_sync_is_set_up() {
-        let mut chrome = Chrome::default();
-        assert!(
-            !chrome.activity.cloud_sync_active,
-            "off until a remote connects"
-        );
-        let oy = chrome.origin_y();
-        let item = activity_bar::action_rect(oy, 800.0 - oy, RailAction::CloudSync);
-        chrome.handle_hover(800.0, item.x + 20.0, item.y + 10.0);
-        assert_eq!(
-            chrome.rail_tooltip(800.0).unwrap().1,
-            "Cloud Sync: not set up"
-        );
-        chrome.activity.cloud_sync_active = true;
-        assert_eq!(chrome.rail_tooltip(800.0).unwrap().1, "Cloud Sync: on");
-    }
-
-    #[test]
-    fn clicking_a_rail_icon_hides_its_tooltip_until_the_pointer_leaves() {
-        let mut chrome = chrome_with_hosts(1);
-        let oy = chrome.origin_y();
-        let item = activity_bar::section_rect(oy, activity_bar::Section::Snippets);
-        let (cx, cy) = (item.x + item.width / 2.0, item.y + item.height / 2.0);
-        chrome.handle_hover(800.0, cx, cy);
-        assert!(chrome.rail_tooltip(800.0).is_some());
-        chrome.handle_press(1200.0, 800.0, cx, cy);
-        assert!(
-            chrome.rail_tooltip(800.0).is_none(),
-            "clicked: out of the way"
-        );
-        chrome.handle_hover(800.0, cx + 1.0, cy);
-        assert!(
-            chrome.rail_tooltip(800.0).is_none(),
-            "still on the same icon"
-        );
-        chrome.handle_hover(800.0, activity_bar::WIDTH + 50.0, cy);
-        chrome.handle_hover(800.0, cx, cy);
-        assert!(chrome.rail_tooltip(800.0).is_some(), "back after leaving");
-    }
 
     #[test]
     fn a_key_row_copies_its_public_key() {
@@ -1589,18 +1707,117 @@ mod tests {
         assert!(notice.contains("authorized_keys"), "{notice}");
     }
 
+    fn centre(r: &crate::geom::Rect) -> (f32, f32) {
+        (r.x + r.width / 2.0, r.y + r.height / 2.0)
+    }
+
     #[test]
-    fn no_rail_tooltip_over_an_open_dialog() {
-        let mut chrome = Chrome::default();
-        let oy = chrome.origin_y();
-        let item = activity_bar::action_rect(oy, 800.0 - oy, RailAction::Settings);
-        chrome.handle_hover(800.0, item.x + 20.0, item.y + 10.0);
-        assert!(chrome.rail_tooltip(800.0).is_some());
-        chrome.settings.open = true;
-        assert!(chrome.rail_tooltip(800.0).is_none());
-        chrome.settings.open = false;
-        chrome.form.open();
-        assert!(chrome.rail_tooltip(800.0).is_none());
+    fn the_reserved_width_is_the_sidebar() {
+        let chrome = chrome_with_hosts(1);
+        assert_eq!(chrome.reserved_width(), crate::shell::grid_insets().left);
+        assert!(chrome.reserved_width() > crate::shell::layout::SIDEBAR_WIDTH);
+        assert_eq!(chrome.origin_y(), 0.0);
+    }
+
+    #[test]
+    fn settings_button_opens_the_settings_page_and_its_dialog() {
+        let mut chrome = chrome_with_hosts(1);
+        let (x, y) = centre(&crate::shell::sidebar::settings_rect(800.0));
+        let action = chrome.handle_press(1200.0, 800.0, x, y);
+        let page = crate::shell::WorkspaceView::Settings(crate::shell::SettingsPage::Keys);
+        assert_eq!(action, ChromeAction::ViewChanged(page));
+        assert_eq!(chrome.shell.view(), page);
+        // The J5 Settings page replaces the legacy dialog.
+        assert!(!chrome.settings_is_open());
+    }
+
+    #[test]
+    fn settings_pages_never_open_the_legacy_dialog_and_leaving_closes_it() {
+        use crate::shell::{SettingsPage, WorkspaceView};
+        let mut chrome = chrome_with_hosts(1);
+        for page in SettingsPage::ALL {
+            chrome.show_view(WorkspaceView::Settings(page));
+            assert!(!chrome.settings_is_open(), "{page:?}");
+        }
+        // Opened some other way (palette): leaving Settings closes it.
+        chrome.open_settings(SettingsTab::Keys);
+        chrome.show_view(WorkspaceView::Terminal);
+        assert!(!chrome.settings_is_open());
+    }
+
+    #[test]
+    fn the_command_bar_opens_the_palette_and_brand_goes_home() {
+        let mut chrome = chrome_with_hosts(1);
+        let (x, y) = centre(&crate::shell::sidebar::command_bar_rect());
+        assert_eq!(chrome.handle_press(1200.0, 800.0, x, y), ChromeAction::OpenPalette);
+        let (x, y) = centre(&crate::shell::sidebar::brand_rect());
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::ViewChanged(crate::shell::WorkspaceView::Home)
+        );
+        assert_eq!(chrome.shell.view(), crate::shell::WorkspaceView::Home);
+    }
+
+    #[test]
+    fn header_tabs_switch_views_and_cover_the_terminal() {
+        use crate::shell::WorkspaceView;
+        let mut chrome = chrome_with_hosts(1);
+        let tab = chrome.shell.header_geom().tabs[3];
+        let (x, y) = centre(&tab);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::ViewChanged(WorkspaceView::Snippets)
+        );
+        // The content is now the view's, not the terminal's.
+        assert!(chrome.shell.view_owns(700.0, 400.0));
+        // Esc on a view that ignores it returns to the terminal.
+        let out = chrome.view_input(&crate::screens::ViewInput::Key {
+            key: crate::screens::ViewKey::Escape,
+            mods: Default::default(),
+        });
+        assert_eq!(out, crate::screens::ViewOutcome::Redraw);
+        assert_eq!(chrome.shell.view(), WorkspaceView::Terminal);
+    }
+
+    #[test]
+    fn pills_focus_close_and_add_sessions_of_the_selected_machine() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.shell.machine = Some(crate::shell::MachineInfo {
+            id: "id-0".into(),
+            name: "host-0".into(),
+            address: "root@host-0".into(),
+        });
+        chrome.shell.pills = vec![crate::shell::SessionPill {
+            tab_index: 7,
+            label: "shell".into(),
+            active: false,
+            new_output: false,
+            closable: true,
+        }];
+        let g = chrome.shell.pills_geom().unwrap();
+        let (x, y) = centre(&g.pills[0]);
+        assert_eq!(chrome.handle_press(1200.0, 800.0, x, y), ChromeAction::OpenSession(7));
+        let (x, y) = centre(&g.plus);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::AddHostSession("id-0".into())
+        );
+        let (x, y) = centre(&g.split_right);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::Split { down: false }
+        );
+        assert_eq!(chrome.handle_press(1200.0, 800.0, 900.0, 30.0), ChromeAction::WindowDrag);
+    }
+
+    #[test]
+    fn hovering_shell_controls_repaints_and_sets_the_cursor() {
+        let mut chrome = chrome_with_hosts(1);
+        let (x, y) = centre(&crate::shell::sidebar::add_server_rect(800.0));
+        assert!(chrome.handle_hover(800.0, x, y));
+        assert_eq!(chrome.shell.hover, Some(crate::shell::ShellHit::AddServer));
+        assert_eq!(chrome.cursor_at(1200.0, 800.0, x, y), ChromeCursor::Pointer);
+        assert_eq!(chrome.cursor_at(1200.0, 800.0, 900.0, 30.0), ChromeCursor::Default);
     }
 
     fn chrome_with_hosts(n: usize) -> Chrome {
@@ -1639,30 +1856,123 @@ mod tests {
             })
             .expect("delete item");
         let item = menu.item_rect(delete).unwrap();
-        // First click only arms the destructive row…
+        // The destructive row opens a confirmation instead of deleting.
         let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
         assert_eq!(action, ChromeAction::Consumed);
-        assert!(chrome.context_menu.is_some(), "menu stays open to confirm");
-        // …the second click on it deletes.
-        let action = chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
-        assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
-        assert!(chrome.context_menu.is_none());
+        assert!(chrome.context_menu.is_none(), "menu closes");
+        let prompt = chrome.confirm.as_ref().expect("confirm dialog open");
+        assert_eq!(prompt.spec.title, "Delete host-0?");
+        assert_eq!(
+            chrome.top_modal_paint(),
+            Some(ModalPaintLayer::Confirm),
+            "the dialog paints above everything"
+        );
+        // Enter on the default (Cancel) focus keeps the host.
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Enter), Some(ChromeAction::Consumed));
+        assert!(chrome.confirm.is_none());
     }
 
     #[test]
-    fn the_reserved_width_matches_what_the_rail_and_panel_paint() {
-        let mut chrome = chrome_with_hosts(1);
+    fn confirming_the_delete_dialog_emits_the_delete_action() {
+        let mut chrome = chrome_with_hosts(2);
+        chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
+        let confirm = chrome.confirm.as_ref().unwrap().layout((1200.0, 800.0)).dialog.confirm;
+        let action =
+            chrome.handle_press(1200.0, 800.0, confirm.x + 4.0, confirm.y + 4.0);
+        assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
+        assert!(chrome.confirm.is_none());
+
+        chrome.open_confirm(ConfirmPrompt::delete_group("g", "prod", 1));
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Tab), Some(ChromeAction::Consumed));
         assert_eq!(
-            chrome.reserved_width(),
-            activity_bar::WIDTH + crate::sidebar::WIDTH
+            chrome.handle_confirm_key(DialogKey::Enter),
+            Some(ChromeAction::DeleteGroup("g".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_scrim_and_escape_dismiss_the_delete_dialog() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, 3.0, 3.0),
+            ChromeAction::Consumed
+        );
+        assert!(chrome.confirm.is_none());
+        chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Escape), Some(ChromeAction::Consumed));
+        assert!(chrome.confirm.is_none());
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Escape), None);
+    }
+
+    #[test]
+    fn deleting_a_host_with_open_sessions_says_so() {
+        let mut chrome = chrome_with_hosts(1);
+        if let Some(Row::Host(h)) = chrome.panel.rows.iter_mut().find(|r| matches!(r, Row::Host(_))) {
+            h.session_count = 2;
+        }
+        let row = chrome.panel.item_rect(0.0, 1);
+        chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
+        let menu = chrome.context_menu.as_ref().unwrap();
+        let delete = menu.items.iter().position(|i| matches!(i.action, crate::context_menu::ContextAction::DeleteHost(_))).unwrap();
+        let item = menu.item_rect(delete).unwrap();
+        chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
+        assert!(chrome.confirm.as_ref().unwrap().spec.body.contains("2 open sessions"));
+    }
+
+    #[test]
+    fn connection_progress_fills_the_content_and_leaves_the_sidebar_live() {
+        let mut chrome = chrome_with_hosts(3);
+        chrome.set_window_size(1200.0, 800.0);
+        chrome.connection = Some(ConnectionSequence::start_ssh(
+            "id-0",
+            "host-0",
+            "SSH root@host-0",
+        ));
+        // Painted by the shell in the Terminal content, not as a window modal.
+        assert!(chrome.modal_paint_stack().is_empty());
+        let content = chrome.connection_area();
+        assert_eq!(content, chrome.shell.content_rect());
+        let conn = chrome.connection.clone().unwrap();
+        let dialog = conn.dialog_rect_in(content);
+        assert!(content.contains(dialog.x, dialog.y));
+        assert!(content.contains(dialog.right() - 1.0, dialog.bottom() - 1.0));
+
+        // Cancel, inside the content, dismisses; the rest of it swallows.
+        let (cx, cy) = centre(&conn.close_button_rect(dialog));
+        assert_eq!(
+            chrome.cursor_at(1200.0, 800.0, cx, cy),
+            ChromeCursor::Pointer
+        );
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, content.x + 4.0, content.bottom() - 4.0),
+            ChromeAction::Consumed
+        );
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, cx, cy),
+            ChromeAction::DismissConnection
         );
 
-        chrome.activity.collapsed = true;
-        assert_eq!(chrome.reserved_width(), 0.0);
+        // The sidebar still answers while connecting.
+        let row = chrome.panel.item_rect(0.0, 2);
+        assert_eq!(
+            chrome.cursor_at(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
+            ChromeCursor::Pointer
+        );
+        chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0);
+        assert_eq!(
+            chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
+            ChromeAction::OpenHost("id-1".to_string())
+        );
 
-        chrome.activity.collapsed = false;
-        chrome.panel_visible = false;
-        assert_eq!(chrome.reserved_width(), activity_bar::WIDTH);
+        // Only the Terminal view shows it: another view's content is live.
+        chrome.show_view(crate::shell::WorkspaceView::Home);
+        let home = chrome.connection_area();
+        let (hx, hy) = (home.x + home.width / 2.0, home.y + 40.0);
+        let conn = chrome.connection.take();
+        let without = chrome.handle_press(1200.0, 800.0, hx, hy);
+        chrome.connection = conn;
+        assert_eq!(chrome.handle_press(1200.0, 800.0, hx, hy), without);
     }
 
     #[test]
@@ -1708,9 +2018,10 @@ mod tests {
             ChromeAction::Consumed
         );
         let group = chrome.panel.card_rect(0.0, 1);
-        assert!(chrome.handle_drag_move(800.0, group.x + 20.0, group.y + 20.0));
+        let gy = group.y + group.height / 2.0;
+        assert!(chrome.handle_drag_move(800.0, group.x + 20.0, gy));
         assert!(chrome.panel.host_drag.as_ref().is_some_and(|d| d.started()));
-        let action = chrome.handle_release(800.0, group.x + 20.0, group.y + 20.0);
+        let action = chrome.handle_release(800.0, group.x + 20.0, gy);
         assert_eq!(
             action,
             ChromeAction::SetHostGroup {
@@ -1739,59 +2050,11 @@ mod tests {
             chrome.handle_press(1200.0, 800.0, 600.0, 400.0),
             ChromeAction::Ignored
         );
-        // Including the rail's own background, between its buttons.
+        // Including the sidebar list's own background, below its rows.
         assert_eq!(
-            chrome.handle_press(1200.0, 800.0, 32.0, 300.0),
-            ChromeAction::Ignored
-        );
-    }
-
-    #[test]
-    fn the_rail_switches_sections_and_toggles_the_panel() {
-        let mut chrome = chrome_with_hosts(1);
-        let snippets = activity_bar::section_rect(0.0, Section::Snippets);
-        let (x, y) = (32.0, snippets.y + 10.0);
-
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, x, y),
+            chrome.handle_press(1200.0, 800.0, 130.0, 600.0),
             ChromeAction::Consumed
         );
-        assert_eq!(chrome.activity.selected, Section::Snippets);
-        assert!(!chrome.hosts_visible());
-        assert!(chrome.snippets_visible());
-
-        // Pressing the active section collapses the panel, pressing it
-        // again brings it back.
-        chrome.handle_press(1200.0, 800.0, x, y);
-        assert!(!chrome.panel_visible);
-        chrome.handle_press(1200.0, 800.0, x, y);
-        assert!(chrome.panel_visible);
-    }
-
-    #[test]
-    fn a_host_row_is_inert_while_another_section_is_showing() {
-        let mut chrome = chrome_with_hosts(3);
-        chrome.activity.selected = Section::Snippets;
-        // Clear demo snippets so a press in the drawer body is not a RunSnippet.
-        chrome.snippets.items.clear();
-        let row = chrome.panel.item_rect(0.0, 2);
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::Consumed
-        );
-        assert_eq!(chrome.panel.selected, None);
-    }
-
-    #[test]
-    fn settings_action_opens_the_settings_modal() {
-        let mut chrome = chrome_with_hosts(1);
-        let settings = activity_bar::action_rect(0.0, 800.0, RailAction::Settings);
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, settings.x + 20.0, settings.y + 10.0),
-            ChromeAction::Consumed
-        );
-        assert!(chrome.settings_is_open());
-        assert_eq!(chrome.settings.tab, SettingsTab::Keys);
     }
 
     #[test]
@@ -1821,7 +2084,7 @@ mod tests {
         assert!(chrome.add_host_is_open());
         assert_eq!(chrome.form.focused_field(), Field::Hostname);
 
-        let cancel = layout.cancel_button_rect();
+        let cancel = layout.secondary_button_rect(&chrome.form);
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, cancel.x + 4.0, cancel.y + 4.0),
             ChromeAction::Consumed
@@ -1830,7 +2093,7 @@ mod tests {
 
         chrome.open_add_host();
         chrome.form.insert("srv.local");
-        let next_btn = layout.next_button_rect();
+        let next_btn = layout.primary_button_rect(&chrome.form);
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, next_btn.x + 4.0, next_btn.y + 4.0),
             ChromeAction::Consumed
@@ -1839,7 +2102,7 @@ mod tests {
 
         chrome.form.set_step(crate::add_host::AddHostStep::Details);
         let layout_details = chrome.dialog_layout(1200.0, 800.0);
-        let connect = layout_details.connect_button_rect();
+        let connect = layout_details.primary_button_rect(&chrome.form);
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, connect.x + 4.0, connect.y + 4.0),
             ChromeAction::SubmitHostForm
@@ -1977,47 +2240,6 @@ mod tests {
     }
 
     #[test]
-    fn the_client_area_excludes_the_top_inset() {
-        let mut chrome = chrome_with_hosts(20);
-        // Inset larger than one card so the same absolute Y maps to a
-        // different host once the inset is cleared.
-        chrome.top_inset = 80.0;
-        let row = chrome.panel.item_rect(80.0, 1);
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::Consumed
-        );
-        assert_eq!(
-            chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::OpenHost("id-0".to_string())
-        );
-        // Clicks in the tab strip (above the chrome) must not be swallowed —
-        // otherwise tab close / switch stop working.
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, 40.0),
-            ChromeAction::Ignored
-        );
-        chrome.top_inset = 0.0;
-        chrome.panel.selected = None;
-        assert_eq!(
-            chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::Consumed
-        );
-        // After inset clear, the same absolute Y is a different host; release
-        // still opens the armed id from press (id-0 was wrong — we re-armed).
-        let armed = chrome
-            .panel
-            .host_drag
-            .as_ref()
-            .map(|d| d.host_id.clone())
-            .expect("armed");
-        assert_eq!(
-            chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
-            ChromeAction::OpenHost(armed)
-        );
-    }
-
-    #[test]
     fn modal_paint_stack_puts_vault_above_host_editor() {
         let mut chrome = chrome_with_hosts(1);
         chrome.open_edit_host(
@@ -2029,6 +2251,7 @@ mod tests {
                 auth_method: "password".into(),
                 password: String::new(),
                 identity_id: None,
+                ..crate::add_host::HostFormValues::default()
             },
             "id-0".into(),
         );
@@ -2051,5 +2274,80 @@ mod tests {
             vec![ModalPaintLayer::HostEditor, ModalPaintLayer::Settings]
         );
         assert_eq!(chrome.top_modal_paint(), Some(ModalPaintLayer::Settings));
+    }
+
+    // ---- Polish 4: overflowing machine list ----
+
+    #[test]
+    fn a_machine_selected_elsewhere_is_scrolled_into_view_once() {
+        let mut chrome = chrome_with_hosts(30);
+        let h = 630.0;
+        // Selected from the palette: row 26 ("id-25") is below the fold.
+        assert!(chrome.reveal_machine("id-25", h));
+        let body = chrome.panel.body_rect(0.0, h);
+        assert!(chrome.panel.row_painted(0.0, h, 26));
+        assert!(chrome.panel.card_rect(0.0, 26).bottom() <= body.bottom() + 0.01);
+
+        // The user then scrolls away: the same selection does not pull
+        // the list back on every frame.
+        chrome.panel.scroll = 0.0;
+        assert!(!chrome.reveal_machine("id-25", h));
+        assert_eq!(chrome.panel.scroll, 0.0);
+
+        // Unknown ids (Local without a row, a collapsed group) are a no-op.
+        assert!(!chrome.reveal_machine("nope", h));
+    }
+
+    #[test]
+    fn pixel_wheel_deltas_scroll_the_list_too() {
+        let mut chrome = chrome_with_hosts(30);
+        let h = 630.0;
+        let row = chrome.panel.item_rect(0.0, 3);
+        // Touchpads send pixels, not lines (positive = content moves down).
+        assert!(chrome.handle_wheel_pixels(h, row.x + 10.0, row.y + 5.0, -30.0));
+        assert_eq!(chrome.panel.scroll, 30.0);
+        assert!(chrome.handle_wheel_pixels(h, row.x + 10.0, row.y + 5.0, 100.0));
+        assert_eq!(chrome.panel.scroll, 0.0);
+        // Outside the sidebar the terminal keeps the wheel.
+        assert!(!chrome.handle_wheel_pixels(h, 600.0, 300.0, -30.0));
+    }
+
+    #[test]
+    fn dragging_a_host_to_the_bottom_edge_auto_scrolls_and_retargets() {
+        let mut chrome = chrome_with_hosts(30);
+        let h = 630.0;
+        chrome.set_window_size(922.0, h);
+        let row = chrome.panel.card_rect(0.0, 2);
+        chrome.handle_press(1200.0, h, row.x + 20.0, row.y + 20.0);
+        let body = chrome.panel.body_rect(0.0, h);
+        let edge_y = body.bottom() - 3.0;
+        assert!(chrome.handle_drag_move(h, row.x + 20.0, edge_y));
+        let before = chrome.panel.drop_target_at(0.0, h, row.x + 20.0, edge_y);
+        for _ in 0..30 {
+            chrome.tick_host_drag(1.0 / 60.0);
+        }
+        assert!(chrome.panel.scroll > 0.0, "the list follows the dragged host");
+        let after = chrome.panel.host_drag.as_ref().unwrap().drop_target.clone();
+        assert!(after.is_some());
+        assert_ne!(after, before, "the drop target follows the scrolled rows");
+        // Released there, the drop lands on the row now under the pointer.
+        let action = chrome.handle_release(h, row.x + 20.0, edge_y);
+        assert!(matches!(action, ChromeAction::ReorderHost { .. }));
+    }
+
+    #[test]
+    fn copy_button_on_the_add_host_error_copies_the_full_message() {
+        let mut chrome = chrome_with_hosts(0);
+        chrome.open_add_host();
+        let message = "Could not save the host: Database error: error returned from \
+                       database: (code: 1) table hosts has no column named os_id";
+        chrome.form.set_error(message);
+        let layout = chrome.dialog_layout(1200.0, 800.0);
+        let copy = layout.copy_error_rect(&chrome.form).expect("copy button");
+
+        let action = chrome.handle_press(1200.0, 800.0, copy.x + 2.0, copy.y + 2.0);
+
+        assert_eq!(action, ChromeAction::CopyText(message.into()));
+        assert!(chrome.form.is_open(), "copying keeps the dialog open");
     }
 }

@@ -283,10 +283,16 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         let terminal: Arc<FairMutex<Crosswords<T>>> = Arc::new(FairMutex::new(terminal));
 
         let pty;
+        // History capture: local POSIX shells load the shell integration.
+        #[cfg(not(target_os = "windows"))]
+        let config_env = crate::history_worker::session_env(
+            config.shell.program.as_deref(),
+            config.env.clone(),
+        );
         #[cfg(not(target_os = "windows"))]
         {
             // Fork path cannot inject env (SSH_ASKPASS); force spawn when set.
-            if config.use_fork && config.env.is_none() {
+            if config.use_fork && config_env.is_none() {
                 tracing::info!("rio -> teletypewriter: create_pty_with_fork");
                 pty = match create_pty_with_fork(
                     config.shell.program.as_deref(),
@@ -308,7 +314,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                     config.shell.program.as_deref(),
                     config.shell.args.clone(),
                     &config.working_dir,
-                    config.env.clone(),
+                    config_env,
                     cols,
                     rows,
                     initial_winsize.width,

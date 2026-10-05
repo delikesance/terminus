@@ -15,7 +15,8 @@ impl Screen<'_> {
         // Host-list answers from the worker thread land here, at the top
         // of the frame, so the painter below always sees this frame's
         // list rather than the previous one.
-        if self.pump_chrome() {
+        let chrome_changed = self.pump_chrome();
+        if self.tick_tunnels() || chrome_changed {
             self.mark_dirty();
         }
 
@@ -56,6 +57,58 @@ impl Screen<'_> {
             }
         }
 
+        // Component gallery mode (TERMINUS_COMPONENT_GALLERY): paint the
+        // gallery full-window instead of the chrome + terminal.
+        if let Some(selector) = crate::renderer::components::gallery_selector() {
+            crate::renderer::components::paint_gallery_frame(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+                selector,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
+
+        // Workspace view previews (TERMINUS_VIEW_PREVIEW=snippets|files|history|tunnels|settings-*).
+        if crate::renderer::views::snippets::preview_selected() {
+            crate::renderer::views::snippets::paint_preview(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
+        if crate::renderer::views::files::preview_selected() {
+            crate::renderer::views::files::paint_preview(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
+        if crate::renderer::views::history::preview_requested() {
+            crate::renderer::views::history::paint_preview(
+                &mut self.sugarloaf,
+                &self.renderer.chrome_theme,
+            );
+            self.sugarloaf.render();
+            return None;
+        }
+        if crate::renderer::views::settings::preview::paint_frame(
+            &mut self.sugarloaf,
+            &self.renderer.chrome_theme,
+        ) {
+            self.sugarloaf.render();
+            return None;
+        }
+        if crate::renderer::views::tunnels::paint_preview_if_selected(
+            &mut self.sugarloaf,
+            &self.renderer.chrome_theme,
+        ) {
+            self.sugarloaf.render();
+            return None;
+        }
+
         self.tick_session_connecting();
         let host_drag_action = self.tick_host_drag_animation();
         if let Some(action) = host_drag_action {
@@ -63,17 +116,28 @@ impl Screen<'_> {
         }
         let connecting_phase = self.connecting_phase();
 
-        let sftp_paint = self.sftp.as_ref().and_then(|session| {
-            self.sftp_bounds().map(|bounds| (&session.state, bounds))
-        });
+        self.sync_shell();
+        crate::renderer::shell::measure(&mut self.sugarloaf, &mut self.chrome);
+
+        let bridged = self.sftp_bridged();
+        let views = crate::renderer::screens::ViewStates {
+            files: self
+                .sftp
+                .as_ref()
+                .filter(|_| bridged)
+                .map(|session| (&session.state, &self.files_view)),
+            settings: &self.settings_view,
+            history: &self.history_view,
+            tunnels: self.tunnels.as_ref().map(|t| t.state()),
+        };
 
         let (window_update, any_panel_dirty) = self.renderer.run(
             &mut self.sugarloaf,
             &mut self.context_manager,
-            &mut self.chrome,
+            &self.chrome,
             connecting_phase,
             self.window_maximized,
-            sftp_paint,
+            &views,
         );
 
         if self.renderer.custom_mouse_cursor {
@@ -86,7 +150,8 @@ impl Screen<'_> {
             );
         }
 
-        if self.renderer.trail_cursor_enabled {
+        if self.renderer.trail_cursor_enabled && self.chrome.shell.view().shows_terminal()
+        {
             let current_grid = self.context_manager.current_grid();
             let scaled_margin = current_grid.get_scaled_margin();
 

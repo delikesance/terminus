@@ -310,6 +310,31 @@ Four things to know:
   to judge layout and logic, not animation or GPU performance. For how it really
   looks on hardware, run `make dev-hot-win` (cross-build + Windows watcher).
 
+## Component gallery
+
+Chrome components are developed against a full-window gallery instead of the
+live app. Set `TERMINUS_COMPONENT_GALLERY` to a section name (`button`,
+`input`, `selection`, `navigation`, `list`, `feedback`, `overlay`, `identity`),
+a comma-separated list, or `all`: the window then paints only that gallery on
+the `frame` background (no chrome, no terminal). Each section lives in
+`frontends/rioterm/src/renderer/components/<name>.rs` as
+`paint_gallery(sugarloaf, theme, origin, width) -> height_used`.
+
+```bash
+TERMINUS_COMPONENT_GALLERY=button scripts/screenshot.sh --out /tmp/button.png
+```
+
+`scripts/screenshot.sh` inherits the variable, disables the self-updater
+(`TERMINUS_NO_UPDATE_CHECK=1`, otherwise the capture can show the released
+build), and honours `TERMINUS_BIN` / `CARGO_TARGET_DIR` to pick the binary.
+Use your own `TERMINUS_SCREENSHOT_DISPLAY` (for example `:93`) when several
+captures may run at once.
+
+UI text uses Sora and Martian Mono (bundled in `sugarloaf`, OFL licences next
+to the fonts): `draw_ui_text` / `draw_mono_text` / `measure_ui_text` in
+`frontends/rioterm/src/renderer/ui_text.rs`. Colours and metrics come from
+`terminus_ui::theme::ChromeTheme` and `terminus_ui::tokens`.
+
 ## Releases
 
 Tag a version (`vX.Y.Z`) after `misc/prepare-release.sh X.Y.Z`, then publish:
@@ -376,7 +401,7 @@ What an installed copy does with a new version:
 | Install | Update |
 | --- | --- |
 | Linux tarball (writable folder) | at launch: installed before the app opens; found later: swapped in, palette → **Restart to Update** |
-| Windows setup `.exe` / `.msi` (per-user, since 0.6), portable `terminus-windows-x86_64.zip` | same as the tarball: `terminus.exe` from the signed zip replaces the running one (moved aside, removed on the next start); no installer, no admin prompt |
+| Windows setup `.exe` / `.msi` (per-user, since 0.6), portable `terminus-windows-x86_64.zip` | same as the tarball: the zip's `terminus.exe` entry replaces the running executable (installed as `tmnx.exe` since 0.7.1, a name Discord's game overlay does not recognise; older installs and the unzipped portable copy keep `terminus.exe`) (moved aside, removed on the next start); no installer, no admin prompt |
 | `.deb` / `.rpm` | package downloaded to `~/Downloads` and verified; **Install Update** copies the `sudo apt/dnf install` command |
 | Windows installed for all users in Program Files (before 0.6) | **Install Update** downloads the setup, which runs when Terminus quits; it offers to remove the old all-users copy, and from then on the per-user copy updates itself |
 | Nix, dev builds, read-only folders | notice only (**Install Update** opens the release page) |
