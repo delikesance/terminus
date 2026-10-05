@@ -1305,9 +1305,21 @@ fn pick_physical_device(
     let devices = unsafe { instance.enumerate_physical_devices() }
         .expect("enumerate_physical_devices");
 
+    // `RIO_VULKAN_DEVICE` forces an adapter: a case-insensitive substring of
+    // the device name, or its enumeration index.
+    let forced = std::env::var("RIO_VULKAN_DEVICE")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+
     let mut best: Option<(vk::PhysicalDevice, u32, i32)> = None;
-    for device in devices {
+    for (dev_index, device) in devices.into_iter().enumerate() {
         let props = unsafe { instance.get_physical_device_properties(device) };
+        let name = physical_device_name(instance, device);
+        let is_forced = forced.as_deref().is_some_and(|f| {
+            let f = f.trim();
+            f.parse::<usize>().map(|i| i == dev_index).unwrap_or(false)
+                || name.to_lowercase().contains(&f.to_lowercase())
+        });
         let qf_props =
             unsafe { instance.get_physical_device_queue_family_properties(device) };
 
@@ -1324,12 +1336,20 @@ fn pick_physical_device(
             if !present_ok {
                 continue;
             }
-            let score = match props.device_type {
-                vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
-                vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
-                vk::PhysicalDeviceType::VIRTUAL_GPU => 100,
-                vk::PhysicalDeviceType::CPU => 10,
-                _ => 1,
+            let score = if is_forced {
+                i32::MAX
+            } else if name.contains("NVK") {
+                // NVK faults (ERROR_DEVICE_LOST) on some GPUs; rank it below
+                // integrated GPUs unless explicitly selected.
+                250
+            } else {
+                match props.device_type {
+                    vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
+                    vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
+                    vk::PhysicalDeviceType::VIRTUAL_GPU => 100,
+                    vk::PhysicalDeviceType::CPU => 10,
+                    _ => 1,
+                }
             };
             if best.map(|(_, _, s)| score > s).unwrap_or(true) {
                 best = Some((device, index, score));
