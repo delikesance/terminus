@@ -31,9 +31,9 @@ interface on top.
 
 ## Screenshots
 
-<p align="center">
-  <img src="docs/assets/screens.png" alt="Terminus screens" width="100%">
-</p>
+| Command palette | Add a server | Settings |
+| :---: | :---: | :---: |
+| <img src="docs/assets/screenshot-palette.png" alt="Command palette"> | <img src="docs/assets/screenshot-addserver.png" alt="Add a server wizard"> | <img src="docs/assets/screenshot-settings.png" alt="Settings"> |
 
 ## Install
 
