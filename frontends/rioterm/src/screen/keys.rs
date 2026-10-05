@@ -154,6 +154,21 @@ impl Screen<'_> {
                         }
                         return;
                     }
+                    // Ctrl/Cmd chords are not text (Ctrl+A selects all).
+                    WKey::Character(c)
+                        if self.modifiers.state().control_key()
+                            || self.modifiers.state().super_key() =>
+                    {
+                        if c.eq_ignore_ascii_case("a") {
+                            if let Some(edit) =
+                                self.sftp.as_mut().and_then(|s| s.state.name_edit.as_mut())
+                            {
+                                edit.draft.select_all();
+                                self.mark_dirty();
+                            }
+                        }
+                        return;
+                    }
                     _ => {
                         if let Some(text) = key.text.as_ref() {
                             if let Some(s) = self.sftp.as_mut() {
