@@ -44,8 +44,6 @@ impl Screen<'_> {
         } else {
             ctl.clear_machine(&machine.name);
         }
-        ctl.tick();
-        self.with_tunnels(|ctl, spawn| ctl.start_pending(spawn));
         let starting = self.tunnels.as_ref().is_some_and(|c| {
             c.state()
                 .items
@@ -63,6 +61,17 @@ impl Screen<'_> {
         if let Some(last) = notices.into_iter().last() {
             self.chrome.panel.error = Some(last);
         }
+    }
+
+    /// Worker answers and process events, and the start of a tunnel just
+    /// created from the form. Called at the top of each frame; true when
+    /// the view changed (the frame must repaint).
+    pub(crate) fn tick_tunnels(&mut self) -> bool {
+        let changed = self.tunnels.as_mut().is_some_and(|c| c.tick());
+        let started = self
+            .with_tunnels(|ctl, spawn| ctl.start_pending(spawn))
+            .unwrap_or(false);
+        changed || started
     }
 
     /// A starting tunnel turns Running (or Failed) after the settle delay,

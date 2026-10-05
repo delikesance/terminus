@@ -199,6 +199,22 @@ impl TunnelRegistry {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
+        // A killed app (SIGTERM/SIGKILL never run Drop) must not leave
+        // `ssh -N` holding its ports: the child gets SIGTERM when the
+        // thread that started it (the UI thread) goes away.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: prctl is async-signal-safe; nothing else runs here.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Could not start ssh: {e}"))?;
@@ -885,6 +901,30 @@ mod tests {
         assert_eq!(friendly_error("some\nodd line  \n", Some(7)), "odd line");
         assert_eq!(friendly_error("", Some(3)), "ssh exited with code 3");
         assert_eq!(friendly_error("", None), "ssh was terminated");
+    }
+
+    /// A killed app (SIGTERM/SIGKILL skip Drop) must not leave `ssh -N`
+    /// holding ports: the child dies with the thread that started it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tunnel_dies_with_the_thread_that_started_it() {
+        let mut r = TunnelRegistry::new(Duration::from_millis(10));
+        let mut r = std::thread::spawn(move || {
+            r.start("orphan", sh("sleep 30")).unwrap();
+            r
+        })
+        .join()
+        .unwrap();
+        let mut events = Vec::new();
+        assert!(
+            wait_for(|| {
+                events.extend(r.poll());
+                events
+                    .iter()
+                    .any(|e| matches!(e, TunnelEvent::Exited { id, .. } if id == "orphan"))
+            }),
+            "child outlived its parent thread: {events:?}"
+        );
     }
 
     #[test]

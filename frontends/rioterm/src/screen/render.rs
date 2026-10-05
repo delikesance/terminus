@@ -15,7 +15,8 @@ impl Screen<'_> {
         // Host-list answers from the worker thread land here, at the top
         // of the frame, so the painter below always sees this frame's
         // list rather than the previous one.
-        if self.pump_chrome() {
+        let chrome_changed = self.pump_chrome();
+        if self.tick_tunnels() || chrome_changed {
             self.mark_dirty();
         }
 
