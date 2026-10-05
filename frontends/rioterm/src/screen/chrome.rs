@@ -25,6 +25,9 @@ impl Screen<'_> {
             self.chrome.panel.collapsed_groups = seed;
         }
         let sftp_changed = self.sftp.as_mut().is_some_and(|s| s.pump());
+        if sftp_changed {
+            self.settle_failed_files_browser();
+        }
         let store_changed = store_changed || sftp_changed;
 
         let open_host_ids: Vec<String> = self
