@@ -22,6 +22,7 @@ use crate::components::list::CARD_HEIGHT;
 use crate::components::list::{card_hit, card_layout, CardHit, CardLayout, CardSpec};
 use crate::components::selection::{SegmentedLayout, SegmentedSize};
 use crate::geom::Rect;
+use crate::text_field::{TextDraft, TextEdit};
 use crate::tokens::height;
 
 /// Padding around the whole view.
@@ -179,7 +180,8 @@ pub enum FormField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormKey {
     Char(char),
-    Backspace,
+    /// Shared caret / selection / delete editing ([`TextDraft::apply`]).
+    Edit(TextEdit),
     Tab,
     BackTab,
     Enter,
@@ -212,10 +214,10 @@ pub struct TunnelDraft {
 pub struct TunnelForm {
     pub id: Option<String>,
     pub kind: TunnelKind,
-    pub name: String,
-    pub local_port: String,
-    pub dest_host: String,
-    pub dest_port: String,
+    pub name: TextDraft,
+    pub local_port: TextDraft,
+    pub dest_host: TextDraft,
+    pub dest_port: TextDraft,
     pub focus: FormField,
     pub errors: Vec<(FormField, String)>,
     /// Machine name shown in "Destination on <host>".
@@ -227,10 +229,10 @@ impl TunnelForm {
         Self {
             id: None,
             kind: TunnelKind::Local,
-            name: String::new(),
-            local_port: String::new(),
-            dest_host: "localhost".into(),
-            dest_port: String::new(),
+            name: TextDraft::default(),
+            local_port: TextDraft::default(),
+            dest_host: TextDraft::new("localhost"),
+            dest_port: TextDraft::default(),
             focus: FormField::Name,
             errors: Vec::new(),
             host_label: host_label.into(),
@@ -241,14 +243,14 @@ impl TunnelForm {
         Self {
             id: Some(item.id.clone()),
             kind: item.kind,
-            name: item.name.clone(),
-            local_port: item.bind_port.to_string(),
-            dest_host: item.dest_host.clone(),
-            dest_port: if item.dest_port == 0 {
+            name: TextDraft::new(item.name.clone()),
+            local_port: TextDraft::new(item.bind_port.to_string()),
+            dest_host: TextDraft::new(item.dest_host.clone()),
+            dest_port: TextDraft::new(if item.dest_port == 0 {
                 String::new()
             } else {
                 item.dest_port.to_string()
-            },
+            }),
             focus: FormField::Name,
             errors: Vec::new(),
             host_label: host_label.into(),
@@ -301,6 +303,10 @@ impl TunnelForm {
     }
 
     pub fn value(&self, field: FormField) -> &str {
+        &self.draft(field).value
+    }
+
+    pub fn draft(&self, field: FormField) -> &TextDraft {
         match field {
             FormField::Name => &self.name,
             FormField::LocalPort => &self.local_port,
@@ -309,7 +315,7 @@ impl TunnelForm {
         }
     }
 
-    fn value_mut(&mut self, field: FormField) -> &mut String {
+    fn draft_mut(&mut self, field: FormField) -> &mut TextDraft {
         match field {
             FormField::Name => &mut self.name,
             FormField::LocalPort => &mut self.local_port,
@@ -330,27 +336,36 @@ impl TunnelForm {
         self.fields().into_iter().find_map(|f| self.error_for(f))
     }
 
-    pub fn type_char(&mut self, c: char) {
+    /// Insert typed or pasted text into the focused field, keeping only
+    /// what the field accepts (digits for ports, no spaces for hosts).
+    pub fn insert_text(&mut self, text: &str) {
         let field = self.focus;
-        let accept = match field {
-            FormField::LocalPort | FormField::DestPort => {
-                c.is_ascii_digit() && self.value(field).len() < 5
-            }
-            FormField::DestHost => {
-                !c.is_whitespace() && !c.is_control() && self.value(field).len() < 253
-            }
-            FormField::Name => !c.is_control() && self.value(field).chars().count() < 60,
+        let (keep, max): (fn(char) -> bool, usize) = match field {
+            FormField::LocalPort | FormField::DestPort => (|c| c.is_ascii_digit(), 5),
+            FormField::DestHost => (|c| !c.is_whitespace() && !c.is_control(), 253),
+            FormField::Name => (|c| !c.is_control(), 60),
         };
-        if accept {
-            self.value_mut(field).push(c);
+        let draft = self.draft_mut(field);
+        let room = max.saturating_sub(draft.value.chars().count());
+        let text: String = text.chars().filter(|c| keep(*c)).take(room).collect();
+        if draft.insert(&text, usize::MAX, false) {
+            self.errors.retain(|(f, _)| *f != field);
+        }
+    }
+
+    pub fn type_char(&mut self, c: char) {
+        self.insert_text(c.encode_utf8(&mut [0; 4]));
+    }
+
+    pub fn edit(&mut self, edit: TextEdit) {
+        let field = self.focus;
+        if self.draft_mut(field).apply(edit) {
             self.errors.retain(|(f, _)| *f != field);
         }
     }
 
     pub fn backspace(&mut self) {
-        let field = self.focus;
-        self.value_mut(field).pop();
-        self.errors.retain(|(f, _)| *f != field);
+        self.edit(TextEdit::Backspace { by_word: false });
     }
 
     fn move_focus(&mut self, delta: i32) {
@@ -363,7 +378,7 @@ impl TunnelForm {
     pub fn key(&mut self, key: FormKey) -> FormOutcome {
         match key {
             FormKey::Char(c) => self.type_char(c),
-            FormKey::Backspace => self.backspace(),
+            FormKey::Edit(e) => self.edit(e),
             FormKey::Tab => self.move_focus(1),
             FormKey::BackTab => self.move_focus(-1),
             FormKey::Enter => return FormOutcome::Submit,
@@ -380,7 +395,7 @@ impl TunnelForm {
         port_free: &dyn Fn(u16) -> bool,
     ) -> Result<TunnelDraft, ()> {
         self.errors.clear();
-        let bind = parse_port(&self.local_port);
+        let bind = parse_port(&self.local_port.value);
         match &bind {
             Err(e) => self.errors.push((FormField::LocalPort, e.clone())),
             Ok(p) if self.kind != TunnelKind::Remote && !port_free(*p) => {
@@ -391,7 +406,7 @@ impl TunnelForm {
         }
         let (mut dest_host, mut dest_port) = (String::new(), 0u16);
         if self.kind != TunnelKind::Dynamic {
-            let host = self.dest_host.trim().to_string();
+            let host = self.dest_host.value.trim().to_string();
             if valid_host(&host) {
                 dest_host = host;
             } else {
@@ -400,7 +415,7 @@ impl TunnelForm {
                     "Enter a host name or address without spaces".into(),
                 ));
             }
-            match parse_port(&self.dest_port) {
+            match parse_port(&self.dest_port.value) {
                 Ok(p) => dest_port = p,
                 Err(e) => self.errors.push((FormField::DestPort, e)),
             }
@@ -409,7 +424,7 @@ impl TunnelForm {
             (Ok(p), true) => p,
             _ => return Err(()),
         };
-        let typed = self.name.trim();
+        let typed = self.name.value.trim();
         let name = if typed.is_empty() {
             route_text(self.kind, bind_port, &dest_host, dest_port)
         } else {
@@ -892,6 +907,7 @@ impl TunnelsState {
 mod tests {
     use super::*;
     use crate::geom::Rect;
+    use crate::text_field::TextMoveKind;
 
     fn content() -> Rect {
         Rect::new(260.0, 96.0, 1180.0, 804.0)
@@ -992,10 +1008,10 @@ mod tests {
     #[test]
     fn a_valid_local_form_yields_a_draft() {
         let mut f = TunnelForm::new("jerem prod");
-        f.name = "Database".into();
-        f.local_port = "5432".into();
-        f.dest_host = "localhost".into();
-        f.dest_port = "5432".into();
+        f.name = TextDraft::new("Database");
+        f.local_port = TextDraft::new("5432");
+        f.dest_host = TextDraft::new("localhost");
+        f.dest_port = TextDraft::new("5432");
         let d = f.validate(&free).expect("valid");
         assert_eq!(d.kind, TunnelKind::Local);
         assert_eq!(d.name, "Database");
@@ -1007,9 +1023,9 @@ mod tests {
     #[test]
     fn an_empty_name_falls_back_to_the_route() {
         let mut f = TunnelForm::new("h");
-        f.local_port = "8080".into();
-        f.dest_host = "localhost".into();
-        f.dest_port = "80".into();
+        f.local_port = TextDraft::new("8080");
+        f.dest_host = TextDraft::new("localhost");
+        f.dest_port = TextDraft::new("80");
         assert_eq!(
             f.validate(&free).unwrap().name,
             "localhost:8080 \u{2192} localhost:80"
@@ -1019,9 +1035,9 @@ mod tests {
     #[test]
     fn bad_ports_and_hosts_flag_their_fields() {
         let mut f = TunnelForm::new("h");
-        f.local_port = "0".into();
-        f.dest_host = "bad host".into();
-        f.dest_port = "70000".into();
+        f.local_port = TextDraft::new("0");
+        f.dest_host = TextDraft::new("bad host");
+        f.dest_port = TextDraft::new("70000");
         assert!(f.validate(&free).is_err());
         assert!(f.error_for(FormField::LocalPort).is_some());
         assert!(f.error_for(FormField::DestHost).is_some());
@@ -1033,9 +1049,9 @@ mod tests {
     fn a_busy_local_port_is_refused_but_not_for_remote_forwards() {
         let busy = |p: u16| p != 5432;
         let mut f = TunnelForm::new("h");
-        f.local_port = "5432".into();
-        f.dest_host = "localhost".into();
-        f.dest_port = "5432".into();
+        f.local_port = TextDraft::new("5432");
+        f.dest_host = TextDraft::new("localhost");
+        f.dest_port = TextDraft::new("5432");
         assert!(f.validate(&busy).is_err());
         assert!(f
             .error_for(FormField::LocalPort)
@@ -1053,7 +1069,7 @@ mod tests {
         let mut f = TunnelForm::new("h");
         f.set_kind(TunnelKind::Dynamic);
         assert_eq!(f.fields(), vec![FormField::Name, FormField::LocalPort]);
-        f.local_port = "1080".into();
+        f.local_port = TextDraft::new("1080");
         let d = f.validate(&free).expect("valid without a destination");
         assert_eq!(d.kind, TunnelKind::Dynamic);
         assert_eq!(d.dest_host, "");
@@ -1066,7 +1082,7 @@ mod tests {
         t.dest_host = "10.0.0.5".into();
         let mut f = TunnelForm::editing(&t, "h");
         assert_eq!(f.kind, TunnelKind::Remote);
-        assert_eq!(f.dest_host, "10.0.0.5");
+        assert_eq!(f.dest_host.value, "10.0.0.5");
         let d = f.validate(&free).unwrap();
         assert_eq!(d.id.as_deref(), Some("abc"));
     }
@@ -1078,16 +1094,31 @@ mod tests {
         for c in "12ab345678".chars() {
             f.type_char(c);
         }
-        assert_eq!(f.local_port, "12345", "digits only, 5 max");
+        assert_eq!(f.local_port.value, "12345", "digits only, 5 max");
         f.focus = FormField::DestHost;
         f.type_char(' ');
         f.type_char('a');
-        assert_eq!(f.dest_host, "localhosta");
+        assert_eq!(f.dest_host.value, "localhosta");
         f.focus = FormField::Name;
         f.type_char('x');
         f.backspace();
         f.backspace();
-        assert_eq!(f.name, "");
+        assert_eq!(f.name.value, "");
+    }
+
+    #[test]
+    fn port_fields_support_delete_caret_and_select_all() {
+        let mut f = TunnelForm::new("h");
+        f.focus = FormField::LocalPort;
+        f.insert_text("5432");
+        f.key(FormKey::Edit(TextEdit::Home {
+            kind: TextMoveKind::Collapse,
+        }));
+        f.key(FormKey::Edit(TextEdit::Delete { by_word: false }));
+        assert_eq!(f.local_port.value, "432");
+        f.key(FormKey::Edit(TextEdit::SelectAll));
+        f.key(FormKey::Edit(TextEdit::Backspace { by_word: false }));
+        assert_eq!(f.local_port.value, "");
     }
 
     #[test]
@@ -1221,9 +1252,9 @@ mod tests {
         assert!(s.form.is_some());
         {
             let f = s.form.as_mut().unwrap();
-            f.local_port = "5432".into();
-            f.dest_host = "localhost".into();
-            f.dest_port = "5432".into();
+            f.local_port = TextDraft::new("5432");
+            f.dest_host = TextDraft::new("localhost");
+            f.dest_port = TextDraft::new("5432");
         }
         let d = dialog_layout(content(), s.form.as_ref().unwrap(), &s.metrics.get());
         let c = d.confirm;

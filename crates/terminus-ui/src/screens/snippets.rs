@@ -59,9 +59,8 @@ pub fn handle(view: &mut SnippetsView, content: Rect, input: &ViewInput) -> View
                     view.filter_focused = true;
                     view.type_text(t)
                 }
-                ViewKey::Backspace => view.backspace(),
                 ViewKey::Escape => view.escape(),
-                _ => false,
+                other => super::text_edit(other, *mods).is_some_and(|e| view.edit(e)),
             };
             if consumed {
                 ViewOutcome::Redraw
@@ -150,13 +149,13 @@ mod tests {
             s.handle(v, content(), &key(ViewKey::Text(needle.clone()))),
             ViewOutcome::Redraw
         );
-        assert_eq!(s.snippets.filter, needle);
+        assert_eq!(s.snippets.filter.value, needle);
         assert!(s.snippets.visible().len() < all);
         assert_eq!(
             s.handle(v, content(), &key(ViewKey::Escape)),
             ViewOutcome::Redraw
         );
-        assert!(s.snippets.filter.is_empty());
+        assert!(s.snippets.filter.value.is_empty());
         // Second Esc unfocuses, the third is left to the shell (→ Terminal).
         assert_eq!(
             s.handle(v, content(), &key(ViewKey::Escape)),
@@ -183,7 +182,7 @@ mod tests {
             },
         );
         assert_eq!(out, ViewOutcome::Ignored);
-        assert!(s.snippets.filter.is_empty());
+        assert!(s.snippets.filter.value.is_empty());
     }
 
     #[test]

@@ -6,7 +6,7 @@
 use crate::components::input::{search_layout, SearchKind, SearchLayout, SEARCH_HEIGHT};
 use crate::components::list::HISTORY_ROW_HEIGHT;
 use crate::geom::Rect;
-use crate::text_field::TextDraft;
+use crate::text_field::{TextDraft, TextEdit};
 
 /// Padding around the list (design: `padding: 20px 28px`).
 pub const PAD_X: f32 = 28.0;
@@ -119,7 +119,12 @@ impl HistoryState {
     }
 
     pub fn backspace(&mut self) -> bool {
-        let changed = self.filter_focused && self.filter.backspace(false);
+        self.edit(TextEdit::Backspace { by_word: false })
+    }
+
+    /// Shared text editing (Backspace, Delete, caret, selection).
+    pub fn edit(&mut self, edit: TextEdit) -> bool {
+        let changed = self.filter_focused && self.filter.apply(edit);
         if changed {
             self.scroll = 0.0;
         }

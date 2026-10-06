@@ -177,7 +177,9 @@ pub enum ChromeAction {
     /// maximizes).
     WindowDrag,
     /// Shell: split the focused session (`down` = horizontal divider).
-    Split { down: bool },
+    Split {
+        down: bool,
+    },
 }
 
 /// Chrome state for one window.
@@ -479,12 +481,12 @@ impl Chrome {
 
     /// Replace the host-list filter text.
     pub fn set_filter(&mut self, filter: String) {
-        self.panel.filter = filter;
+        self.panel.filter = crate::text_field::TextDraft::new(filter);
     }
 
     /// Current host-list filter text.
     pub fn filter(&self) -> &str {
-        &self.panel.filter
+        &self.panel.filter.value
     }
 
     /// Toggle whether a group id is collapsed in the host list.
@@ -1633,6 +1635,15 @@ impl Chrome {
         Some(outcome)
     }
 
+    /// Shared text edit (Delete, caret, selection…) for the unlock prompt.
+    pub fn edit_vault_unlock(&mut self, edit: crate::text_field::TextEdit) -> bool {
+        if !self.vault_unlock.is_open() {
+            return false;
+        }
+        self.vault_unlock.edit(edit);
+        true
+    }
+
     pub fn handle_vault_unlock_input(
         &mut self,
         input: FormInput,
@@ -1724,7 +1735,8 @@ mod tests {
         let mut chrome = chrome_with_hosts(1);
         let (x, y) = centre(&crate::shell::sidebar::settings_rect(800.0));
         let action = chrome.handle_press(1200.0, 800.0, x, y);
-        let page = crate::shell::WorkspaceView::Settings(crate::shell::SettingsPage::Keys);
+        let page =
+            crate::shell::WorkspaceView::Settings(crate::shell::SettingsPage::Keys);
         assert_eq!(action, ChromeAction::ViewChanged(page));
         assert_eq!(chrome.shell.view(), page);
         // The J5 Settings page replaces the legacy dialog.
@@ -1749,7 +1761,10 @@ mod tests {
     fn the_command_bar_opens_the_palette_and_brand_goes_home() {
         let mut chrome = chrome_with_hosts(1);
         let (x, y) = centre(&crate::shell::sidebar::command_bar_rect());
-        assert_eq!(chrome.handle_press(1200.0, 800.0, x, y), ChromeAction::OpenPalette);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::OpenPalette
+        );
         let (x, y) = centre(&crate::shell::sidebar::brand_rect());
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, x, y),
@@ -1796,7 +1811,10 @@ mod tests {
         }];
         let g = chrome.shell.pills_geom().unwrap();
         let (x, y) = centre(&g.pills[0]);
-        assert_eq!(chrome.handle_press(1200.0, 800.0, x, y), ChromeAction::OpenSession(7));
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::OpenSession(7)
+        );
         let (x, y) = centre(&g.plus);
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, x, y),
@@ -1807,7 +1825,10 @@ mod tests {
             chrome.handle_press(1200.0, 800.0, x, y),
             ChromeAction::Split { down: false }
         );
-        assert_eq!(chrome.handle_press(1200.0, 800.0, 900.0, 30.0), ChromeAction::WindowDrag);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, 900.0, 30.0),
+            ChromeAction::WindowDrag
+        );
     }
 
     #[test]
@@ -1817,7 +1838,10 @@ mod tests {
         assert!(chrome.handle_hover(800.0, x, y));
         assert_eq!(chrome.shell.hover, Some(crate::shell::ShellHit::AddServer));
         assert_eq!(chrome.cursor_at(1200.0, 800.0, x, y), ChromeCursor::Pointer);
-        assert_eq!(chrome.cursor_at(1200.0, 800.0, 900.0, 30.0), ChromeCursor::Default);
+        assert_eq!(
+            chrome.cursor_at(1200.0, 800.0, 900.0, 30.0),
+            ChromeCursor::Default
+        );
     }
 
     fn chrome_with_hosts(n: usize) -> Chrome {
@@ -1868,7 +1892,10 @@ mod tests {
             "the dialog paints above everything"
         );
         // Enter on the default (Cancel) focus keeps the host.
-        assert_eq!(chrome.handle_confirm_key(DialogKey::Enter), Some(ChromeAction::Consumed));
+        assert_eq!(
+            chrome.handle_confirm_key(DialogKey::Enter),
+            Some(ChromeAction::Consumed)
+        );
         assert!(chrome.confirm.is_none());
     }
 
@@ -1876,14 +1903,22 @@ mod tests {
     fn confirming_the_delete_dialog_emits_the_delete_action() {
         let mut chrome = chrome_with_hosts(2);
         chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
-        let confirm = chrome.confirm.as_ref().unwrap().layout((1200.0, 800.0)).dialog.confirm;
-        let action =
-            chrome.handle_press(1200.0, 800.0, confirm.x + 4.0, confirm.y + 4.0);
+        let confirm = chrome
+            .confirm
+            .as_ref()
+            .unwrap()
+            .layout((1200.0, 800.0))
+            .dialog
+            .confirm;
+        let action = chrome.handle_press(1200.0, 800.0, confirm.x + 4.0, confirm.y + 4.0);
         assert_eq!(action, ChromeAction::DeleteHost("id-0".to_string()));
         assert!(chrome.confirm.is_none());
 
         chrome.open_confirm(ConfirmPrompt::delete_group("g", "prod", 1));
-        assert_eq!(chrome.handle_confirm_key(DialogKey::Tab), Some(ChromeAction::Consumed));
+        assert_eq!(
+            chrome.handle_confirm_key(DialogKey::Tab),
+            Some(ChromeAction::Consumed)
+        );
         assert_eq!(
             chrome.handle_confirm_key(DialogKey::Enter),
             Some(ChromeAction::DeleteGroup("g".to_string()))
@@ -1900,7 +1935,10 @@ mod tests {
         );
         assert!(chrome.confirm.is_none());
         chrome.open_confirm(ConfirmPrompt::delete_host("id-0", "host-0", 0));
-        assert_eq!(chrome.handle_confirm_key(DialogKey::Escape), Some(ChromeAction::Consumed));
+        assert_eq!(
+            chrome.handle_confirm_key(DialogKey::Escape),
+            Some(ChromeAction::Consumed)
+        );
         assert!(chrome.confirm.is_none());
         assert_eq!(chrome.handle_confirm_key(DialogKey::Escape), None);
     }
@@ -1908,16 +1946,33 @@ mod tests {
     #[test]
     fn deleting_a_host_with_open_sessions_says_so() {
         let mut chrome = chrome_with_hosts(1);
-        if let Some(Row::Host(h)) = chrome.panel.rows.iter_mut().find(|r| matches!(r, Row::Host(_))) {
+        if let Some(Row::Host(h)) = chrome
+            .panel
+            .rows
+            .iter_mut()
+            .find(|r| matches!(r, Row::Host(_)))
+        {
             h.session_count = 2;
         }
         let row = chrome.panel.item_rect(0.0, 1);
         chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
         let menu = chrome.context_menu.as_ref().unwrap();
-        let delete = menu.items.iter().position(|i| matches!(i.action, crate::context_menu::ContextAction::DeleteHost(_))).unwrap();
+        let delete = menu
+            .items
+            .iter()
+            .position(|i| {
+                matches!(i.action, crate::context_menu::ContextAction::DeleteHost(_))
+            })
+            .unwrap();
         let item = menu.item_rect(delete).unwrap();
         chrome.handle_press(1200.0, 800.0, item.x + 4.0, item.y + 4.0);
-        assert!(chrome.confirm.as_ref().unwrap().spec.body.contains("2 open sessions"));
+        assert!(chrome
+            .confirm
+            .as_ref()
+            .unwrap()
+            .spec
+            .body
+            .contains("2 open sessions"));
     }
 
     #[test]
@@ -2326,7 +2381,10 @@ mod tests {
         for _ in 0..30 {
             chrome.tick_host_drag(1.0 / 60.0);
         }
-        assert!(chrome.panel.scroll > 0.0, "the list follows the dragged host");
+        assert!(
+            chrome.panel.scroll > 0.0,
+            "the list follows the dragged host"
+        );
         let after = chrome.panel.host_drag.as_ref().unwrap().drop_target.clone();
         assert!(after.is_some());
         assert_ne!(after, before, "the drop target follows the scrolled rows");
