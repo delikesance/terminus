@@ -4,7 +4,6 @@
 //! through `crate::tunnel_worker::TunnelController::{press, key, hover}` with
 //! the same `content` rect.
 
-
 use std::cell::RefCell;
 
 use rio_backend::sugarloaf::Sugarloaf;
@@ -13,6 +12,7 @@ use terminus_ui::components::input::{FieldKind, FieldState};
 use terminus_ui::components::list::{CardState, CARD_RADIUS};
 use terminus_ui::components::selection::SegmentedSize;
 use terminus_ui::geom::Rect;
+use terminus_ui::text_field::TextDraft;
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::views::tunnels::*;
@@ -267,11 +267,13 @@ fn one_field(
     placeholder: &str,
 ) {
     let value = form.value(f);
+    // Caret sits after the text before it, not at the end of the value.
+    let prefix = form.draft(f).prefix_display();
     let caret = (form.focus == f).then(|| {
         if kind == FieldKind::Mono {
-            measure_mono_text(sugarloaf, value, kind.value_font(), UiWeight::Regular)
+            measure_mono_text(sugarloaf, &prefix, kind.value_font(), UiWeight::Regular)
         } else {
-            measure_ui_text(sugarloaf, value, kind.value_font(), UiWeight::Regular)
+            measure_ui_text(sugarloaf, &prefix, kind.value_font(), UiWeight::Regular)
         }
     });
     let scale = sugarloaf.scale_factor();
@@ -514,8 +516,8 @@ fn preview_state(variant: &str) -> TunnelsState {
         "error" => {
             s.open_new();
             if let Some(f) = s.form.as_mut() {
-                f.local_port = "0".into();
-                f.dest_port = "70000".into();
+                f.local_port = TextDraft::new("0");
+                f.dest_port = TextDraft::new("70000");
                 let _ = f.validate(&|_| true);
                 f.focus = FormField::LocalPort;
             }

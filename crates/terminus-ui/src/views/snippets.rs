@@ -12,6 +12,7 @@ use crate::components::list::{
 };
 use crate::geom::Rect;
 use crate::snippets::SnippetItem;
+use crate::text_field::{TextDraft, TextEdit};
 
 /// Padding around the view (design: 28 px).
 pub const PAD: f32 = 28.0;
@@ -68,7 +69,7 @@ pub enum SnippetsHit {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SnippetsView {
     pub items: Vec<SnippetItem>,
-    pub filter: String,
+    pub filter: TextDraft,
     pub filter_focused: bool,
     pub scroll: f32,
     pub hover: Option<SnippetsHit>,
@@ -102,7 +103,7 @@ impl SnippetsView {
     pub fn visible(&self) -> Vec<&SnippetItem> {
         self.items
             .iter()
-            .filter(|i| matches(i, &self.filter))
+            .filter(|i| matches(i, &self.filter.value))
             .collect()
     }
 
@@ -285,23 +286,30 @@ impl SnippetsView {
         if !self.filter_focused {
             return false;
         }
-        self.filter.extend(text.chars().filter(|c| !c.is_control()));
-        self.scroll = 0.0;
+        // Control characters are dropped but the key stays consumed.
+        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+        if self.filter.insert(&clean, usize::MAX, false) {
+            self.scroll = 0.0;
+        }
         true
     }
 
     pub fn backspace(&mut self) -> bool {
-        if !self.filter_focused {
-            return false;
+        self.edit(TextEdit::Backspace { by_word: false })
+    }
+
+    /// Shared text editing (Backspace, Delete, caret, selection).
+    pub fn edit(&mut self, edit: TextEdit) -> bool {
+        let changed = self.filter_focused && self.filter.apply(edit);
+        if changed {
+            self.scroll = 0.0;
         }
-        self.filter.pop();
-        self.scroll = 0.0;
-        true
+        changed
     }
 
     /// Escape clears the filter, then unfocuses. Returns true if consumed.
     pub fn escape(&mut self) -> bool {
-        if !self.filter.is_empty() {
+        if !self.filter.value.is_empty() {
             self.filter.clear();
             return true;
         }
@@ -352,15 +360,15 @@ mod tests {
     #[test]
     fn filter_matches_title_command_and_tag() {
         let mut v = view();
-        v.filter = "NGINX".into();
+        v.filter = TextDraft::new("NGINX");
         assert_eq!(v.visible().len(), 1);
-        v.filter = "tail 100".into();
+        v.filter = TextDraft::new("tail 100");
         assert_eq!(v.visible()[0].id, "2");
-        v.filter = "disk".into();
+        v.filter = TextDraft::new("disk");
         assert_eq!(v.visible()[0].id, "3");
-        v.filter = "zzz".into();
+        v.filter = TextDraft::new("zzz");
         assert!(v.visible().is_empty());
-        v.filter = "  ".into();
+        v.filter = TextDraft::new("  ");
         assert_eq!(v.visible().len(), 3);
     }
 
@@ -416,7 +424,7 @@ mod tests {
     #[test]
     fn hit_indices_follow_the_filter() {
         let mut v = view();
-        v.filter = "df".into();
+        v.filter = TextDraft::new("df");
         let c = content();
         let card = v.card_rect(c, 0);
         let w = v.action_widths();
@@ -438,12 +446,12 @@ mod tests {
         assert!(v.filter_focused);
         assert!(v.type_text("ng"));
         assert!(v.type_text("\n"));
-        assert_eq!(v.filter, "ng");
+        assert_eq!(v.filter.value, "ng");
         assert_eq!(v.visible().len(), 1);
         assert!(v.backspace());
-        assert_eq!(v.filter, "n");
+        assert_eq!(v.filter.value, "n");
         assert!(v.escape());
-        assert!(v.filter.is_empty() && v.filter_focused);
+        assert!(v.filter.value.is_empty() && v.filter_focused);
         assert!(v.escape());
         assert!(!v.filter_focused);
     }

@@ -5,7 +5,7 @@
 
 use super::super::Screen;
 use crate::tunnel_worker::{SpawnFn, TunnelController};
-use terminus_ui::screens::{ViewInput, ViewKey, ViewOutcome};
+use terminus_ui::screens::{text_edit, ViewInput, ViewKey, ViewOutcome};
 use terminus_ui::shell::MachineInfo;
 use terminus_ui::views::tunnels::{FormKey, TunnelItem, TunnelStatus};
 
@@ -139,12 +139,14 @@ impl Screen<'_> {
                     ViewKey::Text(t) if !mods.ctrl && !mods.logo => {
                         t.chars().map(FormKey::Char).collect()
                     }
-                    ViewKey::Backspace => vec![FormKey::Backspace],
                     ViewKey::Tab if mods.shift => vec![FormKey::BackTab],
                     ViewKey::Tab => vec![FormKey::Tab],
                     ViewKey::Enter => vec![FormKey::Enter],
                     ViewKey::Escape => vec![FormKey::Escape],
-                    _ => Vec::new(),
+                    other => text_edit(other, *mods)
+                        .map(FormKey::Edit)
+                        .into_iter()
+                        .collect(),
                 };
                 let mut changed = false;
                 for k in keys {

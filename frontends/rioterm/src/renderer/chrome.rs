@@ -360,21 +360,23 @@ pub(crate) fn paint_search_field(
         device_scale,
     );
 
-    let placeholder = if chrome.panel.filter.is_empty() && !chrome.panel.filter_focused {
-        "Filter servers…"
-    } else {
-        ""
-    };
-    let filter_text = if chrome.panel.filter.is_empty() {
+    let placeholder =
+        if chrome.panel.filter.value.is_empty() && !chrome.panel.filter_focused {
+            "Filter servers…"
+        } else {
+            ""
+        };
+    let filter_text = if chrome.panel.filter.value.is_empty() {
         placeholder
     } else {
-        chrome.panel.filter.as_str()
+        chrome.panel.filter.value.as_str()
     };
-    let filter_color = if chrome.panel.filter.is_empty() && !chrome.panel.filter_focused {
-        theme.text_placeholder
-    } else {
-        theme.text
-    };
+    let filter_color =
+        if chrome.panel.filter.value.is_empty() && !chrome.panel.filter_focused {
+            theme.text_placeholder
+        } else {
+            theme.text
+        };
     draw_text(
         sugarloaf,
         search.x + 12.0 + SEARCH_ICON + 8.0,
@@ -2121,9 +2123,15 @@ pub(crate) fn paint_rename_text(
 ) {
     let accent = color_from_f32(theme.accent);
     let title_opts = opts(ROW_TITLE_SIZE, accent, true);
-    if let Some((start, end)) = draft.selection_range() {
-        let before: String = draft.name.chars().take(start).collect();
-        let selected: String = draft.name.chars().skip(start).take(end - start).collect();
+    if let Some((start, end)) = draft.text.selection_range() {
+        let before: String = draft.text.value.chars().take(start).collect();
+        let selected: String = draft
+            .text
+            .value
+            .chars()
+            .skip(start)
+            .take(end - start)
+            .collect();
         let bx = sugarloaf.text_mut().measure(&before, &title_opts);
         let sw = sugarloaf
             .text_mut()
@@ -2141,12 +2149,12 @@ pub(crate) fn paint_rename_text(
         sugarloaf,
         text_x,
         text_y,
-        &draft.name,
+        &draft.text.value,
         ROW_TITLE_SIZE,
         accent,
         true,
     );
-    let prefix = draft.prefix();
+    let prefix = draft.text.prefix();
     let w = sugarloaf.text_mut().measure(&prefix, &title_opts);
     paint_caret(
         sugarloaf,
@@ -2394,11 +2402,11 @@ pub(crate) fn paint_new_group_form(
     if !labels {
         return;
     }
-    let placeholder = chrome.panel.new_group_name.is_empty();
+    let placeholder = chrome.panel.new_group_name.value.is_empty();
     let text = if placeholder {
         "Group name…"
     } else {
-        chrome.panel.new_group_name.as_str()
+        chrome.panel.new_group_name.value.as_str()
     };
     let color = if placeholder {
         theme.text_placeholder
@@ -3050,4 +3058,3 @@ mod tests {
         assert!(DEPTH_DIALOG_BG > DEPTH_DIALOG);
     }
 }
-

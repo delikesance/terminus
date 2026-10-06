@@ -14,6 +14,7 @@ use crate::components::input::{self as inp, FieldKind, FieldLayout};
 use crate::components::overlay as ov;
 use crate::components::selection as sel;
 use crate::geom::Rect;
+use crate::text_field::{TextDraft, TextEdit, TextMoveKind};
 
 /// Canonical auth-method wire values, in cycle order.
 pub const AUTH_METHODS: [&str; 3] = ["key", "password", "gssapi"];
@@ -102,11 +103,8 @@ pub enum AddHostStep {
     Details,
 }
 
-pub const STEPS: [AddHostStep; 3] = [
-    AddHostStep::Target,
-    AddHostStep::Auth,
-    AddHostStep::Details,
-];
+pub const STEPS: [AddHostStep; 3] =
+    [AddHostStep::Target, AddHostStep::Auth, AddHostStep::Details];
 
 impl AddHostStep {
     /// Stepper label (the Overlays stepper's own copy).
@@ -497,7 +495,8 @@ fn classify_error(message: &str) -> Option<Field> {
         Some(Field::Hostname)
     } else if m.ends_with("is not a valid port") {
         Some(Field::Port)
-    } else if m.starts_with("select an ssh key") || m.starts_with("select a saved ssh key")
+    } else if m.starts_with("select an ssh key")
+        || m.starts_with("select a saved ssh key")
     {
         Some(Field::Identity)
     } else if m.starts_with("password is required") || m.starts_with("enter a password") {
@@ -518,9 +517,7 @@ pub struct AddHostForm {
     /// When set, the dialog updates this host instead of creating one.
     editing_id: Option<String>,
     /// Name, address, user, port, tags, notes.
-    values: [String; TEXT_SLOTS],
-    /// Caret position, in characters (not bytes), per text slot.
-    carets: [usize; TEXT_SLOTS],
+    values: [TextDraft; TEXT_SLOTS],
     /// The port has been typed (or came from the address), so the pristine
     /// "22" default no longer yields to the address.
     port_dirty: bool,
@@ -529,8 +526,7 @@ pub struct AddHostForm {
     identities: Vec<(String, String)>,
     group_id: Option<String>,
     groups: Vec<(String, String)>,
-    password: String,
-    password_caret: usize,
+    password: TextDraft,
     /// Whether the password field shows plaintext (eye toggle).
     password_visible: bool,
     focus: Field,
@@ -547,22 +543,20 @@ pub struct AddHostForm {
 
 impl Default for AddHostForm {
     fn default() -> Self {
-        let mut values: [String; TEXT_SLOTS] = Default::default();
-        values[3] = "22".to_string();
+        let mut values: [TextDraft; TEXT_SLOTS] = Default::default();
+        values[3] = TextDraft::new("22");
         Self {
             open: false,
             step: AddHostStep::Target,
             editing_id: None,
             values,
-            carets: [0; TEXT_SLOTS],
             port_dirty: false,
             auth_method: "key".to_string(),
             identity_id: None,
             identities: Vec::new(),
             group_id: None,
             groups: Vec::new(),
-            password: String::new(),
-            password_caret: 0,
+            password: TextDraft::default(),
             password_visible: false,
             focus: Field::Hostname,
             error: None,
@@ -623,7 +617,7 @@ impl AddHostForm {
     pub fn can_advance(&self) -> bool {
         match self.step {
             AddHostStep::Target => {
-                let address = split_address(&self.values[Field::Hostname.index()]);
+                let address = split_address(&self.values[Field::Hostname.index()].value);
                 !address.host.trim().is_empty()
             }
             AddHostStep::Auth => self.auth_validation_error().is_none(),
@@ -636,7 +630,7 @@ impl AddHostForm {
         match self.step {
             AddHostStep::Target => {
                 self.settle_address();
-                let address = split_address(&self.values[Field::Hostname.index()]);
+                let address = split_address(&self.values[Field::Hostname.index()].value);
                 if address.host.trim().is_empty() {
                     self.set_field_error(Field::Hostname, "Enter a hostname or IP");
                     return false;
@@ -743,11 +737,9 @@ impl AddHostForm {
 
     fn reset_values(&mut self) {
         self.values = Default::default();
-        self.values[3] = "22".to_string();
-        self.carets = [0; TEXT_SLOTS];
+        self.values[3] = TextDraft::new("22");
         self.port_dirty = false;
         self.password.clear();
-        self.password_caret = 0;
         self.password_visible = false;
         self.group_id = None;
         self.step = AddHostStep::Target;
@@ -776,10 +768,8 @@ impl AddHostForm {
             port,
             values.tags,
             values.notes,
-        ];
-        for i in 0..TEXT_SLOTS {
-            self.carets[i] = self.values[i].chars().count();
-        }
+        ]
+        .map(TextDraft::new);
         self.auth_method = if values.auth_method.trim().is_empty() {
             "key".to_string()
         } else {
@@ -1046,7 +1036,7 @@ impl AddHostForm {
     }
 
     pub fn password(&self) -> &str {
-        &self.password
+        &self.password.value
     }
 
     pub fn focused_field(&self) -> Field {
@@ -1066,16 +1056,29 @@ impl AddHostForm {
             Field::AuthMethod => &self.auth_method,
             Field::Identity => self.identity_id.as_deref().unwrap_or(""),
             Field::Group => self.group_id.as_deref().unwrap_or(""),
-            Field::Password => &self.password,
-            f => &self.values[f.index()],
+            Field::Password => &self.password.value,
+            f => &self.values[f.index()].value,
         }
     }
 
     pub fn cursor(&self, field: Field) -> usize {
+        self.draft(field).map_or(0, |d| d.caret)
+    }
+
+    /// The shared text draft behind a text field (`None` for selects).
+    pub fn draft(&self, field: Field) -> Option<&TextDraft> {
         match field {
-            Field::Password => self.password_caret,
-            f if f.base_index().is_some() => self.carets[f.index()],
-            _ => 0,
+            Field::Password => Some(&self.password),
+            f if f.base_index().is_some() => Some(&self.values[f.index()]),
+            _ => None,
+        }
+    }
+
+    fn draft_mut(&mut self, field: Field) -> Option<&mut TextDraft> {
+        match field {
+            Field::Password => Some(&mut self.password),
+            f if f.base_index().is_some() => Some(&mut self.values[f.index()]),
+            _ => None,
         }
     }
 
@@ -1096,7 +1099,7 @@ impl AddHostForm {
 
     /// The port the form will save: a typed port wins over the address's.
     fn effective_port(&self, from_address: Option<String>) -> String {
-        let typed = &self.values[3];
+        let typed = &self.values[3].value;
         match from_address {
             Some(port) if !self.port_dirty || typed.trim().is_empty() => port,
             _ => typed.clone(),
@@ -1104,23 +1107,23 @@ impl AddHostForm {
     }
 
     pub fn values(&self) -> HostFormValues {
-        let address = split_address(&self.values[1]);
-        let username = if self.values[2].trim().is_empty() {
+        let address = split_address(&self.values[1].value);
+        let username = if self.values[2].value.trim().is_empty() {
             address.user.unwrap_or_default()
         } else {
-            self.values[2].clone()
+            self.values[2].value.clone()
         };
         HostFormValues {
-            name: self.values[0].clone(),
+            name: self.values[0].value.clone(),
             hostname: address.host,
             username,
             port: self.effective_port(address.port),
             auth_method: self.auth_method.clone(),
             identity_id: self.identity_id.clone(),
-            password: self.password.clone(),
+            password: self.password.value.clone(),
             group_id: self.group_id.clone(),
-            tags: self.values[4].clone(),
-            notes: self.values[5].clone(),
+            tags: self.values[4].value.clone(),
+            notes: self.values[5].value.clone(),
         }
     }
 
@@ -1129,7 +1132,7 @@ impl AddHostForm {
         match self.auth_method.as_str() {
             "key" if self.identity_id.is_none() => Some("Select an SSH key"),
             // When editing, an empty password means "keep the stored one".
-            "password" if self.password.is_empty() && self.editing_id.is_none() => {
+            "password" if self.password.value.is_empty() && self.editing_id.is_none() => {
                 Some("Enter a password")
             }
             "key" | "password" | "gssapi" => None,
@@ -1194,33 +1197,49 @@ impl AddHostForm {
     /// Insert text at the caret. Empty or control-bearing text is
     /// rejected, the same policy every other text sink in rio applies.
     pub fn insert(&mut self, text: &str) -> bool {
-        if text.is_empty() || text.chars().any(char::is_control) {
-            return false;
-        }
         let field = self.focused_field();
         if !field.is_text() {
             return false;
         }
         if field == Field::Port && !self.port_dirty {
-            // Typing over the untouched default replaces it.
+            // Typing over the untouched default replaces it, unless the
+            // text would be refused anyway.
+            if text.is_empty() || text.chars().any(char::is_control) {
+                return false;
+            }
             self.values[3].clear();
-            self.carets[3] = 0;
+        }
+        let Some(draft) = self.draft_mut(field) else {
+            return false;
+        };
+        if !draft.insert(text, usize::MAX, false) {
+            return false;
         }
         if field == Field::Port {
             self.port_dirty = true;
         }
-        let byte = self.cursor_byte(field);
-        match field {
-            Field::Password => {
-                self.password.insert_str(byte, text);
-                self.password_caret += text.chars().count();
-            }
-            _ => {
-                self.values[field.index()].insert_str(byte, text);
-                self.carets[field.index()] += text.chars().count();
-            }
-        }
         self.clear_error();
+        true
+    }
+
+    /// Shared text editing (Backspace, Delete, caret, selection, by word).
+    /// Returns whether anything changed.
+    pub fn edit(&mut self, edit: TextEdit) -> bool {
+        let field = self.focused_field();
+        let Some(draft) = self.draft_mut(field) else {
+            return false;
+        };
+        let before = draft.value.len();
+        if !draft.apply(edit) {
+            return false;
+        }
+        let edited = draft.value.len() != before;
+        if edited {
+            if field == Field::Port {
+                self.port_dirty = true;
+            }
+            self.clear_error();
+        }
         true
     }
 
@@ -1228,98 +1247,41 @@ impl AddHostForm {
     /// changed (a backspace at offset 0 must not be reported as an edit,
     /// or the caller repaints on every stray keypress).
     pub fn backspace(&mut self) -> bool {
-        let field = self.focused_field();
-        if !field.is_text() {
-            return false;
-        }
-        let chars = self.cursor(field);
-        if chars == 0 {
-            return false;
-        }
-        match field {
-            Field::Password => {
-                let start = char_byte_offset(&self.password, chars - 1);
-                let end = char_byte_offset(&self.password, chars);
-                self.password.replace_range(start..end, "");
-                self.password_caret = chars - 1;
-            }
-            _ => {
-                let value = &mut self.values[field.index()];
-                let start = char_byte_offset(value, chars - 1);
-                let end = char_byte_offset(value, chars);
-                value.replace_range(start..end, "");
-                self.carets[field.index()] = chars - 1;
-            }
-        }
-        if field == Field::Port {
-            self.port_dirty = true;
-        }
-        self.clear_error();
-        true
+        self.edit(TextEdit::Backspace { by_word: false })
     }
 
     /// Delete the character after the caret.
     pub fn delete(&mut self) -> bool {
-        let field = self.focused_field();
-        if !field.is_text() {
-            return false;
-        }
-        let chars = self.cursor(field);
-        let len = self.value(field).chars().count();
-        if chars >= len {
-            return false;
-        }
-        match field {
-            Field::Password => {
-                let start = char_byte_offset(&self.password, chars);
-                let end = char_byte_offset(&self.password, chars + 1);
-                self.password.replace_range(start..end, "");
-            }
-            _ => {
-                let value = &mut self.values[field.index()];
-                let start = char_byte_offset(value, chars);
-                let end = char_byte_offset(value, chars + 1);
-                value.replace_range(start..end, "");
-            }
-        }
-        if field == Field::Port {
-            self.port_dirty = true;
-        }
-        self.clear_error();
-        true
+        self.edit(TextEdit::Delete { by_word: false })
     }
 
     pub fn move_cursor(&mut self, delta: isize) {
-        let field = self.focused_field();
-        if !field.is_text() {
-            return;
-        }
-        let len = self.value(field).chars().count();
-        let next = (self.cursor(field) as isize + delta).clamp(0, len as isize) as usize;
-        match field {
-            Field::Password => self.password_caret = next,
-            _ => self.carets[field.index()] = next,
+        let edit = if delta < 0 {
+            TextEdit::Left {
+                kind: TextMoveKind::Collapse,
+                by_word: false,
+            }
+        } else {
+            TextEdit::Right {
+                kind: TextMoveKind::Collapse,
+                by_word: false,
+            }
+        };
+        for _ in 0..delta.unsigned_abs() {
+            self.edit(edit);
         }
     }
 
     pub fn cursor_home(&mut self) {
-        let field = self.focused_field();
-        match field {
-            Field::Password => self.password_caret = 0,
-            f if f.base_index().is_some() => self.carets[f.index()] = 0,
-            _ => {}
-        }
+        self.edit(TextEdit::Home {
+            kind: TextMoveKind::Collapse,
+        });
     }
 
     pub fn cursor_end(&mut self) {
-        let field = self.focused_field();
-        match field {
-            Field::Password => self.password_caret = self.password.chars().count(),
-            f if f.base_index().is_some() => {
-                self.carets[f.index()] = self.value(f).chars().count();
-            }
-            _ => {}
-        }
+        self.edit(TextEdit::End {
+            kind: TextMoveKind::Collapse,
+        });
     }
 
     /// Leaving the address: show the user and port it carried in their
@@ -1330,12 +1292,11 @@ impl AddHostForm {
         }
         let parsed = self.values();
         for (i, value) in [(1, parsed.hostname), (2, parsed.username), (3, parsed.port)] {
-            if self.values[i] != value {
-                self.carets[i] = value.chars().count();
+            if self.values[i].value != value {
                 if i == 3 {
                     self.port_dirty = true;
                 }
-                self.values[i] = value;
+                self.values[i] = TextDraft::new(value);
             }
         }
     }
@@ -1529,7 +1490,8 @@ impl AddHostLayout {
 
     /// Bar and label of one stepper segment (the click target).
     pub fn step_rect(&self, step: AddHostStep) -> Rect {
-        let seg = ov::stepper_segments(self.stepper_rect(), step.index() + 1)[step.index()];
+        let seg =
+            ov::stepper_segments(self.stepper_rect(), step.index() + 1)[step.index()];
         Rect::new(seg.bar.x, seg.bar.y, seg.bar.width, ov::STEPPER_HEIGHT)
     }
 
@@ -1573,7 +1535,13 @@ impl AddHostLayout {
                     } else {
                         (x + wide + PAIR_GAP, col)
                     };
-                    return Some(inp::field_layout((fx, top), fw, field.kind(), true, false));
+                    return Some(inp::field_layout(
+                        (fx, top),
+                        fw,
+                        field.kind(),
+                        true,
+                        false,
+                    ));
                 }
                 _ => {}
             }
@@ -1602,7 +1570,9 @@ impl AddHostLayout {
         self.row_tops(form)
             .into_iter()
             .find(|(r, _)| *r == Row::Choices)
-            .map(|(_, top)| Rect::new(self.inner_x(), top, self.inner_width(), inp::LABEL_HEIGHT))
+            .map(|(_, top)| {
+                Rect::new(self.inner_x(), top, self.inner_width(), inp::LABEL_HEIGHT)
+            })
     }
 
     /// The three sign-in cards (key, password, Kerberos).
@@ -1631,7 +1601,12 @@ impl AddHostLayout {
             return None;
         }
         let hint = self.hint_rect(form)?;
-        Some(Rect::new(hint.x + HINT_LINK_X, hint.y, HINT_LINK_W, hint.height))
+        Some(Rect::new(
+            hint.x + HINT_LINK_X,
+            hint.y,
+            HINT_LINK_W,
+            hint.height,
+        ))
     }
 
     /// The open select's list, under its box.
@@ -1779,7 +1754,10 @@ impl AddHostLayout {
                 return AddHostHit::SelectAuth(i);
             }
         }
-        if self.generate_link_rect(form).is_some_and(|r| r.contains(x, y)) {
+        if self
+            .generate_link_rect(form)
+            .is_some_and(|r| r.contains(x, y))
+        {
             return AddHostHit::GenerateKey;
         }
         for field in form.visible_fields() {
@@ -1893,9 +1871,15 @@ mod tests {
     fn sign_in_step_fields_follow_the_method() {
         let mut form = open_form();
         form.set_step(AddHostStep::Auth);
-        assert_eq!(form.visible_fields(), vec![Field::AuthMethod, Field::Identity]);
+        assert_eq!(
+            form.visible_fields(),
+            vec![Field::AuthMethod, Field::Identity]
+        );
         form.cycle_auth_method(1);
-        assert_eq!(form.visible_fields(), vec![Field::AuthMethod, Field::Password]);
+        assert_eq!(
+            form.visible_fields(),
+            vec![Field::AuthMethod, Field::Password]
+        );
         form.cycle_auth_method(1);
         assert_eq!(form.auth_method(), "gssapi");
         assert_eq!(form.visible_fields(), vec![Field::AuthMethod]);
@@ -1961,9 +1945,15 @@ mod tests {
         let mut form = open_form();
         form.set_identities(vec![("k1".into(), "Key".into())]);
         type_into(&mut form, "vps.example.com");
-        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Enter, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Auth);
-        assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Enter, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Details);
         assert_eq!(form.handle_input(FormInput::Enter, ""), FormOutcome::Submit);
     }
@@ -1976,11 +1966,20 @@ mod tests {
         form.next_step();
         form.next_step();
         assert_eq!(form.step(), AddHostStep::Details);
-        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Escape, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Auth);
-        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Escape, ""),
+            FormOutcome::Consumed
+        );
         assert_eq!(form.step(), AddHostStep::Target);
-        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Cancel);
+        assert_eq!(
+            form.handle_input(FormInput::Escape, ""),
+            FormOutcome::Cancel
+        );
     }
 
     #[test]
@@ -1991,7 +1990,10 @@ mod tests {
         form.focus_field(Field::Identity);
         form.toggle_identity_menu();
         assert!(form.identity_menu_open());
-        assert_eq!(form.handle_input(FormInput::Escape, ""), FormOutcome::Consumed);
+        assert_eq!(
+            form.handle_input(FormInput::Escape, ""),
+            FormOutcome::Consumed
+        );
         assert!(!form.identity_menu_open());
         assert_eq!(form.step(), AddHostStep::Auth);
     }
@@ -2313,7 +2315,11 @@ mod tests {
 
         form.set_step(AddHostStep::Auth);
         form.select_auth_method(1);
-        assert_eq!(form.auth_validation_error(), None, "blank keeps the password");
+        assert_eq!(
+            form.auth_validation_error(),
+            None,
+            "blank keeps the password"
+        );
     }
 
     #[test]
@@ -2635,7 +2641,9 @@ mod tests {
             layout.hit_test(&form, key.x + 2.0, key.y + 2.0),
             AddHostHit::ToggleIdentityMenu
         );
-        let link = layout.generate_link_rect(&form).expect("link under the key");
+        let link = layout
+            .generate_link_rect(&form)
+            .expect("link under the key");
         assert!(link.y >= key.bottom());
         assert_eq!(
             layout.hit_test(&form, link.x + 2.0, link.y + 2.0),
@@ -2721,7 +2729,10 @@ mod tests {
         assert_eq!(form.primary_label(), "Continue");
         assert_eq!(form.secondary_label(), "Cancel");
         let l = layout_for(&form);
-        assert_eq!(hit(&form, l.secondary_button_rect(&form)), AddHostHit::Cancel);
+        assert_eq!(
+            hit(&form, l.secondary_button_rect(&form)),
+            AddHostHit::Cancel
+        );
         assert_eq!(hit(&form, l.primary_button_rect(&form)), AddHostHit::Next);
 
         form.set_step(AddHostStep::Auth);
@@ -2733,7 +2744,10 @@ mod tests {
         form.set_step(AddHostStep::Details);
         let l = layout_for(&form);
         assert_eq!(form.primary_label(), "Save server");
-        assert_eq!(hit(&form, l.primary_button_rect(&form)), AddHostHit::Connect);
+        assert_eq!(
+            hit(&form, l.primary_button_rect(&form)),
+            AddHostHit::Connect
+        );
         assert_eq!(form.step_hint(), "Step 3 of 3");
         form.set_step(AddHostStep::Target);
         assert_eq!(form.step_hint(), "Step 1 of 3");
@@ -2787,7 +2801,10 @@ mod tests {
         assert!(!form.insert("secret\n"));
         assert!(form.insert("s3cret-from-clipboard"));
         assert_eq!(form.password(), "s3cret-from-clipboard");
-        let cleaned: String = "p@ss\r\nw0rd\u{7f}".chars().filter(|c| !c.is_control()).collect();
+        let cleaned: String = "p@ss\r\nw0rd\u{7f}"
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
         assert_eq!(cleaned, "p@ssw0rd");
     }
 }

@@ -281,22 +281,23 @@ impl Route<'_> {
         {
             if self.window.screen.chrome.panel.filter_focused {
                 if crate::renderer::is_printable_text(text) {
-                    self.window.screen.chrome.panel.filter.push_str(text);
+                    self.window.screen.chrome.panel.filter.insert(
+                        text,
+                        usize::MAX,
+                        false,
+                    );
                     self.request_overlay_redraw();
                 }
                 return true;
             }
             if self.window.screen.chrome.panel.new_group_focused {
-                if crate::renderer::is_printable_text(text)
-                    && self.window.screen.chrome.panel.new_group_name.len() + text.len()
-                        <= 32
-                {
+                if crate::renderer::is_printable_text(text) {
                     self.window
                         .screen
                         .chrome
                         .panel
                         .new_group_name
-                        .push_str(text);
+                        .insert(text, 32, false);
                     self.request_overlay_redraw();
                 }
                 return true;
@@ -311,7 +312,7 @@ impl Route<'_> {
                 .is_some_and(|r| r.focused)
             {
                 if let Some(draft) = self.window.screen.chrome.panel.rename.as_mut() {
-                    if draft.insert(text, 64) {
+                    if draft.text.insert(text, 64, false) {
                         self.request_overlay_redraw();
                     }
                 }
@@ -451,6 +452,7 @@ impl Route<'_> {
                 if let Some(ref mut island) = self.window.screen.renderer.island {
                     island.handle_rename_input(
                         key_event,
+                        self.window.screen.modifiers.state(),
                         &mut self.window.screen.context_manager,
                     );
                 }
@@ -497,22 +499,23 @@ impl Route<'_> {
                             self.window.screen.confirm_palette_selection(clipboard);
                             self.request_overlay_redraw();
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            let current_query =
-                                self.window.screen.renderer.command_palette.query.clone();
-                            if !current_query.is_empty() {
-                                let mut chars = current_query.chars().collect::<Vec<_>>();
-                                chars.pop();
-                                self.window
+                        other => {
+                            let mods = self.window.screen.modifiers.state();
+                            if let Some(edit) =
+                                crate::screen::chrome_input::text_edit_for_key(
+                                    other, mods,
+                                )
+                            {
+                                if self
+                                    .window
                                     .screen
                                     .renderer
                                     .command_palette
-                                    .set_query(chars.into_iter().collect());
-                                self.request_overlay_redraw();
-                            }
-                        }
-                        _ => {
-                            if let Some(text) = key_event.text.as_ref() {
+                                    .edit_query(edit)
+                                {
+                                    self.request_overlay_redraw();
+                                }
+                            } else if let Some(text) = key_event.text.as_ref() {
                                 if self
                                     .window
                                     .screen
@@ -549,12 +552,9 @@ impl Route<'_> {
                             .key(DialogKey::Enter),
                         Key::Named(NamedKey::Tab)
                         | Key::Named(NamedKey::ArrowLeft)
-                        | Key::Named(NamedKey::ArrowRight) => self
-                            .window
-                            .screen
-                            .renderer
-                            .confirm_quit
-                            .key(DialogKey::Tab),
+                        | Key::Named(NamedKey::ArrowRight) => {
+                            self.window.screen.renderer.confirm_quit.key(DialogKey::Tab)
+                        }
                         _ => ConfirmOutcome::Idle,
                     };
                     if self.apply_quit_outcome(outcome) {
