@@ -23,7 +23,7 @@ use crate::components::overlay::{
     DialogLayout,
 };
 use crate::geom::Rect;
-use crate::text_field::{TextDraft, TextMoveKind};
+use crate::text_field::{TextDraft, TextEdit, TextMoveKind};
 
 pub use appearance::{AppearanceState, CursorStyle, ThemeChoice};
 pub use keys::{DraftField, DraftMode, KeyDraft, KeysState};
@@ -192,16 +192,24 @@ pub fn column(content: Rect) -> Rect {
 
 /// Route a text editing key to a draft. Returns whether the draft changed.
 pub fn edit_draft(draft: &mut TextDraft, key: Key) -> bool {
-    match key {
-        Key::Backspace => draft.backspace(false),
-        Key::Delete => draft.delete_forward(false),
-        Key::Left => draft.move_left(TextMoveKind::Collapse, false),
-        Key::Right => draft.move_right(TextMoveKind::Collapse, false),
-        Key::Home => draft.move_home(TextMoveKind::Collapse),
-        Key::End => draft.move_end(TextMoveKind::Collapse),
-        Key::SelectAll => draft.select_all(),
-        _ => false,
-    }
+    let collapse = TextMoveKind::Collapse;
+    let edit = match key {
+        Key::Backspace => TextEdit::Backspace { by_word: false },
+        Key::Delete => TextEdit::Delete { by_word: false },
+        Key::Left => TextEdit::Left {
+            kind: collapse,
+            by_word: false,
+        },
+        Key::Right => TextEdit::Right {
+            kind: collapse,
+            by_word: false,
+        },
+        Key::Home => TextEdit::Home { kind: collapse },
+        Key::End => TextEdit::End { kind: collapse },
+        Key::SelectAll => TextEdit::SelectAll,
+        _ => return false,
+    };
+    draft.apply(edit)
 }
 
 // ---------------------------------------------------------------- confirm

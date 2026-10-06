@@ -554,7 +554,7 @@ pub struct Island {
     /// Which tab has the color picker open (None = closed)
     color_picker_tab: Option<usize>,
     /// Current rename input text while picker is open
-    rename_input: String,
+    rename_input: terminus_ui::TextDraft,
     /// Caret blink timer
     rename_caret_time: Instant,
     /// In-progress tab drag (reorder by dragging)
@@ -597,7 +597,7 @@ impl Island {
             // Default error color (red-ish)
             progress_bar_error_color: [1.0, 0.3, 0.3, 1.0],
             color_picker_tab: None,
-            rename_input: String::new(),
+            rename_input: terminus_ui::TextDraft::default(),
             rename_caret_time: Instant::now(),
             drag: None,
             slide_springs: FxHashMap::default(),
@@ -1391,10 +1391,12 @@ impl Island {
         } else {
             self.color_picker_tab = Some(tab_index);
             // Initialize rename input with custom title or current displayed title
-            self.rename_input = context_manager
-                .custom_title(tab_index)
-                .map(str::to_string)
-                .unwrap_or_else(|| current_title.to_string());
+            self.rename_input = terminus_ui::TextDraft::new(
+                context_manager
+                    .custom_title(tab_index)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| current_title.to_string()),
+            );
             self.rename_caret_time = Instant::now();
         }
     }
@@ -1420,7 +1422,7 @@ impl Island {
     /// Apply the rename input as a custom title for the current picker tab
     fn apply_rename(&mut self, context_manager: &mut ContextManager<EventProxy>) {
         if let Some(tab) = self.color_picker_tab {
-            let trimmed = self.rename_input.trim().to_string();
+            let trimmed = self.rename_input.value.trim().to_string();
             let title = (!trimmed.is_empty()).then_some(trimmed);
             context_manager.set_custom_title(tab, title);
         }
@@ -1435,6 +1437,7 @@ impl Island {
     pub fn handle_rename_input(
         &mut self,
         key_event: &rio_window::event::KeyEvent,
+        modifiers: rio_window::keyboard::ModifiersState,
         context_manager: &mut ContextManager<EventProxy>,
     ) {
         use rio_window::event::ElementState;
@@ -1454,12 +1457,16 @@ impl Island {
                 self.apply_rename(context_manager);
                 self.color_picker_tab = None;
             }
-            Key::Named(NamedKey::Backspace) => {
-                self.rename_input.pop();
-                self.rename_caret_time = Instant::now();
-            }
-            _ => {
-                if let Some(text) = key_event.text.as_ref() {
+            other => {
+                // Same edit routing as every other text field.
+                let mods = modifiers;
+                if let Some(edit) =
+                    crate::screen::chrome_input::text_edit_for_key(other, mods)
+                {
+                    if self.rename_input.apply(edit) {
+                        self.rename_caret_time = Instant::now();
+                    }
+                } else if let Some(text) = key_event.text.as_ref() {
                     self.append_rename_text(text.as_str());
                 }
             }
@@ -1475,7 +1482,7 @@ impl Island {
         if self.color_picker_tab.is_none() || !crate::renderer::is_printable_text(text) {
             return false;
         }
-        self.rename_input.push_str(text);
+        self.rename_input.insert(text, usize::MAX, false);
         self.rename_caret_time = Instant::now();
         true
     }
@@ -1717,7 +1724,7 @@ impl Island {
         let max_text_width = input_width - text_inset * 2.0;
         let text_y = input_y + (PICKER_INPUT_HEIGHT - PICKER_INPUT_FONT_SIZE) / 2.0;
 
-        let text_color = if self.rename_input.is_empty() {
+        let text_color = if self.rename_input.value.is_empty() {
             [0.45, 0.45, 0.45, 1.0]
         } else {
             [0.93, 0.93, 0.93, 1.0]
@@ -1729,10 +1736,11 @@ impl Island {
         };
 
         // Determine visible text: trim from the front if it overflows.
-        let display_text: String = if self.rename_input.is_empty() {
+        let mut caret_prefix = String::new();
+        let display_text: String = if self.rename_input.value.is_empty() {
             "Tab title...".to_string()
         } else {
-            let input = self.rename_input.as_str();
+            let input = self.rename_input.value.as_str();
             let chars: Vec<char> = input.chars().collect();
             let ui = sugarloaf.text_mut();
             let mut start = 0;
@@ -1752,17 +1760,19 @@ impl Island {
                 }
                 start = lo;
             }
+            let caret = self.rename_input.caret.min(chars.len());
+            caret_prefix = chars[start.min(caret)..caret].iter().collect();
             chars[start..].iter().collect()
         };
 
-        let rendered_width =
-            sugarloaf
-                .text_mut()
-                .draw(text_x, text_y, &display_text, &rename_opts);
-        let rendered_width = if self.rename_input.is_empty() {
+        sugarloaf
+            .text_mut()
+            .draw(text_x, text_y, &display_text, &rename_opts);
+        // The caret follows the editing position, not the end of the text.
+        let rendered_width = if caret_prefix.is_empty() {
             0.0
         } else {
-            rendered_width
+            sugarloaf.text_mut().measure(&caret_prefix, &rename_opts)
         };
 
         // Blinking caret

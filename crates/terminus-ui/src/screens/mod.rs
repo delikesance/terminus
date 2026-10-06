@@ -20,6 +20,7 @@ pub mod snippets;
 
 use crate::geom::Rect;
 use crate::shell::WorkspaceView;
+use crate::text_field::{TextEdit, TextMoveKind};
 
 /// Content padding of a view (the mock's 28px).
 pub const PAD: f32 = 28.0;
@@ -56,6 +57,30 @@ pub enum ViewKey {
     PageUp,
     PageDown,
     F2,
+}
+
+/// Map a key to the shared text edit every field understands: Backspace,
+/// Delete, caret moves (Shift extends the selection, Ctrl jumps by word)
+/// and Ctrl+A. `None` for keys a field does not edit with.
+pub fn text_edit(key: &ViewKey, mods: ViewMods) -> Option<TextEdit> {
+    let kind = if mods.shift {
+        TextMoveKind::Extend
+    } else {
+        TextMoveKind::Collapse
+    };
+    let by_word = mods.ctrl;
+    Some(match key {
+        ViewKey::Backspace => TextEdit::Backspace { by_word },
+        ViewKey::Delete => TextEdit::Delete { by_word },
+        ViewKey::Left => TextEdit::Left { kind, by_word },
+        ViewKey::Right => TextEdit::Right { kind, by_word },
+        ViewKey::Home => TextEdit::Home { kind },
+        ViewKey::End => TextEdit::End { kind },
+        ViewKey::Text(t) if mods.ctrl && t.eq_ignore_ascii_case("a") => {
+            TextEdit::SelectAll
+        }
+        _ => return None,
+    })
 }
 
 /// One input event for the shown view, in logical window pixels.

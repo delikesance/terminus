@@ -4,7 +4,7 @@
 
 use super::super::Screen;
 use crate::renderer::views::history as painter;
-use terminus_ui::screens::{ViewInput, ViewKey, ViewOutcome};
+use terminus_ui::screens::{text_edit, ViewInput, ViewKey, ViewOutcome};
 use terminus_ui::shell::WorkspaceView;
 use terminus_ui::views::history::HistoryAction;
 
@@ -82,9 +82,8 @@ impl Screen<'_> {
                         state.filter_focused = true;
                         painter::text(state, t)
                     }
-                    ViewKey::Backspace => state.backspace(),
                     ViewKey::Escape => state.escape(),
-                    _ => false,
+                    other => text_edit(other, *mods).is_some_and(|e| state.edit(e)),
                 };
                 if consumed {
                     ViewOutcome::Redraw
