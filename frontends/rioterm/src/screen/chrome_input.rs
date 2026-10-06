@@ -6,7 +6,51 @@ use crate::hosts;
 use rio_window::event::ElementState;
 use rio_window::keyboard::{Key, NamedKey};
 
+/// The one winit-key → [`TextEdit`] mapping for text fields: Backspace,
+/// Delete, caret moves (Shift extends, Ctrl/Alt jumps by word) and
+/// Ctrl/Cmd+A. Every field routes keys through this so they cannot drift.
+pub(crate) fn text_edit_for_key(
+    key: &Key,
+    mods: rio_window::keyboard::ModifiersState,
+) -> Option<terminus_ui::TextEdit> {
+    use terminus_ui::{TextEdit, TextMoveKind};
+    let by_word = mods.control_key() || mods.alt_key();
+    let kind = if mods.shift_key() {
+        TextMoveKind::Extend
+    } else {
+        TextMoveKind::Collapse
+    };
+    Some(match key {
+        Key::Named(NamedKey::Backspace) => TextEdit::Backspace { by_word },
+        Key::Named(NamedKey::Delete) => TextEdit::Delete { by_word },
+        Key::Named(NamedKey::ArrowLeft) => TextEdit::Left { kind, by_word },
+        Key::Named(NamedKey::ArrowRight) => TextEdit::Right { kind, by_word },
+        Key::Named(NamedKey::Home) => TextEdit::Home { kind },
+        Key::Named(NamedKey::End) => TextEdit::End { kind },
+        Key::Character(ch)
+            if (mods.control_key() || mods.super_key())
+                && ch.eq_ignore_ascii_case("a") =>
+        {
+            TextEdit::SelectAll
+        }
+        _ => return None,
+    })
+}
+
 impl Screen<'_> {
+    fn rename_insert(&mut self, text: &str) {
+        if crate::renderer::is_printable_text(text) {
+            if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                draft.text.insert(text, 64, false);
+            }
+        }
+    }
+
+    fn ctrl_or_super(&self) -> bool {
+        let mods = self.modifiers.state();
+        mods.control_key() || mods.super_key()
+    }
+
     /// Route a key to the add-host editor. `None` when it is closed.
     ///
     /// Committed IME text never arrives here — it has no key event; the
@@ -35,24 +79,13 @@ impl Screen<'_> {
             if key_event.state != ElementState::Pressed {
                 return Some(FormOutcome::Consumed);
             }
-            let mods = self.modifiers.state();
-            let shift = mods.shift_key();
-            // Windows/Linux: Ctrl+Arrow = word. macOS: Option/Alt = word.
-            let word = mods.control_key() || mods.alt_key();
-            let select_mod = mods.control_key() || mods.super_key();
-            let move_kind = if shift {
-                terminus_ui::sidebar::RenameMoveKind::Extend
-            } else {
-                terminus_ui::sidebar::RenameMoveKind::Collapse
-            };
             match &key_event.logical_key {
                 Key::Named(NamedKey::Escape) => {
                     self.chrome.panel.cancel_rename();
-                    return Some(FormOutcome::Consumed);
                 }
                 Key::Named(NamedKey::Enter) => {
                     if let Some(draft) = self.chrome.panel.rename.clone() {
-                        let name = draft.name.trim().to_string();
+                        let name = draft.text.value.trim().to_string();
                         if !name.is_empty() {
                             if draft.is_group {
                                 self.host_store.rename_group(&draft.id, &name);
@@ -62,81 +95,25 @@ impl Screen<'_> {
                         }
                         self.chrome.panel.cancel_rename();
                     }
-                    return Some(FormOutcome::Consumed);
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.backspace(word);
-                    }
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Named(NamedKey::Delete) => {
-                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.delete_forward(word);
-                    }
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Named(NamedKey::ArrowLeft) => {
-                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.move_left(move_kind, word);
-                    }
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.move_right(move_kind, word);
-                    }
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Named(NamedKey::Home) => {
-                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.move_home(move_kind);
-                    }
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Named(NamedKey::End) => {
-                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.move_end(move_kind);
-                    }
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Named(NamedKey::Space) => {
-                    if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                        draft.insert(" ", 64);
-                    }
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Character(ch) => {
-                    // Ctrl/Cmd+A select-all (layout-independent via character).
-                    if select_mod && ch.eq_ignore_ascii_case("a") {
-                        if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                            draft.select_all();
-                        }
-                        return Some(FormOutcome::Consumed);
-                    }
-                    if select_mod {
-                        // Leave other Ctrl/Cmd chords alone (no insert of "c"/"v").
-                        return Some(FormOutcome::Consumed);
-                    }
+                Key::Character(ch) if !self.ctrl_or_super() => {
                     let text = key_event.text.as_deref().unwrap_or(ch.as_str());
-                    if crate::renderer::is_printable_text(text) {
-                        if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                            draft.insert(text, 64);
-                        }
-                    }
-                    return Some(FormOutcome::Consumed);
+                    self.rename_insert(text);
                 }
-                _ => {
-                    if let Some(text) = key_event.text.as_ref() {
-                        if !select_mod && crate::renderer::is_printable_text(text) {
-                            if let Some(draft) = self.chrome.panel.rename.as_mut() {
-                                draft.insert(text, 64);
-                            }
+                Key::Named(NamedKey::Space) => self.rename_insert(" "),
+                other => {
+                    if let Some(edit) = text_edit_for_key(other, self.modifiers.state()) {
+                        if let Some(draft) = self.chrome.panel.rename.as_mut() {
+                            draft.text.apply(edit);
+                        }
+                    } else if !self.ctrl_or_super() {
+                        if let Some(text) = key_event.text.as_deref() {
+                            self.rename_insert(text);
                         }
                     }
-                    return Some(FormOutcome::Consumed);
                 }
             }
+            return Some(FormOutcome::Consumed);
         }
 
         // Host-list search field: type to filter, Esc clears focus.
@@ -149,18 +126,19 @@ impl Screen<'_> {
                     self.chrome.panel.escape_filter();
                     return Some(FormOutcome::Consumed);
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.chrome.panel.filter.pop();
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Character(ch) => {
+                Key::Character(ch) if !self.ctrl_or_super() => {
                     let text = key_event.text.as_deref().unwrap_or(ch.as_str());
                     if crate::renderer::is_printable_text(text) {
-                        self.chrome.panel.filter.push_str(text);
+                        self.chrome.panel.filter.insert(text, usize::MAX, false);
                     }
                     return Some(FormOutcome::Consumed);
                 }
-                _ => return Some(FormOutcome::Consumed),
+                other => {
+                    if let Some(edit) = text_edit_for_key(other, self.modifiers.state()) {
+                        self.chrome.panel.filter.apply(edit);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
             }
         }
 
@@ -175,27 +153,26 @@ impl Screen<'_> {
                     return Some(FormOutcome::Consumed);
                 }
                 Key::Named(NamedKey::Enter) => {
-                    let name = self.chrome.panel.new_group_name.trim().to_string();
+                    let name = self.chrome.panel.new_group_name.value.trim().to_string();
                     if !name.is_empty() {
                         self.host_store.create_group(&name);
                         self.chrome.panel.close_new_group_form();
                     }
                     return Some(FormOutcome::Consumed);
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.chrome.panel.new_group_name.pop();
-                    return Some(FormOutcome::Consumed);
-                }
-                Key::Character(ch) => {
+                Key::Character(ch) if !self.ctrl_or_super() => {
                     let text = key_event.text.as_deref().unwrap_or(ch.as_str());
-                    if crate::renderer::is_printable_text(text)
-                        && self.chrome.panel.new_group_name.len() < 32
-                    {
-                        self.chrome.panel.new_group_name.push_str(text);
+                    if crate::renderer::is_printable_text(text) {
+                        self.chrome.panel.new_group_name.insert(text, 32, false);
                     }
                     return Some(FormOutcome::Consumed);
                 }
-                _ => return Some(FormOutcome::Consumed),
+                other => {
+                    if let Some(edit) = text_edit_for_key(other, self.modifiers.state()) {
+                        self.chrome.panel.new_group_name.apply(edit);
+                    }
+                    return Some(FormOutcome::Consumed);
+                }
             }
         }
 
@@ -208,9 +185,18 @@ impl Screen<'_> {
             return Some(FormOutcome::Consumed);
         }
 
+        // Text fields edit through the shared TextDraft router (word jumps,
+        // selection, Delete…); selects keep the arrow-cycling path below.
+        if self.chrome.form.focused_field().is_text() {
+            if let Some(edit) =
+                text_edit_for_key(&key_event.logical_key, self.modifiers.state())
+            {
+                self.chrome.form.edit(edit);
+                return Some(FormOutcome::Consumed);
+            }
+        }
+
         let input = match &key_event.logical_key {
-            Key::Named(NamedKey::Backspace) => FormInput::Backspace,
-            Key::Named(NamedKey::Delete) => FormInput::Delete,
             Key::Named(NamedKey::Enter) => FormInput::Enter,
             Key::Named(NamedKey::Escape) => FormInput::Escape,
             Key::Named(NamedKey::Tab) => {
@@ -378,10 +364,15 @@ impl Screen<'_> {
         if key_event.state != ElementState::Pressed {
             return false;
         }
+        if let Some(edit) =
+            text_edit_for_key(&key_event.logical_key, self.modifiers.state())
+        {
+            self.chrome.edit_vault_unlock(edit);
+            return false;
+        }
         let input = match &key_event.logical_key {
             Key::Named(NamedKey::Enter) => FormInput::Enter,
             Key::Named(NamedKey::Escape) => FormInput::Escape,
-            Key::Named(NamedKey::Backspace) => FormInput::Backspace,
             Key::Named(NamedKey::Tab) => FormInput::Next,
             _ => {
                 let text = key_event.text.as_deref().unwrap_or("");

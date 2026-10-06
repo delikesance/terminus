@@ -197,10 +197,10 @@ impl Application<'_> {
             }
             SidebarIntent::OpenHostSession { host_id } => {
                 for route in self.router.routes.values_mut() {
-                    let _ = route.window.screen.open_host_session(
-                        &host_id,
-                        &mut self.router.clipboard,
-                    );
+                    let _ = route
+                        .window
+                        .screen
+                        .open_host_session(&host_id, &mut self.router.clipboard);
                 }
             }
             SidebarIntent::ToggleGroup { group_id } => {
@@ -225,7 +225,12 @@ impl Application<'_> {
             }
             SidebarIntent::ToggleHostExpansion { host_id } => {
                 for route in self.router.routes.values_mut() {
-                    route.window.screen.chrome.panel.toggle_host_collapsed(&host_id);
+                    route
+                        .window
+                        .screen
+                        .chrome
+                        .panel
+                        .toggle_host_collapsed(&host_id);
                 }
             }
         }
@@ -284,7 +289,11 @@ impl Application<'_> {
     /// On failure: revert every window to the prior state and show the error
     /// on each window's sidebar panel.
     fn poll_group_collapse_outcome(&mut self) {
-        let outcome = match self.host_persistence.as_ref().and_then(|h| h.poll_outcome()) {
+        let outcome = match self
+            .host_persistence
+            .as_ref()
+            .and_then(|h| h.poll_outcome())
+        {
             Some(o) => o,
             None => return,
         };
@@ -1631,10 +1640,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::WindowControl(button) => {
-                                        route
-                                            .window
-                                            .screen
-                                            .apply_header_control(&route.window.winit_window, button);
+                                        route.window.screen.apply_header_control(
+                                            &route.window.winit_window,
+                                            button,
+                                        );
                                         route.request_redraw();
                                         return;
                                     }
@@ -1696,6 +1705,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             .chrome
                                             .panel
                                             .new_group_name
+                                            .value
                                             .trim()
                                             .to_string();
                                         if !name.is_empty() {
@@ -2541,8 +2551,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             if route.window.screen.view_owns(mx, my)
                                 && route.window.screen.chrome.panel.host_drag.is_none()
                             {
-                                let input =
-                                    terminus_ui::screens::ViewInput::Release { x: mx, y: my };
+                                let input = terminus_ui::screens::ViewInput::Release {
+                                    x: mx,
+                                    y: my,
+                                };
                                 if route
                                     .window
                                     .screen
@@ -2911,7 +2923,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             y: ly,
                             dragging,
                         };
-                        if route.window.screen.view_input(input, &mut self.router.clipboard)
+                        if route
+                            .window
+                            .screen
+                            .view_input(input, &mut self.router.clipboard)
                         {
                             chrome_dirty = true;
                         }
@@ -2946,7 +2961,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     }
                     // A view covering the terminal keeps the pointer too.
                     let shell = &route.window.screen.chrome.shell;
-                    if !shell.view().shows_terminal() && shell.layout().main.contains(lx, ly)
+                    if !shell.view().shows_terminal()
+                        && shell.layout().main.contains(lx, ly)
                     {
                         if route.window.screen.chrome_cursor_at(lx, ly).is_none()
                             && route.window.screen.sftp_cursor_at(lx, ly).is_none()
@@ -2989,7 +3005,10 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     let over_chrome = route
                         .window
                         .screen
-                        .chrome_cursor_at(x as f32 / scale_factor, y as f32 / scale_factor)
+                        .chrome_cursor_at(
+                            x as f32 / scale_factor,
+                            y as f32 / scale_factor,
+                        )
                         .is_some();
                     if !over_chrome {
                         route.window.winit_window.set_cursor(CursorIcon::Default);
@@ -3204,8 +3223,11 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                             MouseScrollDelta::LineDelta(_, lines) => -lines,
                             MouseScrollDelta::PixelDelta(pos) => -(pos.y as f32) / 20.0,
                         };
-                        let input =
-                            terminus_ui::screens::ViewInput::Wheel { x: mx, y: my, lines };
+                        let input = terminus_ui::screens::ViewInput::Wheel {
+                            x: mx,
+                            y: my,
+                            lines,
+                        };
                         if route
                             .window
                             .screen
@@ -3649,7 +3671,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     route.request_overlay_redraw();
                                 }
                                 terminus_ui::PendingVaultAction::SaveSshKey => {
-                                    if !route.window.screen.resubmit_settings_key_draft() {
+                                    if !route.window.screen.resubmit_settings_key_draft()
+                                    {
                                         route.window.screen.submit_key_draft();
                                     }
                                     route.request_overlay_redraw();

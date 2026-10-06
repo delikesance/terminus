@@ -22,6 +22,7 @@ use std::collections::HashSet;
 use crate::geom::Rect;
 use crate::icons::Icon;
 use crate::os_icons::HostStatus;
+use crate::text_field::TextDraft;
 
 /// Sidebar width, in logical pixels.
 pub const WIDTH: f32 = crate::shell::layout::SIDEBAR_WIDTH;
@@ -218,18 +219,22 @@ impl HostPanel {
         match hit {
             PanelHit::Item(index) => {
                 let host = self.rows.get(index)?.host()?;
-                Some(SidebarIntent::SelectHost { host_id: host.id.clone() })
+                Some(SidebarIntent::SelectHost {
+                    host_id: host.id.clone(),
+                })
             }
             PanelHit::ToggleHost(index) => {
                 let host = self.rows.get(index)?.host()?;
-                Some(SidebarIntent::ToggleHostExpansion { host_id: host.id.clone() })
+                Some(SidebarIntent::ToggleHostExpansion {
+                    host_id: host.id.clone(),
+                })
             }
-            PanelHit::Group(index) => {
-                match self.rows.get(index)? {
-                    Row::Group { id, .. } => Some(SidebarIntent::ToggleGroup { group_id: id.clone() }),
-                    _ => None,
-                }
-            }
+            PanelHit::Group(index) => match self.rows.get(index)? {
+                Row::Group { id, .. } => Some(SidebarIntent::ToggleGroup {
+                    group_id: id.clone(),
+                }),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -468,300 +473,14 @@ pub enum PanelHit {
     Background,
 }
 
-/// Inline rename of a host or group from the context menu.
+/// Inline rename of a host or group from the context menu. The text is the
+/// shared [`TextDraft`], so it edits exactly like every other field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenameDraft {
     pub id: String,
     pub is_group: bool,
-    pub name: String,
-    /// Character index of the caret inside [`Self::name`].
-    pub caret: usize,
-    /// When set, selection spans `[min(anchor, caret), max(anchor, caret))`.
-    pub sel_anchor: Option<usize>,
+    pub text: TextDraft,
     pub focused: bool,
-}
-
-/// How a caret move should treat an existing selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenameMoveKind {
-    /// Collapse selection (if any) then move the caret.
-    Collapse,
-    /// Extend or start a selection (Shift held).
-    Extend,
-}
-
-impl RenameDraft {
-    /// Inclusive-exclusive character range of the selection, if any.
-    pub fn selection_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.sel_anchor?;
-        let (a, b) = if anchor <= self.caret {
-            (anchor, self.caret)
-        } else {
-            (self.caret, anchor)
-        };
-        (a < b).then_some((a, b))
-    }
-
-    pub fn clear_selection(&mut self) {
-        self.sel_anchor = None;
-    }
-
-    pub fn select_all(&mut self) -> bool {
-        let end = self.name.chars().count();
-        if end == 0 {
-            return false;
-        }
-        self.sel_anchor = Some(0);
-        self.caret = end;
-        true
-    }
-
-    /// Delete the selected range, if any. Returns whether anything changed.
-    pub fn delete_selection(&mut self) -> bool {
-        let Some((start, end)) = self.selection_range() else {
-            return false;
-        };
-        let from = rename_char_byte(&self.name, start);
-        let to = rename_char_byte(&self.name, end);
-        self.name.replace_range(from..to, "");
-        self.caret = start;
-        self.sel_anchor = None;
-        true
-    }
-
-    /// Insert printable text at the caret (replacing the selection).
-    pub fn insert(&mut self, text: &str, max_bytes: usize) -> bool {
-        if text.is_empty() || text.chars().any(char::is_control) {
-            return false;
-        }
-        self.delete_selection();
-        if self.name.len() + text.len() > max_bytes {
-            return false;
-        }
-        let byte = rename_char_byte(&self.name, self.caret);
-        self.name.insert_str(byte, text);
-        self.caret += text.chars().count();
-        self.sel_anchor = None;
-        true
-    }
-
-    /// Delete before the caret, or the selection, or the previous word.
-    pub fn backspace(&mut self, by_word: bool) -> bool {
-        if self.delete_selection() {
-            return true;
-        }
-        if by_word {
-            let start = word_boundary_left(&self.name, self.caret);
-            if start == self.caret {
-                return false;
-            }
-            let from = rename_char_byte(&self.name, start);
-            let to = rename_char_byte(&self.name, self.caret);
-            self.name.replace_range(from..to, "");
-            self.caret = start;
-            return true;
-        }
-        if self.caret == 0 {
-            return false;
-        }
-        let start = rename_char_byte(&self.name, self.caret - 1);
-        let end = rename_char_byte(&self.name, self.caret);
-        self.name.replace_range(start..end, "");
-        self.caret -= 1;
-        true
-    }
-
-    /// Delete after the caret, or the selection, or the next word.
-    pub fn delete_forward(&mut self, by_word: bool) -> bool {
-        if self.delete_selection() {
-            return true;
-        }
-        let len = self.name.chars().count();
-        if self.caret >= len {
-            return false;
-        }
-        if by_word {
-            let end = word_boundary_right(&self.name, self.caret);
-            if end == self.caret {
-                return false;
-            }
-            let from = rename_char_byte(&self.name, self.caret);
-            let to = rename_char_byte(&self.name, end);
-            self.name.replace_range(from..to, "");
-            return true;
-        }
-        let start = rename_char_byte(&self.name, self.caret);
-        let end = rename_char_byte(&self.name, self.caret + 1);
-        self.name.replace_range(start..end, "");
-        true
-    }
-
-    fn prepare_move(&mut self, kind: RenameMoveKind) {
-        match kind {
-            RenameMoveKind::Collapse => {
-                if let Some((start, end)) = self.selection_range() {
-                    // Bare arrow collapses to the edge in the move direction
-                    // after the caller adjusts caret — clear here first.
-                    let _ = (start, end);
-                }
-                self.sel_anchor = None;
-            }
-            RenameMoveKind::Extend => {
-                if self.sel_anchor.is_none() {
-                    self.sel_anchor = Some(self.caret);
-                }
-            }
-        }
-    }
-
-    pub fn move_left(&mut self, kind: RenameMoveKind, by_word: bool) -> bool {
-        if kind == RenameMoveKind::Collapse {
-            if let Some((start, _)) = self.selection_range() {
-                self.caret = start;
-                self.sel_anchor = None;
-                return true;
-            }
-        }
-        self.prepare_move(kind);
-        let next = if by_word {
-            word_boundary_left(&self.name, self.caret)
-        } else if self.caret == 0 {
-            self.caret
-        } else {
-            self.caret - 1
-        };
-        if next == self.caret && kind != RenameMoveKind::Extend {
-            return false;
-        }
-        let changed = next != self.caret || self.selection_range().is_some();
-        self.caret = next;
-        if kind == RenameMoveKind::Collapse {
-            self.sel_anchor = None;
-        }
-        changed || kind == RenameMoveKind::Extend
-    }
-
-    pub fn move_right(&mut self, kind: RenameMoveKind, by_word: bool) -> bool {
-        if kind == RenameMoveKind::Collapse {
-            if let Some((_, end)) = self.selection_range() {
-                self.caret = end;
-                self.sel_anchor = None;
-                return true;
-            }
-        }
-        self.prepare_move(kind);
-        let len = self.name.chars().count();
-        let next = if by_word {
-            word_boundary_right(&self.name, self.caret)
-        } else if self.caret >= len {
-            self.caret
-        } else {
-            self.caret + 1
-        };
-        let changed = next != self.caret;
-        self.caret = next;
-        if kind == RenameMoveKind::Collapse {
-            self.sel_anchor = None;
-        }
-        changed || kind == RenameMoveKind::Extend
-    }
-
-    pub fn move_home(&mut self, kind: RenameMoveKind) -> bool {
-        self.prepare_move(kind);
-        if self.caret == 0 && kind == RenameMoveKind::Collapse {
-            return false;
-        }
-        self.caret = 0;
-        if kind == RenameMoveKind::Collapse {
-            self.sel_anchor = None;
-        }
-        true
-    }
-
-    pub fn move_end(&mut self, kind: RenameMoveKind) -> bool {
-        self.prepare_move(kind);
-        let end = self.name.chars().count();
-        if self.caret == end && kind == RenameMoveKind::Collapse {
-            return false;
-        }
-        self.caret = end;
-        if kind == RenameMoveKind::Collapse {
-            self.sel_anchor = None;
-        }
-        true
-    }
-
-    /// Text before the caret, for painting the caret inline.
-    pub fn prefix(&self) -> String {
-        self.name.chars().take(self.caret).collect()
-    }
-
-    /// Text before the selection start (or caret if none).
-    pub fn before_selection(&self) -> String {
-        let start = self.selection_range().map(|(s, _)| s).unwrap_or(self.caret);
-        self.name.chars().take(start).collect()
-    }
-
-    /// Selected text, empty when nothing is selected.
-    pub fn selected_text(&self) -> String {
-        let Some((start, end)) = self.selection_range() else {
-            return String::new();
-        };
-        self.name.chars().skip(start).take(end - start).collect()
-    }
-}
-
-fn rename_char_byte(value: &str, chars: usize) -> usize {
-    value
-        .char_indices()
-        .nth(chars)
-        .map(|(byte, _)| byte)
-        .unwrap_or(value.len())
-}
-
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
-}
-
-fn word_boundary_left(value: &str, caret: usize) -> usize {
-    let chars: Vec<char> = value.chars().collect();
-    if caret == 0 || chars.is_empty() {
-        return 0;
-    }
-    let mut i = caret.min(chars.len());
-    // Skip trailing whitespace left of caret.
-    while i > 0 && chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    if i == 0 {
-        return 0;
-    }
-    let word = is_word_char(chars[i - 1]);
-    while i > 0 && is_word_char(chars[i - 1]) == word && !chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    i
-}
-
-fn word_boundary_right(value: &str, caret: usize) -> usize {
-    let chars: Vec<char> = value.chars().collect();
-    let len = chars.len();
-    if caret >= len {
-        return len;
-    }
-    let mut i = caret;
-    // Skip whitespace under/after caret.
-    while i < len && chars[i].is_whitespace() {
-        i += 1;
-    }
-    if i >= len {
-        return len;
-    }
-    let word = is_word_char(chars[i]);
-    while i < len && is_word_char(chars[i]) == word && !chars[i].is_whitespace() {
-        i += 1;
-    }
-    i
 }
 
 /// Sidebar state.
@@ -775,7 +494,7 @@ pub struct HostPanel {
     /// Whether the pointer is over the add-host header action.
     pub add_hover: bool,
     /// Filter text for the host list search field.
-    pub filter: String,
+    pub filter: TextDraft,
     /// Whether the search field has keyboard focus.
     pub filter_focused: bool,
     /// Whether the pointer is over the new-group header button.
@@ -783,7 +502,7 @@ pub struct HostPanel {
     /// Inline form under Hosts for naming a new group.
     pub new_group_drafting: bool,
     /// Draft name while [`Self::new_group_drafting`] is true.
-    pub new_group_name: String,
+    pub new_group_name: TextDraft,
     /// Whether the new-group name field has keyboard focus.
     pub new_group_focused: bool,
     /// Context-menu rename of a host or group row.
@@ -822,7 +541,7 @@ impl HostPanel {
 
     /// Whether the filter field is on screen: while focused or non-empty.
     pub fn filter_visible(&self) -> bool {
-        self.filter_focused || !self.filter.is_empty()
+        self.filter_focused || !self.filter.value.is_empty()
     }
 
     /// Title-only band ("SERVERS & HOSTS").
@@ -846,7 +565,12 @@ impl HostPanel {
             return Rect::new(0.0, 0.0, 0.0, 0.0);
         }
         let band = self.search_band_rect(origin_y);
-        Rect::new(band.x + PAD_X, band.y, band.width - 2.0 * PAD_X, SEARCH_HEIGHT)
+        Rect::new(
+            band.x + PAD_X,
+            band.y,
+            band.width - 2.0 * PAD_X,
+            SEARCH_HEIGHT,
+        )
     }
 
     /// Height reserved for a sticky notice/error card, including margin.
@@ -921,9 +645,9 @@ impl HostPanel {
     /// Index of the `Servers` section row (ungrouped stored hosts), if
     /// present. `Hosts` is accepted for older row sets.
     pub fn hosts_section_index(&self) -> Option<usize> {
-        self.rows.iter().position(|row| {
-            matches!(row.label(), Some(SERVERS_SECTION) | Some("Hosts"))
-        })
+        self.rows
+            .iter()
+            .position(|row| matches!(row.label(), Some(SERVERS_SECTION) | Some("Hosts")))
     }
 
     /// First row of the user's stored machines: the first group header,
@@ -1042,15 +766,13 @@ impl HostPanel {
     pub fn begin_rename(&mut self, id: String, is_group: bool, current_name: &str) {
         self.filter_focused = false;
         self.new_group_focused = false;
-        let name = current_name.to_string();
-        let caret = name.chars().count();
+        let mut text = TextDraft::new(current_name);
+        // Whole name selected: typing replaces it, arrows keep it.
+        text.select_all();
         self.rename = Some(RenameDraft {
             id,
             is_group,
-            name,
-            caret,
-            // Whole name selected: typing replaces it, arrows keep it.
-            sel_anchor: (caret > 0).then_some(0),
+            text,
             focused: true,
         });
     }
@@ -1145,7 +867,10 @@ impl HostPanel {
             .map(Row::card_height)
             .unwrap_or(ITEM_HEIGHT);
         // Headers sit at the bottom of their slot, under the top gap.
-        if matches!(self.rows.get(index), Some(Row::Section(_) | Row::Group { .. })) {
+        if matches!(
+            self.rows.get(index),
+            Some(Row::Section(_) | Row::Group { .. })
+        ) {
             return Rect::new(slot.x, slot.bottom() - h, slot.width, h);
         }
         let (nest_left, nest_right) = match self.rows.get(index) {
@@ -1607,7 +1332,7 @@ impl HostPanel {
 
     /// Row indices that should be painted and hit-tested.
     pub fn visible_row_indices(&self) -> Vec<usize> {
-        let filter_lower = self.filter.trim().to_ascii_lowercase();
+        let filter_lower = self.filter.value.trim().to_ascii_lowercase();
         let filtering = !filter_lower.is_empty();
 
         let host_visible = |host: &HostItem| -> bool {
@@ -1765,7 +1490,7 @@ impl HostPanel {
     /// What to say when the list shows no host of the user's: none saved
     /// yet, or none matching the filter.
     pub fn empty_hint(&self) -> Option<EmptyHint> {
-        let filter = self.filter.trim();
+        let filter = self.filter.value.trim();
         if !filter.is_empty() {
             let any_host = self.visible_row_indices().into_iter().any(|i| {
                 self.rows
@@ -1800,7 +1525,7 @@ impl HostPanel {
     /// Esc in the filter: clear it first, leave the field on the next one,
     /// so hosts are never left hidden behind a filter nobody sees.
     pub fn escape_filter(&mut self) {
-        if self.filter.is_empty() {
+        if self.filter.value.is_empty() {
             self.filter_focused = false;
         } else {
             self.filter.clear();
@@ -1812,17 +1537,16 @@ impl HostPanel {
     pub fn content_height(&self) -> f32 {
         let hosts_idx = self.hosts_section_index();
         let form_extra = self.new_group_form_slot_height();
-        self
-                .visible_row_indices()
-                .into_iter()
-                .map(|index| {
-                    let mut h = self.row_slot_height(index);
-                    if hosts_idx == Some(index) {
-                        h += form_extra;
-                    }
-                    h
-                })
-                .sum::<f32>()
+        self.visible_row_indices()
+            .into_iter()
+            .map(|index| {
+                let mut h = self.row_slot_height(index);
+                if hosts_idx == Some(index) {
+                    h += form_extra;
+                }
+                h
+            })
+            .sum::<f32>()
     }
 
     /// How many stored hosts the list holds: what the `Hosts` section shows
@@ -2192,6 +1916,7 @@ impl HostPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text_field::TextMoveKind;
 
     #[test]
     fn section_label_and_geometry_helpers_are_consistent() {
@@ -2340,7 +2065,12 @@ mod tests {
         assert_eq!(panel.scroll, 0.0);
         assert_eq!(panel.max_scroll(oy, h), 0.0);
         assert_eq!(
-            panel.hit_test(oy, h, ORIGIN_X + PAD_X + 10.0, panel.item_rect(oy, 0).y + 2.0),
+            panel.hit_test(
+                oy,
+                h,
+                ORIGIN_X + PAD_X + 10.0,
+                panel.item_rect(oy, 0).y + 2.0
+            ),
             Some(PanelHit::Item(0))
         );
     }
@@ -2616,14 +2346,14 @@ mod tests {
         assert_eq!(panel.count_label(), "3 hosts");
         assert!(panel.empty_hint().is_none(), "not 'No saved hosts yet'");
         // Filtering on the group's name shows the group: not "No matches".
-        panel.filter = "prod".into();
+        panel.filter = TextDraft::new("prod");
         assert!(panel.empty_hint().is_none());
     }
 
     #[test]
     fn a_filter_with_no_match_says_so_and_how_to_clear_it() {
         let mut panel = panel(2);
-        panel.filter = "zzz".to_string();
+        panel.filter = TextDraft::new("zzz");
         let hint = panel.empty_hint().expect("hint");
         assert_eq!(hint.title, "No matches");
         assert!(
@@ -2631,7 +2361,7 @@ mod tests {
             "{}",
             hint.body
         );
-        panel.filter = "host-1".to_string();
+        panel.filter = TextDraft::new("host-1");
         assert!(panel.empty_hint().is_none(), "a match hides the hint");
     }
 
@@ -2648,10 +2378,10 @@ mod tests {
     #[test]
     fn escape_clears_the_filter_before_leaving_it() {
         let mut panel = panel(2);
-        panel.filter = "zzz".to_string();
+        panel.filter = TextDraft::new("zzz");
         panel.filter_focused = true;
         panel.escape_filter();
-        assert_eq!(panel.filter, "");
+        assert_eq!(panel.filter.value, "");
         assert!(panel.filter_focused, "first Esc only clears");
         panel.escape_filter();
         assert!(!panel.filter_focused);
@@ -2687,9 +2417,9 @@ mod tests {
         let mut panel = panel(1);
         panel.begin_rename("id-0".into(), false, "old-name");
         let draft = panel.rename.as_mut().unwrap();
-        assert_eq!(draft.selection_range(), Some((0, 8)));
-        draft.insert("web", 64);
-        assert_eq!(draft.name, "web", "typing replaces the old name");
+        assert_eq!(draft.text.selection_range(), Some((0, 8)));
+        draft.text.insert("web", 64, false);
+        assert_eq!(draft.text.value, "web", "typing replaces the old name");
     }
 
     #[test]
@@ -2763,7 +2493,9 @@ mod tests {
         // First header drops its top gap.
         assert_eq!(
             panel.content_height(),
-            SECTION_HEIGHT + (SECTION_GAP + SECTION_HEIGHT) + 4.0 * (ITEM_HEIGHT + CARD_GAP)
+            SECTION_HEIGHT
+                + (SECTION_GAP + SECTION_HEIGHT)
+                + 4.0 * (ITEM_HEIGHT + CARD_GAP)
         );
         // Local + two platform hosts + Hosts + two stored hosts.
         assert_eq!(panel.rows.len(), 6);
@@ -2772,7 +2504,11 @@ mod tests {
 
         // Rows stack in order: Local, local, wsl, Hosts, then stored hosts.
         assert_eq!(panel.item_rect(oy, 1).y, panel.item_rect(oy, 0).bottom());
-        assert_eq!(panel.item_rect(oy, 0).height, SECTION_HEIGHT, "first header");
+        assert_eq!(
+            panel.item_rect(oy, 0).height,
+            SECTION_HEIGHT,
+            "first header"
+        );
         assert_eq!(
             panel.item_rect(oy, 3).height,
             SECTION_GAP + SECTION_HEIGHT,
@@ -3024,24 +2760,24 @@ mod tests {
         let mut panel = HostPanel::default();
         panel.begin_rename("h1".into(), false, "web");
         let draft = panel.rename.as_mut().unwrap();
-        assert_eq!(draft.caret, 3);
+        assert_eq!(draft.text.caret, 3);
         // End drops the initial select-all, caret stays at the end.
-        draft.move_end(RenameMoveKind::Collapse);
-        assert_eq!(draft.selection_range(), None);
-        assert!(draft.move_left(RenameMoveKind::Collapse, false));
-        assert_eq!(draft.caret, 2);
-        assert!(draft.insert(" ", 64));
-        assert_eq!(draft.name, "we b");
-        assert_eq!(draft.caret, 3);
-        assert!(draft.insert("01", 64));
-        assert_eq!(draft.name, "we 01b");
-        assert_eq!(draft.prefix(), "we 01");
-        assert!(draft.move_home(RenameMoveKind::Collapse));
-        assert_eq!(draft.caret, 0);
-        assert!(draft.move_end(RenameMoveKind::Collapse));
-        assert_eq!(draft.caret, draft.name.chars().count());
-        assert!(draft.backspace(false));
-        assert_eq!(draft.name, "we 01");
+        draft.text.move_end(TextMoveKind::Collapse);
+        assert_eq!(draft.text.selection_range(), None);
+        assert!(draft.text.move_left(TextMoveKind::Collapse, false));
+        assert_eq!(draft.text.caret, 2);
+        assert!(draft.text.insert(" ", 64, false));
+        assert_eq!(draft.text.value, "we b");
+        assert_eq!(draft.text.caret, 3);
+        assert!(draft.text.insert("01", 64, false));
+        assert_eq!(draft.text.value, "we 01b");
+        assert_eq!(draft.text.prefix(), "we 01");
+        assert!(draft.text.move_home(TextMoveKind::Collapse));
+        assert_eq!(draft.text.caret, 0);
+        assert!(draft.text.move_end(TextMoveKind::Collapse));
+        assert_eq!(draft.text.caret, draft.text.value.chars().count());
+        assert!(draft.text.backspace(false));
+        assert_eq!(draft.text.value, "we 01");
     }
 
     #[test]
@@ -3049,29 +2785,28 @@ mod tests {
         let mut panel = HostPanel::default();
         panel.begin_rename("h1".into(), false, "main-server box");
         let draft = panel.rename.as_mut().unwrap();
-        draft.move_home(RenameMoveKind::Collapse);
-        assert!(draft.move_right(RenameMoveKind::Extend, false));
-        assert!(draft.move_right(RenameMoveKind::Extend, false));
-        assert!(draft.move_right(RenameMoveKind::Extend, false));
-        assert_eq!(draft.selection_range(), Some((0, 3)));
-        assert_eq!(draft.selected_text(), "mai");
-        assert!(draft.move_right(RenameMoveKind::Collapse, true));
+        draft.text.move_home(TextMoveKind::Collapse);
+        assert!(draft.text.move_right(TextMoveKind::Extend, false));
+        assert!(draft.text.move_right(TextMoveKind::Extend, false));
+        assert!(draft.text.move_right(TextMoveKind::Extend, false));
+        assert_eq!(draft.text.selection_range(), Some((0, 3)));
+        assert!(draft.text.move_right(TextMoveKind::Collapse, true));
         // Collapse to end of selection then word-jump would need two steps;
         // after collapse-by-right with selection, caret is at 3.
-        assert_eq!(draft.caret, 3);
-        assert!(draft.selection_range().is_none());
-        assert!(draft.move_right(RenameMoveKind::Collapse, true));
-        assert_eq!(draft.caret, 11); // after "main-server"
-        assert!(draft.select_all());
+        assert_eq!(draft.text.caret, 3);
+        assert!(draft.text.selection_range().is_none());
+        assert!(draft.text.move_right(TextMoveKind::Collapse, true));
+        assert_eq!(draft.text.caret, 4); // after "main" (shared word rules)
+        assert!(draft.text.select_all());
         assert_eq!(
-            draft.selection_range(),
-            Some((0, draft.name.chars().count()))
+            draft.text.selection_range(),
+            Some((0, draft.text.value.chars().count()))
         );
-        assert!(draft.insert("foo bar", 64));
-        assert_eq!(draft.name, "foo bar");
-        draft.move_end(RenameMoveKind::Collapse);
-        assert!(draft.backspace(true));
-        assert_eq!(draft.name, "foo ");
+        assert!(draft.text.insert("foo bar", 64, false));
+        assert_eq!(draft.text.value, "foo bar");
+        draft.text.move_end(TextMoveKind::Collapse);
+        assert!(draft.text.backspace(true));
+        assert_eq!(draft.text.value, "foo ");
     }
 
     // ---- intent slice --------------------------------------------------
@@ -3145,7 +2880,9 @@ mod tests {
             let intent = panel.resolve_intent(hit.unwrap()).unwrap();
             assert_eq!(
                 intent,
-                SidebarIntent::SelectHost { host_id: format!("id-{index}") },
+                SidebarIntent::SelectHost {
+                    host_id: format!("id-{index}")
+                },
                 "row {index} should emit SelectHost"
             );
             // Must not conflate selection with opening a session.
@@ -3167,7 +2904,9 @@ mod tests {
         let intent = panel.resolve_intent(hit.unwrap()).unwrap();
         assert_eq!(
             intent,
-            SidebarIntent::ToggleHostExpansion { host_id: "host-a".into() },
+            SidebarIntent::ToggleHostExpansion {
+                host_id: "host-a".into()
+            },
             "chevron on host must emit ToggleHostExpansion, not ToggleGroup"
         );
         assert!(
@@ -3185,7 +2924,9 @@ mod tests {
         assert_eq!(hit, Some(PanelHit::Group(0)));
         assert_eq!(
             panel.resolve_intent(hit.unwrap()),
-            Some(SidebarIntent::ToggleGroup { group_id: "grp-1".into() })
+            Some(SidebarIntent::ToggleGroup {
+                group_id: "grp-1".into()
+            })
         );
     }
 
@@ -3251,7 +2992,11 @@ mod tests {
         // Second toggle: expands them back.
         panel.toggle_host_collapsed("host-a");
         assert!(!panel.collapsed_hosts.contains("host-a"));
-        assert_eq!(panel.visible_row_indices(), vec![0, 1, 2], "sessions restored");
+        assert_eq!(
+            panel.visible_row_indices(),
+            vec![0, 1, 2],
+            "sessions restored"
+        );
     }
 
     #[test]
@@ -3266,7 +3011,11 @@ mod tests {
 
         // Expand: nested host is back.
         panel.collapsed_groups.remove("grp-1");
-        assert_eq!(panel.visible_row_indices(), vec![0, 1], "nested host restored");
+        assert_eq!(
+            panel.visible_row_indices(),
+            vec![0, 1],
+            "nested host restored"
+        );
 
         // Verify the group hit still maps to ToggleGroup (not ToggleHostExpansion).
         let (oy, h) = tall();
@@ -3274,7 +3023,9 @@ mod tests {
         let hit = panel.hit_test(oy, h, rect.x + 10.0, rect.y + rect.height / 2.0);
         assert_eq!(
             panel.resolve_intent(hit.unwrap()),
-            Some(SidebarIntent::ToggleGroup { group_id: "grp-1".into() })
+            Some(SidebarIntent::ToggleGroup {
+                group_id: "grp-1".into()
+            })
         );
     }
 
@@ -3348,7 +3099,10 @@ mod tests {
         );
         // The local machines above are not a drop zone.
         let local = panel.card_rect(oy, 1);
-        assert_eq!(panel.drop_target_at(oy, h, local.x + 10.0, local.y + 10.0), None);
+        assert_eq!(
+            panel.drop_target_at(oy, h, local.x + 10.0, local.y + 10.0),
+            None
+        );
     }
 
     #[test]
@@ -3387,7 +3141,7 @@ mod tests {
             Some(PanelHit::Search)
         );
         panel.filter_focused = false;
-        panel.filter = "prod".into();
+        panel.filter = TextDraft::new("prod");
         assert!(panel.filter_visible(), "a live filter stays visible");
         panel.escape_filter();
         assert!(!panel.filter_visible());
@@ -3409,7 +3163,7 @@ mod tests {
     fn filtering_hides_a_section_whose_own_rows_do_not_match() {
         let mut panel = HostPanel::default();
         panel.set_rows(shell_rows());
-        panel.filter = "prod".into();
+        panel.filter = TextDraft::new("prod");
         // "This computer" (local only) is hidden; the group with prod stays.
         assert_eq!(panel.visible_row_indices(), vec![2, 3]);
     }
@@ -3474,7 +3228,10 @@ mod tests {
         assert!(panel.reveal_row(25, oy, h));
         let card = panel.card_rect(oy, 25);
         assert!(panel.row_painted(oy, h, 25));
-        assert!((card.bottom() - body.bottom()).abs() < 0.01, "lands at the bottom");
+        assert!(
+            (card.bottom() - body.bottom()).abs() < 0.01,
+            "lands at the bottom"
+        );
 
         assert!(panel.reveal_row(0, oy, h));
         assert_eq!(panel.scroll, 0.0);
@@ -3493,14 +3250,20 @@ mod tests {
         let body = panel.body_rect(oy, h);
         assert!(panel.drag_autoscroll_speed(oy, h, body.bottom() - 4.0) > 0.0);
         assert!(panel.drag_autoscroll_speed(oy, h, body.y + 4.0) < 0.0);
-        assert_eq!(panel.drag_autoscroll_speed(oy, h, body.y + body.height / 2.0), 0.0);
+        assert_eq!(
+            panel.drag_autoscroll_speed(oy, h, body.y + body.height / 2.0),
+            0.0
+        );
         // Nearer the edge scrolls faster.
         assert!(
             panel.drag_autoscroll_speed(oy, h, body.bottom() - 2.0)
                 > panel.drag_autoscroll_speed(oy, h, body.bottom() - 20.0)
         );
         // Nothing to scroll: no auto-scroll.
-        assert_eq!(panel_fit().drag_autoscroll_speed(oy, h, body.bottom() - 4.0), 0.0);
+        assert_eq!(
+            panel_fit().drag_autoscroll_speed(oy, h, body.bottom() - 4.0),
+            0.0
+        );
     }
 
     fn panel_fit() -> HostPanel {

@@ -7,7 +7,7 @@
 // which is licensed under Apache 2.0 license.
 
 mod chrome;
-mod chrome_input;
+pub(crate) mod chrome_input;
 mod clipboard;
 mod config;
 pub mod hint;
@@ -23,10 +23,10 @@ mod search;
 mod selection;
 mod sessions;
 mod sftp;
-mod workspace;
 mod shell;
-mod tunnels;
 pub mod touch;
+mod tunnels;
+mod workspace;
 
 use crate::bindings::MouseBinding;
 use crate::context;

@@ -7,6 +7,7 @@
 use crate::components::overlay::wrap_text;
 use crate::confirm::{estimate_text_width, BODY_FONT, BUTTON_ADVANCE, BUTTON_FONT};
 use crate::geom::Rect;
+use crate::text_field::{FieldPaint, TextDraft, TextEdit};
 
 pub const WIDTH: f32 = 400.0;
 pub const PAD: f32 = 32.0;
@@ -98,7 +99,7 @@ pub enum VaultUnlockHit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VaultUnlockPrompt {
     open: bool,
-    passphrase: String,
+    passphrase: TextDraft,
     visible: bool,
     /// Persist passphrase in the OS keyring after a successful unlock.
     remember: bool,
@@ -107,7 +108,7 @@ pub struct VaultUnlockPrompt {
     unlocking: bool,
     /// No vault exists yet: this prompt creates one (asks twice).
     creating: bool,
-    confirm: String,
+    confirm: TextDraft,
     confirm_focused: bool,
     /// Name of the host this unlock is for, when known.
     host_label: Option<String>,
@@ -117,11 +118,11 @@ impl Default for VaultUnlockPrompt {
     fn default() -> Self {
         Self {
             creating: false,
-            confirm: String::new(),
+            confirm: TextDraft::default(),
             confirm_focused: false,
             host_label: None,
             open: false,
-            passphrase: String::new(),
+            passphrase: TextDraft::default(),
             visible: false,
             remember: false,
             error: None,
@@ -172,7 +173,7 @@ impl VaultUnlockPrompt {
     }
 
     pub fn passphrase(&self) -> &str {
-        &self.passphrase
+        &self.passphrase.value
     }
 
     pub fn visible(&self) -> bool {
@@ -213,25 +214,29 @@ impl VaultUnlockPrompt {
         self.visible = !self.visible;
     }
 
-    pub fn insert(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
+    fn focused_draft(&mut self) -> &mut TextDraft {
         if self.confirm_focused {
-            self.confirm.push_str(text);
+            &mut self.confirm
         } else {
-            self.passphrase.push_str(text);
+            &mut self.passphrase
         }
-        self.error = None;
+    }
+
+    pub fn insert(&mut self, text: &str) {
+        if self.focused_draft().insert(text, usize::MAX, false) {
+            self.error = None;
+        }
+    }
+
+    /// Shared text editing (Backspace, Delete, caret, selection).
+    pub fn edit(&mut self, edit: TextEdit) {
+        if self.focused_draft().apply(edit) {
+            self.error = None;
+        }
     }
 
     pub fn backspace(&mut self) {
-        if self.confirm_focused {
-            self.confirm.pop();
-        } else {
-            self.passphrase.pop();
-        }
-        self.error = None;
+        self.edit(TextEdit::Backspace { by_word: false });
     }
 
     /// Whether this prompt creates a new vault (no vault header yet).
@@ -322,45 +327,29 @@ impl VaultUnlockPrompt {
 
     /// The passphrase to submit, or the message to show instead.
     pub fn validate(&self) -> Result<String, String> {
-        if self.passphrase.trim().is_empty() {
+        let pass = &self.passphrase.value;
+        if pass.trim().is_empty() {
             return Err("Enter your vault passphrase".into());
         }
         if self.creating {
-            if self.passphrase.trim().chars().count() < MIN_PASSPHRASE_CHARS {
+            if pass.trim().chars().count() < MIN_PASSPHRASE_CHARS {
                 return Err(format!("Use at least {MIN_PASSPHRASE_CHARS} characters"));
             }
-            if self.confirm != self.passphrase {
+            if self.confirm.value != *pass {
                 return Err("Passphrases do not match".into());
             }
         }
-        Ok(self.passphrase.clone())
+        Ok(pass.clone())
     }
 
     /// Paint model for the confirm field.
-    pub fn confirm_field_paint(&self) -> crate::text_field::FieldPaint {
-        use crate::text_field::FieldPaint;
-        if self.confirm.is_empty() {
-            FieldPaint {
-                text: "Repeat passphrase…".into(),
-                placeholder: true,
-                show_caret: self.confirm_focused,
-                caret_prefix: String::new(),
-                selection: None,
-            }
-        } else {
-            let text = if self.visible {
-                self.confirm.clone()
-            } else {
-                "•".repeat(self.confirm.chars().count())
-            };
-            FieldPaint {
-                caret_prefix: text.clone(),
-                text,
-                placeholder: false,
-                show_caret: self.confirm_focused,
-                selection: None,
-            }
-        }
+    pub fn confirm_field_paint(&self) -> FieldPaint {
+        FieldPaint::from_draft_masked(
+            &self.confirm,
+            "Repeat passphrase…",
+            self.confirm_focused,
+            !self.visible,
+        )
     }
 
     /// Display string for the shared Settings field painter (masking included).
@@ -370,35 +359,13 @@ impl VaultUnlockPrompt {
     }
 
     /// Shared [`FieldPaint`] model (same path as Settings / SFTP fields).
-    pub fn field_paint(&self) -> crate::text_field::FieldPaint {
-        use crate::text_field::FieldPaint;
-        let caret = !self.confirm_focused;
-        if self.passphrase.is_empty() {
-            FieldPaint {
-                text: "Enter passphrase…".into(),
-                placeholder: true,
-                show_caret: caret,
-                caret_prefix: String::new(),
-                selection: None,
-            }
-        } else if self.visible {
-            FieldPaint {
-                text: self.passphrase.clone(),
-                placeholder: false,
-                show_caret: caret,
-                caret_prefix: self.passphrase.clone(),
-                selection: None,
-            }
-        } else {
-            let masked = "•".repeat(self.passphrase.chars().count());
-            FieldPaint {
-                text: masked.clone(),
-                placeholder: false,
-                show_caret: caret,
-                caret_prefix: masked,
-                selection: None,
-            }
-        }
+    pub fn field_paint(&self) -> FieldPaint {
+        FieldPaint::from_draft_masked(
+            &self.passphrase,
+            "Enter passphrase…",
+            !self.confirm_focused,
+            !self.visible,
+        )
     }
 
     pub fn display_value(&self) -> String {

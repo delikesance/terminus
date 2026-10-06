@@ -568,7 +568,8 @@ fn host_fuzzy_score(query: &str, host: &HostPaletteItem) -> Option<i32> {
 /// Command palette UI component (Raycast-style)
 pub struct CommandPalette {
     enabled: bool,
-    pub query: String,
+    /// Search text; edits go through [`TextDraft`] like every other field.
+    pub query: terminus_ui::TextDraft,
     pub selected_index: usize,
     scroll_offset: usize,
     pub has_adaptive_theme: bool,
@@ -597,7 +598,7 @@ impl Default for CommandPalette {
     fn default() -> Self {
         Self {
             enabled: false,
-            query: String::new(),
+            query: terminus_ui::TextDraft::default(),
             selected_index: 0,
             scroll_offset: 0,
             has_adaptive_theme: false,
@@ -690,13 +691,28 @@ impl CommandPalette {
         if !crate::renderer::is_printable_text(text) {
             return false;
         }
-        let query = format!("{}{}", self.query, text);
-        self.set_query(query);
+        if !self.query.insert(text, usize::MAX, false) {
+            return false;
+        }
+        self.reset_results();
         true
     }
 
     pub fn set_query(&mut self, query: String) {
-        self.query = query;
+        self.query = terminus_ui::TextDraft::new(query);
+        self.reset_results();
+    }
+
+    /// Shared text editing (Backspace, Delete, caret, selection).
+    pub fn edit_query(&mut self, edit: terminus_ui::TextEdit) -> bool {
+        if !self.query.apply(edit) {
+            return false;
+        }
+        self.reset_results();
+        true
+    }
+
+    fn reset_results(&mut self) {
         self.selected_index = 0;
         self.scroll_offset = 0;
         self.caret_blink_start = Instant::now();
@@ -782,7 +798,7 @@ impl CommandPalette {
                         true
                     })
                     .filter_map(|cmd| {
-                        let score = fuzzy_score(&self.query, cmd.title)?;
+                        let score = fuzzy_score(&self.query.value, cmd.title)?;
                         Some((
                             score,
                             PaletteRow::Command {
@@ -797,9 +813,9 @@ impl CommandPalette {
                 // surface matching hosts so Ctrl+Shift+P → "prod" → Enter works
                 // without entering Hosts mode first. Empty query keeps the
                 // catalog command-only to avoid dumping a long host list.
-                if !self.query.is_empty() {
+                if !self.query.value.is_empty() {
                     for host in &self.hosts_cache {
-                        if let Some(score) = host_fuzzy_score(&self.query, host) {
+                        if let Some(score) = host_fuzzy_score(&self.query.value, host) {
                             rows.push((
                                 score,
                                 PaletteRow::Host {
@@ -816,14 +832,14 @@ impl CommandPalette {
             PaletteMode::Fonts(fonts) => fonts
                 .iter()
                 .filter_map(|family| {
-                    let score = fuzzy_score(&self.query, family)?;
+                    let score = fuzzy_score(&self.query.value, family)?;
                     Some((score, PaletteRow::Font { family }))
                 })
                 .collect(),
             PaletteMode::Hosts(hosts) => hosts
                 .iter()
                 .filter_map(|host| {
-                    let score = host_fuzzy_score(&self.query, host)?;
+                    let score = host_fuzzy_score(&self.query.value, host)?;
                     Some((
                         score,
                         PaletteRow::Host {
@@ -883,7 +899,7 @@ impl CommandPalette {
     /// The overlay palette for the current scroll window.
     fn view(&self) -> terminus_ui::components::overlay::Palette {
         terminus_ui::palette_view::visible_palette(
-            &self.query,
+            &self.query.value,
             self.placeholder(),
             &self.row_specs(),
             self.scroll_offset,
@@ -894,7 +910,7 @@ impl CommandPalette {
 
     /// Query to offer "Add server" for: nothing matched but something was typed.
     pub fn add_server_query(&self) -> Option<String> {
-        let q = self.query.trim();
+        let q = self.query.value.trim();
         (!q.is_empty() && self.filtered_rows().is_empty()).then(|| q.to_string())
     }
 
@@ -985,20 +1001,16 @@ impl CommandPalette {
         if (elapsed_ms / CARET_BLINK_MS).is_multiple_of(2) {
             let q = &layout.query;
             let text_x = q.x + ov::PALETTE_QUERY_PAD_X + ov::PALETTE_QUERY_ICON + 12.0;
-            let w = if self.query.is_empty() {
+            let prefix = self.query.prefix();
+            let w = if prefix.is_empty() {
                 0.0
             } else {
-                measure_ui_text(sugarloaf, &self.query, 19.0, UiWeight::Regular)
+                measure_ui_text(sugarloaf, &prefix, 19.0, UiWeight::Regular)
             };
             let h = (19.0_f32 * 1.25).round();
             crate::renderer::chrome::paint_flat(
                 sugarloaf,
-                &terminus_ui::Rect::new(
-                    text_x + w,
-                    q.y + (q.height - h) / 2.0,
-                    1.5,
-                    h,
-                ),
+                &terminus_ui::Rect::new(text_x + w, q.y + (q.height - h) / 2.0, 1.5, h),
                 theme.accent,
                 0.16,
                 30,
@@ -1022,7 +1034,7 @@ mod tests {
 
         palette.set_enabled(true);
 
-        assert!(palette.query.is_empty());
+        assert!(palette.query.value.is_empty());
         assert_eq!(palette.selected_index, 0);
         assert_eq!(palette.scroll_offset, 0);
     }
@@ -1038,7 +1050,7 @@ mod tests {
     #[test]
     fn test_filtered_commands_by_title() {
         let mut palette = CommandPalette::new();
-        palette.query = "split".to_string();
+        palette.query = terminus_ui::TextDraft::new("split");
         let filtered = palette.filtered_rows();
         assert!(filtered.len() >= 2);
         for (_, row) in &filtered {
@@ -1049,7 +1061,7 @@ mod tests {
     #[test]
     fn test_filtered_commands_case_insensitive() {
         let mut palette = CommandPalette::new();
-        palette.query = "QUIT".to_string();
+        palette.query = terminus_ui::TextDraft::new("QUIT");
         let filtered = palette.filtered_rows();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].1.title(), "Quit");
@@ -1058,7 +1070,7 @@ mod tests {
     #[test]
     fn test_fuzzy_matching() {
         let mut palette = CommandPalette::new();
-        palette.query = "nt".to_string(); // Should match "New Tab", "Next Tab", etc.
+        palette.query = terminus_ui::TextDraft::new("nt"); // Should match "New Tab", "Next Tab", etc.
         let filtered = palette.filtered_rows();
         assert!(!filtered.is_empty());
     }
@@ -1157,12 +1169,21 @@ mod tests {
             .nth(1)
             .unwrap();
         palette.last_layout = Some(layout);
-        assert!(palette.hit_test(0.0, 0.0, 1440.0, 1.0).is_err(), "scrim closes");
+        assert!(
+            palette.hit_test(0.0, 0.0, 1440.0, 1.0).is_err(),
+            "scrim closes"
+        );
         let (rect, _) = second;
-        assert_eq!(palette.hit_test(rect.x + 4.0, rect.y + 4.0, 1440.0, 1.0), Ok(Some(1)));
+        assert_eq!(
+            palette.hit_test(rect.x + 4.0, rect.y + 4.0, 1440.0, 1.0),
+            Ok(Some(1))
+        );
         // Scrolled by 3: the same row is absolute index 4.
         palette.scroll_offset = 3;
-        assert_eq!(palette.hit_test(rect.x + 4.0, rect.y + 4.0, 1440.0, 1.0), Ok(Some(4)));
+        assert_eq!(
+            palette.hit_test(rect.x + 4.0, rect.y + 4.0, 1440.0, 1.0),
+            Ok(Some(4))
+        );
     }
 
     #[test]
@@ -1197,7 +1218,7 @@ mod tests {
         palette.enter_fonts_mode(fonts);
 
         // Query cleared, selection reset, full list visible.
-        assert!(palette.query.is_empty());
+        assert!(palette.query.value.is_empty());
         assert_eq!(palette.selected_index, 0);
         assert_eq!(palette.filtered_rows().len(), 3);
         // Every row is a Font row, so no executable action.
@@ -1313,7 +1334,7 @@ mod tests {
         let mut palette = CommandPalette::new();
         palette.set_enabled(true);
         palette.enter_hosts_mode(sample_hosts());
-        assert!(palette.query.is_empty());
+        assert!(palette.query.value.is_empty());
         assert_eq!(palette.filtered_rows().len(), 2);
         assert!(palette.get_selected_action().is_none());
         assert!(palette.get_selected_host_id().is_some());
@@ -1510,7 +1531,7 @@ mod tests {
     fn servers_list_after_commands_so_each_group_is_contiguous() {
         let mut palette = CommandPalette::new();
         palette.set_hosts(vec![host("1", "tab-server")]);
-        palette.query = "tab".to_string();
+        palette.query = terminus_ui::TextDraft::new("tab");
         let specs = palette.row_specs();
         let first_server = specs.iter().position(|r| r.group == "Servers").unwrap();
         assert!(first_server > 0);
@@ -1529,13 +1550,20 @@ mod tests {
         let view = palette.view();
         assert_eq!(view.item_count(), MAX_VISIBLE_RESULTS);
         assert_eq!(view.selected, MAX_VISIBLE_RESULTS - 1);
-        assert_eq!(view.placeholder.as_deref(), Some("Search servers and commands"));
+        assert_eq!(
+            view.placeholder.as_deref(),
+            Some("Search servers and commands")
+        );
     }
 
     #[test]
     fn nothing_matching_offers_add_server_with_the_query() {
         let mut palette = CommandPalette::new();
-        assert_eq!(palette.add_server_query(), None, "empty query never offers it");
+        assert_eq!(
+            palette.add_server_query(),
+            None,
+            "empty query never offers it"
+        );
         palette.set_query("zzzqqq".to_string());
         assert_eq!(palette.add_server_query().as_deref(), Some("zzzqqq"));
         palette.set_query("quit".to_string());

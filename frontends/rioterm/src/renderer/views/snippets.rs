@@ -68,12 +68,13 @@ pub fn paint_measured(
         theme,
         &search,
         SearchKind::Search,
-        &state.filter,
+        &state.filter.value,
         "Filter snippets",
         device_scale,
     );
     if state.filter_focused {
-        let w = measure_ui_text(s, &state.filter, 14.0, UiWeight::Regular);
+        let w =
+            measure_ui_text(s, &state.filter.prefix_display(), 14.0, UiWeight::Regular);
         paint_flat(
             s,
             &Rect::new(
@@ -201,7 +202,7 @@ pub fn paint_preview(s: &mut Sugarloaf, theme: &ChromeTheme) {
     };
     let mut state = SnippetsView::new(items);
     if let Ok(f) = std::env::var("TERMINUS_VIEW_PREVIEW_FILTER") {
-        state.filter = f;
+        state.filter = terminus_ui::TextDraft::new(f);
         state.filter_focused = true;
     }
     paint(s, theme, content, &mut state, scale);

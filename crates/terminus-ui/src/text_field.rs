@@ -18,6 +18,20 @@ pub enum TextMoveKind {
     Extend,
 }
 
+/// One editing command. Every text field routes its keys through
+/// [`TextDraft::apply`] so Backspace, Delete, caret moves and selection
+/// behave identically everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextEdit {
+    Backspace { by_word: bool },
+    Delete { by_word: bool },
+    Left { kind: TextMoveKind, by_word: bool },
+    Right { kind: TextMoveKind, by_word: bool },
+    Home { kind: TextMoveKind },
+    End { kind: TextMoveKind },
+    SelectAll,
+}
+
 /// Paint model for a labeled text field card (Settings, SFTP name, …).
 ///
 /// Carries everything a painter needs to place the caret and draw the
@@ -119,6 +133,19 @@ impl TextDraft {
             value,
             caret,
             sel_anchor: None,
+        }
+    }
+
+    /// Run one editing command. Returns whether anything changed.
+    pub fn apply(&mut self, edit: TextEdit) -> bool {
+        match edit {
+            TextEdit::Backspace { by_word } => self.backspace(by_word),
+            TextEdit::Delete { by_word } => self.delete_forward(by_word),
+            TextEdit::Left { kind, by_word } => self.move_left(kind, by_word),
+            TextEdit::Right { kind, by_word } => self.move_right(kind, by_word),
+            TextEdit::Home { kind } => self.move_home(kind),
+            TextEdit::End { kind } => self.move_end(kind),
+            TextEdit::SelectAll => self.select_all(),
         }
     }
 
@@ -415,6 +442,22 @@ mod tests {
         ));
         assert!(d.value.contains('\n'));
         assert!(d.value.contains("BEGIN OPENSSH"));
+    }
+
+    #[test]
+    fn apply_routes_every_edit_the_same_way() {
+        let mut d = TextDraft::new("abc");
+        assert!(d.apply(TextEdit::Backspace { by_word: false }));
+        assert_eq!(d.value, "ab");
+        assert!(d.apply(TextEdit::Home {
+            kind: TextMoveKind::Collapse
+        }));
+        assert!(d.apply(TextEdit::Delete { by_word: false }));
+        assert_eq!(d.value, "b");
+        assert!(d.apply(TextEdit::SelectAll));
+        assert!(d.apply(TextEdit::Backspace { by_word: false }));
+        assert_eq!(d.value, "");
+        assert!(!d.apply(TextEdit::Backspace { by_word: false }));
     }
 
     #[test]
