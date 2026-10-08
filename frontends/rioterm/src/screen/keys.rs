@@ -507,8 +507,7 @@ impl Screen<'_> {
                         self.paste(s, false);
                     }
                     Act::Paste => {
-                        let content = clipboard.get(ClipboardType::Clipboard);
-                        self.paste_from_clipboard(&content);
+                        self.paste_clipboard_or_image(clipboard);
                     }
                     Act::ClearSelection => {
                         self.clear_selection();
