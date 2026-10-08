@@ -1413,6 +1413,16 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
+                // Frameless Linux window: an edge press starts a resize.
+                if state == ElementState::Pressed
+                    && button == MouseButton::Left
+                    && route.window.screen.frameless_edge_press(
+                        &route.window.winit_window,
+                        self.router.quake_window_id == Some(window_id),
+                    )
+                {
+                    return;
+                }
                 if state == ElementState::Pressed
                     && button == MouseButton::Left
                     && route.window.screen.renderer.confirm_quit.is_active()
@@ -2452,6 +2462,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 }
                             }
 
+                            // Frameless Linux window: the compositor's window
+                            // menu on the empty header.
+                            if route.window.screen.frameless_header_menu(
+                                &route.window.winit_window,
+                                self.router.quake_window_id == Some(window_id),
+                            ) {
+                                return;
+                            }
+
                             let handled_by_island =
                                 route.window.screen.handle_island_click(
                                     &route.window.winit_window,
@@ -2821,6 +2840,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 route.window.screen.mouse.x = x;
                 route.window.screen.mouse.y = y;
                 route.window.screen.mouse.raw_y = position.y;
+
+                // Frameless Linux window: edges and corners own the pointer.
+                if let Some(repaint) = route.window.screen.frameless_edge_hover(
+                    &route.window.winit_window,
+                    self.router.quake_window_id == Some(window_id),
+                ) {
+                    if repaint {
+                        route.request_overlay_redraw();
+                    }
+                    return;
+                }
 
                 if route.window.screen.renderer.confirm_quit.is_active() {
                     let scale = route.window.screen.sugarloaf.scale_factor();
