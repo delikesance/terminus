@@ -648,6 +648,19 @@ mod tests {
     }
 
     #[test]
+    fn split_target_follows_the_focused_pane_host() {
+        use super::sessions::{split_target, SplitTarget};
+        assert_eq!(split_target(None), SplitTarget::Local);
+        assert_eq!(split_target(Some(hosts::LOCAL_ID)), SplitTarget::Local);
+        assert_eq!(
+            split_target(Some("9c1e")),
+            SplitTarget::Row("9c1e".to_string())
+        );
+        let wsl = format!("{}Ubuntu", hosts::WSL_PREFIX);
+        assert_eq!(split_target(Some(&wsl)), SplitTarget::Row(wsl.clone()));
+    }
+
+    #[test]
     fn gssapi_ssh_options_force_kerberos_mic() {
         assert!(GSSAPI_SSH_OPTIONS.contains(&"GSSAPIAuthentication=yes"));
         assert!(GSSAPI_SSH_OPTIONS.contains(&"PreferredAuthentications=gssapi-with-mic"));

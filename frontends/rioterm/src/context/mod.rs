@@ -1196,6 +1196,13 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         split_down: bool,
         sugarloaf: &mut Sugarloaf,
     ) {
+        // A split of a local pane stays local; failures are only logged.
+        let _ =
+            self.split_with_shell(rich_text_id, split_down, sugarloaf, None, None, None);
+    }
+
+    /// Working directory a split's new pane starts in.
+    fn split_working_dir(&self) -> Option<String> {
         let mut working_dir = self.config.working_dir.clone();
         if self.config.cwd {
             #[cfg(not(target_os = "windows"))]
@@ -1218,23 +1225,77 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 working_dir = None;
             }
         }
+        working_dir
+    }
 
+    /// The config a split's new pane is spawned with: the app's own, with
+    /// `shell` / `env` replacing its shell and environment when given (a
+    /// host pane's ssh command and askpass env).
+    fn split_config(
+        &self,
+        working_dir: Option<String>,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+    ) -> ContextManagerConfig {
         let mut cloned_config = self.config.clone();
         if working_dir.is_some() {
             cloned_config.working_dir = working_dir;
         }
+        if let Some(shell) = shell {
+            cloned_config.shell = shell;
+        }
+        if env.is_some() {
+            cloned_config.env = env;
+        }
+        cloned_config
+    }
 
+    /// Build the context a split opens beside the focused pane.
+    ///
+    /// `host_id` is the sidebar row the new pane belongs to; a host pane also
+    /// inherits the focused pane's OS glyph and endpoint label, so the title
+    /// bar reads the same for both halves.
+    fn split_context(
+        &self,
+        rich_text_id: usize,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+        host_id: Option<String>,
+    ) -> Result<Context<T>, Box<dyn Error>> {
+        let config = self.split_config(self.split_working_dir(), shell, env);
         let current = self.current();
         let cursor = current.cursor_from_ref();
 
-        match ContextManager::create_context(
+        let mut new_context = ContextManager::create_context(
             (&cursor, current.renderable_content.has_blinking_enabled),
             self.event_proxy.clone(),
             self.window_id,
             rich_text_id,
-            self.current().dimension,
-            &cloned_config,
-        ) {
+            current.dimension,
+            &config,
+        )?;
+        if host_id.is_some() {
+            new_context.os_id = current.os_id.clone();
+            new_context.host_label = current.host_label.clone();
+        }
+        new_context.host_id = host_id;
+        Ok(new_context)
+    }
+
+    /// Split the focused pane, running `shell` in the new one instead of the
+    /// app's own when given. Returns why it could not start rather than only
+    /// logging, because a host pane that silently does nothing is worse than
+    /// one that says why.
+    pub fn split_with_shell(
+        &mut self,
+        rich_text_id: usize,
+        split_down: bool,
+        sugarloaf: &mut Sugarloaf,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+        host_id: Option<String>,
+    ) -> Result<(), String> {
+        match self.split_context(rich_text_id, shell, env, host_id) {
             Ok(new_context) => {
                 let new_route_id = new_context.route_id;
                 if split_down {
@@ -1244,9 +1305,11 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 }
 
                 self.current_route = new_route_id;
+                Ok(())
             }
-            Err(..) => {
-                tracing::error!("not able to create a new context");
+            Err(err) => {
+                tracing::error!("not able to create a new context: {err}");
+                Err(format!("Could not start the session: {err}"))
             }
         }
     }
@@ -1602,6 +1665,78 @@ pub mod test {
 
     fn set_tab_host(cm: &mut ContextManager<VoidListener>, index: usize, host: &str) {
         cm.contexts[index].current_mut().host_id = Some(host.to_string());
+    }
+
+    fn ssh_launch() -> (Shell, Vec<(String, String)>) {
+        (
+            Shell {
+                program: Some("ssh".into()),
+                args: vec!["-p".into(), "22".into(), "alice@box".into()],
+            },
+            vec![("TERM".into(), "xterm-256color".into())],
+        )
+    }
+
+    /// The split of a host pane must spawn that host's ssh, not the app's
+    /// own shell it used to clone.
+    #[test]
+    fn split_config_runs_the_host_shell_and_env() {
+        let window_id = WindowId::from(0);
+        let cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        let (shell, env) = ssh_launch();
+        let config = cm.split_config(None, Some(shell.clone()), Some(env.clone()));
+        assert_eq!(config.shell.program, shell.program);
+        assert_eq!(config.shell.args, shell.args);
+        assert_eq!(config.env, Some(env));
+    }
+
+    /// A local split keeps cloning the app's config untouched.
+    #[test]
+    fn split_config_without_a_shell_keeps_the_app_shell() {
+        let window_id = WindowId::from(0);
+        let cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        let config = cm.split_config(Some("/tmp".into()), None, None);
+        assert_eq!(config.shell.program, cm.config.shell.program);
+        assert_eq!(config.shell.args, cm.config.shell.args);
+        assert_eq!(config.env, cm.config.env);
+        assert_eq!(config.working_dir.as_deref(), Some("/tmp"));
+    }
+
+    /// The new pane carries the host it runs, so the lost-session card and
+    /// the sidebar can tell it belongs to that host.
+    #[test]
+    fn split_context_of_a_host_pane_carries_its_host() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        cm.current_mut().host_id = Some("a".into());
+        cm.current_mut().os_id = Some("nixos".into());
+        cm.current_mut().host_label = Some("alice@box:22".into());
+        let (shell, env) = ssh_launch();
+        let pane = cm
+            .split_context(7, Some(shell), Some(env), Some("a".into()))
+            .expect("split context");
+        assert_eq!(pane.host_id.as_deref(), Some("a"));
+        assert_eq!(pane.os_id.as_deref(), Some("nixos"));
+        assert_eq!(pane.host_label.as_deref(), Some("alice@box:22"));
+        assert!(!pane.pinned);
+    }
+
+    #[test]
+    fn split_context_of_a_local_pane_has_no_host() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        cm.current_mut().host_id = Some(crate::hosts::LOCAL_ID.into());
+        cm.current_mut().os_id = Some("nixos".into());
+        let pane = cm
+            .split_context(7, None, None, None)
+            .expect("split context");
+        assert_eq!(pane.host_id, None);
+        assert_eq!(pane.os_id, None);
+        assert_eq!(pane.host_label, None);
     }
 
     /// Going to another host and back must land on the tab the user was
