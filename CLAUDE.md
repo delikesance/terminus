@@ -19,6 +19,26 @@ what follows.
   Prefer unit tests next to the code (e.g. in `terminus-ui`) before wiring the
   painter/frontend.
 
+## Claude Code model workflow
+
+Project settings (`.claude/settings.json`) start sessions on Sonnet at high effort,
+with Opus as the advisor (`advisorModel`). Plan on high, delegate on medium, keep
+Opus on call.
+
+- The main session plans, decides and reviews. Consult the advisor before
+  committing to a plan, when an error keeps recurring, and before declaring a
+  task done; don't spend it on routine steps.
+- Delegate to the subagents in `.claude/agents/`:
+  - `explorer` (Haiku): reads and searches code.
+  - `researcher` (Haiku): looks up docs and specs outside the repo.
+  - `worker` (Sonnet): edits and runs tests for a planned change.
+- When the work is back, review the full diff yourself before pushing.
+- Always run `cargo fmt --all` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` before pushing: CI
+  (`.github/workflows/ci.yml`) fails on either.
+- Override per session with `claude --model <m>`, `--effort <level>` or
+  `--advisor <m>`; `/advisor off` turns the advisor off.
+
 ## Build & test
 
 The nix devshell is required to build `rioterm`: outside it, fontconfig's
