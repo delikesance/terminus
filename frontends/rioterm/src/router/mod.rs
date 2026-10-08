@@ -447,6 +447,7 @@ impl Route<'_> {
             tunnels.shutdown();
         }
         self.window.screen.updater.run_exit_action();
+        crate::ssh_secrets::shred_all();
         std::process::exit(0);
     }
 

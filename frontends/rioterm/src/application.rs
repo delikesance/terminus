@@ -3885,6 +3885,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
         // replace it with a safe no-op placeholder.
         self.router.clipboard = Clipboard::new_nop();
 
+        crate::ssh_secrets::shred_all();
         std::process::exit(0);
     }
 }

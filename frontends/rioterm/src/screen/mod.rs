@@ -606,8 +606,6 @@ impl Screen<'_> {
 
 mod tests {
     use super::hint_actions::post_process_hyperlink_uri;
-    #[cfg(unix)]
-    use super::shell::private_temp_dir;
     use super::shell::{ssh_shell, GSSAPI_SSH_OPTIONS};
     use super::*;
     use chrono::Utc;
@@ -740,6 +738,65 @@ mod tests {
         }
     }
 
+    /// The key only has to exist until ssh has authenticated: ssh's own
+    /// `LocalCommand` deletes it (and the passphrase file) at that point.
+    #[cfg(unix)]
+    #[test]
+    fn key_ssh_shell_deletes_its_secrets_once_connected() {
+        let host = host_row("key");
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        let (shell, env) =
+            ssh_shell(&host, None, Some(pem), Some("pass")).expect("key shell");
+        let key = shell
+            .args
+            .windows(2)
+            .find(|w| w[0] == "-i")
+            .map(|w| w[1].clone())
+            .unwrap();
+        let env = env.unwrap();
+        let secret = env
+            .iter()
+            .find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert!(shell.args.iter().any(|a| a == "PermitLocalCommand=yes"));
+        let local = shell
+            .args
+            .iter()
+            .find_map(|a| a.strip_prefix("LocalCommand="))
+            .expect("LocalCommand option");
+        assert!(local.contains(&key), "{local}");
+        assert!(local.contains(&secret), "{local}");
+        // The destination stays last (tunnels rely on it).
+        assert_eq!(
+            shell.args.last().map(String::as_str),
+            Some("alice@box.example")
+        );
+        crate::ssh_secrets::shred(std::path::Path::new(&key));
+        crate::ssh_secrets::shred(std::path::Path::new(&secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_ssh_shell_deletes_its_secret_once_connected() {
+        let host = host_row("password");
+        let (shell, env) =
+            ssh_shell(&host, Some("secret"), None, None).expect("password shell");
+        let secret = env
+            .unwrap()
+            .into_iter()
+            .find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            .map(|(_, v)| v)
+            .unwrap();
+        let local = shell
+            .args
+            .iter()
+            .find_map(|a| a.strip_prefix("LocalCommand="))
+            .expect("LocalCommand option");
+        assert!(local.contains(&secret), "{local}");
+        crate::ssh_secrets::shred(std::path::Path::new(&secret));
+    }
+
     #[test]
     fn password_ssh_shell_disables_pubkey() {
         let host = host_row("password");
@@ -797,9 +854,9 @@ mod tests {
     fn private_temp_dir_tightens_a_loose_existing_dir() {
         use std::os::unix::fs::PermissionsExt;
         let name = format!("test-loose-{}", uuid::Uuid::new_v4());
-        let dir = private_temp_dir(&name).unwrap();
+        let dir = crate::ssh_secrets::private_temp_dir(&name).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let again = private_temp_dir(&name).unwrap();
+        let again = crate::ssh_secrets::private_temp_dir(&name).unwrap();
         assert_eq!(again, dir);
         assert_eq!(
             std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,

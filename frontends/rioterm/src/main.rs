@@ -25,6 +25,7 @@ mod router;
 mod scheduler;
 mod screen;
 mod sftp_ui;
+mod ssh_secrets;
 mod tunnel_worker;
 mod updater;
 mod vault_remember;
@@ -159,6 +160,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rio_backend::config::create_config_file(config_path);
         return Ok(());
     }
+
+    // Temp SSH keys / passwords a crashed or killed run left behind.
+    ssh_secrets::sweep_on_startup();
 
     let (mut config, config_error) =
         startup_config(rio_backend::config::Config::try_load(), || {
