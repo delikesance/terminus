@@ -82,6 +82,10 @@ pub struct Context<T: EventListener> {
     pub host_label: Option<String>,
     /// Home "This computer" tab — cannot be closed.
     pub pinned: bool,
+    /// Set when this host session's ssh exited because the link dropped:
+    /// the tab stays open behind a "Connection lost" card instead of
+    /// closing (`Screen::note_child_exit`).
+    pub connection_lost: Option<terminus_ui::LostSession>,
     _io_thread: Option<JoinHandle<(Machine<teletypewriter::Pty, T>, performer::State)>>,
 }
 
@@ -203,6 +207,7 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         os_id: None,
         host_label: None,
         pinned: false,
+        connection_lost: None,
         _io_thread: None,
     }
 }
@@ -387,6 +392,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             os_id: None,
             host_label: None,
             pinned: false,
+            connection_lost: None,
             _io_thread: io_thread,
         })
     }
