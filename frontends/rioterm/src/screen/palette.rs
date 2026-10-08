@@ -366,8 +366,7 @@ impl Screen<'_> {
                 self.copy_selection(ClipboardType::Clipboard, clipboard);
             }
             PaletteAction::Paste => {
-                let content = clipboard.get(ClipboardType::Clipboard);
-                self.paste(&content, true);
+                self.paste_clipboard_or_image(clipboard);
             }
             PaletteAction::SearchForward => {
                 self.start_search(Direction::Right);
