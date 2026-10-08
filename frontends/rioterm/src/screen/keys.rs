@@ -5,15 +5,12 @@ use crate::bindings::kitty_keyboard::build_key_sequence;
 use crate::bindings::{
     Action as Act, BindingKey, BindingMode, FontSizeAction, SearchAction, ViAction,
 };
-use crate::context;
 use crate::crosswords::grid::Dimensions;
 use crate::crosswords::grid::Scroll;
 use crate::crosswords::pos::Side;
 use crate::crosswords::vi_mode::ViMotion;
 use crate::crosswords::Mode;
-use crate::hosts;
-use crate::renderer::island;
-use crate::selection::{Selection, SelectionType};
+use crate::selection::SelectionType;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
 use rio_backend::crosswords::pos::Direction;
 use rio_window::event::{ElementState, Modifiers, MouseButton};
@@ -160,8 +157,10 @@ impl Screen<'_> {
                             || self.modifiers.state().super_key() =>
                     {
                         if c.eq_ignore_ascii_case("a") {
-                            if let Some(edit) =
-                                self.sftp.as_mut().and_then(|s| s.state.name_edit.as_mut())
+                            if let Some(edit) = self
+                                .sftp
+                                .as_mut()
+                                .and_then(|s| s.state.name_edit.as_mut())
                             {
                                 edit.draft.select_all();
                                 self.mark_dirty();

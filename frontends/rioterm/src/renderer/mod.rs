@@ -11,6 +11,7 @@ pub(crate) fn is_printable_text(text: &str) -> bool {
 /// Config colors are linear-ish `[f32; 4]`; the chrome wants plain
 /// bytes so it can do its own arithmetic on them.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn rgb_u8(color: [f32; 4]) -> [u8; 3] {
     [
         (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,
@@ -21,11 +22,11 @@ pub(crate) fn rgb_u8(color: [f32; 4]) -> [u8; 3] {
 
 pub mod assistant;
 pub mod chrome;
-pub mod components;
 pub mod command_palette;
+pub mod components;
 pub mod confirm_quit;
-pub mod dialogs;
 pub mod custom_cursor;
+pub mod dialogs;
 pub mod helpers;
 pub mod island;
 pub mod screens;
@@ -914,7 +915,6 @@ impl Renderer {
             &self.chrome_theme,
             (window_size.width, window_size.height, scale_factor),
         );
-
 
         // Terminus chrome (activity rail, host panel, add-host editor).
         // Painted from the same rectangles the mouse hit-tests against;

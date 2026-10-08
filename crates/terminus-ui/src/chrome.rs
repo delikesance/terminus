@@ -700,9 +700,7 @@ impl Chrome {
     }
 
     fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
-        let Some(menu) = self.context_menu.as_mut() else {
-            return None;
-        };
+        let menu = self.context_menu.as_mut()?;
         match menu.hit_test(x, y) {
             ContextMenuHit::Dismiss => {
                 self.close_context_menu();
@@ -1606,9 +1604,7 @@ impl Chrome {
     /// bottom edge of the machine list, scroll the list and retarget the
     /// drop under the (still) pointer. Never produces an action.
     pub fn tick_host_drag(&mut self, dt: f32) -> Option<ChromeAction> {
-        let Some(drag) = self.panel.host_drag.as_ref() else {
-            return None;
-        };
+        let drag = self.panel.host_drag.as_ref()?;
         if !matches!(drag.phase, crate::sidebar::HostDragPhase::Dragging) {
             return None;
         }
@@ -1718,10 +1714,7 @@ impl Chrome {
         Some(outcome)
     }
 
-    /// Route keyboard input to the vault unlock prompt.
-    ///
-    /// Returns `Some(true)` when Unlock should be submitted.
-
+    /// Route a keyboard input to the snippet editor. `None` when it is closed.
     pub fn handle_snippet_form_input(
         &mut self,
         input: crate::add_snippet::FormInput,

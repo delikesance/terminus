@@ -1920,7 +1920,7 @@ mod tests {
 
     #[test]
     fn section_label_and_geometry_helpers_are_consistent() {
-        let (oy, _) = tall();
+        let (_oy, _) = tall();
         let rect = Rect::new(0.0, 100.0, 100.0, SECTION_HEIGHT);
         // 12px label centred in the 15px line above the 6px gap.
         assert_eq!(section_label_y(rect), 100.0 + 1.5);

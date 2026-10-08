@@ -129,7 +129,12 @@ impl SegmentedLayout {
             segments.push(Rect::new(cx, y + SEGMENT_TRACK_PAD, sw, h));
             cx += sw;
         }
-        let track = Rect::new(x, y, cx - x + SEGMENT_TRACK_PAD, h + 2.0 * SEGMENT_TRACK_PAD);
+        let track = Rect::new(
+            x,
+            y,
+            cx - x + SEGMENT_TRACK_PAD,
+            h + 2.0 * SEGMENT_TRACK_PAD,
+        );
         Self { track, segments }
     }
 
@@ -213,7 +218,12 @@ impl CheckboxLayout {
     /// Rect of the check mark glyph, centred in the box.
     pub fn mark_rect(&self) -> Rect {
         let o = (CHECKBOX_SIZE - CHECKBOX_MARK) * 0.5;
-        Rect::new(self.box_rect.x + o, self.box_rect.y + o, CHECKBOX_MARK, CHECKBOX_MARK)
+        Rect::new(
+            self.box_rect.x + o,
+            self.box_rect.y + o,
+            CHECKBOX_MARK,
+            CHECKBOX_MARK,
+        )
     }
 
     pub fn hit_test(&self, px: f32, py: f32) -> bool {

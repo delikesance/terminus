@@ -3,15 +3,11 @@
 use super::Screen;
 use crate::context;
 use crate::context::next_rich_text_id;
-use crate::crosswords::pos::Column;
 use crate::hosts;
-use crate::layout::ContextDimension;
-use crate::renderer::island;
 use crate::renderer::utils::padding_top_from_config;
 use rio_backend::clipboard::Clipboard;
 use rio_backend::config::layout::Margin;
 use rio_backend::config::Shell;
-use rio_backend::crosswords::pos::Line;
 use rio_backend::event::EventProxy;
 use terminus_ui::sidebar::Badge;
 
@@ -662,9 +658,7 @@ impl Screen<'_> {
     /// Looping `0..1` phase for the active-node pulse.
     pub(super) fn connecting_phase(&self) -> Option<f32> {
         let started = self.connecting_started?;
-        if self.chrome.connection.is_none() {
-            return None;
-        }
+        self.chrome.connection.as_ref()?;
         Some(terminus_ui::loading_phase(started.elapsed().as_secs_f32()))
     }
 

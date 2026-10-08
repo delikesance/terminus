@@ -431,6 +431,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn card_height_covers_padding_and_text_block() {
         assert_eq!(CARD_HEIGHT, 2.0 * 16.0 + CARD_CONTENT_HEIGHT);
         assert!(CARD_CONTENT_HEIGHT >= 36.0, "fits a medium button");

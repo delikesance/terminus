@@ -5,7 +5,7 @@ use crate::crosswords::grid::Dimensions;
 use crate::crosswords::grid::Scroll;
 use crate::crosswords::pos::{Column, Pos, Side};
 use crate::crosswords::Mode;
-use crate::selection::{Selection, SelectionType};
+use crate::selection::SelectionType;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
 use rio_backend::crosswords::pos::{Boundary, Direction, Line};
 use rio_backend::crosswords::search::RegexSearch;

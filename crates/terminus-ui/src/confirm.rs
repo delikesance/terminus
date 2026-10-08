@@ -90,8 +90,12 @@ impl ConfirmSpec {
     pub fn layout_in(&self, area: Rect) -> ConfirmLayout {
         let inner = DIALOG_WIDTH - 2.0 * DIALOG_PAD;
         let lines = wrap_text(&self.body, inner, |s| estimate_text_width(s, BODY_FONT));
-        let cancel_w = action_width(self.cancel.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE);
-        let confirm_w = action_width(self.confirm.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE);
+        let cancel_w = action_width(
+            self.cancel.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE,
+        );
+        let confirm_w = action_width(
+            self.confirm.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE,
+        );
         // Height first (position does not change it), then centre.
         let probe = dialog_layout_at(
             0.0,

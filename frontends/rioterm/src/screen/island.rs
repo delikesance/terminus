@@ -3,7 +3,6 @@
 use super::{ChromePress, Screen};
 use crate::renderer::island;
 use crate::renderer::island::{TabStripLayout, CONTEXT_BAR_HEIGHT};
-use raw_window_handle::RawWindowHandle;
 use rio_backend::clipboard::Clipboard;
 use rio_window::event::ElementState;
 

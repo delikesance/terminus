@@ -299,15 +299,16 @@ pub fn paint_preview(s: &mut Sugarloaf, theme: &ChromeTheme) {
         let mut p = p.borrow_mut();
         let state = p.get_or_insert_with(|| {
             let home = std::env::var("HOME").ok();
-            let real = std::env::var_os("TERMINUS_VIEW_PREVIEW_SEED")
-                .is_none()
-                .then(|| {
+            let real = if std::env::var_os("TERMINUS_VIEW_PREVIEW_SEED").is_none() {
+                {
                     crate::history_worker::to_items(
                         &crate::history_worker::load_blocking("local", 500),
                         home.as_deref(),
                     )
-                })
-                .unwrap_or_default();
+                }
+            } else {
+                Default::default()
+            };
             let items = if real.is_empty() { seeded(now) } else { real };
             let mut st = HistoryState::new(items, true);
             if let Ok(f) = std::env::var("TERMINUS_VIEW_PREVIEW_FILTER") {

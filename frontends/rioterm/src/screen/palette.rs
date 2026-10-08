@@ -2,9 +2,6 @@
 
 use super::Screen;
 use crate::bindings::FontSizeAction;
-use crate::context;
-use crate::hosts;
-use crate::renderer::island;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
 use rio_backend::crosswords::pos::Direction;
 
@@ -38,7 +35,11 @@ impl Screen<'_> {
             }
             Ok(None) => {
                 // "Add server …" on the empty result: hand the query to the wizard.
-                if self.renderer.command_palette.add_server_hit(mouse_x, mouse_y) {
+                if self
+                    .renderer
+                    .command_palette
+                    .add_server_hit(mouse_x, mouse_y)
+                {
                     self.palette_add_server();
                     self.mark_dirty();
                 }
