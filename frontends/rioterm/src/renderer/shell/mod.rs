@@ -189,7 +189,8 @@ pub fn paint(
             &lost.spec,
             &lost.layout_in(area),
             crate::renderer::dialogs::confirm::ConfirmView {
-                focus: Some(lost.focus),
+                // Keys go to the live pane in focus, not to this card.
+                focus: (!chrome.lost_pane_unfocused).then_some(lost.focus),
                 hover: lost.hover,
                 option_checked: false,
             },

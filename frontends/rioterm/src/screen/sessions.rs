@@ -484,8 +484,14 @@ impl Screen<'_> {
         let split = grid.len() > 1;
         let pane = grid.lost_pane();
         let front = pane.and_then(|pane| {
-            grid.get_by_route_id(pane.route_id)
-                .and_then(|item| item.context().connection_lost.clone())
+            let lost = grid
+                .get_by_route_id(pane.route_id)?
+                .context_mut()
+                .connection_lost
+                .as_mut()?;
+            // The close button says what it closes now, split or not.
+            lost.set_whole_tab(!split);
+            Some(lost.clone())
         });
         let same = match (front.as_ref(), self.chrome.lost.as_ref()) {
             (Some(want), Some(shown)) => want.route_id == shown.route_id,
@@ -494,6 +500,8 @@ impl Screen<'_> {
         };
         if !same {
             self.chrome.lost = front;
+        } else if let Some(shown) = self.chrome.lost.as_mut() {
+            shown.set_whole_tab(!split);
         }
         // A whole-tab card covers the content; a split pane's covers the pane.
         self.chrome.lost_pane = pane.filter(|_| split).map(|pane| {

@@ -194,6 +194,12 @@ impl LostSession {
         }
     }
 
+    /// Re-label the close button when the tab is split or unsplit after the
+    /// card was made: "Close tab" for a lone session, "Close pane" in a split.
+    pub fn set_whole_tab(&mut self, whole_tab: bool) {
+        self.spec.cancel = if whole_tab { CLOSE_TAB } else { CLOSE_PANE }.to_string();
+    }
+
     /// The card centred over `area` (the terminal's content rect), which
     /// it dims.
     pub fn layout_in(&self, area: Rect) -> ConfirmLayout {
@@ -328,6 +334,16 @@ mod tests {
             lost.spec.body,
             "box: The network connection was interrupted. (exit status 255)"
         );
+    }
+
+    #[test]
+    fn the_close_label_follows_the_tab_being_split_or_not() {
+        let mut lost = LostSession::new(3, "h", "box", &[]);
+        assert_eq!(lost.spec.cancel, "Close tab");
+        lost.set_whole_tab(false);
+        assert_eq!(lost.spec.cancel, "Close pane");
+        lost.set_whole_tab(true);
+        assert_eq!(lost.spec.cancel, "Close tab");
     }
 
     #[test]
