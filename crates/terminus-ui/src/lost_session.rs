@@ -25,8 +25,8 @@ pub enum SessionEnd {
     Clean,
     /// Exit status 255: ssh gave up on the link itself.
     ConnectionLost,
-    /// Any other non-zero status: the remote shell's (or its last
-    /// command's) own code, or an ssh startup error.
+    /// Any other non-zero status: the remote shell's last command status
+    /// after the user left (`exit`, Ctrl-D, Ctrl-C). Closes the tab.
     Exited(i32),
     /// Killed by a signal.
     Signaled(i32),
@@ -47,13 +47,12 @@ pub fn classify_exit(code: Option<i32>, signal: Option<i32>) -> SessionEnd {
 }
 
 impl SessionEnd {
-    /// Whether the tab stays open behind a card: any end that is not a
-    /// clean logout (or unreported).
+    /// Whether the tab stays open behind a card: only a dropped link
+    /// (exit 255) or a local ssh killed by a signal. Any other exit status
+    /// is the remote shell's last command status, i.e. the user leaving
+    /// (`exit`, Ctrl-D, Ctrl-C), and closes the tab as before.
     pub fn keeps_tab(self) -> bool {
-        matches!(
-            self,
-            SessionEnd::ConnectionLost | SessionEnd::Exited(_) | SessionEnd::Signaled(_)
-        )
+        matches!(self, SessionEnd::ConnectionLost | SessionEnd::Signaled(_))
     }
 
     /// The status as the card words it, e.g. `exit status 1` or
@@ -89,7 +88,7 @@ fn signal_name(signal: i32) -> Option<&'static str> {
 }
 
 pub const TITLE: &str = "Connection lost";
-pub const ENDED_TITLE: &str = "Session ended";
+pub const KILLED_TITLE: &str = "Session killed";
 pub const RECONNECT: &str = "Reconnect";
 pub const CLOSE_TAB: &str = "Close tab";
 pub const CLOSE_PANE: &str = "Close pane";
@@ -160,9 +159,11 @@ impl LostSession {
             SessionEnd::ConnectionLost,
             true,
         )
+        .expect("a lost connection always has a card")
     }
 
-    /// The card for a session that ended as `end` (see [`classify_exit`]).
+    /// The card for a session that ended as `end` (see [`classify_exit`]),
+    /// or `None` when that end just closes the tab.
     /// `whole_tab` is false when the session is one pane of a split tab:
     /// the card then closes just that pane.
     pub fn ended(
@@ -172,26 +173,29 @@ impl LostSession {
         output: &[String],
         end: SessionEnd,
         whole_tab: bool,
-    ) -> Self {
+    ) -> Option<Self> {
         let (title, body) = match end {
             SessionEnd::ConnectionLost => (
                 TITLE,
                 format!("{name}: {} ({})", lost_reason(output), end.status_text()),
             ),
-            _ => (
-                ENDED_TITLE,
-                format!("{name}: ssh ended with {}.", end.status_text()),
+            SessionEnd::Signaled(_) => (
+                KILLED_TITLE,
+                format!("{name}: ssh was killed by {}.", end.status_text()),
             ),
+            SessionEnd::Clean | SessionEnd::Exited(_) | SessionEnd::Unknown => {
+                return None
+            }
         };
         let close = if whole_tab { CLOSE_TAB } else { CLOSE_PANE };
         let spec = ConfirmSpec::new(DialogKind::Confirm, title, body, close, RECONNECT);
-        Self {
+        Some(Self {
             route_id,
             host_id: host_id.to_string(),
             focus: spec.kind.default_focus(),
             spec,
             hover: None,
-        }
+        })
     }
 
     /// Re-label the close button when the tab is split or unsplit after the
@@ -277,12 +281,15 @@ mod tests {
     }
 
     #[test]
-    fn only_unclean_ends_keep_the_tab() {
+    fn only_255_and_a_signal_keep_the_tab() {
         assert!(!SessionEnd::Clean.keeps_tab());
         assert!(!SessionEnd::Unknown.keeps_tab());
         assert!(SessionEnd::ConnectionLost.keeps_tab());
-        assert!(SessionEnd::Exited(2).keeps_tab());
         assert!(SessionEnd::Signaled(15).keeps_tab());
+        // The remote shell's last status after `exit` / Ctrl-D / Ctrl-C:
+        // the user leaving, not a drop.
+        assert!(!SessionEnd::Exited(1).keeps_tab());
+        assert!(!SessionEnd::Exited(130).keeps_tab());
     }
 
     #[test]
@@ -298,25 +305,22 @@ mod tests {
     }
 
     #[test]
-    fn exited_card_says_the_status_and_is_not_titled_connection_lost() {
-        let lost = LostSession::ended(
-            3,
-            "h1",
-            "prod-db",
-            &lines(&["logout"]),
+    fn ends_that_close_the_tab_get_no_card() {
+        for end in [
+            SessionEnd::Clean,
+            SessionEnd::Unknown,
             SessionEnd::Exited(1),
-            true,
-        );
-        assert_eq!(lost.spec.title, "Session ended");
-        assert_eq!(lost.spec.body, "prod-db: ssh ended with exit status 1.");
-        assert_eq!(lost.spec.confirm, "Reconnect");
+        ] {
+            assert_eq!(LostSession::ended(3, "h", "box", &[], end, true), None);
+        }
     }
 
     #[test]
     fn signaled_card_names_the_signal() {
-        let lost = LostSession::ended(3, "h", "box", &[], SessionEnd::Signaled(9), true);
-        assert_eq!(lost.spec.title, "Session ended");
-        assert_eq!(lost.spec.body, "box: ssh ended with signal 9 (SIGKILL).");
+        let lost = LostSession::ended(3, "h", "box", &[], SessionEnd::Signaled(9), true)
+            .unwrap();
+        assert_eq!(lost.spec.title, "Session killed");
+        assert_eq!(lost.spec.body, "box: ssh was killed by signal 9 (SIGKILL).");
     }
 
     #[test]
@@ -328,7 +332,8 @@ mod tests {
             &lines(&["Broken pipe"]),
             SessionEnd::ConnectionLost,
             true,
-        );
+        )
+        .unwrap();
         assert_eq!(lost.spec.title, "Connection lost");
         assert_eq!(
             lost.spec.body,
@@ -348,9 +353,11 @@ mod tests {
 
     #[test]
     fn a_split_pane_card_closes_the_pane_not_the_tab() {
-        let pane = LostSession::ended(3, "h", "box", &[], SessionEnd::Exited(2), false);
+        let pane = LostSession::ended(3, "h", "box", &[], SessionEnd::Signaled(1), false)
+            .unwrap();
         assert_eq!(pane.spec.cancel, "Close pane");
-        let tab = LostSession::ended(3, "h", "box", &[], SessionEnd::Exited(2), true);
+        let tab = LostSession::ended(3, "h", "box", &[], SessionEnd::Signaled(1), true)
+            .unwrap();
         assert_eq!(tab.spec.cancel, "Close tab");
     }
 
