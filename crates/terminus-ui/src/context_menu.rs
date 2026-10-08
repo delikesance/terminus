@@ -40,6 +40,10 @@ pub enum ContextAction {
     RenameHost(String),
     /// Begin renaming a host group.
     RenameGroup(String),
+    /// Begin renaming the session pill of this tab index.
+    RenameSession(usize),
+    /// Close the session of this tab index.
+    CloseSession(usize),
     /// Copy the active selection / clipboard write (terminal / fields).
     Copy,
     /// Paste clipboard into the focused sink.
@@ -230,6 +234,21 @@ impl ContextMenu {
                     .danger(),
             ],
         )
+    }
+
+    /// Session pill context: rename, and close unless the tab is pinned.
+    pub fn for_session(x: f32, y: f32, tab_index: usize, closable: bool) -> Option<Self> {
+        let mut items = vec![ContextItem::new(
+            "Rename",
+            ContextAction::RenameSession(tab_index),
+        )];
+        if closable {
+            items.push(ContextItem::new(
+                "Close",
+                ContextAction::CloseSession(tab_index),
+            ));
+        }
+        Self::open(x, y, items)
     }
 
     /// Terminal / text field context: copy + paste.
