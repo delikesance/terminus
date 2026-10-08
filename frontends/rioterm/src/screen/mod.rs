@@ -13,6 +13,7 @@ mod config;
 pub mod hint;
 mod hint_actions;
 mod history;
+mod image_paste;
 mod island;
 mod keys;
 mod mouse;

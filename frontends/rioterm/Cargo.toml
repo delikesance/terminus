@@ -62,9 +62,12 @@ smallvec = { workspace = true }
 rio-window = { workspace = true }
 lru = "0.16.0"
 rio-notifier = { workspace = true }
+# Image half of the clipboard: copypasta (rio-vt) only reads text.
+arboard = { version = "3", default-features = false, features = ["image-data"] }
 
 [target.'cfg(all(not(target_os = "macos"), not(target_os = "windows")))'.dependencies]
 cpal = { version = "0.15", optional = true }
+arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = { workspace = true }
