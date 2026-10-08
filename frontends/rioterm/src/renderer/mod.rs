@@ -11,6 +11,7 @@ pub(crate) fn is_printable_text(text: &str) -> bool {
 /// Config colors are linear-ish `[f32; 4]`; the chrome wants plain
 /// bytes so it can do its own arithmetic on them.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn rgb_u8(color: [f32; 4]) -> [u8; 3] {
     [
         (color[0].clamp(0.0, 1.0) * 255.0).round() as u8,

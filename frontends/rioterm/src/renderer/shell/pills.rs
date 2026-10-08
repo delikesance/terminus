@@ -82,6 +82,7 @@ fn paint_rename(
     paint_caret(sugarloaf, caret_x, y, size, theme.accent, DEPTH, ORDER);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn icon_button(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,

@@ -1,7 +1,6 @@
 //! `Screen` chrome surface, split out of `screen/mod.rs`.
 
 use super::{ChromePress, Screen};
-use crate::context;
 use crate::hosts;
 use rio_backend::config::layout::Margin;
 use rio_backend::event::ClickState;
@@ -301,7 +300,7 @@ impl Screen<'_> {
     pub fn chrome_press(&mut self, x: f32, y: f32) -> terminus_ui::chrome::ChromeAction {
         let (width, height) = self.chrome_viewport();
         let reserved_before = self.chrome.reserved_width();
-        let menu_was_open = self.chrome.context_menu.is_some();
+        let _menu_was_open = self.chrome.context_menu.is_some();
         self.commit_session_rename_unless_at(x, y);
         let action = self.chrome.handle_press(width, height, x, y);
         // Collapsing the rail or toggling the panel changes how much of
@@ -348,10 +347,9 @@ impl Screen<'_> {
         let (width, height) = self.chrome_viewport();
         let sftp_open = self.sftp.is_some();
         self.commit_session_rename_unless_at(x, y);
-        let action = self
-            .chrome
-            .handle_context_press(width, height, x, y, sftp_open);
-        action
+
+        self.chrome
+            .handle_context_press(width, height, x, y, sftp_open)
     }
 
     /// Right-click inside the Files view: open a file/folder context menu.

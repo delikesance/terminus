@@ -3,7 +3,6 @@
 use super::Screen;
 use crate::crosswords::pos::{Column, Pos};
 use crate::crosswords::Mode;
-use crate::renderer::island;
 use crate::selection::SelectionType;
 use rio_backend::clipboard::Clipboard;
 use rio_backend::event::ClickState;

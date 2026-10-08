@@ -733,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn pump_waits_for_the_terminal_to_catch_up() {
-        let (mut transport, mut pump) = pair();
+        let (mut transport, pump) = pair();
         let chunk = vec![b'x'; 64 * 1024];
 
         // Fill past the budget: the pump must not be able to push more until

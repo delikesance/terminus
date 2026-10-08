@@ -188,6 +188,7 @@ struct Well {
     cols: Vec<f32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn begin_well(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,

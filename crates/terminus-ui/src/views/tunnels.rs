@@ -390,6 +390,7 @@ impl TunnelForm {
     /// Validate every visible field. `port_free(p)` says whether local port
     /// `p` can be bound (only asked for Local and Dynamic tunnels). On
     /// failure `errors` names each bad field.
+    #[allow(clippy::result_unit_err)]
     pub fn validate(
         &mut self,
         port_free: &dyn Fn(u16) -> bool,

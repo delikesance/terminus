@@ -125,7 +125,7 @@ impl ChromeTheme {
             dialog_bg: rgba([0x11, 0x11, 0x13], 1.0),
             dialog_border: rgba([0x2f, 0x2f, 0x35], 1.0),
             dialog_header: rgba([0x22, 0x22, 0x26], 1.0),
-            /// Main shell / settings content (`appleBg`).
+            // Main shell / settings content (`appleBg`).
             shell_bg: rgba([0x18, 0x18, 0x1b], 1.0),
             scrim: [0.0, 0.0, 0.0, 0.60],
             accent: rgba([0x0a, 0x84, 0xff], 1.0),

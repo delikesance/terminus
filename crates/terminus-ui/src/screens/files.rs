@@ -248,7 +248,7 @@ impl FilesState {
 
     /// Whether the selected machine's browser is waiting to open.
     pub fn is_connecting(&self) -> bool {
-        self.connecting.iter().any(|m| *m == self.machine_id)
+        self.connecting.contains(&self.machine_id)
     }
 
     /// The browser could not be opened (or its connection failed).

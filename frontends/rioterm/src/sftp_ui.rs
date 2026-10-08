@@ -86,6 +86,7 @@ impl ActiveSftp {
     }
 
     /// Both panes local — used by unit/E2E harnesses (no SSH).
+    #[allow(dead_code)]
     pub fn start_local_dual(
         left: PathBuf,
         right: PathBuf,
@@ -471,11 +472,7 @@ impl ActiveSftp {
                 let transfer = Some(self.transfer_label(SftpFocus::Left));
                 let can_edit = !row.is_dir;
                 terminus_ui::ContextMenu::for_sftp_entry(
-                    x,
-                    y,
-                    row.is_dir,
-                    transfer.as_deref(),
-                    can_edit,
+                    x, y, row.is_dir, transfer, can_edit,
                 )
             }
             SftpHit::RightRow(i) => {
@@ -485,11 +482,7 @@ impl ActiveSftp {
                 let transfer = Some(self.transfer_label(SftpFocus::Right));
                 let can_edit = !row.is_dir;
                 terminus_ui::ContextMenu::for_sftp_entry(
-                    x,
-                    y,
-                    row.is_dir,
-                    transfer.as_deref(),
-                    can_edit,
+                    x, y, row.is_dir, transfer, can_edit,
                 )
             }
             SftpHit::LeftParent | SftpHit::LeftCrumb => {

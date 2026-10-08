@@ -238,10 +238,8 @@ impl SettingsModal {
     pub fn apply_sync_status(&mut self, snap: SyncUiStatus) {
         // Never wipe a non-empty local draft with an empty worker URI.
         // While the URI field is focused, leave the draft alone entirely.
-        if self.sql_focus != SqlSyncFocus::Uri {
-            if !snap.uri.is_empty() {
-                self.sql_uri = TextDraft::new(snap.uri);
-            }
+        if self.sql_focus != SqlSyncFocus::Uri && !snap.uri.is_empty() {
+            self.sql_uri = TextDraft::new(snap.uri);
         }
         self.sync_connected = snap.connected;
         self.vault_unlocked = snap.vault_unlocked;
@@ -715,7 +713,7 @@ impl SettingsModal {
         window_width: f32,
         window_height: f32,
     ) -> Option<Rect> {
-        let draft = self.key_draft_rect(window_width, window_height)?;
+        let _draft = self.key_draft_rect(window_width, window_height)?;
         let cancel = self.key_draft_cancel_rect(window_width, window_height)?;
         Some(Rect::new(
             cancel.x - 8.0 - KEY_DRAFT_GENERATE_WIDTH,
@@ -894,9 +892,7 @@ impl SettingsModal {
         window_width: f32,
         window_height: f32,
     ) -> Option<Rect> {
-        let Some(msg) = self.sync_error.as_deref() else {
-            return None;
-        };
+        let msg = self.sync_error.as_deref()?;
         if msg.trim().is_empty() {
             return None;
         }
@@ -1583,8 +1579,10 @@ mod tests {
 
     #[test]
     fn empty_worker_uri_does_not_wipe_local_draft() {
-        let mut s = SettingsModal::default();
-        s.sql_uri = TextDraft::new("sqlite:./draft.db");
+        let mut s = SettingsModal {
+            sql_uri: TextDraft::new("sqlite:./draft.db"),
+            ..Default::default()
+        };
         s.apply_sync_status(SyncUiStatus {
             uri: String::new(),
             connected: false,

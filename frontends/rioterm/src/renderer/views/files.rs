@@ -162,8 +162,10 @@ fn rasterize_up_arrow(size: u16) -> Option<CoverageMask> {
     }
     let path = b.finish()?;
     let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = true;
+    let mut paint = tiny_skia::Paint {
+        anti_alias: true,
+        ..Default::default()
+    };
     paint.set_color_rgba8(255, 255, 255, 255);
     let stroke = tiny_skia::Stroke {
         width: 2.0 * unit,

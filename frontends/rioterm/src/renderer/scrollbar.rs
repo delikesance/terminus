@@ -70,6 +70,7 @@ pub fn opacity_from_last_scroll(last_scroll: Option<Instant>, dragging: bool) ->
 ///
 /// Thumb height is clamped at `SCROLLBAR_MIN_THUMB_HEIGHT` so very
 /// long lists don't shrink the thumb to a sub-pixel sliver.
+#[allow(dead_code)]
 pub fn compute_thumb(
     visible: usize,
     total: usize,

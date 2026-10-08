@@ -445,6 +445,7 @@ impl Updater {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn exit_action_armed(&self) -> bool {
         self.on_exit.is_some()
     }
