@@ -121,12 +121,61 @@ pub struct TunnelItem {
     pub dest_port: u16,
     pub status: TunnelStatus,
     pub error: Option<String>,
+    /// Live numbers of the running process; `None` unless the tunnel is
+    /// active (the backend fills it on every tick).
+    pub stats: Option<TunnelStats>,
 }
 
 impl TunnelItem {
     /// Mono route line of the card.
     pub fn route(&self) -> String {
         route_text(self.kind, self.bind_port, &self.dest_host, self.dest_port)
+    }
+
+    /// Mono detail line of the card: the failure, or the route followed by
+    /// the live stats of an active tunnel.
+    pub fn detail(&self) -> String {
+        match (self.status, &self.error, self.stats) {
+            (TunnelStatus::Failed, Some(err), _) => format!("Failed \u{2014} {err}"),
+            (st, _, Some(stats)) if st.is_active() => {
+                format!("{}  \u{b7}  {}", self.route(), stats.summary())
+            }
+            _ => self.route(),
+        }
+    }
+}
+
+/// What can honestly be observed about an `ssh -N` process.
+///
+/// `connections` is a sample of the established forwarded connections and is
+/// `None` where the platform (or the forward kind) cannot provide it. Bytes
+/// are not tracked: nothing cheap and truthful exposes them for a plain
+/// `ssh -N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TunnelStats {
+    pub uptime_secs: u64,
+    pub connections: Option<u32>,
+}
+
+impl TunnelStats {
+    /// `up 3m 12s \u{b7} 2 connections`, `up 42s \u{b7} connections n/a`.
+    pub fn summary(&self) -> String {
+        let conns = match self.connections {
+            Some(1) => "1 connection".to_string(),
+            Some(n) => format!("{n} connections"),
+            None => "connections n/a".to_string(),
+        };
+        format!("up {} \u{b7} {conns}", format_uptime(self.uptime_secs))
+    }
+}
+
+/// `42s`, `3m 12s`, `1h 05m`, `2d 3h`.
+pub fn format_uptime(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
+        3600..=86_399 => format!("{}h {:02}m", secs / 3600, secs % 3600 / 60),
+        _ => format!("{}d {}h", secs / 86_400, secs % 86_400 / 3600),
     }
 }
 
@@ -925,11 +974,56 @@ mod tests {
             dest_port: 5432,
             status,
             error: None,
+            stats: None,
         }
     }
 
     fn free(_: u16) -> bool {
         true
+    }
+
+    #[test]
+    fn uptime_is_compact_and_grows_a_unit_at_a_time() {
+        assert_eq!(format_uptime(0), "0s");
+        assert_eq!(format_uptime(42), "42s");
+        assert_eq!(format_uptime(60), "1m 00s");
+        assert_eq!(format_uptime(192), "3m 12s");
+        assert_eq!(format_uptime(3600), "1h 00m");
+        assert_eq!(format_uptime(3600 + 5 * 60 + 59), "1h 05m");
+        assert_eq!(format_uptime(2 * 86_400 + 3 * 3600 + 120), "2d 3h");
+    }
+
+    #[test]
+    fn stats_summary_says_n_a_when_connections_are_unknown() {
+        let s = |u, c| TunnelStats {
+            uptime_secs: u,
+            connections: c,
+        };
+        assert_eq!(s(42, Some(0)).summary(), "up 42s \u{b7} 0 connections");
+        assert_eq!(s(192, Some(1)).summary(), "up 3m 12s \u{b7} 1 connection");
+        assert_eq!(s(192, Some(2)).summary(), "up 3m 12s \u{b7} 2 connections");
+        assert_eq!(s(7, None).summary(), "up 7s \u{b7} connections n/a");
+    }
+
+    #[test]
+    fn the_detail_line_is_the_route_plus_stats_of_an_active_tunnel() {
+        let mut t = item("a", TunnelKind::Local, TunnelStatus::Stopped);
+        assert_eq!(t.detail(), t.route());
+        t.status = TunnelStatus::Running;
+        t.stats = Some(TunnelStats {
+            uptime_secs: 5,
+            connections: Some(3),
+        });
+        assert_eq!(
+            t.detail(),
+            format!("{}  \u{b7}  up 5s \u{b7} 3 connections", t.route())
+        );
+        // Stale stats never show on a tunnel that is not running.
+        t.status = TunnelStatus::Stopped;
+        assert_eq!(t.detail(), t.route());
+        t.status = TunnelStatus::Failed;
+        t.error = Some("boom".into());
+        assert_eq!(t.detail(), "Failed \u{2014} boom");
     }
 
     #[test]
