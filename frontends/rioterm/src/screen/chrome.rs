@@ -24,7 +24,11 @@ impl Screen<'_> {
         // Apply the initial collapsed-groups seed from the DB exactly once.
         if let Some(seed) = self.host_store.take_collapsed_groups_seed() {
             self.chrome.panel.collapsed_groups = seed;
+            // The seed is the last answer of the first refresh: hosts and
+            // distros are known now, so last launch's tabs can reopen.
+            self.saved_tabs.hosts_known();
         }
+        self.autosave_tabs();
         let sftp_changed = self.sftp.as_mut().is_some_and(|s| s.pump());
         // Parked browsers (other machines) keep draining their workers.
         for parked in self.sftp_parked.iter_mut() {

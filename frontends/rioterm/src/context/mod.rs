@@ -810,6 +810,30 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
     }
 
+    /// Sidebar row the tab was opened from.
+    pub fn tab_host_id(&self, index: usize) -> Option<&str> {
+        self.contexts
+            .get(index)
+            .and_then(|grid| grid.current().host_id.as_deref())
+    }
+
+    /// Directory the tab's foreground process is in, where the platform
+    /// can tell (not on Windows).
+    pub fn tab_working_dir(&self, index: usize) -> Option<String> {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let context = self.contexts.get(index)?.current();
+            teletypewriter::foreground_process_path(*context.main_fd, context.shell_pid)
+                .ok()
+                .map(|path| path.to_string_lossy().to_string())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = index;
+            None
+        }
+    }
+
     /// OS / distro hint for the tab at `index`, if the session came from a host.
     #[inline]
     pub fn tab_os_id(&self, index: usize) -> Option<&str> {
@@ -1237,7 +1261,8 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
 
     #[inline]
     pub fn add_context(&mut self, redirect: bool, rich_text_id: usize) {
-        let _ = self.add_context_with_shell(redirect, rich_text_id, None, None, None);
+        let _ =
+            self.add_context_with_shell(redirect, rich_text_id, None, None, None, None);
     }
 
     /// Add a context, optionally running a different shell than the app's own.
@@ -1256,9 +1281,12 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         shell: Option<Shell>,
         env: Option<Vec<(String, String)>>,
         host_id: Option<String>,
+        start_dir: Option<String>,
     ) -> Result<(), String> {
         let mut working_dir = self.config.working_dir.clone();
-        if self.config.cwd {
+        if start_dir.is_some() {
+            working_dir = start_dir;
+        } else if self.config.cwd {
             #[cfg(not(target_os = "windows"))]
             {
                 let current_context = self.current();
