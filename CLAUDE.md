@@ -25,12 +25,20 @@ Project settings (`.claude/settings.json`) start sessions on Sonnet at high effo
 with Opus as the advisor (`advisorModel`). Plan on high, delegate on medium, keep
 Opus on call.
 
-- The main session plans, decides and reviews. Consult the advisor before
-  committing to a plan, when an error keeps recurring, and before declaring a
-  task done; don't spend it on routine steps.
+- The main session plans, decides and reviews. Consult the advisor at three
+  checkpoints, and stay silent on routine commands:
+  - before locking a plan that touches several files (does it miss an invariant,
+    a schema or a store contract?);
+  - when the same test or compiler error fails twice (root cause, or a rabbit
+    hole?);
+  - before declaring a task done or committing (does the full diff regress
+    something or break the rules in this file?).
 - Delegate to the subagents in `.claude/agents/`:
-  - `explorer` (Haiku): reads and searches code.
-  - `researcher` (Haiku): looks up docs and specs outside the repo.
+  - `explorer` (Haiku): reads and searches code, returns a short summary with
+    `path:line` references. Read-only.
+  - `researcher` (Haiku): looks up docs and specs outside the repo, returns
+    quoted snippets with URLs. Read-only.
+  - Run independent explorer/researcher lookups in parallel.
   - `worker` (Sonnet): edits and runs tests for a planned change.
 - When the work is back, review the full diff yourself before pushing.
 - Always run `cargo fmt --all` and
