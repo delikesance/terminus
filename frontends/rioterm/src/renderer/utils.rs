@@ -67,22 +67,58 @@ pub fn terminal_dimensions(layout: &ContextDimension) -> rio_backend::event::Win
     }
 }
 
+/// Swap `config.colors` to the palette of `theme_opt` and record which
+/// one is showing in `config.active_theme` (the chrome follows it). A theme
+/// with no palette behind it leaves both untouched.
 #[inline]
 pub fn update_colors_based_on_theme(config: &mut Config, theme_opt: Option<Theme>) {
-    if let Some(theme) = theme_opt {
-        if let Some(adaptive_colors) = &config.adaptive_colors {
-            match theme {
-                Theme::Light => {
-                    if let Some(light_colors) = adaptive_colors.light {
-                        config.colors = light_colors;
-                    }
-                }
-                Theme::Dark => {
-                    if let Some(darkcolors) = adaptive_colors.dark {
-                        config.colors = darkcolors;
-                    }
-                }
-            }
-        }
+    use rio_backend::config::theme::AppearanceTheme;
+    let Some(theme) = theme_opt else {
+        return;
+    };
+    let Some(adaptive_colors) = &config.adaptive_colors else {
+        return;
+    };
+    let colors = match theme {
+        Theme::Light => adaptive_colors.light,
+        Theme::Dark => adaptive_colors.dark,
+    };
+    if let Some(colors) = colors {
+        config.colors = colors;
+        config.active_theme = Some(AppearanceTheme::from_window_theme(theme));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rio_backend::config::appearance::light_colors;
+    use rio_backend::config::theme::AppearanceTheme;
+
+    fn resolved(src: &str) -> Config {
+        let mut config: Config = toml::from_str(src).unwrap();
+        config.resolve_appearance();
+        config
+    }
+
+    #[test]
+    fn os_theme_swaps_the_terminal_palette_and_records_it() {
+        let mut config = resolved("[appearance]\ntheme = \"system\"\n");
+        let dark = config.colors;
+        update_colors_based_on_theme(&mut config, Some(Theme::Light));
+        assert_eq!(config.colors, light_colors());
+        assert_eq!(config.active_theme, Some(AppearanceTheme::Light));
+        update_colors_based_on_theme(&mut config, Some(Theme::Dark));
+        assert_eq!(config.colors, dark);
+        assert_eq!(config.active_theme, Some(AppearanceTheme::Dark));
+    }
+
+    #[test]
+    fn no_palette_for_the_theme_leaves_colors_and_chrome_dark() {
+        let mut config = Config::default();
+        let before = config.colors;
+        update_colors_based_on_theme(&mut config, Some(Theme::Light));
+        assert_eq!(config.colors, before);
+        assert_eq!(config.active_theme, None);
     }
 }
