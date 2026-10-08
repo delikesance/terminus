@@ -818,6 +818,10 @@ impl TunnelController {
         if ids.len() > 1 {
             // The same name on several machines: the running one is meant.
             ids.retain(|id| self.registry.is_active(id));
+            if ids.is_empty() {
+                // Same name on several machines and none is running.
+                return Ok(());
+            }
         }
         let id = one_match(key, ids)?;
         self.registry.stop(&id);
@@ -1767,5 +1771,17 @@ mod tests {
         let settled = wakes.load(Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(1300));
         assert_eq!(wakes.load(Ordering::SeqCst), settled, "woke with no tunnel");
+    }
+
+    #[test]
+    fn stopping_a_name_shared_by_idle_tunnels_of_two_machines_is_a_no_op() {
+        let mut c = TunnelController::spawn(dir("shared"), None)
+            .with_settle(Duration::from_millis(10));
+        for label in ["a", "b"] {
+            c.select_machine(&uuid::Uuid::new_v4().to_string(), label);
+            c.save(&draft("db", 5432));
+            assert!(pump(&mut c, |c| c.state().items.len() == 1));
+        }
+        assert_eq!(c.stop_tunnel("db"), Ok(()));
     }
 }
