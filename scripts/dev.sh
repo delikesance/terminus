@@ -106,7 +106,7 @@ RUN_LOG="$LOG_DIR/run.log"
 PID_FILE="$DEV_DIR/app.pid"
 STAMP="$DEV_DIR/.watch-stamp"
 DEBOUNCE_REF="$DEV_DIR/.watch-ref"
-BIN="$ROOT/target/debug/rio"
+BIN="$ROOT/target/debug/terminus"
 
 mkdir -p "$CONFIG_DIR" "$LOG_DIR"
 

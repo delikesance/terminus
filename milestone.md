@@ -11,7 +11,7 @@
 
 - **`terminus-core`** — domaine Tokio pur (Store SQLite, Vault, Sync, SSH/SFTP
   russh, WSL, historique shell, onglets sauvegardés, OS detect). Contient aussi
-  `ForwardRuntime` et `SessionManager`, **non utilisés** par le frontend.
+  `ForwardRuntime`, **non utilisé** par le frontend (`SessionManager` supprimé avec 1.8).
 - **`terminus-bridge`** — workers / transports partagés (`SshTransport`,
   `sftp_worker`, `folder_diff`, `walk_remote`). Le trait `TerminusBridge` /
   `TerminusCoreService` est toujours un stub (`terminus_bridge_impl.rs` = un
@@ -66,7 +66,7 @@ processus `ssh`.
 | Port-forward UI | ⚠️ MVP | Onglet Tunnels (CRUD + start/stop) via `ssh -L/-R/-D` ; pas de stats |
 | `SessionSpec::Ssh` + `SshTransport` | 📎 dette | Crate prêt ; branchement = 1.4-debt |
 | Palette | ⚠️ | Open Host…, Open SFTP, Show Files/Tunnels/Snippets/History ; pas de syntaxe `>` |
-| Reprise d’onglets | ✅ MVP | `saved_tabs` (fichier), pas `SessionManager` |
+| Reprise d’onglets | ✅ MVP | `saved_tabs` (fichier) |
 | Thèmes `ChromeTheme` | ⚠️ | `violet_ink` (sombre) + `violet_paper` (clair), Réglages > Apparence : Sombre / Clair / Système |
 | `TerminusCoreService` bridge | ❌ | Stub commenté |
 
@@ -86,17 +86,17 @@ Légende : ✅ fait · ⚠️ partiel · ❌ pas commencé · 📎 dette assumé
 | **1.5** | Sidebar Hosts | ✅ | Groupes, DnD, rename, OS badges, connecting shimmer, context menu ; largeur fixe 260 |
 | **1.6** | Palette Hosts | ✅ | `ListHosts` « Open Host… » + match inline dans Commands |
 | **1.7** | Vault Unlock | ✅ | Overlay + déverrouillage ; **aucune** animation de fade trouvée (ni dans `vault_unlock.rs`, ni dans `renderer/dialogs/`) |
-| **1.8** | Session lifecycle | ⚠️ | Carte « Connection lost » + Reconnect (SSH exit 255, hôte stocké, mono-panneau) ; onglets renommables ; réouverture des onglets au lancement ; autres sorties = onglet fermé |
-| **2.1** | Port forwarding live | ⚠️ MVP | Onglet Tunnels : CRUD, start/stop, états Stopped/Starting/Running/Failed, badge, erreurs lisibles, arrêt à la suppression d’hôte ; via `ssh -N -L/-R/-D` ; **pas** de stats ni de palette |
+| **1.8** | Session lifecycle | ✅ MVP | Carte « Connection lost » (SSH exit 255) ou « Session killed » (signal sur le `ssh` local) + Reconnect / Close, hôte stocké, **par panneau** dans un split ; tout autre code de sortie (le statut du shell distant après `exit` / Ctrl-D) ferme comme avant ; `SessionManager` / `SessionState` supprimés de `terminus-core` ; reste : Reconnect en split = nouvel onglet (pas de respawn en place), non vérifié en GUI |
+| **2.1** | Port forwarding live | ⚠️ MVP | Onglet Tunnels : CRUD, start/stop, états Stopped/Starting/Running/Failed, badge, erreurs lisibles, arrêt à la suppression d’hôte ; via `ssh -N -L/-R/-D` ; uptime + connexions (Linux, échantillon `/proc/net/tcp`) sur les cartes ; start/stop par id ou nom (`Screen::start_tunnel` / `stop_tunnel`) ; **pas** de compteur d’octets ; `ForwardRuntime` conservé (dette 1.4-debt) |
 | **2.2** | SFTP dual-pane | ✅ | Local\|Remote ou Host\|Host, menu contextuel, Edit remote (temp+default app+reupload), DnD, Close |
 | **2.2b** | SFTP polish | ⚠️ | Drop-target vide, « This folder is empty », erreur en pied de pane OK ; breadcrumbs : un clic remonte d’un niveau, pas de saut vers un segment |
 | **2.3** | Transferts async | ⚠️ | Dossiers (`TransferFolder`, récursif, sync différentielle, remote→remote), conflits (`ResolveConflict`), annulation, barre de progression ; worker **série** : pas de queue, pas de retry |
-| **2.4** | Palette Forwards / SFTP | ⚠️ | « Open SFTP » (+ choix d’hôte), « Show Tunnels » ; pas de `>sftp` / `>forward`, pas d’action start/stop tunnel |
+| **2.4** | Palette Forwards / SFTP | ✅ MVP | « Open SFTP » (+ choix d’hôte), « Show Tunnels » ; syntaxe `>sftp [hôte]`, `>forward [list\|start <nom>\|stop <nom>]`, entrées « Start Tunnel… » / « Stop Tunnel… » ; ne couvre que les tunnels de la machine à l’écran ; rendu non vérifié en GUI |
 | **2.5** | Empty states / onboarding | ⚠️ | Hint sidebar vide + formulaire Add server en 3 étapes ; pas de scaffold d’onboarding ni CTA « Add first host » |
 | **3.1** | Groupe « Open All » | ❌ | Menu groupe = Rename / Delete group |
 | **3.2** | Sync-aware UI | ⚠️ | Settings SqlSync (statut, last-synced) + mot « Synced » sur le bouton Settings ; `SyncReport.conflicts` calculé mais non affiché ; pas de badge pending / conflits |
 | **3.3** | Host Inspector | ❌ | — |
-| **3.4** | Session recall | ✅ MVP | `saved_tabs` : réouverture des onglets et de leurs noms au lancement (`restore_saved_tabs_if_due`) ; `SessionManager` core toujours non branché |
+| **3.4** | Session recall | ✅ MVP | `saved_tabs` : réouverture des onglets et de leurs noms au lancement (`restore_saved_tabs_if_due`) |
 | **3.5** | WSL reconnect | ⚠️ | Discover / launch OK ; carte Reconnect réservée aux hôtes SSH stockés ; pas d’auto-reconnect WSL |
 | **4.1** | Thèmes Terminus (×7) | ⚠️ | 2 thèmes chrome (sombre/clair) + mode Système ; 7 presets à faire |
 | **4.2** | WCAG AA / reduced-motion | ❌ | Fonction de ratio de contraste dans `theme.rs`, aucun preset ni option reduced-motion |
@@ -187,7 +187,7 @@ Légende : ✅ fait · ⚠️ partiel · ❌ pas commencé · 📎 dette assumé
 | 1.5b | **Sidebar resize** | Poignée de resize + persist largeur (aujourd’hui constante `SIDEBAR_WIDTH = 260`) | Largeur utilisateur persistée |
 | 1.5c | **États hôte** | `HostStatus` n’a que Idle / Running / Stopped / Active ; ajouter `connected` / `connecting` / `error` dérivés des sessions live (le shimmer connecting est un indicateur séparé) | Trois états visibles et justes |
 | 1.7b | **Fade vault** | Animation d’apparition 120 ms (optionnel ; `anim.rs` fournit `Tween` mais rioterm ne l’utilise pas pour les dialogs ; lié à 4.2 reduced-motion) | Fade respectant reduced-motion |
-| 1.8 | **Session lifecycle** | Étendre la détection de drop au-delà de exit 255 et aux onglets multi-panneaux ; brancher ou supprimer `SessionManager` / `SessionState::Disconnected` | Pas d’onglet zombie ; message clair pour toute sortie non propre |
+| 1.8b | **Session lifecycle (suite)** | Reconnect en place dans un split (aujourd’hui : nouvel onglet) ; split d’un onglet hôte = session sur le même hôte (aujourd’hui : shell local) ; vérifier en GUI la fermeture volontaire | Pas d’onglet zombie en multi-panneaux |
 
 ---
 
@@ -197,10 +197,10 @@ Légende : ✅ fait · ⚠️ partiel · ❌ pas commencé · 📎 dette assumé
 
 | # | Jalon | Reste à faire | Critère de done |
 | :--- | :--- | :--- | :--- |
-| 2.1 | **Port forwarding (finition)** | Stats (connexions / octets / uptime) ; actions palette start/stop ; décider du sort de `ForwardRuntime` (direct-tcpip russh) vs processus `ssh` (voir 1.4-debt) | Tunnel observable et pilotable sans souris |
+| 2.1 | **Port forwarding (finition)** | Compteur d’octets (netlink `sock_diag`) ; réveil 1 Hz limité à l’onglet Tunnels ; ligne de détail à clipper sur fenêtre étroite ; stats des tunnels d’une autre machine ; décider du sort de `ForwardRuntime` (voir 1.4-debt) | Tunnel observable (octets compris) et pilotable sans souris |
 | 2.2b | **SFTP polish** | Breadcrumbs : clic sur un segment navigue vers ce segment (aujourd’hui = un niveau up) | Parité « explorateur » basique |
 | 2.3 | **Transferts robustes** | Queue (worker série aujourd’hui), retry sur échec, vue de file | Plusieurs gros transferts sans bloquer l’UI ni se perdre sur erreur |
-| 2.4 | **Palette ops** | Syntaxe `>sftp`, `>forward …`, actions tunnel dans la palette | Actions sans souris |
+| 2.4 | **Palette ops (suite)** | `>forward` pour toutes les machines (pas seulement celle à l’écran) ; liste rafraîchie pendant que la palette est ouverte | Actions sans souris sur toute la flotte |
 | 2.5 | **Onboarding** | Empty sidebar 3 étapes avec CTA « Add first host » (aujourd’hui : un hint texte) | Premier host < 60 s |
 
 ---
@@ -246,10 +246,10 @@ Légende : ✅ fait · ⚠️ partiel · ❌ pas commencé · 📎 dette assumé
 | Risque | Impact | État mitigation |
 | :--- | :--- | :--- |
 | Deux piles SSH (OpenSSH CLI pour shell + tunnels, russh pour SFTP) | Auth / host-key divergents entre CLI et SFTP | **Accepté (Option A)** ; unification = 1.4-debt |
-| Code mort côté core (`ForwardRuntime`, `SessionManager`, `TerminusCoreService`) | Dette, faux sentiment de couverture | 1.2b / 2.1 / 1.8 : brancher ou supprimer |
+| Code mort côté core (`ForwardRuntime`, `TerminusCoreService`) | Dette, faux sentiment de couverture | 1.2b / 2.1 : brancher ou supprimer (`SessionManager` supprimé) |
 | Bridge stub + workers dans rioterm | Dette de structure | 1.2b |
 | Transferts SFTP sans queue ni retry | Ops limitées, perte silencieuse sur erreur | 2.3 |
-| Détection de perte limitée à SSH exit 255 | Onglets fermés sans explication pour les autres sorties | 1.8 |
+| Fenêtre Linux sans cadre : rendu, redimensionnement et fermeture non vérifiés sous GNOME / X11 | Régression visuelle possible | `feat/linux-titlebar` mergé, à valider à l’écran |
 | Liste d’hôtes non virtualisée | Lag 100+ | Toujours à faire (4.4 / sidebar) |
 | Pas de workflow de release CI | Release manuelle (`release.sh`) | 4.5 |
 | Vault Argon2id | Freeze UI si mal placé | Worker dédié ✅ |
