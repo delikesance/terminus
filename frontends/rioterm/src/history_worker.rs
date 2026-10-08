@@ -138,7 +138,11 @@ pub fn to_items(
 }
 
 /// Env for a new session: adds the shell-integration variables for local
-/// POSIX shells (when recording is on); everything else passes through.
+/// POSIX shells; everything else passes through.
+///
+/// Loaded whether or not history recording is on: the integration also
+/// keeps a hand-typed `ssh` from sending `TERM=xterm-rio` to the remote.
+/// Recording itself is gated in [`record`].
 #[cfg(not(target_os = "windows"))]
 pub fn session_env(
     program: Option<&str>,
@@ -146,19 +150,22 @@ pub fn session_env(
 ) -> Option<Vec<(String, String)>> {
     use std::path::PathBuf;
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    if !env_recording_enabled()
-        || !terminus_core::shell_integration::is_local_posix_shell(program)
-    {
+    if !terminus_core::shell_integration::is_local_posix_shell(program) {
         return env;
     }
     let Some(dir) = DIR
-        .get_or_init(|| terminus_core::shell_integration::install(&crate::hosts::data_dir()).ok())
+        .get_or_init(|| {
+            terminus_core::shell_integration::install(&crate::hosts::data_dir()).ok()
+        })
         .as_ref()
     else {
         return env;
     };
     let orig = std::env::var("ZDOTDIR").ok();
     let mut merged = env.unwrap_or_default();
-    merged.extend(terminus_core::shell_integration::local_env(dir, orig.as_deref()));
+    merged.extend(terminus_core::shell_integration::local_env(
+        dir,
+        orig.as_deref(),
+    ));
     Some(merged)
 }

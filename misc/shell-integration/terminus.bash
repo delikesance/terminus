@@ -80,3 +80,17 @@ PS0='$(__terminus_cmdline)\e]133;C\a'"${PS0-}"
 # PROMPT_COMMAND, so announce the directory (and the history number) now.
 printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "${PWD// /%20}"
 __terminus_histcmd=${HISTCMD-}
+
+# `ssh` passes our TERM to the remote, and no host ships a terminfo entry for
+# `xterm-rio`: readline then cannot move the cursor and `tput`/`htop` fail.
+# Advertise the entry every host has, for this one command only. A `ssh`
+# function or alias of your own is left alone (and `function ssh` rather than
+# `ssh()`, which bash would alias-expand into a syntax error).
+if ! declare -F ssh >/dev/null && ! alias ssh >/dev/null 2>&1; then
+  function ssh {
+    case ${TERM-} in
+      xterm-rio | rio) TERM=xterm-256color command ssh "$@" ;;
+      *) command ssh "$@" ;;
+    esac
+  }
+fi
