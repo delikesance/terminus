@@ -17,6 +17,9 @@ pub const SPLIT_RADIUS: f32 = 9.0;
 pub const SPLIT_ICON: f32 = 15.0;
 /// Longest label before it is elided.
 pub const MAX_LABEL: f32 = 180.0;
+/// Narrowest label slot while a pill is being renamed, so an empty draft
+/// still shows a field with its caret.
+pub const RENAME_MIN_LABEL: f32 = 48.0;
 
 /// One open session of the selected machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
