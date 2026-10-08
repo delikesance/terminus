@@ -206,40 +206,22 @@ impl Screen<'_> {
         // Picking a machine brings its terminal forward (design: a sidebar
         // row always lands on Terminal).
         self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
-        // If this host already has open sessions, focus the last one (else first).
-        {
-            let len = self.context_manager.len();
-            let mut last: Option<usize> = None;
-            let mut first: Option<usize> = None;
-            for i in 0..len {
-                let host = self
-                    .context_manager
-                    .contexts_mut()
-                    .get(i)
-                    .and_then(|g| g.current().host_id.clone())
-                    .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
-                if host == id {
-                    if first.is_none() {
-                        first = Some(i);
-                    }
-                    last = Some(i);
-                }
+        // If this host already has open sessions, go back to the one the
+        // user was last on rather than whichever sits last in the strip.
+        if let Some(idx) = self.context_manager.host_tab_to_restore(id) {
+            if idx != self.context_manager.current_index() {
+                self.stop_hint_mode_if_active();
+                self.cancel_search(clipboard);
+                self.clear_selection();
+                let old = self.context_manager.current_index();
+                self.context_manager.set_current(idx);
+                self.switch_visible_context(old, idx);
+                self.mark_dirty();
             }
-            if let Some(idx) = last.or(first) {
-                if idx != self.context_manager.current_index() {
-                    self.stop_hint_mode_if_active();
-                    self.cancel_search(clipboard);
-                    self.clear_selection();
-                    let old = self.context_manager.current_index();
-                    self.context_manager.set_current(idx);
-                    self.switch_visible_context(old, idx);
-                    self.mark_dirty();
-                }
-                self.sync_sidebar_selection();
-                // Refresh OS/distro icon even when reusing an open session.
-                self.host_store.detect_os(id);
-                return Ok(());
-            }
+            self.sync_sidebar_selection();
+            // Refresh OS/distro icon even when reusing an open session.
+            self.host_store.detect_os(id);
+            return Ok(());
         }
 
         // Reuse the pinned home tab instead of opening a duplicate local.
