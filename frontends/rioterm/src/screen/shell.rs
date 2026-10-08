@@ -82,6 +82,9 @@ impl Screen<'_> {
     }
 }
 
+/// Terminal type advertised to SSH remotes; see [`ssh_shell`].
+pub(super) const REMOTE_TERM: &str = "xterm-256color";
+
 /// Build the local PTY program for an SSH host tab (**accepted MVP path**).
 ///
 /// **Architecture decision (Option A, see `milestone.md`):** interactive shells
@@ -116,7 +119,11 @@ pub(super) fn ssh_shell(
     };
 
     let mut args = vec!["-p".to_string(), host.port.to_string()];
-    let mut env = None;
+    // `ssh` forwards our `$TERM` in its pty request. The local one is
+    // usually `xterm-rio`, which remote hosts have no terminfo for: readline
+    // then can't move the cursor and history recall piles lines on top of
+    // each other. Advertise the entry every remote ships instead.
+    let mut env = vec![("TERM".to_string(), REMOTE_TERM.to_string())];
 
     if let Some(password) = password {
         let (askpass, secret_file) = write_ssh_askpass(password)?;
@@ -130,7 +137,7 @@ pub(super) fn ssh_shell(
             "-o".into(),
             "StrictHostKeyChecking=accept-new".into(),
         ]);
-        env = Some(vec![
+        env.extend([
             ("SSH_ASKPASS".into(), askpass.to_string_lossy().into_owned()),
             ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
             (
@@ -159,7 +166,7 @@ pub(super) fn ssh_shell(
         ]);
         if let Some(passphrase) = identity_passphrase.filter(|p| !p.is_empty()) {
             let (askpass, secret_file) = write_ssh_askpass(passphrase)?;
-            env = Some(vec![
+            env.extend([
                 ("SSH_ASKPASS".into(), askpass.to_string_lossy().into_owned()),
                 ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
                 (
@@ -180,7 +187,7 @@ pub(super) fn ssh_shell(
             program: Some("ssh".to_string()),
             args,
         },
-        env,
+        Some(env),
     ))
 }
 
