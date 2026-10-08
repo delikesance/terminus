@@ -156,6 +156,9 @@ pub struct ContextGrid<T: EventListener> {
     pub custom_color: Option<[f32; 4]>,
     /// Home "This computer" tab — cannot be closed (survives splits).
     pub pinned: bool,
+    /// Focus clock reading from the last time this tab came to the front
+    /// (0: never); see `ContextManager::host_tab_to_restore`.
+    pub last_focused: u64,
     scale: f32,
     inner: FxHashMap<NodeId, ContextGridItem<T>>,
     pub root: Option<NodeId>,
@@ -291,6 +294,7 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
             custom_title: None,
             custom_color: None,
             pinned: false,
+            last_focused: 0,
             scale,
             width,
             height,
