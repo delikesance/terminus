@@ -31,6 +31,7 @@ pub mod loading;
 pub mod lost_session;
 pub mod os_icons;
 pub mod overlap;
+pub mod palette_query;
 pub mod palette_view;
 pub mod screens;
 pub mod settings;
