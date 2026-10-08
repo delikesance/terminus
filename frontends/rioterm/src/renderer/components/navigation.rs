@@ -4,20 +4,18 @@
 //! Geometry and state come from `terminus_ui::components::navigation`.
 
 use rio_backend::sugarloaf::Sugarloaf;
+use terminus_ui::components::identity::TileGlyph;
 use terminus_ui::components::navigation::{
     drop_target, section_header, server_row, session_pill, view_tabs, MetaTone,
     PillState, RowMeta, RowState, TabSize, TabState,
 };
-use terminus_ui::components::identity::TileGlyph;
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::os_icons::OsGlyph;
 use terminus_ui::theme::{text_color, ChromeTheme};
 use terminus_ui::tokens::{font_size, space};
 
-use crate::renderer::chrome::{
-    draw_icon, paint_flat, paint_surface_stroke,
-};
+use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
 const DEPTH: f32 = 0.1;

@@ -14,7 +14,6 @@
 //!   ([`terminus_ui::views::tunnels::TunnelsState`]), the persistence worker
 //!   (SQLite on its own thread, like `hosts.rs`) and the registry.
 
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -918,9 +917,9 @@ mod tests {
         assert!(
             wait_for(|| {
                 events.extend(r.poll());
-                events
-                    .iter()
-                    .any(|e| matches!(e, TunnelEvent::Exited { id, .. } if id == "orphan"))
+                events.iter().any(
+                    |e| matches!(e, TunnelEvent::Exited { id, .. } if id == "orphan"),
+                )
             }),
             "child outlived its parent thread: {events:?}"
         );

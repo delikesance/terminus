@@ -36,7 +36,8 @@ impl Screen<'_> {
             .iter()
             .any(|(id, other, _)| *id == host.id && *other == other_pane)
         {
-            self.sftp_pending.push((host.id.clone(), other_pane, selected));
+            self.sftp_pending
+                .push((host.id.clone(), other_pane, selected));
             self.host_store
                 .request_sftp_auth(&host.id, &host.auth_method);
         }

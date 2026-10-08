@@ -469,7 +469,10 @@ mod tests {
         s.begin_connecting("a");
         assert!(s.is_connecting());
         assert_eq!(s.body(), "Connecting to e2e local…");
-        assert!(s.cta_rect(content()).is_none(), "no Browse button meanwhile");
+        assert!(
+            s.cta_rect(content()).is_none(),
+            "no Browse button meanwhile"
+        );
         assert!(!s.take_auto_open(true), "no second request while waiting");
 
         // Another machine selected: its own state, not A's wait.

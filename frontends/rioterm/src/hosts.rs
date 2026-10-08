@@ -402,7 +402,10 @@ pub fn sidebar_rows(
     // One section per group (in group order), then "Servers" for the
     // ungrouped hosts — the design's machine sections.
     let mut ordered_groups: Vec<&(String, String, i64)> = groups.iter().collect();
-    ordered_groups.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    ordered_groups.sort_by(|a, b| {
+        a.2.cmp(&b.2)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
     for (group_id, group_name, _) in ordered_groups {
         let mut group_hosts: Vec<_> = hosts
             .iter()
@@ -437,8 +440,10 @@ pub fn sidebar_rows(
     }
 
     rows.push(Row::Section(HOSTS_SECTION.to_string()));
-    let mut ungrouped: Vec<&HostRow> =
-        hosts.iter().filter(|host| host.group_id.is_none()).collect();
+    let mut ungrouped: Vec<&HostRow> = hosts
+        .iter()
+        .filter(|host| host.group_id.is_none())
+        .collect();
     ungrouped.sort_by(|a, b| {
         a.sort_order
             .cmp(&b.sort_order)
@@ -707,7 +712,11 @@ pub struct HostPersistHandle {
 impl HostPersistHandle {
     fn new(commands: Sender<Command>) -> Self {
         let (outcomes_tx, outcomes_rx) = channel();
-        Self { commands, outcomes_tx, outcomes_rx }
+        Self {
+            commands,
+            outcomes_tx,
+            outcomes_rx,
+        }
     }
 
     /// Persist `group_id` as explicitly collapsed (`true`) or expanded (`false`).
@@ -1918,7 +1927,11 @@ fn worker(
                     }
                 }
             }
-            Command::SetGroupCollapsed { group_id, collapsed, reply } => {
+            Command::SetGroupCollapsed {
+                group_id,
+                collapsed,
+                reply,
+            } => {
                 let result =
                     set_collapsed_group_setting(&runtime, &store, &group_id, collapsed);
                 let _ = reply.send(GroupCollapseOutcome {
@@ -4029,16 +4042,17 @@ mod tests {
             .expect("outcome must arrive");
         assert_eq!(outcome.group_id, "g1");
         assert!(outcome.collapsed);
-        assert!(outcome.error.is_none(), "unexpected error: {:?}", outcome.error);
+        assert!(
+            outcome.error.is_none(),
+            "unexpected error: {:?}",
+            outcome.error
+        );
 
         // Reopen: the group must be in the restored set.
         drop(repo);
         let mut reopened = HostRepository::spawn(dir.clone(), None);
-        assert!(drain_until(
-            &mut reopened,
-            Duration::from_secs(10),
-            |r| r.collapsed_groups_seeded
-        ));
+        assert!(drain_until(&mut reopened, Duration::from_secs(10), |r| r
+            .collapsed_groups_seeded));
         let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
         assert!(
             restored.contains("g1"),
@@ -4065,16 +4079,17 @@ mod tests {
             .expect("second outcome must arrive");
         assert_eq!(outcome.group_id, "g2");
         assert!(!outcome.collapsed);
-        assert!(outcome.error.is_none(), "unexpected error: {:?}", outcome.error);
+        assert!(
+            outcome.error.is_none(),
+            "unexpected error: {:?}",
+            outcome.error
+        );
 
         // Reopen: the group must be absent.
         drop(repo);
         let mut reopened = HostRepository::spawn(dir.clone(), None);
-        assert!(drain_until(
-            &mut reopened,
-            Duration::from_secs(10),
-            |r| r.collapsed_groups_seeded
-        ));
+        assert!(drain_until(&mut reopened, Duration::from_secs(10), |r| r
+            .collapsed_groups_seeded));
         let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
         assert!(
             !restored.contains("g2"),
@@ -4100,11 +4115,8 @@ mod tests {
         // Reopen: exactly one entry for g3.
         drop(repo);
         let mut reopened = HostRepository::spawn(dir.clone(), None);
-        assert!(drain_until(
-            &mut reopened,
-            Duration::from_secs(10),
-            |r| r.collapsed_groups_seeded
-        ));
+        assert!(drain_until(&mut reopened, Duration::from_secs(10), |r| r
+            .collapsed_groups_seeded));
         let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
         assert!(
             restored.contains("g3"),
@@ -4133,11 +4145,8 @@ mod tests {
         drop(repo);
 
         let mut reopened = HostRepository::spawn(dir.clone(), None);
-        assert!(drain_until(
-            &mut reopened,
-            Duration::from_secs(10),
-            |r| r.collapsed_groups_seeded
-        ));
+        assert!(drain_until(&mut reopened, Duration::from_secs(10), |r| r
+            .collapsed_groups_seeded));
         let restored = reopened.take_collapsed_groups_seed().unwrap_or_default();
         assert!(
             restored.contains("persistent-group"),
@@ -4166,10 +4175,7 @@ mod tests {
         }));
         let first_seed = repo.take_collapsed_groups_seed();
         // Seed is consumed; future drains must not re-populate it.
-        assert!(
-            first_seed.is_some(),
-            "seed must arrive on initial Refresh"
-        );
+        assert!(first_seed.is_some(), "seed must arrive on initial Refresh");
 
         // Trigger a second Refresh (simulates host-list reload after a create).
         let _ = repo.commands.send(Command::Refresh);

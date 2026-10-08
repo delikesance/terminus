@@ -1331,7 +1331,10 @@ mod tests {
         );
         assert_eq!((result.window.width, result.window.height), (1200, 760));
         assert_eq!(
-            (Config::default().window.width, Config::default().window.height),
+            (
+                Config::default().window.width,
+                Config::default().window.height
+            ),
             (1200, 760)
         );
     }
