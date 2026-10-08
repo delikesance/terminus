@@ -421,7 +421,7 @@ fn paint_rename(
         3,
     );
     let ty = field.y + (field.height - sidebar::ROW_TITLE_FONT_SIZE) * 0.5;
-    crate::renderer::chrome::paint_rename_text(sugarloaf, draft, text_x, ty, theme);
+    crate::renderer::chrome::paint_rename_text(sugarloaf, &draft.text, text_x, ty, theme);
 }
 
 /// `text` in Sora Regular `size`, cut with an ellipsis to fit `max_w`.

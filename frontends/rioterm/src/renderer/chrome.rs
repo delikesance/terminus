@@ -2116,22 +2116,17 @@ pub(crate) fn paint_field_caret_prefix_at(
 /// Inline rename name + optional selection wash + caret.
 pub(crate) fn paint_rename_text(
     sugarloaf: &mut Sugarloaf,
-    draft: &sidebar::RenameDraft,
+    draft: &terminus_ui::TextDraft,
     text_x: f32,
     text_y: f32,
     theme: &ChromeTheme,
 ) {
     let accent = color_from_f32(theme.accent);
     let title_opts = opts(ROW_TITLE_SIZE, accent, true);
-    if let Some((start, end)) = draft.text.selection_range() {
-        let before: String = draft.text.value.chars().take(start).collect();
-        let selected: String = draft
-            .text
-            .value
-            .chars()
-            .skip(start)
-            .take(end - start)
-            .collect();
+    if let Some((start, end)) = draft.selection_range() {
+        let before: String = draft.value.chars().take(start).collect();
+        let selected: String =
+            draft.value.chars().skip(start).take(end - start).collect();
         let bx = sugarloaf.text_mut().measure(&before, &title_opts);
         let sw = sugarloaf
             .text_mut()
@@ -2149,12 +2144,12 @@ pub(crate) fn paint_rename_text(
         sugarloaf,
         text_x,
         text_y,
-        &draft.text.value,
+        &draft.value,
         ROW_TITLE_SIZE,
         accent,
         true,
     );
-    let prefix = draft.text.prefix();
+    let prefix = draft.prefix();
     let w = sugarloaf.text_mut().measure(&prefix, &title_opts);
     paint_caret(
         sugarloaf,

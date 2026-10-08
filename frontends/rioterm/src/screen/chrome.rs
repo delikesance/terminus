@@ -298,6 +298,7 @@ impl Screen<'_> {
         let (width, height) = self.chrome_viewport();
         let reserved_before = self.chrome.reserved_width();
         let menu_was_open = self.chrome.context_menu.is_some();
+        self.commit_session_rename_unless_at(x, y);
         let action = self.chrome.handle_press(width, height, x, y);
         // Collapsing the rail or toggling the panel changes how much of
         // the window the terminal may use.
@@ -305,6 +306,33 @@ impl Screen<'_> {
             self.reapply_chrome_inset();
         }
         action
+    }
+
+    /// A press anywhere but the pill being renamed commits the rename,
+    /// the way a click outside a text field ends editing.
+    fn commit_session_rename_unless_at(&mut self, x: f32, y: f32) {
+        let Some(tab) = self.chrome.shell.rename.as_ref().map(|r| r.tab_index) else {
+            return;
+        };
+        use terminus_ui::shell::ShellHit;
+        let on_field = matches!(
+            self.chrome.shell.hit_test(x, y),
+            Some(ShellHit::Pill(t) | ShellHit::PillClose(t)) if t == tab
+        );
+        if !on_field {
+            self.commit_session_rename();
+        }
+    }
+
+    /// Apply the pill rename as the tab's name. A blank name drops the
+    /// custom name, so the pill shows its default label again.
+    pub(crate) fn commit_session_rename(&mut self) {
+        if let Some((tab, name)) = self.chrome.shell.take_rename() {
+            if tab < self.context_manager.len() {
+                self.context_manager.set_custom_title(tab, name);
+            }
+            self.mark_dirty();
+        }
     }
 
     /// Right-click on chrome: open or dismiss a context menu.
@@ -315,6 +343,7 @@ impl Screen<'_> {
     ) -> terminus_ui::chrome::ChromeAction {
         let (width, height) = self.chrome_viewport();
         let sftp_open = self.sftp.is_some();
+        self.commit_session_rename_unless_at(x, y);
         let action = self
             .chrome
             .handle_context_press(width, height, x, y, sftp_open);
@@ -401,9 +430,11 @@ impl Screen<'_> {
         let owner = crate::sftp_ui::ActiveSftp::owner;
         let before = std::mem::replace(&mut self.sftp_tab_hosts, open_host_ids.to_vec());
         self.sftp_parked.tabs_changed(&before, open_host_ids);
-        let mut closed =
-            self.sftp_parked
-                .reap(&mut self.sftp, owner, crate::sftp_ui::ActiveSftp::busy);
+        let mut closed = self.sftp_parked.reap(
+            &mut self.sftp,
+            owner,
+            crate::sftp_ui::ActiveSftp::busy,
+        );
         if !self.host_store.loading() {
             let hosts = self.host_store.hosts();
             closed.extend(self.sftp_parked.retire_where(&mut self.sftp, owner, |s| {

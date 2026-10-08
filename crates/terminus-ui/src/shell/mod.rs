@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 use crate::components::navigation::TabSize;
 use crate::geom::Rect;
+use crate::TextDraft;
 pub use header::{HeaderGeom, HeaderTab};
 pub use layout::{grid_insets, min_window_size, Insets, ShellLayout};
 pub use pills::{PillsGeom, PillsHit, SessionPill};
@@ -58,6 +59,15 @@ pub struct MachineInfo {
     pub name: String,
     /// `user@host`, `WSL · NixOS`, …
     pub address: String,
+}
+
+/// Inline rename of a session pill (double-click, or "Rename" in its
+/// context menu).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PillRename {
+    /// Tab whose name is being edited.
+    pub tab_index: usize,
+    pub text: TextDraft,
 }
 
 /// Header window controls (painted on Windows, where the app draws its
@@ -110,6 +120,8 @@ pub struct Shell {
     pub machine: Option<MachineInfo>,
     /// Sessions of the selected machine, in tab order.
     pub pills: Vec<SessionPill>,
+    /// The pill being renamed, if any.
+    pub rename: Option<PillRename>,
     /// Running tunnels of the selected machine (Tunnels tab badge).
     pub tunnel_badge: u32,
     /// Sync is configured and healthy: "Synced" on the Settings button.
@@ -128,6 +140,7 @@ impl Default for Shell {
             workspace: Workspace::default(),
             machine: None,
             pills: Vec::new(),
+            rename: None,
             tunnel_badge: 0,
             sync_ok: false,
             window_controls: cfg!(target_os = "windows"),
@@ -191,6 +204,9 @@ impl Shell {
         }
         for p in &self.pills {
             out.push((TextKind::Pill, p.label.clone()));
+        }
+        if let Some(r) = &self.rename {
+            out.push((TextKind::Pill, r.text.value.clone()));
         }
         out
     }
@@ -259,7 +275,12 @@ impl Shell {
         let widths: Vec<f32> = self
             .pills
             .iter()
-            .map(|p| self.width(TextKind::Pill, &p.label))
+            .map(|p| match &self.rename {
+                Some(r) if r.tab_index == p.tab_index => self
+                    .width(TextKind::Pill, &r.text.value)
+                    .max(pills::RENAME_MIN_LABEL),
+                _ => self.width(TextKind::Pill, &p.label),
+            })
             .collect();
         Some(pills::layout(
             &self.layout().pills,
@@ -267,6 +288,48 @@ impl Shell {
             &widths,
             self.hovered_pill(),
         ))
+    }
+
+    /// Replace the pills (each frame). A rename whose tab is no longer
+    /// shown is dropped.
+    pub fn set_pills(&mut self, pills: Vec<SessionPill>) {
+        self.pills = pills;
+        if let Some(r) = &self.rename {
+            if !self.pills.iter().any(|p| p.tab_index == r.tab_index) {
+                self.rename = None;
+            }
+        }
+    }
+
+    /// Start renaming the pill of `tab_index`, its current label selected
+    /// so typing replaces it. Returns whether that pill exists.
+    pub fn begin_rename(&mut self, tab_index: usize) -> bool {
+        let Some(pill) = self.pills.iter().find(|p| p.tab_index == tab_index) else {
+            return false;
+        };
+        let mut text = TextDraft::new(pill.label.clone());
+        text.select_all();
+        self.rename = Some(PillRename { tab_index, text });
+        true
+    }
+
+    pub fn is_renaming(&self, tab_index: usize) -> bool {
+        self.rename
+            .as_ref()
+            .is_some_and(|r| r.tab_index == tab_index)
+    }
+
+    /// End the rename and return `(tab, name)` to apply. A blank name is
+    /// `None`: the tab goes back to its default label.
+    pub fn take_rename(&mut self) -> Option<(usize, Option<String>)> {
+        let r = self.rename.take()?;
+        let name = r.text.value.trim();
+        Some((r.tab_index, (!name.is_empty()).then(|| name.to_string())))
+    }
+
+    /// Drop the rename without applying it. Returns whether one was open.
+    pub fn cancel_rename(&mut self) -> bool {
+        self.rename.take().is_some()
     }
 
     // ---- hit-testing -------------------------------------------------
@@ -496,5 +559,65 @@ mod tests {
         assert_eq!(s.hovered_pill(), Some(1));
         assert!(!s.set_hover(Some(ShellHit::Pill(4))));
         assert!(s.set_hover(None));
+    }
+
+    #[test]
+    fn renaming_a_pill_starts_from_its_label_selected() {
+        let mut s = shell();
+        assert!(s.begin_rename(4));
+        let r = s.rename.as_ref().expect("rename draft");
+        assert_eq!(r.tab_index, 4);
+        assert_eq!(r.text.value, "logs");
+        assert_eq!(r.text.selection_range(), Some((0, 4)));
+        assert!(s.is_renaming(4));
+        assert!(!s.is_renaming(2));
+        assert!(!s.begin_rename(9), "no pill for that tab");
+        assert!(s.is_renaming(4), "a failed begin keeps the current draft");
+    }
+
+    #[test]
+    fn the_renamed_pill_grows_with_its_draft() {
+        let mut s = shell();
+        let before = s.pills_geom().unwrap().pills[1].width;
+        s.begin_rename(4);
+        s.rename.as_mut().unwrap().text = crate::TextDraft::new("production logs");
+        let g = s.pills_geom().unwrap();
+        assert!(g.pills[1].width > before);
+        assert!(s
+            .texts()
+            .contains(&(TextKind::Pill, "production logs".to_string())));
+        // An empty draft still leaves room for the caret.
+        s.rename.as_mut().unwrap().text = crate::TextDraft::new("");
+        let g = s.pills_geom().unwrap();
+        assert!(g.label_w[1] >= pills::RENAME_MIN_LABEL);
+    }
+
+    #[test]
+    fn committing_a_rename_trims_and_blank_resets_to_the_default() {
+        let mut s = shell();
+        s.begin_rename(4);
+        s.rename.as_mut().unwrap().text = crate::TextDraft::new("  db  ");
+        assert_eq!(s.take_rename(), Some((4, Some("db".to_string()))));
+        assert!(s.rename.is_none());
+        s.begin_rename(2);
+        s.rename.as_mut().unwrap().text = crate::TextDraft::new("   ");
+        assert_eq!(s.take_rename(), Some((2, None)));
+        assert_eq!(s.take_rename(), None);
+        s.begin_rename(2);
+        assert!(s.cancel_rename());
+        assert!(!s.cancel_rename());
+    }
+
+    #[test]
+    fn a_rename_is_dropped_when_its_pill_goes_away() {
+        let mut s = shell();
+        s.begin_rename(4);
+        let pills = s.pills[..1].to_vec();
+        s.set_pills(pills);
+        assert!(s.rename.is_none());
+        s.begin_rename(2);
+        let pills = s.pills.clone();
+        s.set_pills(pills);
+        assert!(s.is_renaming(2));
     }
 }

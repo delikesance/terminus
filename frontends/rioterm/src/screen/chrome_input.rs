@@ -46,6 +46,18 @@ impl Screen<'_> {
         }
     }
 
+    /// Type into the session pill rename field.
+    pub(crate) fn session_rename_insert(&mut self, text: &str) -> bool {
+        if !crate::renderer::is_printable_text(text) {
+            return false;
+        }
+        self.chrome
+            .shell
+            .rename
+            .as_mut()
+            .is_some_and(|r| r.text.insert(text, 64, false))
+    }
+
     fn ctrl_or_super(&self) -> bool {
         let mods = self.modifiers.state();
         mods.control_key() || mods.super_key()
@@ -70,6 +82,38 @@ impl Screen<'_> {
             }
             if matches!(key_event.logical_key, Key::Named(NamedKey::Escape)) {
                 self.chrome.close_context_menu();
+            }
+            return Some(FormOutcome::Consumed);
+        }
+
+        // Session pill rename (double-click or its context menu).
+        if self.chrome.shell.rename.is_some() && !self.chrome.add_host_is_open() {
+            if key_event.state != ElementState::Pressed {
+                return Some(FormOutcome::Consumed);
+            }
+            match &key_event.logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.chrome.shell.cancel_rename();
+                }
+                Key::Named(NamedKey::Enter) => self.commit_session_rename(),
+                Key::Character(ch) if !self.ctrl_or_super() => {
+                    let text = key_event.text.as_deref().unwrap_or(ch.as_str());
+                    self.session_rename_insert(text);
+                }
+                Key::Named(NamedKey::Space) => {
+                    self.session_rename_insert(" ");
+                }
+                other => {
+                    if let Some(edit) = text_edit_for_key(other, self.modifiers.state()) {
+                        if let Some(r) = self.chrome.shell.rename.as_mut() {
+                            r.text.apply(edit);
+                        }
+                    } else if !self.ctrl_or_super() {
+                        if let Some(text) = key_event.text.as_deref() {
+                            self.session_rename_insert(text);
+                        }
+                    }
+                }
             }
             return Some(FormOutcome::Consumed);
         }

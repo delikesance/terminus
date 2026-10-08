@@ -10,10 +10,10 @@ use terminus_ui::shell::pills::{PLUS_ICON, SPLIT_ICON, SPLIT_RADIUS};
 use terminus_ui::shell::ShellHit;
 use terminus_ui::theme::ChromeTheme;
 
-use super::{fill, u8_to_f32};
-use crate::renderer::chrome::draw_icon;
+use super::{fill, text_top, u8_to_f32, DEPTH, ORDER};
+use crate::renderer::chrome::{draw_icon, paint_caret};
 use crate::renderer::components::navigation::paint_session_pill;
-use crate::renderer::ui_text::{measure_ui_text, UiWeight};
+use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
 /// `label` cut with an ellipsis to fit `max_w`.
 fn elide(sugarloaf: &mut Sugarloaf, label: &str, max_w: f32) -> String {
@@ -31,6 +31,55 @@ fn elide(sugarloaf: &mut Sugarloaf, label: &str, max_w: f32) -> String {
         }
     }
     "…".to_string()
+}
+
+/// The pill being renamed: a field capsule holding the draft, its
+/// selection wash and the caret, in the pill's own type.
+fn paint_rename(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    rect: &Rect,
+    draft: &terminus_ui::TextDraft,
+) {
+    let size = session_pill::SIZE;
+    let measure =
+        |s: &mut Sugarloaf, text: &str| measure_ui_text(s, text, size, UiWeight::Regular);
+    // Accent ring, then the field inset by 1px inside it.
+    fill(sugarloaf, rect, theme.accent, rect.height * 0.5);
+    let inner = Rect::new(
+        rect.x + 1.0,
+        rect.y + 1.0,
+        rect.width - 2.0,
+        rect.height - 2.0,
+    );
+    fill(sugarloaf, &inner, theme.field, inner.height * 0.5);
+    let x = session_pill::text_x(rect, false);
+    let y = text_top(rect.y + rect.height * 0.5, size);
+    if let Some((start, end)) = draft.selection_range() {
+        let before: String = draft.value.chars().take(start).collect();
+        let selected: String =
+            draft.value.chars().skip(start).take(end - start).collect();
+        let bx = measure(sugarloaf, &before);
+        let sw = measure(sugarloaf, &selected).max(2.0);
+        let [r, g, b, _] = theme.accent;
+        fill(
+            sugarloaf,
+            &Rect::new(x + bx, y - 1.0, sw, size + 2.0),
+            [r, g, b, 0.35],
+            0.0,
+        );
+    }
+    draw_ui_text(
+        sugarloaf,
+        x,
+        y,
+        &draft.value,
+        size,
+        theme.text,
+        UiWeight::Regular,
+    );
+    let caret_x = x + measure(sugarloaf, &draft.prefix());
+    paint_caret(sugarloaf, caret_x, y, size, theme.accent, DEPTH, ORDER);
 }
 
 fn icon_button(
@@ -79,6 +128,14 @@ pub(super) fn paint(
         let (Some(rect), Some(lw)) = (g.pills.get(i), g.label_w.get(i)) else {
             continue;
         };
+        if let Some(r) = shell
+            .rename
+            .as_ref()
+            .filter(|r| r.tab_index == pill.tab_index)
+        {
+            paint_rename(sugarloaf, theme, rect, &r.text);
+            continue;
+        }
         let label = elide(sugarloaf, &pill.label, *lw);
         let state = pill.state(hovered == Some(i));
         // The component fills with `radius::PILL` (999), which sugarloaf
