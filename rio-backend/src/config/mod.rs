@@ -1,3 +1,4 @@
+pub mod appearance;
 pub mod bell;
 pub mod bindings;
 // `colors` and `ConfigError` moved to the `rio-vt` core crate; re-export
@@ -168,6 +169,14 @@ pub struct Config {
     pub adaptive_colors: Option<AdaptiveColors>,
     #[serde(default = "Option::default", rename = "force-theme")]
     pub force_theme: Option<AppearanceTheme>,
+    /// `[appearance]`: Terminus Dark / Light / System, see
+    /// [`Config::resolve_appearance`].
+    #[serde(default)]
+    pub appearance: appearance::Appearance,
+    /// Light or dark, whichever the colors currently applied belong to.
+    /// Set at runtime with the window theme, never read from the file.
+    #[serde(skip)]
+    pub active_theme: Option<AppearanceTheme>,
     #[serde(default = "Developer::default")]
     pub developer: Developer,
     #[serde(default = "Updates::default")]
@@ -498,6 +507,7 @@ impl Config {
                             }
                         }
 
+                        decoded.resolve_appearance();
                         Ok(decoded)
                     }
                     Err(err_message) => {
@@ -682,6 +692,8 @@ impl Default for Config {
             adaptive_theme: None,
             adaptive_colors: None,
             force_theme: None,
+            appearance: appearance::Appearance::default(),
+            active_theme: None,
             bindings: Bindings::default(),
             colors: Colors::default(),
             scroll: Scroll::default(),

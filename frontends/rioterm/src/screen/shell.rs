@@ -2,6 +2,10 @@
 
 use super::Screen;
 use crate::hosts;
+use crate::ssh_secrets::{
+    private_temp_dir, sweep_legacy_secret_dirs, sweep_stale_secrets, write_private_file,
+    ASKPASS_DIR, ASKPASS_FILE_ENV, IDENTITY_DIR,
+};
 use rio_backend::config::Shell;
 
 impl Screen<'_> {
@@ -105,6 +109,9 @@ pub(super) const REMOTE_TERM: &str = "xterm-256color";
 /// When `identity_pem` is set, the PEM is written to a temp IdentityFile and
 /// passed with `-i` (IdentitiesOnly) so managed keys actually authenticate.
 ///
+/// Every temp secret is deleted by ssh itself once authenticated
+/// (`LocalCommand`); see [`crate::ssh_secrets`] for the other exit paths.
+///
 /// When the host's auth method is `gssapi`, OpenSSH is forced onto
 /// `gssapi-with-mic` (Kerberos ticket cache) with pubkey/password disabled.
 #[allow(clippy::type_complexity)]
@@ -121,11 +128,13 @@ pub(super) fn ssh_shell(
     };
 
     let mut args = vec!["-p".to_string(), host.port.to_string()];
+    push_o_options(&mut args, KEEPALIVE_SSH_OPTIONS);
     // `ssh` forwards our `$TERM` in its pty request. The local one is
     // usually `xterm-rio`, which remote hosts have no terminfo for: readline
     // then can't move the cursor and history recall piles lines on top of
     // each other. Advertise the entry every remote ships instead.
     let mut env = vec![("TERM".to_string(), REMOTE_TERM.to_string())];
+    let mut secrets: Vec<std::path::PathBuf> = Vec::new();
 
     if let Some(password) = password {
         let (askpass, secret_file) = write_ssh_askpass(password)?;
@@ -143,15 +152,13 @@ pub(super) fn ssh_shell(
             ("SSH_ASKPASS".into(), askpass.to_string_lossy().into_owned()),
             ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
             (
-                "TERMINUS_SSH_ASKPASS_FILE".into(),
+                ASKPASS_FILE_ENV.into(),
                 secret_file.to_string_lossy().into_owned(),
             ),
             // Some OpenSSH builds still gate askpass on DISPLAY.
             ("DISPLAY".into(), "terminus:0".into()),
         ]);
-        // Best-effort cleanup of the secret file after askpass has had time
-        // to run (OpenSSH may call it more than once during handshake).
-        remove_after_ttl(secret_file.clone());
+        secrets.push(secret_file);
     } else if host.auth_method.eq_ignore_ascii_case("gssapi") {
         push_o_options(&mut args, GSSAPI_SSH_OPTIONS);
     } else if let Some(pem) = identity_pem {
@@ -172,14 +179,28 @@ pub(super) fn ssh_shell(
                 ("SSH_ASKPASS".into(), askpass.to_string_lossy().into_owned()),
                 ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
                 (
-                    "TERMINUS_SSH_ASKPASS_FILE".into(),
+                    ASKPASS_FILE_ENV.into(),
                     secret_file.to_string_lossy().into_owned(),
                 ),
                 ("DISPLAY".into(), "terminus:0".into()),
             ]);
-            remove_after_ttl(secret_file.clone());
+            secrets.push(secret_file);
         }
-        remove_after_ttl(key_file.clone());
+        secrets.push(key_file);
+    }
+
+    // The secrets are only needed until ssh has authenticated: have ssh
+    // delete them right then. Closing the tab / tunnel (`SecretFiles`), quit
+    // and the TTL sweep cover the paths where this never runs.
+    let secret_refs: Vec<&std::path::Path> =
+        secrets.iter().map(|p| p.as_path()).collect();
+    if let Some(cmd) = crate::ssh_secrets::local_command_removing(&secret_refs) {
+        args.extend([
+            "-o".into(),
+            "PermitLocalCommand=yes".into(),
+            "-o".into(),
+            format!("LocalCommand={cmd}"),
+        ]);
     }
 
     args.push(destination);
@@ -192,6 +213,16 @@ pub(super) fn ssh_shell(
         Some(env),
     ))
 }
+
+/// OpenSSH `-o` values that make a dead link end the session.
+///
+/// After a sleep or a server restart nothing ever arrives on the socket,
+/// and without keepalives ssh waits on it forever: the tab just freezes.
+/// Probing every 15s and giving up after 3 misses makes ssh exit with 255
+/// within about 45s, which the tab turns into "Connection lost" with a
+/// Reconnect button (`Screen::note_child_exit`).
+pub(super) const KEEPALIVE_SSH_OPTIONS: &[&str] =
+    &["ServerAliveInterval=15", "ServerAliveCountMax=3"];
 
 /// OpenSSH `-o` values that force Kerberos `gssapi-with-mic` for a session.
 pub(super) const GSSAPI_SSH_OPTIONS: &[&str] = &[
@@ -209,130 +240,11 @@ pub(super) fn push_o_options(args: &mut Vec<String>, options: &[&str]) {
     }
 }
 
-/// How long an askpass secret / temp identity may live before a sweep
-/// removes it (OpenSSH reads them during the handshake only).
-const SSH_TEMP_SECRET_TTL: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// Per-user private directory for SSH temp secrets (`0700`, owned by us).
-///
-/// Lives under `$XDG_RUNTIME_DIR` when set (already per-user), else the temp
-/// dir with the uid in the name. An existing directory is only reused when it
-/// is a real directory we own (never a symlink) and gets its mode tightened,
-/// so another local user cannot pre-create it, read the secrets or swap the
-/// askpass helper.
-pub(super) fn private_temp_dir(name: &str) -> Result<std::path::PathBuf, String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-        let uid = unsafe { libc::getuid() };
-        let base = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .filter(|p| p.is_dir())
-            .unwrap_or_else(std::env::temp_dir);
-        let dir = base.join(format!("terminus-{name}-{uid}"));
-        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(err) => return Err(format!("Could not create {}: {err}", dir.display())),
-        }
-        let meta = std::fs::symlink_metadata(&dir)
-            .map_err(|e| format!("Could not inspect {}: {e}", dir.display()))?;
-        if !meta.file_type().is_dir() || meta.uid() != uid {
-            return Err(format!(
-                "Refusing to use {}: not a directory owned by this user",
-                dir.display()
-            ));
-        }
-        if meta.permissions().mode() & 0o077 != 0 {
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| format!("Could not secure {}: {e}", dir.display()))?;
-        }
-        Ok(dir)
-    }
-    #[cfg(not(unix))]
-    {
-        // %TEMP% is already per-user on Windows.
-        let dir = std::env::temp_dir().join(format!("terminus-{name}"));
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-        Ok(dir)
-    }
-}
-
-/// Create `path` exclusively with owner-only permissions and write `data`.
-fn write_private_file(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
-    file.write_all(data)
-        .map_err(|e| format!("Could not write {}: {e}", path.display()))
-}
-
-/// Remove secrets older than [`SSH_TEMP_SECRET_TTL`] from `dir` (leftovers of
-/// a session whose cleanup thread died with the app).
-fn sweep_stale_secrets(dir: &std::path::Path, extensions: &[&str]) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let wanted = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| extensions.contains(&e));
-        let stale = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age > SSH_TEMP_SECRET_TTL);
-        if wanted && stale {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
-/// Remove world-readable secrets left in the shared temp dirs used by older
-/// builds (`/tmp/terminus-ssh-askpass`, `/tmp/terminus-ssh-identity`).
-fn sweep_legacy_secret_dirs() {
-    for (name, ext) in [
-        ("terminus-ssh-askpass", "secret"),
-        ("terminus-ssh-identity", "pem"),
-    ] {
-        let dir = std::env::temp_dir().join(name);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some(ext) {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-    }
-}
-
-/// Delete `path` after [`SSH_TEMP_SECRET_TTL`] on a background thread.
-fn remove_after_ttl(path: std::path::PathBuf) {
-    std::thread::spawn(move || {
-        std::thread::sleep(SSH_TEMP_SECRET_TTL);
-        let _ = std::fs::remove_file(path);
-    });
-}
-
 /// Write a managed OpenSSH private key to a temp IdentityFile (mode 0600,
 /// in a per-user 0700 directory).
 pub(super) fn write_ssh_identity_file(pem: &str) -> Result<std::path::PathBuf, String> {
     sweep_legacy_secret_dirs();
-    let dir = private_temp_dir("ssh-identity")?;
+    let dir = private_temp_dir(IDENTITY_DIR)?;
     sweep_stale_secrets(&dir, &["pem"]);
     let path = dir.join(format!("{}.pem", uuid::Uuid::new_v4()));
     let mut body = pem.as_bytes().to_vec();
@@ -340,6 +252,7 @@ pub(super) fn write_ssh_identity_file(pem: &str) -> Result<std::path::PathBuf, S
         body.push(b'\n');
     }
     write_private_file(&path, &body)?;
+    crate::ssh_secrets::track(path.clone());
     Ok(path)
 }
 
@@ -349,13 +262,14 @@ pub(super) fn write_ssh_askpass(
     password: &str,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     sweep_legacy_secret_dirs();
-    let dir = private_temp_dir("ssh-askpass")?;
+    let dir = private_temp_dir(ASKPASS_DIR)?;
     sweep_stale_secrets(&dir, &["secret"]);
 
     let secret_file = dir.join(format!("{}.secret", uuid::Uuid::new_v4()));
     let mut body = password.as_bytes().to_vec();
     body.push(b'\n');
     write_private_file(&secret_file, &body)?;
+    crate::ssh_secrets::track(secret_file.clone());
 
     #[cfg(windows)]
     let (name, script) = (

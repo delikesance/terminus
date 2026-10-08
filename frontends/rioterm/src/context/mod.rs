@@ -83,6 +83,14 @@ pub struct Context<T: EventListener> {
     pub host_label: Option<String>,
     /// Home "This computer" tab — cannot be closed.
     pub pinned: bool,
+    /// Temp key / askpass files of the ssh session this tab runs, removed
+    /// when the tab goes away (a login that failed never runs ssh's own
+    /// `LocalCommand` cleanup).
+    _ssh_secrets: crate::ssh_secrets::SecretFiles,
+    /// Set when this host session's ssh exited because the link dropped:
+    /// the tab stays open behind a "Connection lost" card instead of
+    /// closing (`Screen::note_child_exit`).
+    pub connection_lost: Option<terminus_ui::LostSession>,
     _io_thread: Option<JoinHandle<(Machine<teletypewriter::Pty, T>, performer::State)>>,
 }
 
@@ -164,6 +172,9 @@ pub struct ContextManager<T: EventListener> {
     window_id: WindowId,
     pub config: ContextManagerConfig,
     last_title_update: Option<Instant>,
+    /// Ticks every time a tab comes to the front, so each host's most
+    /// recently used tab can be found again.
+    focus_clock: u64,
 }
 
 pub fn create_dead_context<T: rio_backend::event::EventListener>(
@@ -201,6 +212,8 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         os_id: None,
         host_label: None,
         pinned: false,
+        _ssh_secrets: Default::default(),
+        connection_lost: None,
         _io_thread: None,
     }
 }
@@ -265,6 +278,17 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 dimension,
             ));
         }
+
+        // Taken first, so a session that fails to spawn drops it too.
+        let ssh_secrets =
+            crate::ssh_secrets::SecretFiles::new(crate::ssh_secrets::launch_secrets(
+                config.shell.args.iter().map(String::as_str),
+                config
+                    .env
+                    .iter()
+                    .flatten()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            ));
 
         let cols: u16 = dimension.columns.try_into().unwrap_or(MIN_COLUMNS as u16);
         let rows: u16 = dimension.lines.try_into().unwrap_or(MIN_LINES as u16);
@@ -385,6 +409,8 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             os_id: None,
             host_label: None,
             pinned: false,
+            _ssh_secrets: ssh_secrets,
+            connection_lost: None,
             _io_thread: io_thread,
         })
     }
@@ -478,6 +504,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             window_id,
             config: ctx_config,
             last_title_update: None,
+            focus_clock: 0,
         };
         manager.set_custom_title(0, Some("This computer".to_string()));
         if let Some(grid) = manager.contexts.get_mut(0) {
@@ -521,6 +548,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             window_id,
             config,
             last_title_update: None,
+            focus_clock: 0,
         })
     }
 
@@ -976,7 +1004,14 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         if context_id < self.contexts.len() {
             self.current_index = context_id;
             self.current_route = self.current().route_id;
+            self.mark_current_focused();
         }
+    }
+
+    /// Stamp the front tab as the most recently used one.
+    fn mark_current_focused(&mut self) {
+        self.focus_clock += 1;
+        self.contexts[self.current_index].last_focused = self.focus_clock;
     }
 
     #[inline]
@@ -1040,6 +1075,23 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             })
     }
 
+    /// The tab to bring forward when the user picks host `host_id` in
+    /// the sidebar, if it has any open.
+    pub fn host_tab_to_restore(&self, host_id: &str) -> Option<usize> {
+        let host_of = |i: usize| {
+            self.contexts[i]
+                .current()
+                .host_id
+                .as_deref()
+                .unwrap_or(crate::hosts::LOCAL_ID)
+        };
+        // The tab the user was last on wins; among tabs never brought to
+        // the front, the last one (max_by_key keeps the last of equals).
+        (0..self.contexts.len())
+            .filter(|&i| host_of(i) == host_id)
+            .max_by_key(|&i| self.contexts[i].last_focused)
+    }
+
     #[inline]
     pub fn current_index(&self) -> usize {
         self.current_index
@@ -1075,6 +1127,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
 
         self.current_route = self.current().route_id;
+        self.mark_current_focused();
     }
 
     #[inline]
@@ -1092,6 +1145,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
 
         self.current_route = self.current().route_id;
+        self.mark_current_focused();
     }
 
     #[inline]
@@ -1370,6 +1424,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                     if redirect {
                         self.current_index = last_index;
                         self.current_route = self.current().route_id;
+                        self.mark_current_focused();
                     }
                     Ok(())
                 }
@@ -1543,6 +1598,50 @@ pub mod test {
 
         context_manager.set_current(8);
         assert_eq!(context_manager.current_index, 3);
+    }
+
+    fn set_tab_host(cm: &mut ContextManager<VoidListener>, index: usize, host: &str) {
+        cm.contexts[index].current_mut().host_id = Some(host.to_string());
+    }
+
+    /// Going to another host and back must land on the tab the user was
+    /// last on for that host, not on whichever of its tabs sits last.
+    #[test]
+    fn host_tab_to_restore_is_the_last_focused_one() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(6, VoidListener {}, window_id).unwrap();
+        for _ in 0..3 {
+            cm.add_context(false, 0);
+        }
+        // 0: local, 1: a, 2: a, 3: b
+        set_tab_host(&mut cm, 1, "a");
+        set_tab_host(&mut cm, 2, "a");
+        set_tab_host(&mut cm, 3, "b");
+
+        // Nothing focused yet on "a": fall back on its last tab.
+        assert_eq!(cm.host_tab_to_restore("a"), Some(2));
+
+        // Work in a's first tab, then go to b.
+        cm.set_current(2);
+        cm.set_current(1);
+        cm.set_current(3);
+        assert_eq!(cm.host_tab_to_restore("a"), Some(1));
+
+        // Cycling through tabs counts too.
+        cm.switch_to_prev(); // 2
+        cm.switch_to_next(); // 3
+        assert_eq!(cm.host_tab_to_restore("a"), Some(2));
+
+        // The memory follows the tab when tabs move around.
+        cm.set_current(2);
+        cm.move_current_tab_to(0);
+        cm.set_current(3);
+        assert_eq!(cm.host_tab_to_restore("a"), Some(0));
+
+        // A tab without a host id belongs to the local machine.
+        assert_eq!(cm.host_tab_to_restore(crate::hosts::LOCAL_ID), Some(1));
+        assert_eq!(cm.host_tab_to_restore("missing"), None);
     }
 
     fn set_tab_title(cm: &mut ContextManager<VoidListener>, index: usize, content: &str) {

@@ -202,40 +202,22 @@ impl Screen<'_> {
         // Picking a machine brings its terminal forward (design: a sidebar
         // row always lands on Terminal).
         self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
-        // If this host already has open sessions, focus the last one (else first).
-        {
-            let len = self.context_manager.len();
-            let mut last: Option<usize> = None;
-            let mut first: Option<usize> = None;
-            for i in 0..len {
-                let host = self
-                    .context_manager
-                    .contexts_mut()
-                    .get(i)
-                    .and_then(|g| g.current().host_id.clone())
-                    .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
-                if host == id {
-                    if first.is_none() {
-                        first = Some(i);
-                    }
-                    last = Some(i);
-                }
+        // If this host already has open sessions, go back to the one the
+        // user was last on rather than whichever sits last in the strip.
+        if let Some(idx) = self.context_manager.host_tab_to_restore(id) {
+            if idx != self.context_manager.current_index() {
+                self.stop_hint_mode_if_active();
+                self.cancel_search(clipboard);
+                self.clear_selection();
+                let old = self.context_manager.current_index();
+                self.context_manager.set_current(idx);
+                self.switch_visible_context(old, idx);
+                self.mark_dirty();
             }
-            if let Some(idx) = last.or(first) {
-                if idx != self.context_manager.current_index() {
-                    self.stop_hint_mode_if_active();
-                    self.cancel_search(clipboard);
-                    self.clear_selection();
-                    let old = self.context_manager.current_index();
-                    self.context_manager.set_current(idx);
-                    self.switch_visible_context(old, idx);
-                    self.mark_dirty();
-                }
-                self.sync_sidebar_selection();
-                // Refresh OS/distro icon even when reusing an open session.
-                self.host_store.detect_os(id);
-                return Ok(());
-            }
+            self.sync_sidebar_selection();
+            // Refresh OS/distro icon even when reusing an open session.
+            self.host_store.detect_os(id);
+            return Ok(());
         }
 
         // Reuse the pinned home tab instead of opening a duplicate local.
@@ -414,6 +396,168 @@ impl Screen<'_> {
         };
         self.end_session_connecting();
         self.chrome.panel.error = Some(message);
+    }
+
+    /// A session's process exited with `status` (`RioEvent::ChildExited`,
+    /// which arrives just before its `CloseTerminal`).
+    ///
+    /// When an SSH host tab's `ssh` gave up on its link (exit 255: the
+    /// laptop slept, the network changed, the server restarted), the tab is
+    /// kept behind a "Connection lost" card that offers Reconnect, instead
+    /// of vanishing. A remote `exit` passes the shell's own status and
+    /// closes the tab as before. Returns whether the tab was kept.
+    pub fn note_child_exit(&mut self, route_id: usize, status: Option<i32>) -> bool {
+        if !terminus_ui::lost_session::ssh_exit_is_connection_loss(exit_code(status)) {
+            return false;
+        }
+        let Some(tab) = self.tab_of_route(route_id) else {
+            return false;
+        };
+        let grid = &mut self.context_manager.contexts_mut()[tab];
+        // A split panel dying only removes that panel; host sessions are
+        // whole tabs.
+        if grid.len() != 1 {
+            return false;
+        }
+        let Some(host_id) = grid
+            .get_by_route_id(route_id)
+            .and_then(|item| item.context().host_id.clone())
+        else {
+            return false;
+        };
+        // Only stored SSH hosts: the local shell and WSL distros are not
+        // links that can drop.
+        if !self
+            .host_store
+            .hosts()
+            .iter()
+            .any(|host| host.id == host_id)
+        {
+            return false;
+        }
+        // Still coming up: the connection progress reports that failure.
+        if self
+            .chrome
+            .connection
+            .as_ref()
+            .is_some_and(|conn| conn.host_id == host_id)
+        {
+            return false;
+        }
+        let name = self.host_row_label(&host_id);
+        let Some(item) =
+            self.context_manager.contexts_mut()[tab].get_by_route_id(route_id)
+        else {
+            return false;
+        };
+        let output = lines_up_to_cursor(item.context(), 8);
+        item.context_mut().connection_lost = Some(terminus_ui::LostSession::new(
+            route_id, &host_id, &name, &output,
+        ));
+        tracing::info!("ssh session for {host_id} lost its connection");
+        self.mark_dirty();
+        true
+    }
+
+    /// Whether `route_id` is a tab kept open after its connection dropped.
+    pub fn is_connection_lost(&mut self, route_id: usize) -> bool {
+        self.context_manager
+            .get_by_route_id(route_id)
+            .is_some_and(|item| item.context().connection_lost.is_some())
+    }
+
+    /// Index of the tab holding terminal `route_id`.
+    fn tab_of_route(&mut self, route_id: usize) -> Option<usize> {
+        self.context_manager
+            .contexts_mut()
+            .iter_mut()
+            .position(|grid| grid.get_by_route_id(route_id).is_some())
+    }
+
+    /// Mirror the front tab's lost-connection card into the chrome, keeping
+    /// its hover/focus while the same tab stays in front. Runs every frame,
+    /// so a tab switch (from any of the places that switch) shows the right
+    /// card or none.
+    pub(super) fn sync_lost_session(&mut self) {
+        let front = self.context_manager.current().connection_lost.as_ref();
+        let same = match (front, self.chrome.lost.as_ref()) {
+            (Some(want), Some(shown)) => want.route_id == shown.route_id,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.chrome.lost = front.cloned();
+        }
+    }
+
+    /// Run the lost-connection card's Reconnect / Close tab.
+    pub fn run_lost_session_action(
+        &mut self,
+        action: terminus_ui::ChromeAction,
+        clipboard: &mut Clipboard,
+    ) {
+        match action {
+            terminus_ui::ChromeAction::ReconnectSession(route_id) => {
+                if let Err(err) = self.reconnect_lost_session(route_id, clipboard) {
+                    self.chrome.panel.error = Some(err);
+                }
+            }
+            terminus_ui::ChromeAction::CloseLostSession(route_id) => {
+                if let Some(tab) = self.tab_of_route(route_id) {
+                    self.close_tab_at(tab, clipboard);
+                }
+            }
+            _ => return,
+        }
+        self.sync_lost_session();
+    }
+
+    /// Reopen the host of dead tab `route_id` in its place: a fresh session
+    /// (with the connection progress) lands beside it, takes over its name,
+    /// and the dead tab closes, so the new one sits where the old one was.
+    pub fn reconnect_lost_session(
+        &mut self,
+        route_id: usize,
+        clipboard: &mut Clipboard,
+    ) -> Result<(), String> {
+        let Some(tab) = self.tab_of_route(route_id) else {
+            return Ok(());
+        };
+        let Some(host_id) = self.context_manager.contexts_mut()[tab]
+            .get_by_route_id(route_id)
+            .and_then(|item| item.context().connection_lost.as_ref())
+            .map(|lost| lost.host_id.clone())
+        else {
+            return Ok(());
+        };
+        let title = self.context_manager.custom_title(tab).map(str::to_string);
+        if tab != self.context_manager.current_index() {
+            self.focus_session(tab, clipboard);
+        }
+        let before = self.context_manager.len();
+        self.add_host_session(&host_id, clipboard)?;
+        // No new tab: the vault prompt took over and opens one on unlock;
+        // the dead tab stays until then.
+        if self.context_manager.len() == before {
+            return Ok(());
+        }
+        // A name the user gave the tab survives the reconnect.
+        let fresh = self.context_manager.current_index();
+        if title.is_some() {
+            self.context_manager.set_custom_title(fresh, title);
+        }
+        // New tabs open last: close the dead one, then move the new one
+        // (still last) into its slot.
+        self.close_tab_at(tab, clipboard);
+        let last = self.context_manager.len() - 1;
+        self.focus_session(last, clipboard);
+        if tab < last {
+            self.context_manager.move_current_tab_to(tab);
+            let now = self.context_manager.current_index();
+            self.switch_visible_context(last, now);
+        }
+        self.mark_dirty();
+        Ok(())
     }
 
     /// Public dismiss from the connection modal's Close button.
@@ -805,6 +949,43 @@ fn printable_lines(ctx: &context::Context<EventProxy>) -> Vec<String> {
         .collect()
 }
 
+/// The last `count` screen lines down to the cursor, top to bottom: where
+/// a long-running session's final words (ssh's disconnect message) are,
+/// unlike [`printable_lines`], which reads a fresh session from the top.
+fn lines_up_to_cursor(ctx: &context::Context<EventProxy>, count: usize) -> Vec<String> {
+    use crate::crosswords::pos::{Column, Line};
+    let terminal = ctx.terminal.lock();
+    let cursor = terminal.grid.cursor.pos.row.0.max(0);
+    let first = (cursor + 1 - count as i32).max(0);
+    let cols = terminal.columns().min(200);
+    (first..=cursor)
+        .map(|row| {
+            let line = Line(row);
+            let text: String = (0..cols)
+                .map(|col| match terminal.grid[line][Column(col)].c() {
+                    '\0' => ' ',
+                    c => c,
+                })
+                .collect();
+            text.trim_end().to_string()
+        })
+        .collect()
+}
+
+/// The exit code in a `ChildExited` status: Unix reports the raw wait
+/// status, Windows the code itself.
+pub(super) fn exit_code(status: Option<i32>) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.and_then(|raw| std::process::ExitStatus::from_raw(raw).code())
+    }
+    #[cfg(not(unix))]
+    {
+        status
+    }
+}
+
 /// True when the session's grid already shows something other than blank
 /// cells — the cue that the connecting overlay can retire.
 pub(super) fn terminal_has_printable_output(ctx: &context::Context<EventProxy>) -> bool {
@@ -822,4 +1003,20 @@ pub(super) fn terminal_has_printable_output(ctx: &context::Context<EventProxy>) 
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exit_code;
+
+    #[test]
+    #[cfg(unix)]
+    fn exit_code_decodes_the_raw_wait_status() {
+        // waitpid's status: the code sits in the second byte.
+        assert_eq!(exit_code(Some(255 << 8)), Some(255));
+        assert_eq!(exit_code(Some(0)), Some(0));
+        // Killed by SIGHUP: no exit code, so never "connection lost".
+        assert_eq!(exit_code(Some(libc::SIGHUP)), None);
+        assert_eq!(exit_code(None), None);
+    }
 }

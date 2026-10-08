@@ -11,6 +11,14 @@
 //!
 //! [`violet_ink`]: ChromeTheme::violet_ink
 
+/// Which of the two chrome palettes is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+}
+
 /// Colors for the activity bar, the host panel and the dialogs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChromeTheme {
@@ -212,6 +220,93 @@ impl ChromeTheme {
         }
     }
 
+    /// "Violet paper": the light counterpart of [`ChromeTheme::violet_ink`].
+    /// Same token roles, white cards on a lavender-grey frame, a deeper
+    /// violet accent so it keeps contrast on white.
+    pub fn violet_paper() -> Self {
+        let frame = rgba([0xf3, 0xf1, 0xf8], 1.0);
+        let canvas = rgba([0xfb, 0xfa, 0xfd], 1.0);
+        let field = rgba([0xff, 0xff, 0xff], 1.0);
+        let surface = rgba([0xff, 0xff, 0xff], 1.0);
+        let raised = rgba([0xec, 0xe9, 0xf4], 1.0);
+        let selected = rgba([0xe4, 0xde, 0xf6], 1.0);
+        let line = rgba([0xd6, 0xd0, 0xe4], 1.0);
+        let divider = rgba([0xe5, 0xe1, 0xee], 1.0);
+        let dialog = rgba([0xff, 0xff, 0xff], 1.0);
+        let dialog_line = rgba([0xdc, 0xd6, 0xe9], 1.0);
+        let accent = rgba([0x6f, 0x55, 0xe0], 1.0);
+        let danger_text = [0xb4, 0x32, 0x26, 255];
+        Self {
+            frame,
+            canvas,
+            field,
+            surface,
+            raised,
+            selected,
+            line,
+            divider,
+            dialog,
+            dialog_line,
+            accent_hover: rgba([0x7f, 0x67, 0xe8], 1.0),
+            accent_press: rgba([0x5e, 0x45, 0xcc], 1.0),
+            on_accent: rgba([0xff, 0xff, 0xff], 1.0),
+            danger_fill: rgba([0xc8, 0x3b, 0x2e], 1.0),
+            danger_hover: rgba([0xd6, 0x4a, 0x3c], 1.0),
+            danger_text,
+            on_danger: rgba([0xff, 0xff, 0xff], 1.0),
+            danger_press: rgba([0xb0, 0x32, 0x26], 1.0),
+            hover_border: rgba([0xbd, 0xb4, 0xd4], 1.0),
+            choice_selected_bg: rgba([0xee, 0xe9, 0xfc], 1.0),
+            selected_subtle_text: [0x4f, 0x45, 0x6a, 255],
+            idle_ring: rgba([0x8c, 0x84, 0xa3], 1.0),
+            step_done_bg: rgba([0xdc, 0xf0, 0xe4], 1.0),
+            step_failed_bg: rgba([0xf8, 0xdf, 0xdc], 1.0),
+            info: rgba([0x2f, 0x64, 0xc8], 1.0),
+            warning: rgba([0x8f, 0x64, 0x00], 1.0),
+            rail_bg: canvas,
+            rail_marker: accent,
+            rail_active_bg: rgba([0x6f, 0x55, 0xe0], 0.12),
+            panel_bg: frame,
+            panel_border: divider,
+            item_hover: raised,
+            item_selected: selected,
+            button_bg: surface,
+            notice_bg: field,
+            field_bg: field,
+            field_border: line,
+            field_border_focus: accent,
+            dialog_bg: dialog,
+            dialog_border: dialog_line,
+            dialog_header: frame,
+            shell_bg: frame,
+            scrim: [0.10, 0.08, 0.16, 0.35],
+            accent,
+            accent_soft: rgba([0x6f, 0x55, 0xe0], 0.12),
+            success: rgba([0x2c, 0x7d, 0x4f], 1.0),
+            terminal_bg: canvas,
+            text: [0x1e, 0x1a, 0x29, 255],
+            text_muted: [0x55, 0x4e, 0x69, 255],
+            text_faint: [0x67, 0x60, 0x7c, 255],
+            text_placeholder: [0x67, 0x60, 0x7c, 255],
+            danger: danger_text,
+        }
+    }
+
+    /// The chrome palette for a light or dark window.
+    pub fn for_mode(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::Dark => Self::violet_ink(),
+            ThemeMode::Light => Self::violet_paper(),
+        }
+    }
+
+    /// True for the light palette (painters that blend with white or
+    /// black pick the opposite ink).
+    pub fn is_light(&self) -> bool {
+        let [r, g, b, _] = self.frame;
+        0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5
+    }
+
     /// Build a palette from the terminal's colors (legacy / optional).
     pub fn from_terminal(fg: [u8; 3], bg: [u8; 3], accent: [u8; 3]) -> Self {
         let _ = (fg, bg, accent);
@@ -339,6 +434,67 @@ mod tests {
         assert!(l(t.surface) < l(t.raised));
         assert!(l(t.raised) < l(t.selected));
         assert!(l(t.selected) < l(t.line));
+    }
+
+    /// WCAG relative-luminance contrast ratio.
+    fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
+        let lin = |v: f32| {
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let lum =
+            |c: [f32; 4]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+        let (x, y) = (lum(a) + 0.05, lum(b) + 0.05);
+        x.max(y) / x.min(y)
+    }
+
+    #[test]
+    fn for_mode_picks_ink_or_paper() {
+        assert_eq!(
+            ChromeTheme::for_mode(ThemeMode::Dark),
+            ChromeTheme::violet_ink()
+        );
+        assert_eq!(
+            ChromeTheme::for_mode(ThemeMode::Light),
+            ChromeTheme::violet_paper()
+        );
+        assert!(ChromeTheme::violet_paper().is_light());
+        assert!(!ChromeTheme::violet_ink().is_light());
+    }
+
+    #[test]
+    fn both_palettes_keep_text_readable() {
+        for t in [ChromeTheme::violet_ink(), ChromeTheme::violet_paper()] {
+            for bg in [t.frame, t.canvas, t.surface, t.raised, t.selected, t.dialog] {
+                assert!(contrast(unit_color(t.text), bg) >= 7.0, "{bg:?}");
+                assert!(contrast(unit_color(t.text_muted), bg) >= 4.5, "{bg:?}");
+                assert!(contrast(unit_color(t.text_faint), bg) >= 4.5, "{bg:?}");
+            }
+            assert!(contrast(t.on_accent, t.accent) >= 4.5);
+            assert!(contrast(t.on_danger, t.danger_fill) >= 4.5);
+            assert!(contrast(unit_color(t.danger_text), t.surface) >= 4.5);
+            assert!(contrast(t.accent, t.surface) >= 3.0, "accent as an outline");
+        }
+    }
+
+    #[test]
+    fn paper_text_hierarchy_is_dark_to_light() {
+        let t = ChromeTheme::violet_paper();
+        let luma = |c: [u8; 4]| c[0] as u32 + c[1] as u32 + c[2] as u32;
+        assert!(luma(t.text) < luma(t.text_muted));
+        assert!(luma(t.text_muted) < luma(t.text_faint));
+    }
+
+    #[test]
+    fn paper_borders_show_on_its_surfaces() {
+        let t = ChromeTheme::violet_paper();
+        let l = |c: [f32; 4]| c[0] + c[1] + c[2];
+        assert!(l(t.line) < l(t.frame) && l(t.line) < l(t.surface));
+        assert!(l(t.divider) < l(t.frame));
+        assert!(l(t.selected) < l(t.surface));
     }
 
     #[test]
