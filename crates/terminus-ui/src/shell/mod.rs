@@ -70,8 +70,8 @@ pub struct PillRename {
     pub text: TextDraft,
 }
 
-/// Header window controls (painted on Windows, where the app draws its
-/// own caption buttons).
+/// Header window controls (painted wherever the app draws its own
+/// caption buttons: Windows and Linux, not macOS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowButton {
     Minimize,
@@ -126,7 +126,8 @@ pub struct Shell {
     pub tunnel_badge: u32,
     /// Sync is configured and healthy: "Synced" on the Settings button.
     pub sync_ok: bool,
-    /// Paint / hit the min-max-close buttons (Windows).
+    /// Paint / hit the min-max-close buttons (Windows and Linux; on Linux
+    /// only while the window runs without OS decorations).
     pub window_controls: bool,
     pub hover: Option<ShellHit>,
     /// Logical window size, refreshed by the frontend.
@@ -143,7 +144,7 @@ impl Default for Shell {
             rename: None,
             tunnel_badge: 0,
             sync_ok: false,
-            window_controls: cfg!(target_os = "windows"),
+            window_controls: cfg!(not(target_os = "macos")),
             hover: None,
             window: (1200.0, 800.0),
             widths: HashMap::new(),
@@ -473,6 +474,33 @@ mod tests {
         assert_eq!(s.hit_test(1000.0, 30.0), Some(ShellHit::Drag));
         let (x, y) = centre(&g.ident.title);
         assert_eq!(s.hit_test(x, y), Some(ShellHit::Drag));
+    }
+
+    #[test]
+    fn window_controls_default_on_wherever_the_app_draws_them() {
+        // macOS keeps its traffic lights; Windows and Linux draw their own.
+        assert_eq!(
+            Shell::default().window_controls,
+            cfg!(not(target_os = "macos"))
+        );
+    }
+
+    #[test]
+    fn hovering_a_window_control_repaints_once_per_change() {
+        let mut s = shell();
+        s.window_controls = true;
+        let hit = Some(ShellHit::Control(WindowButton::Close));
+        assert!(s.set_hover(hit), "entering a button repaints");
+        assert!(!s.set_hover(hit), "staying on it does not");
+        assert!(
+            s.set_hover(Some(ShellHit::Control(WindowButton::Minimize))),
+            "moving to a neighbour repaints"
+        );
+        assert!(s.set_hover(None), "leaving repaints");
+        assert!(
+            !s.set_hover(Some(ShellHit::Drag)),
+            "the empty header is not hover"
+        );
     }
 
     #[test]

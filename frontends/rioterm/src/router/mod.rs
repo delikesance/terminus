@@ -1,5 +1,5 @@
 pub mod routes;
-mod window;
+pub(crate) mod window;
 use crate::event::EventProxy;
 use crate::router::window::{
     configure_window, create_window_builder, DEFAULT_MINIMUM_WINDOW_HEIGHT,

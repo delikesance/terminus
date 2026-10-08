@@ -10,6 +10,7 @@ mod chrome;
 pub(crate) mod chrome_input;
 mod clipboard;
 mod config;
+mod frameless;
 pub mod hint;
 mod hint_actions;
 mod history;
@@ -128,6 +129,14 @@ pub struct Screen<'screen> {
     /// Whether Tab navigation may drag the window from the chrome band.
     /// True whenever the custom title bar is active (Tab mode).
     pub allow_manual_dragging: bool,
+    /// The window runs without OS decorations (see
+    /// `router::window::uses_custom_titlebar`). On Linux this turns on
+    /// edge resizing, the header window menu and the caption buttons.
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    pub custom_titlebar: bool,
+    /// The pointer is on a resize edge (resize cursor showing).
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    on_resize_edge: bool,
     /// Last known maximized state — drives the Windows caption restore icon.
     pub window_maximized: bool,
     last_chrome_press: Option<ChromePress>,
@@ -351,10 +360,17 @@ impl Screen<'_> {
         // being painted over.
         // The rail starts under the tab strip rather than behind
         // it, so it lines up with the terminal's own top margin.
-        let chrome = terminus_ui::chrome::Chrome {
+        #[allow(unused_mut)]
+        let mut chrome = terminus_ui::chrome::Chrome {
             top_inset: padding_y_top,
             ..Default::default()
         };
+        // Caption buttons only where the window has no OS decorations.
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            chrome.shell.window_controls =
+                crate::router::window::uses_custom_titlebar(config);
+        }
         let chrome_left = chrome.reserved_width();
 
         let padding_right = crate::renderer::utils::padding_right_from_config(
@@ -469,6 +485,8 @@ impl Screen<'_> {
             last_ime_cursor_pos: None,
             resize_state: None,
             allow_manual_dragging: config.navigation.is_enabled(),
+            custom_titlebar: crate::router::window::uses_custom_titlebar(config),
+            on_resize_edge: false,
             window_maximized: false,
             last_chrome_press: None,
             last_close_press: None,
