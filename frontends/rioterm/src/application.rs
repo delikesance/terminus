@@ -1796,10 +1796,41 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::OpenSession(tab_index) => {
-                                        route.window.screen.focus_session(
-                                            tab_index,
-                                            &mut self.router.clipboard,
-                                        );
+                                        // The first click focused the tab;
+                                        // a double-click on its pill renames it.
+                                        let on_pill = route
+                                            .window
+                                            .screen
+                                            .chrome
+                                            .shell
+                                            .hit_test(mx, my)
+                                            == Some(terminus_ui::shell::ShellHit::Pill(
+                                                tab_index,
+                                            ));
+                                        let double = on_pill
+                                            && matches!(
+                                                route.window.screen.mouse.click_state,
+                                                ClickState::DoubleClick
+                                            )
+                                            && route
+                                                .window
+                                                .screen
+                                                .context_manager
+                                                .current_index()
+                                                == tab_index;
+                                        if double {
+                                            route
+                                                .window
+                                                .screen
+                                                .chrome
+                                                .shell
+                                                .begin_rename(tab_index);
+                                        } else {
+                                            route.window.screen.focus_session(
+                                                tab_index,
+                                                &mut self.router.clipboard,
+                                            );
+                                        }
                                         route.request_overlay_redraw();
                                         return;
                                     }

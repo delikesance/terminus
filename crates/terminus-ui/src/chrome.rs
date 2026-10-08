@@ -311,6 +311,12 @@ impl Chrome {
             ShellHit::Settings => view(self, WorkspaceView::Settings(SettingsPage::Keys)),
             ShellHit::Tab(v) => view(self, v),
             ShellHit::Control(b) => ChromeAction::WindowControl(b),
+            // Clicks inside the field being edited stay with it.
+            ShellHit::Pill(tab) | ShellHit::PillClose(tab)
+                if self.shell.is_renaming(tab) =>
+            {
+                ChromeAction::Consumed
+            }
             ShellHit::Pill(tab) => ChromeAction::OpenSession(tab),
             ShellHit::PillClose(tab) => ChromeAction::CloseSession(tab),
             ShellHit::NewSession => ChromeAction::AddHostSession(
@@ -558,6 +564,22 @@ impl Chrome {
             return ChromeAction::Ignored;
         }
 
+        // Session pills: rename / close.
+        use crate::shell::ShellHit;
+        if let Some(ShellHit::Pill(tab) | ShellHit::PillClose(tab)) =
+            self.shell.hit_test(x, y)
+        {
+            let closable = self
+                .shell
+                .pills
+                .iter()
+                .find(|p| p.tab_index == tab)
+                .is_some_and(|p| p.closable);
+            self.context_menu = ContextMenu::for_session(x, y, tab, closable)
+                .map(|m| m.clamped(window_width, window_height));
+            return ChromeAction::Consumed;
+        }
+
         let origin_y = self.origin_y();
         let height = (window_height - origin_y).max(0.0);
         let menu = match self.panel.hit_test(origin_y, height, x, y) {
@@ -668,6 +690,13 @@ impl Chrome {
                     }
                     Some(ContextAction::RenameHost(id)) => ChromeAction::RenameHost(id),
                     Some(ContextAction::RenameGroup(id)) => ChromeAction::RenameGroup(id),
+                    Some(ContextAction::RenameSession(tab)) => {
+                        self.shell.begin_rename(tab);
+                        ChromeAction::Consumed
+                    }
+                    Some(ContextAction::CloseSession(tab)) => {
+                        ChromeAction::CloseSession(tab)
+                    }
                     Some(ContextAction::Copy) => ChromeAction::ContextCopy,
                     Some(ContextAction::Paste) => ChromeAction::ContextPaste,
                     Some(ContextAction::SftpNewFolder) => ChromeAction::SftpNewFolder,
@@ -1828,6 +1857,108 @@ mod tests {
         assert_eq!(
             chrome.handle_press(1200.0, 800.0, 900.0, 30.0),
             ChromeAction::WindowDrag
+        );
+    }
+
+    fn chrome_with_pills() -> Chrome {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.shell.machine = Some(crate::shell::MachineInfo {
+            id: "id-0".into(),
+            name: "host-0".into(),
+            address: "root@host-0".into(),
+        });
+        chrome.shell.pills = vec![
+            crate::shell::SessionPill {
+                tab_index: 0,
+                label: "home".into(),
+                active: false,
+                new_output: false,
+                closable: false,
+            },
+            crate::shell::SessionPill {
+                tab_index: 7,
+                label: "~".into(),
+                active: true,
+                new_output: false,
+                closable: true,
+            },
+        ];
+        chrome
+    }
+
+    #[test]
+    fn right_clicking_a_pill_offers_rename_and_close() {
+        let mut chrome = chrome_with_pills();
+        let g = chrome.shell.pills_geom().unwrap();
+        let (x, y) = centre(&g.pills[1]);
+        assert_eq!(
+            chrome.handle_context_press(1200.0, 800.0, x, y, false),
+            ChromeAction::Consumed
+        );
+        let menu = chrome.context_menu.clone().expect("session menu");
+        let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["Rename", "Close"]);
+
+        // "Rename" starts the inline draft on that pill.
+        let (x, y) = centre(&menu.item_rect(0).unwrap());
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::Consumed
+        );
+        assert!(chrome.context_menu.is_none());
+        assert!(chrome.shell.is_renaming(7));
+
+        // "Close" closes the session like its ×.
+        let g = chrome.shell.pills_geom().unwrap();
+        let (x, y) = centre(&g.pills[1]);
+        chrome.handle_context_press(1200.0, 800.0, x, y, false);
+        let menu = chrome.context_menu.clone().unwrap();
+        let (x, y) = centre(&menu.item_rect(1).unwrap());
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::CloseSession(7)
+        );
+    }
+
+    #[test]
+    fn a_pinned_pill_can_be_renamed_but_not_closed() {
+        let mut chrome = chrome_with_pills();
+        let g = chrome.shell.pills_geom().unwrap();
+        let (x, y) = centre(&g.pills[0]);
+        chrome.handle_context_press(1200.0, 800.0, x, y, false);
+        let labels: Vec<String> = chrome
+            .context_menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.label.clone())
+            .collect();
+        assert_eq!(labels, ["Rename"]);
+    }
+
+    #[test]
+    fn pressing_the_pill_being_renamed_keeps_editing() {
+        let mut chrome = chrome_with_pills();
+        chrome.shell.begin_rename(7);
+        let g = chrome.shell.pills_geom().unwrap();
+        let (x, y) = centre(&g.pills[1]);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::Consumed
+        );
+        assert!(chrome.shell.is_renaming(7));
+        // The field covers the pill: its × does not close mid-edit.
+        let c = crate::components::navigation::session_pill::close_rect(&g.pills[1]);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, c.x + 2.0, c.y + 2.0),
+            ChromeAction::Consumed
+        );
+        // Another pill still focuses its session.
+        let (x, y) = centre(&g.pills[0]);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, x, y),
+            ChromeAction::OpenSession(0)
         );
     }
 

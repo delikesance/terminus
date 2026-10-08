@@ -276,6 +276,14 @@ impl Route<'_> {
     /// consumed (an open text sink swallows even rejected text, the
     /// way `has_key_wait` blocks all keys for it).
     pub fn overlay_commit_text(&mut self, text: &str) -> bool {
+        if self.window.screen.chrome.shell.rename.is_some()
+            && !self.window.screen.chrome.add_host_is_open()
+        {
+            if self.window.screen.session_rename_insert(text) {
+                self.request_overlay_redraw();
+            }
+            return true;
+        }
         if self.window.screen.chrome.hosts_visible()
             && !self.window.screen.chrome.add_host_is_open()
         {
@@ -420,7 +428,8 @@ impl Route<'_> {
         // terminal. Rename wins whenever a draft exists (focused is set on
         // begin); gating only on `focused` left arrows/spaces leaking to the
         // PTY if focus was dropped by an unrelated press.
-        let rename_active = self.window.screen.chrome.panel.rename.is_some();
+        let rename_active = self.window.screen.chrome.panel.rename.is_some()
+            || self.window.screen.chrome.shell.rename.is_some();
         if self.window.screen.chrome.hosts_visible()
             && (self.window.screen.chrome.panel.filter_focused
                 || self.window.screen.chrome.panel.new_group_focused
