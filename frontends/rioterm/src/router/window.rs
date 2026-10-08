@@ -5,9 +5,12 @@ use rio_window::window::{
 };
 
 pub const LOGO_ICON: &[u8; 410598] = include_bytes!("./resources/images/rio-logo.ico");
-// Terminal W/H constraints
-pub const DEFAULT_MINIMUM_WINDOW_HEIGHT: i32 = 200;
-pub const DEFAULT_MINIMUM_WINDOW_WIDTH: i32 = 300;
+// Terminal W/H constraints: the chrome plus a usable grid. Anything
+// narrower than the sidebar leaves the terminal one or two cells wide.
+pub const DEFAULT_MINIMUM_WINDOW_HEIGHT: i32 =
+    terminus_ui::shell::min_window_size().1 as i32;
+pub const DEFAULT_MINIMUM_WINDOW_WIDTH: i32 =
+    terminus_ui::shell::min_window_size().0 as i32;
 
 #[cfg(all(
     any(feature = "wayland", feature = "x11"),
