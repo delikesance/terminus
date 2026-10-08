@@ -19,6 +19,37 @@ what follows.
   Prefer unit tests next to the code (e.g. in `terminus-ui`) before wiring the
   painter/frontend.
 
+## Claude Code model workflow
+
+Project settings (`.claude/settings.json`) start sessions on Sonnet at high effort,
+with Opus as the advisor (`advisorModel`). Plan on high, delegate on medium, keep
+Opus on call.
+
+- The main session plans, decides and reviews. Consult the advisor at three
+  checkpoints, and stay silent on routine commands:
+  - before locking a plan that touches several files (does it miss an invariant,
+    a schema or a store contract?);
+  - when the same test or compiler error fails twice (root cause, or a rabbit
+    hole?);
+  - before declaring a task done or committing (does the full diff regress
+    something or break the rules in this file?).
+- Delegate to the subagents in `.claude/agents/`:
+  - `explorer` (Haiku): reads and searches code, returns a short summary with
+    `path:line` references. Read-only.
+  - `researcher` (Haiku): looks up docs and specs outside the repo, returns
+    quoted snippets with URLs. Read-only.
+  - Run independent explorer/researcher lookups in parallel.
+  - `worker` (Sonnet): edits and runs tests for a planned change.
+- When the work is back, review the full diff yourself before pushing.
+- Always run `cargo fmt --all` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` before pushing: CI
+  (`.github/workflows/ci.yml`) fails on either.
+- The `typesafe` plugin (TypeSafe's Jev decision API docs) is enabled from the
+  `typesafe-ai/skills` marketplace once the folder is trusted. Code that calls the
+  API reads the key from `TYPESAFE_API_KEY`; never commit it.
+- Override per session with `claude --model <m>`, `--effort <level>` or
+  `--advisor <m>`; `/advisor off` turns the advisor off.
+
 ## Build & test
 
 The nix devshell is required to build `rioterm`: outside it, fontconfig's
