@@ -14,9 +14,10 @@
 //!   ([`terminus_ui::views::tunnels::TunnelsState`]), the persistence worker
 //!   (SQLite on its own thread, like `hosts.rs`) and the registry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -26,8 +27,8 @@ use terminus_core::models::PortForward;
 use terminus_core::Store;
 use terminus_ui::geom::Rect;
 use terminus_ui::views::tunnels::{
-    FormKey, TunnelAction, TunnelDraft, TunnelItem, TunnelKind, TunnelStatus,
-    TunnelsState,
+    FormKey, TunnelAction, TunnelDraft, TunnelItem, TunnelKind, TunnelStats,
+    TunnelStatus, TunnelsState,
 };
 use uuid::Uuid;
 
@@ -153,6 +154,101 @@ pub fn friendly_error(stderr: &str, code: Option<i32>) -> String {
 pub fn local_port_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
+
+// ---------------------------------------------------------------- stats
+
+/// One socket row of `/proc/net/tcp{,6}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpRow {
+    pub local_port: u16,
+    pub remote_port: u16,
+    pub established: bool,
+    pub inode: u64,
+}
+
+/// Parse the text of `/proc/net/tcp` or `/proc/net/tcp6`; malformed lines
+/// (and the header) are skipped.
+pub fn parse_proc_net_tcp(text: &str) -> Vec<TcpRow> {
+    // `sl local rem st tx:rx tr:tm retrnsmt uid timeout inode …`; addresses
+    // are `HEXIP:HEXPORT` (8 or 32 hex digits of IP), state `01` is
+    // ESTABLISHED.
+    fn port(addr: &str) -> Option<u16> {
+        u16::from_str_radix(addr.rsplit_once(':')?.1, 16).ok()
+    }
+    text.lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 10 || !f[0].ends_with(':') {
+                return None;
+            }
+            Some(TcpRow {
+                local_port: port(f[1])?,
+                remote_port: port(f[2])?,
+                established: f[3] == "01",
+                inode: f[9].parse().ok()?,
+            })
+        })
+        .collect()
+}
+
+/// Established forwarded connections of one tunnel among `rows`, counting
+/// only sockets owned by its ssh process (`owned` = socket inodes of
+/// `/proc/<pid>/fd`):
+///
+/// * `-L` / `-D`: connections ssh accepted, i.e. local port == `bind_port`.
+/// * `-R`: connections ssh opened to the destination, i.e. remote port ==
+///   `dest_port`.
+pub fn count_connections(
+    rows: &[TcpRow],
+    kind: TunnelKind,
+    bind_port: u16,
+    dest_port: u16,
+    owned: &HashSet<u64>,
+) -> u32 {
+    rows.iter()
+        .filter(|r| r.established && owned.contains(&r.inode))
+        .filter(|r| match kind {
+            TunnelKind::Local | TunnelKind::Dynamic => r.local_port == bind_port,
+            TunnelKind::Remote => r.remote_port == dest_port,
+        })
+        .count() as u32
+}
+
+/// Sample the established connections of the tunnel run by ssh process
+/// `pid`. `None` when the platform cannot tell (anything but Linux) or the
+/// process is gone.
+pub fn sample_connections(
+    pid: u32,
+    kind: TunnelKind,
+    bind_port: u16,
+    dest_port: u16,
+) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let owned: HashSet<u64> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .ok()?
+            .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+            .filter_map(|l| {
+                let l = l.to_str()?;
+                l.strip_prefix("socket:[")?.strip_suffix(']')?.parse().ok()
+            })
+            .collect();
+        let mut rows =
+            parse_proc_net_tcp(&std::fs::read_to_string("/proc/net/tcp").ok()?);
+        if let Ok(v6) = std::fs::read_to_string("/proc/net/tcp6") {
+            rows.extend(parse_proc_net_tcp(&v6));
+        }
+        Some(count_connections(&rows, kind, bind_port, dest_port, &owned))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, kind, bind_port, dest_port);
+        None
+    }
+}
+
+/// Connections are re-sampled at most this often (`/proc` reads).
+const SAMPLE_EVERY: Duration = Duration::from_secs(1);
 
 // ---------------------------------------------------------------- registry
 
@@ -288,9 +384,13 @@ impl TunnelRegistry {
         ids
     }
 
-    #[cfg(test)]
     pub fn pid(&self, id: &str) -> Option<u32> {
         self.procs.get(id).map(|p| p.child.id())
+    }
+
+    /// How long the process of `id` has been alive.
+    pub fn uptime(&self, id: &str) -> Option<Duration> {
+        self.procs.get(id).map(|p| p.started.elapsed())
     }
 
     /// Detect exits and settled tunnels. Call on every UI tick.
@@ -366,6 +466,7 @@ fn item_from_forward(pf: &PortForward) -> TunnelItem {
         dest_port: pf.dest_port.unwrap_or(0),
         status: TunnelStatus::Stopped,
         error: None,
+        stats: None,
     }
 }
 
@@ -472,6 +573,95 @@ fn worker(
 /// credentials and calls [`tunnel_ssh_args`]).
 pub type SpawnFn<'a> = &'a mut dyn FnMut(&TunnelItem) -> Result<Command, String>;
 
+/// Ids designated by `key` among `(id, name)` candidates: an exact id, else
+/// every name equal to it ignoring case.
+fn matching_ids(candidates: &[(&str, &str)], key: &str) -> Vec<String> {
+    let key = key.trim();
+    if let Some((id, _)) = candidates.iter().find(|(id, _)| *id == key) {
+        return vec![id.to_string()];
+    }
+    let key = key.to_lowercase();
+    candidates
+        .iter()
+        .filter(|(_, name)| name.to_lowercase() == key)
+        .map(|(id, _)| id.to_string())
+        .collect()
+}
+
+fn one_match(key: &str, mut ids: Vec<String>) -> Result<String, String> {
+    match ids.len() {
+        0 => Err(format!("No tunnel named \"{}\"", key.trim())),
+        1 => Ok(ids.remove(0)),
+        _ => Err(format!(
+            "More than one tunnel is named \"{}\"; use its id",
+            key.trim()
+        )),
+    }
+}
+
+/// Wakes the UI once a second while a tunnel of the machine on screen runs,
+/// so its uptime moves even in an otherwise idle window. One thread at most;
+/// it ends when nothing runs or the controller is dropped.
+struct Ticker {
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    shared: Arc<TickShared>,
+}
+
+#[derive(Default)]
+struct TickShared {
+    active: AtomicBool,
+    running: AtomicBool,
+    dead: AtomicBool,
+}
+
+impl Ticker {
+    fn new(wake: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+        Self {
+            wake,
+            shared: Arc::new(TickShared::default()),
+        }
+    }
+
+    fn set_active(&self, active: bool) {
+        self.shared.active.store(active, Ordering::SeqCst);
+        let Some(wake) = self.wake.clone() else {
+            return;
+        };
+        if !active || self.shared.running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let shared = self.shared.clone();
+        let spawned = std::thread::Builder::new()
+            .name("terminus-tunnel-tick".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(1));
+                if shared.dead.load(Ordering::SeqCst) {
+                    break;
+                }
+                if !shared.active.load(Ordering::SeqCst) {
+                    shared.running.store(false, Ordering::SeqCst);
+                    // `set_active(true)` may have raced the store above.
+                    if shared.active.load(Ordering::SeqCst)
+                        && !shared.running.swap(true, Ordering::SeqCst)
+                    {
+                        continue;
+                    }
+                    break;
+                }
+                wake();
+            });
+        if spawned.is_err() {
+            self.shared.running.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.shared.dead.store(true, Ordering::SeqCst);
+    }
+}
+
 /// Everything the Tunnels view needs, owned in one place.
 pub struct TunnelController {
     commands: Sender<Cmd>,
@@ -486,6 +676,10 @@ pub struct TunnelController {
     notices: Vec<String>,
     /// A tunnel just created from "Start tunnel": start it once listed.
     pending_start: Option<String>,
+    /// Live numbers of the active tunnels of the machine on screen.
+    stats: HashMap<String, TunnelStats>,
+    last_sample: Option<Instant>,
+    ticker: Ticker,
 }
 
 impl TunnelController {
@@ -494,6 +688,7 @@ impl TunnelController {
     pub fn spawn(data_dir: PathBuf, wake: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         let (cmd_tx, cmd_rx) = channel();
         let (ev_tx, ev_rx) = channel();
+        let ticker = Ticker::new(wake.clone());
         let _ = std::thread::Builder::new()
             .name("terminus-tunnels".into())
             .spawn(move || worker(data_dir, cmd_rx, ev_tx, wake));
@@ -508,6 +703,9 @@ impl TunnelController {
             names: HashMap::new(),
             notices: Vec::new(),
             pending_start: None,
+            stats: HashMap::new(),
+            last_sample: None,
+            ticker,
         }
     }
 
@@ -575,10 +773,80 @@ impl TunnelController {
         }
     }
 
+    /// Id of the tunnel of the machine on screen designated by `key`: an
+    /// exact id, else a name (case-insensitive). Unknown and ambiguous keys
+    /// are errors.
+    pub fn resolve_current(&self, key: &str) -> Result<String, String> {
+        let candidates: Vec<(&str, &str)> = self
+            .state
+            .items
+            .iter()
+            .map(|t| (t.id.as_str(), t.name.as_str()))
+            .collect();
+        one_match(key, matching_ids(&candidates, key))
+    }
+
+    /// Start a tunnel of the machine on screen by id or name (what a command
+    /// palette calls). Already running or starting is a no-op `Ok`. On
+    /// failure the card turns Failed and `Err` carries a message fit for a
+    /// toast (no separate notice is queued: the caller shows the `Err`).
+    ///
+    /// `spawn` builds the `ssh` command for the machine on screen, so only
+    /// that machine's tunnels can be started.
+    pub fn start_tunnel(&mut self, key: &str, spawn: SpawnFn) -> Result<(), String> {
+        let id = self.resolve_current(key)?;
+        if self.registry.is_active(&id) {
+            return Ok(());
+        }
+        let Some(item) = self.state.items.iter().find(|t| t.id == id).cloned() else {
+            return Err(format!("No tunnel \"{key}\""));
+        };
+        let result = self.launch(&item, spawn);
+        self.apply_statuses();
+        result
+    }
+
+    /// Stop a tunnel by id or name. Works for any machine; stopping one that
+    /// is not running is a no-op `Ok`. `Err` for an unknown or ambiguous key.
+    pub fn stop_tunnel(&mut self, key: &str) -> Result<(), String> {
+        let candidates: Vec<(&str, &str)> = self
+            .names
+            .iter()
+            .map(|(id, name)| (id.as_str(), name.as_str()))
+            .collect();
+        let mut ids = matching_ids(&candidates, key);
+        if ids.len() > 1 {
+            // The same name on several machines: the running one is meant.
+            ids.retain(|id| self.registry.is_active(id));
+        }
+        let id = one_match(key, ids)?;
+        self.registry.stop(&id);
+        self.statuses.remove(&id);
+        self.apply_statuses();
+        Ok(())
+    }
+
+    /// Spawn the process of `item` and record Starting or Failed.
+    fn launch(&mut self, item: &TunnelItem, spawn: SpawnFn) -> Result<(), String> {
+        match spawn(item).and_then(|cmd| self.registry.start(&item.id, cmd)) {
+            Ok(()) => {
+                self.statuses
+                    .insert(item.id.clone(), (TunnelStatus::Starting, None));
+                Ok(())
+            }
+            Err(msg) => {
+                self.statuses
+                    .insert(item.id.clone(), (TunnelStatus::Failed, Some(msg.clone())));
+                Err(msg)
+            }
+        }
+    }
+
     /// Stop (if running) and soft-delete a tunnel.
     pub fn delete(&mut self, id: &str) {
         self.registry.stop(id);
         self.statuses.remove(id);
+        self.names.remove(id);
         if let Some(host_id) = self.host_id.clone() {
             let _ = self.commands.send(Cmd::Delete {
                 host_id,
@@ -596,18 +864,8 @@ impl TunnelController {
         if self.registry.is_active(id) {
             self.registry.stop(id);
             self.statuses.remove(id);
-        } else {
-            match spawn(&item).and_then(|cmd| self.registry.start(id, cmd)) {
-                Ok(()) => {
-                    self.statuses
-                        .insert(id.to_string(), (TunnelStatus::Starting, None));
-                }
-                Err(msg) => {
-                    self.notices.push(format!("{}: {msg}", item.name));
-                    self.statuses
-                        .insert(id.to_string(), (TunnelStatus::Failed, Some(msg)));
-                }
-            }
+        } else if let Err(msg) = self.launch(&item, spawn) {
+            self.notices.push(format!("{}: {msg}", item.name));
         }
         self.apply_statuses();
     }
@@ -637,6 +895,7 @@ impl TunnelController {
         for id in ids {
             self.registry.stop(&id);
             self.statuses.remove(&id);
+            self.names.remove(&id);
         }
         if self.host_id.as_deref() == Some(host_id) {
             self.state.items.clear();
@@ -667,7 +926,46 @@ impl TunnelController {
                     item.error = None;
                 }
             }
+            item.stats = if item.status.is_active() {
+                self.stats.get(&item.id).copied()
+            } else {
+                None
+            };
         }
+    }
+
+    /// Update uptime (every call) and connection samples (about once a
+    /// second) of the active tunnels on screen. True when a number changed.
+    fn refresh_stats(&mut self) -> bool {
+        let due = self.last_sample.is_none_or(|t| t.elapsed() >= SAMPLE_EVERY);
+        let mut next = HashMap::new();
+        for item in &self.state.items {
+            let Some(up) = self.registry.uptime(&item.id) else {
+                continue;
+            };
+            let connections = match self.stats.get(&item.id) {
+                Some(prev) if !due => prev.connections,
+                _ => self.registry.pid(&item.id).and_then(|pid| {
+                    sample_connections(pid, item.kind, item.bind_port, item.dest_port)
+                }),
+            };
+            next.insert(
+                item.id.clone(),
+                TunnelStats {
+                    uptime_secs: up.as_secs(),
+                    connections,
+                },
+            );
+        }
+        if due {
+            self.last_sample = Some(Instant::now());
+        }
+        self.ticker.set_active(!next.is_empty());
+        if next == self.stats {
+            return false;
+        }
+        self.stats = next;
+        true
     }
 
     /// Drain worker answers and process events. True when the view changed.
@@ -707,6 +1005,7 @@ impl TunnelController {
                 }
             }
         }
+        changed |= self.refresh_stats();
         if changed {
             self.apply_statuses();
         }
@@ -802,6 +1101,7 @@ mod tests {
             dest_port: 5433,
             status: TunnelStatus::Stopped,
             error: None,
+            stats: None,
         }
     }
 
@@ -1219,5 +1519,253 @@ mod tests {
         assert!(!local_port_free(port));
         drop(l);
         assert!(local_port_free(port));
+    }
+
+    // ------------------------------------------------------------ stats
+
+    const PROC_TCP: &str = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:1538 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:1538 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 22222 1 0000000000000000 20 4 30 10 -1
+   2: 0100007F:C350 0100007F:1538 01 00000000:00000000 00:00000000 00000000  1000        0 33333 1 0000000000000000 20 4 30 10 -1
+   3: garbage
+";
+
+    const PROC_TCP6: &str = "\
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000001000000:1538 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 44444 1 0000000000000000 100 0 0 10 0
+   1: 00000000000000000000000001000000:1538 00000000000000000000000001000000:D431 01 00000000:00000000 00:00000000 00000000  1000        0 55555 1 0000000000000000 20 4 30 10 -1
+";
+
+    fn owned(inodes: &[u64]) -> HashSet<u64> {
+        inodes.iter().copied().collect()
+    }
+
+    #[test]
+    fn proc_net_tcp_rows_are_parsed_and_junk_is_skipped() {
+        let rows = parse_proc_net_tcp(PROC_TCP);
+        assert_eq!(
+            rows,
+            vec![
+                TcpRow {
+                    local_port: 5432,
+                    remote_port: 0,
+                    established: false,
+                    inode: 11111
+                },
+                TcpRow {
+                    local_port: 5432,
+                    remote_port: 50000,
+                    established: true,
+                    inode: 22222
+                },
+                TcpRow {
+                    local_port: 50000,
+                    remote_port: 5432,
+                    established: true,
+                    inode: 33333
+                },
+            ]
+        );
+        let rows6 = parse_proc_net_tcp(PROC_TCP6);
+        assert_eq!(rows6.len(), 2);
+        assert_eq!(rows6[1].local_port, 5432);
+        assert_eq!(rows6[1].remote_port, 0xD431);
+        assert!(rows6[1].established && !rows6[0].established);
+        assert!(parse_proc_net_tcp("").is_empty());
+    }
+
+    #[test]
+    fn local_and_dynamic_count_accepted_connections_only() {
+        let rows = parse_proc_net_tcp(PROC_TCP);
+        let all = owned(&[11111, 22222, 33333]);
+        for kind in [TunnelKind::Local, TunnelKind::Dynamic] {
+            // LISTEN is not a connection; the client end (remote port ==
+            // bind port) is not ssh's accepted socket.
+            assert_eq!(count_connections(&rows, kind, 5432, 0, &all), 1, "{kind:?}");
+        }
+        assert_eq!(
+            count_connections(&rows, TunnelKind::Local, 5432, 0, &owned(&[])),
+            0
+        );
+        assert_eq!(
+            count_connections(&rows, TunnelKind::Local, 9999, 0, &all),
+            0
+        );
+    }
+
+    #[test]
+    fn remote_counts_connections_opened_to_the_destination() {
+        let rows = parse_proc_net_tcp(PROC_TCP);
+        assert_eq!(
+            count_connections(&rows, TunnelKind::Remote, 7000, 5432, &owned(&[33333])),
+            1
+        );
+        // Sockets of other processes are not ours.
+        assert_eq!(
+            count_connections(&rows, TunnelKind::Remote, 7000, 5432, &owned(&[22222])),
+            0
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_live_accepted_connection_is_sampled_from_proc() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let me = std::process::id();
+        assert_eq!(sample_connections(me, TunnelKind::Local, port, 0), Some(0));
+        let _client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (_server, _) = l.accept().unwrap();
+        assert_eq!(sample_connections(me, TunnelKind::Local, port, 0), Some(1));
+        assert_eq!(
+            sample_connections(0x7fff_fff0, TunnelKind::Local, port, 0),
+            None
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn connections_are_unavailable_off_linux() {
+        assert_eq!(sample_connections(1, TunnelKind::Local, 1, 0), None);
+    }
+
+    #[test]
+    fn the_registry_reports_uptime_until_the_stop() {
+        let mut r = TunnelRegistry::new(Duration::from_millis(10));
+        assert_eq!(r.uptime("a"), None);
+        r.start("a", sh("sleep 30")).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let up = r.uptime("a").unwrap();
+        assert!(up >= Duration::from_millis(30) && up < Duration::from_secs(5));
+        r.stop("a");
+        assert_eq!(r.uptime("a"), None);
+    }
+
+    /// A controller with two saved tunnels ("db" and "web") on one machine.
+    fn two_tunnels(tag: &str) -> (TunnelController, String, String) {
+        let mut c = TunnelController::spawn(dir(tag), None)
+            .with_settle(Duration::from_millis(10));
+        c.select_machine(&uuid::Uuid::new_v4().to_string(), "prod");
+        c.save(&draft("db", 5432));
+        c.save(&draft("web", 8080));
+        assert!(pump(&mut c, |c| c.state().items.len() == 2));
+        let id = |name: &str| {
+            c.state()
+                .items
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let (db, web) = (id("db"), id("web"));
+        (c, db, web)
+    }
+
+    #[test]
+    fn a_running_tunnel_carries_uptime_and_a_connection_sample() {
+        let (mut c, db, web) = two_tunnels("stats");
+        assert!(c.state().items.iter().all(|t| t.stats.is_none()));
+        c.start_tunnel("db", &mut |_| Ok(sh("sleep 30"))).unwrap();
+        assert!(pump(&mut c, |c| c
+            .state()
+            .items
+            .iter()
+            .any(|t| t.stats.is_some())));
+        let by = |c: &TunnelController, id: &str| {
+            c.state().items.iter().find(|t| t.id == id).unwrap().clone()
+        };
+        let stats = by(&c, &db).stats.unwrap();
+        assert!(stats.uptime_secs < 5);
+        // `sh` owns no socket: 0 on Linux, unknown elsewhere.
+        let expected = if cfg!(target_os = "linux") {
+            Some(0)
+        } else {
+            None
+        };
+        assert_eq!(stats.connections, expected);
+        assert!(by(&c, &web).stats.is_none(), "stopped tunnels have none");
+        c.stop_tunnel("db").unwrap();
+        assert!(by(&c, &db).stats.is_none(), "stats end with the process");
+    }
+
+    #[test]
+    fn start_and_stop_resolve_ids_and_names() {
+        let (mut c, db, _web) = two_tunnels("api");
+        c.start_tunnel(&db, &mut |_| Ok(sh("sleep 30"))).unwrap();
+        assert!(c.registry.is_active(&db));
+        let pid = c.registry.pid(&db);
+        // Starting a running tunnel keeps the same process.
+        c.start_tunnel("DB", &mut |_| unreachable!("already running"))
+            .unwrap();
+        assert_eq!(c.registry.pid(&db), pid);
+        c.stop_tunnel("db").unwrap();
+        assert!(!c.registry.is_active(&db));
+        assert_eq!(c.state().items[0].status, TunnelStatus::Stopped);
+        // Stopping a stopped tunnel is fine; unknown keys are not.
+        c.stop_tunnel(&db).unwrap();
+        assert!(c.stop_tunnel("nope").is_err());
+        assert!(c.start_tunnel("nope", &mut |_| unreachable!()).is_err());
+    }
+
+    #[test]
+    fn a_failed_start_reports_the_error_and_marks_the_card() {
+        let (mut c, db, _web) = two_tunnels("fail");
+        let err = c
+            .start_tunnel("db", &mut |_| Err("no ssh".to_string()))
+            .unwrap_err();
+        assert_eq!(err, "no ssh");
+        let t = c.state().items.iter().find(|t| t.id == db).unwrap();
+        assert_eq!(t.status, TunnelStatus::Failed);
+        assert!(c.take_notices().is_empty(), "the caller shows the Err");
+    }
+
+    #[test]
+    fn an_ambiguous_name_is_refused() {
+        let mut c = TunnelController::spawn(dir("ambig"), None)
+            .with_settle(Duration::from_millis(10));
+        c.select_machine(&uuid::Uuid::new_v4().to_string(), "prod");
+        c.save(&draft("db", 5432));
+        c.save(&draft("db", 5433));
+        assert!(pump(&mut c, |c| c.state().items.len() == 2));
+        let err = c.start_tunnel("db", &mut |_| unreachable!()).unwrap_err();
+        assert!(err.contains("More than one"), "{err}");
+        let id = c.state().items[0].id.clone();
+        assert_eq!(c.resolve_current(&id).as_deref(), Ok(id.as_str()));
+    }
+
+    #[test]
+    fn an_active_tunnel_wakes_the_ui_about_once_a_second() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let w = wakes.clone();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            w.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut c = TunnelController::spawn(dir("wake"), Some(wake))
+            .with_settle(Duration::from_millis(10));
+        c.select_machine(&uuid::Uuid::new_v4().to_string(), "prod");
+        c.save(&draft("db", 5432));
+        assert!(pump(&mut c, |c| c.state().items.len() == 1));
+        std::thread::sleep(Duration::from_millis(100));
+        let before = wakes.load(Ordering::SeqCst);
+        c.start_tunnel("db", &mut |_| Ok(sh("sleep 30"))).unwrap();
+        c.tick();
+        let end = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < end && wakes.load(Ordering::SeqCst) == before {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            wakes.load(Ordering::SeqCst) > before,
+            "no tick while running"
+        );
+        // Idle again once nothing runs: the ticker stops waking.
+        c.stop_tunnel("db").unwrap();
+        c.tick();
+        std::thread::sleep(Duration::from_millis(1300));
+        let settled = wakes.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(1300));
+        assert_eq!(wakes.load(Ordering::SeqCst), settled, "woke with no tunnel");
     }
 }
