@@ -744,3 +744,20 @@ fn test_build_on_degenerate_window_starts_at_default_grid() {
         );
     }
 }
+
+#[test]
+fn lost_card_goes_to_the_focused_dead_pane_else_the_first_dead_one() {
+    // (route, has a card, focused), top to bottom.
+    let none = [(1, false, true), (2, false, false)];
+    assert_eq!(pick_lost_route(&none), None);
+    assert_eq!(pick_lost_route(&[]), None);
+
+    let one = [(1, false, true), (2, true, false)];
+    assert_eq!(pick_lost_route(&one), Some(2));
+
+    let two = [(1, true, false), (2, true, true), (3, false, false)];
+    assert_eq!(pick_lost_route(&two), Some(2));
+
+    let unfocused = [(4, false, true), (5, true, false), (6, true, false)];
+    assert_eq!(pick_lost_route(&unfocused), Some(5));
+}

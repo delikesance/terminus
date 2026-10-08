@@ -1956,6 +1956,21 @@ pub mod test {
     }
 
     #[test]
+    fn a_grid_reports_the_pane_behind_its_card() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(2, VoidListener {}, window_id).unwrap();
+        assert_eq!(cm.contexts[0].lost_pane(), None);
+
+        let route_id = cm.contexts[0].current().route_id;
+        cm.contexts[0].current_mut().connection_lost =
+            Some(terminus_ui::LostSession::new(route_id, "h", "host", &[]));
+        let lost = cm.contexts[0].lost_pane().expect("card on the only pane");
+        assert_eq!(lost.route_id, route_id);
+        assert!(lost.focused);
+    }
+
+    #[test]
     fn is_pinned_survives_when_current_pane_is_not_the_root() {
         // Grid-level `pinned` is the source of truth so a split on the home
         // tab cannot make CloseTab suddenly work.

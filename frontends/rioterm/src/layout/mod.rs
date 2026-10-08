@@ -145,6 +145,27 @@ impl Default for BorderConfig {
     }
 }
 
+/// A pane whose session ended behind a card (see `Context::connection_lost`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LostPane {
+    pub route_id: usize,
+    /// The pane's `layout_rect`, relative to the grid's root container.
+    pub layout_rect: [f32; 4],
+    /// Whether this is the grid's focused pane.
+    pub focused: bool,
+}
+
+/// The route whose card shows among `panes` (route id, has a card,
+/// focused), top to bottom: the focused pane's card when it has one, else
+/// the first dead pane's.
+fn pick_lost_route(panes: &[(usize, bool, bool)]) -> Option<usize> {
+    panes
+        .iter()
+        .find(|(_, lost, focused)| *lost && *focused)
+        .or_else(|| panes.iter().find(|(_, lost, _)| *lost))
+        .map(|(route_id, _, _)| *route_id)
+}
+
 pub struct ContextGrid<T: EventListener> {
     pub width: f32,
     pub height: f32,
@@ -329,6 +350,33 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    /// The pane whose "Connection lost" / "Session ended" card shows for
+    /// this tab, if any pane has one.
+    pub fn lost_pane(&self) -> Option<LostPane> {
+        let keys = self.get_ordered_keys();
+        let panes: Vec<(usize, bool, bool)> = keys
+            .iter()
+            .filter_map(|key| {
+                let item = self.inner.get(key)?;
+                Some((
+                    item.val.route_id,
+                    item.val.connection_lost.is_some(),
+                    *key == self.current,
+                ))
+            })
+            .collect();
+        let route_id = pick_lost_route(&panes)?;
+        let item = self
+            .inner
+            .values()
+            .find(|item| item.val.route_id == route_id)?;
+        Some(LostPane {
+            route_id,
+            layout_rect: item.layout_rect,
+            focused: self.current().route_id == route_id,
+        })
     }
 
     pub fn panel_count(&self) -> usize {
