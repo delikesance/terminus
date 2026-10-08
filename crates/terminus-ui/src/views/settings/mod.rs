@@ -106,6 +106,7 @@ pub enum SettingsAction {
     SetFont(String),
     SetFontSize(f32),
     SetCursor(CursorStyle),
+    SetTheme(ThemeChoice),
     // ---- Updates
     CheckUpdates,
     InstallUpdate,
@@ -122,6 +123,9 @@ impl SettingsAction {
             SettingsAction::SetFontSize(s) => ("fonts", "size", format_size(*s)),
             SettingsAction::SetCursor(c) => {
                 ("cursor", "shape", config_edit::quote(c.config_value()))
+            }
+            SettingsAction::SetTheme(t) => {
+                ("appearance", "theme", config_edit::quote(t.config_value()))
             }
             SettingsAction::SetCheckUpdates(on) => ("updates", "check", on.to_string()),
             SettingsAction::SetAutoInstall(on) => {
@@ -480,6 +484,10 @@ mod tests {
         assert_eq!(
             SettingsAction::SetAutoInstall(true).config_edit(),
             Some(("updates", "auto-install", "true".to_string()))
+        );
+        assert_eq!(
+            SettingsAction::SetTheme(ThemeChoice::System).config_edit(),
+            Some(("appearance", "theme", "\"system\"".to_string()))
         );
         assert_eq!(SettingsAction::CheckUpdates.config_edit(), None);
     }

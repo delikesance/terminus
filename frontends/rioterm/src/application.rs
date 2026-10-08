@@ -467,10 +467,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             unix,
             not(any(target_os = "redox", target_family = "wasm", target_os = "macos"))
         ))]
-        if cause == StartCause::Init
-            && self.config.adaptive_colors.is_some()
-            && self.config.force_theme.is_none()
-        {
+        // Started even under `force-theme`: Settings can switch to System
+        // at runtime, and `ThemeChanged` is ignored while a theme is forced.
+        if cause == StartCause::Init && self.config.adaptive_colors.is_some() {
             use rio_window::platform::linux::ActiveEventLoopExtLinux;
             event_loop.start_system_theme_monitor();
         }

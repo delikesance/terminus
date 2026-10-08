@@ -228,9 +228,20 @@ pub struct Renderer {
     pub custom_mouse_cursor: bool,
     pub trail_cursor_enabled: bool,
     pub trail_cursor: trail_cursor::TrailCursor,
-    /// Colors for the Terminus chrome, derived from the terminal
-    /// palette so the rail and the host panel follow the user's theme.
+    /// Colors for the Terminus chrome: violet ink, or violet paper while
+    /// the light terminal palette is showing (see [`chrome_theme_for`]).
     pub chrome_theme: terminus_ui::theme::ChromeTheme,
+}
+
+/// The chrome palette matching the terminal colors `config` currently
+/// shows (`active_theme`, set with the window theme).
+pub fn chrome_theme_for(config: &Config) -> terminus_ui::theme::ChromeTheme {
+    use rio_backend::config::theme::AppearanceTheme;
+    use terminus_ui::theme::{ChromeTheme, ThemeMode};
+    ChromeTheme::for_mode(match config.active_theme {
+        Some(AppearanceTheme::Light) => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    })
 }
 
 impl Renderer {
@@ -305,7 +316,7 @@ impl Renderer {
                 decay_slow: config.effects.trail_cursor_decay[1] as f32 / 1000.0,
                 start_threshold: config.effects.trail_cursor_start_threshold as f32,
             }),
-            chrome_theme: terminus_ui::theme::ChromeTheme::default(),
+            chrome_theme: chrome_theme_for(config),
         }
     }
 
@@ -1538,3 +1549,28 @@ mod grid_cell_bg_tests {
     }
 }
 
+#[cfg(test)]
+mod chrome_theme_tests {
+    use super::*;
+    use rio_backend::config::theme::AppearanceTheme;
+    use terminus_ui::theme::ChromeTheme;
+
+    #[test]
+    fn chrome_follows_the_palette_the_terminal_shows() {
+        let mut config = Config::default();
+        assert_eq!(
+            Renderer::new(&config).chrome_theme,
+            ChromeTheme::violet_ink()
+        );
+        config.active_theme = Some(AppearanceTheme::Light);
+        assert_eq!(
+            Renderer::new(&config).chrome_theme,
+            ChromeTheme::violet_paper()
+        );
+        config.active_theme = Some(AppearanceTheme::Dark);
+        assert_eq!(
+            Renderer::new(&config).chrome_theme,
+            ChromeTheme::violet_ink()
+        );
+    }
+}

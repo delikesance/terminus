@@ -8,7 +8,7 @@ use terminus_ui::components::selection::{
     SegmentedSize, SEGMENT_RADIUS, SEGMENT_TRACK_RADIUS,
 };
 use terminus_ui::geom::Rect;
-use terminus_ui::theme::ChromeTheme;
+use terminus_ui::theme::{text_color, ChromeTheme};
 use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::views::settings::appearance::{
     fit_segments, AppearanceLayout, AppearanceState, AppearanceTarget, CursorStyle,
@@ -23,11 +23,6 @@ use crate::renderer::components::selection::paint_segmented;
 use crate::renderer::ui_text::{
     draw_mono_text, draw_ui_text, measure_mono_text, UiWeight,
 };
-
-const PREVIEW_BLUE: [u8; 4] = [0x8D, 0xBB, 0xF5, 255];
-const PREVIEW_GREEN: [u8; 4] = [0x9E, 0xD9, 0xB5, 255];
-const PREVIEW_LILAC: [u8; 4] = [0xD6, 0xCB, 0xFF, 255];
-const PREVIEW_FG: [u8; 4] = [0xE4, 0xDE, 0xEF, 255];
 
 fn label(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, r: &Rect, text: &str) {
     draw_ui_text(
@@ -108,36 +103,20 @@ pub fn paint(
         selected,
         SegmentedSize::Medium,
     );
-    // Light and System have no chrome theme behind them: veil those segments.
-    for (i, seg) in l.theme.segments.iter().enumerate() {
-        if !ThemeChoice::ALL[i].available() {
-            let c = theme.surface;
-            sugarloaf.rounded_rect(
-                None,
-                seg.x - 1.0,
-                seg.y - 1.0,
-                seg.width + 2.0,
-                seg.height + 2.0,
-                [c[0], c[1], c[2], 0.62],
-                0.4,
-                SEGMENT_RADIUS,
-                7,
-            );
-        }
-    }
-    let _ = SEGMENT_TRACK_RADIUS;
-    draw_ui_text(
-        sugarloaf,
-        l.theme_note.x,
-        text_top(
-            l.theme_note.y + l.theme_note.height / 2.0,
+    if s.theme == ThemeChoice::System {
+        draw_ui_text(
+            sugarloaf,
+            l.theme_note.x,
+            text_top(
+                l.theme_note.y + l.theme_note.height / 2.0,
+                font_size::CAPTION,
+            ),
+            THEME_NOTE,
             font_size::CAPTION,
-        ),
-        THEME_NOTE,
-        font_size::CAPTION,
-        theme.text_faint,
-        UiWeight::Regular,
-    );
+            theme.text_faint,
+            UiWeight::Regular,
+        );
+    }
 
     label(sugarloaf, theme, &l.preview_label, "Preview");
     paint_preview(sugarloaf, theme, &l.preview, s);
@@ -245,6 +224,13 @@ fn paint_preview(
         usize::MAX
     };
     let prompt = "delikesance@DELIKESANCE:~$ ";
+    // Preview inks follow the chrome palette so they read on its canvas.
+    let fg = theme.text;
+    let (blue, green, lilac) = (
+        text_color(theme.info),
+        text_color(theme.success),
+        text_color(theme.accent),
+    );
     let draw_line = |sugarloaf: &mut Sugarloaf, y: f32, segs: &[(&str, [u8; 4])]| {
         let texts: Vec<&str> = segs.iter().map(|(t, _)| *t).collect();
         let mut cx = x;
@@ -253,21 +239,21 @@ fn paint_preview(
         }
         cx - x
     };
-    draw_line(sugarloaf, y, &[(prompt, PREVIEW_FG), ("ls", PREVIEW_FG)]);
+    draw_line(sugarloaf, y, &[(prompt, fg), ("ls", fg)]);
     y += line;
     draw_line(
         sugarloaf,
         y,
         &[
-            ("development", PREVIEW_BLUE),
-            ("  ", PREVIEW_FG),
-            ("notes.md", PREVIEW_GREEN),
-            ("  ", PREVIEW_FG),
-            ("build.tar.gz", PREVIEW_LILAC),
+            ("development", blue),
+            ("  ", fg),
+            ("notes.md", green),
+            ("  ", fg),
+            ("build.tar.gz", lilac),
         ],
     );
     y += line;
-    let pw = draw_line(sugarloaf, y, &[(prompt, PREVIEW_FG)]);
+    let pw = draw_line(sugarloaf, y, &[(prompt, fg)]);
     let cell_h = (size * 1.35).round();
     let top = y - size * 0.12;
     let cursor_x = x + pw;

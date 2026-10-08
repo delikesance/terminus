@@ -1093,7 +1093,7 @@ fn render_settings_modal(
                 paint_surface(
                     sugarloaf,
                     &pill,
-                    rgba_u8(0x10, 0xb9, 0x81, 0.10),
+                    with_alpha(theme.success, 0.12),
                     None,
                     8.0,
                     DEPTH_DIALOG + 0.03,
@@ -1106,7 +1106,7 @@ fn render_settings_modal(
                     content_y + 2.0,
                     "Connected",
                     HINT_SIZE,
-                    [0x34, 0xd3, 0x99, 255],
+                    terminus_ui::theme::text_color(theme.success),
                     false,
                 );
             }
@@ -2342,7 +2342,12 @@ pub(crate) fn paint_new_group_form(
     paint_surface(
         sugarloaf,
         &form,
-        with_alpha([1.0, 1.0, 1.0, 1.0], 0.025),
+        // A faint lift off the panel: lighter on ink, darker on paper.
+        if theme.is_light() {
+            with_alpha([0.0, 0.0, 0.0, 1.0], 0.025)
+        } else {
+            with_alpha([1.0, 1.0, 1.0, 1.0], 0.025)
+        },
         Some(theme.panel_border),
         10.0,
         DEPTH_CONTENT + 0.02,
