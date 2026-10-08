@@ -427,7 +427,14 @@ impl Application<'_> {
 }
 
 impl ApplicationHandler<EventPayload> for Application<'_> {
-    fn resumed(&mut self, _active_event_loop: &ActiveEventLoop) {}
+    fn resumed(&mut self, _active_event_loop: &ActiveEventLoop) {
+        // Also fired on Windows after sleep/hibernate: GPU textures may be
+        // blank, so rebuild the glyph atlases (no routes yet at startup).
+        for route in self.router.routes.values_mut() {
+            route.window.screen.on_system_resume();
+            route.request_overlay_redraw();
+        }
+    }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         if cause != StartCause::Init

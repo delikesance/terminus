@@ -697,3 +697,50 @@ fn test_update_recovers_after_collapse() {
 
     assert_eq!((dim.columns, dim.lines), (40, 12));
 }
+
+/// Cell and chrome margins of a real window: the sidebar reserves ~288
+/// logical px on the left and ~36 on the right before the grid.
+fn chrome_window_metrics() -> (rio_backend::sugarloaf::layout::CellMetrics, Margin) {
+    let dims = TextDimensions {
+        width: 8.0,
+        height: 17.0,
+        scale: 1.0,
+    };
+    (cell_for(dims), Margin::new(172.0, 36.0, 16.0, 288.0))
+}
+
+#[test]
+fn test_window_too_narrow_for_chrome_cannot_hold_a_grid() {
+    // A window just wider than the chrome leaves room for two cells; the
+    // shell must not be told it has two columns (one glyph per line).
+    let (cell, margin) = chrome_window_metrics();
+    assert!(!window_fits_grid(345.0, 760.0, cell, margin));
+    assert!(!window_fits_grid(1200.0, 200.0, cell, margin));
+}
+
+#[test]
+fn test_normal_window_holds_a_grid() {
+    let (cell, margin) = chrome_window_metrics();
+    assert!(window_fits_grid(1200.0, 760.0, cell, margin));
+}
+
+#[test]
+fn test_build_on_degenerate_window_starts_at_default_grid() {
+    // The first PTY is spawned from this dimension: a window that isn't
+    // placed yet (or too small for the chrome) must not start the shell
+    // at MIN_COLS, it would print its banner one char per line.
+    let (cell, margin) = chrome_window_metrics();
+    let dims = TextDimensions {
+        width: 8.0,
+        height: 17.0,
+        scale: 1.0,
+    };
+    for (w, h) in [(0.0, 0.0), (345.0, 760.0), (300.0, 200.0)] {
+        let dim = ContextDimension::build(w, h, dims, cell, 1.0, 14.0, margin);
+        assert_eq!(
+            (dim.columns, dim.lines),
+            (DEFAULT_COLS, DEFAULT_LINES),
+            "{w}x{h}"
+        );
+    }
+}

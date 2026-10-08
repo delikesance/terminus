@@ -58,6 +58,21 @@ pub const fn grid_insets() -> Insets {
     }
 }
 
+/// Smallest terminal area the window keeps beside the chrome, in logical
+/// pixels. Below it the grid would be one or two cells wide.
+pub const MIN_GRID_WIDTH: f32 = 240.0;
+pub const MIN_GRID_HEIGHT: f32 = 96.0;
+
+/// Minimum window inner size: the chrome plus [`MIN_GRID_WIDTH`] x
+/// [`MIN_GRID_HEIGHT`] of terminal.
+pub const fn min_window_size() -> (f32, f32) {
+    let i = grid_insets();
+    (
+        i.left + i.right + MIN_GRID_WIDTH,
+        i.top + i.bottom + MIN_GRID_HEIGHT,
+    )
+}
+
 /// The shell's boxes for one window size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShellLayout {
@@ -120,6 +135,17 @@ impl ShellLayout {
 mod tests {
     use super::*;
     use crate::shell::workspace::SettingsPage;
+
+    #[test]
+    fn the_smallest_window_still_leaves_room_for_a_grid() {
+        // The OS may shrink the window to its minimum; the terminal must
+        // keep a real grid beside the chrome there, not one or two cells.
+        let (w, h) = min_window_size();
+        let i = grid_insets();
+        assert!(w - i.left - i.right >= MIN_GRID_WIDTH, "{w}");
+        assert!(h - i.top - i.bottom >= MIN_GRID_HEIGHT, "{h}");
+        assert!(MIN_GRID_WIDTH >= 200.0 && MIN_GRID_HEIGHT >= 80.0);
+    }
 
     #[test]
     fn boxes_match_the_mock_at_1440x900() {

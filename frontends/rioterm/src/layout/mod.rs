@@ -69,6 +69,33 @@ fn has_usable_space(
     available_width > 0.0 && available_height > 0.0
 }
 
+/// Grid a window starts with when its size can't hold one yet (not
+/// placed, or narrower than the chrome). The first real resize replaces it.
+const DEFAULT_COLS: usize = 80;
+const DEFAULT_LINES: usize = 24;
+/// Below this, a window-level size is treated as transient: the OS
+/// placing, restoring or squeezing the window, not a size to reflow to.
+const MIN_WINDOW_GRID_COLS: u32 = 10;
+const MIN_WINDOW_GRID_LINES: u32 = 2;
+
+/// Whether a window of `width` x `height` physical pixels, minus the
+/// already-scaled `margin` (chrome + config), holds at least
+/// `MIN_WINDOW_GRID_COLS` x `MIN_WINDOW_GRID_LINES` cells.
+fn window_fits_grid(
+    width: f32,
+    height: f32,
+    cell: rio_backend::sugarloaf::layout::CellMetrics,
+    margin: Margin,
+) -> bool {
+    if cell.cell_width == 0 || cell.cell_height == 0 {
+        return false;
+    }
+    let available_width = width - margin.left - margin.right;
+    let available_height = height - margin.top - margin.bottom;
+    available_width >= (MIN_WINDOW_GRID_COLS * cell.cell_width) as f32
+        && available_height >= (MIN_WINDOW_GRID_LINES * cell.cell_height) as f32
+}
+
 fn compute(
     width: f32,
     height: f32,
@@ -1304,6 +1331,15 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
 
     /// Resize grid - always uses Taffy for consistent layout
     pub fn resize(&mut self, new_width: f32, new_height: f32, sugarloaf: &mut Sugarloaf) {
+        // A window too small to hold a grid beside the chrome keeps the
+        // last one: reflowing the PTY to 1-2 columns rewraps everything
+        // the shell prints meanwhile, and shrinking the rows pushes the
+        // screen into history, so the text looks gone once restored.
+        let cell = self.current().dimension.cell;
+        if !window_fits_grid(new_width, new_height, cell, self.scaled_margin) {
+            return;
+        }
+
         self.width = new_width;
         self.height = new_height;
 
@@ -1765,7 +1801,20 @@ impl ContextDimension {
         font_size: f32,
         margin: Margin,
     ) -> Self {
-        let (columns, lines) = compute(width, height, cell, margin, dimension.scale);
+        let scale = dimension.scale;
+        let scaled_margin = Margin::new(
+            margin.top * scale,
+            margin.right * scale,
+            margin.bottom * scale,
+            margin.left * scale,
+        );
+        // The first PTY is spawned with this size: a shell started at
+        // MIN_COLS prints its banner and prompt one glyph per line.
+        let (columns, lines) = if window_fits_grid(width, height, cell, scaled_margin) {
+            compute(width, height, cell, margin, scale)
+        } else {
+            (DEFAULT_COLS, DEFAULT_LINES)
+        };
         Self {
             width,
             height,
