@@ -44,10 +44,16 @@ pub enum CloseAction {
 
 /// How a close request (native `CloseRequested` or our own Close
 /// button) is handled. macOS and Windows confirm natively before the
-/// event reaches us, so there it is always `Close`; elsewhere the
-/// in-app dialog runs when `confirm_before_quit` is set.
-pub fn close_action(native_confirm: bool, confirm_before_quit: bool) -> CloseAction {
-    if native_confirm || !confirm_before_quit {
+/// event reaches us, so there it is always `Close`. Elsewhere the in-app
+/// dialog runs only for the last window (like Windows' WM_CLOSE): closing
+/// one of several windows must not prompt, and confirming the dialog
+/// quits the app.
+pub fn close_action(
+    native_confirm: bool,
+    confirm_before_quit: bool,
+    is_last_window: bool,
+) -> CloseAction {
+    if native_confirm || !confirm_before_quit || !is_last_window {
         CloseAction::Close
     } else {
         CloseAction::Confirm
@@ -381,19 +387,25 @@ mod tests {
     }
 
     #[test]
-    fn close_asks_first_when_confirm_before_quit_is_on() {
-        assert_eq!(close_action(false, true), CloseAction::Confirm);
+    fn last_window_asks_first_when_confirm_before_quit_is_on() {
+        assert_eq!(close_action(false, true, true), CloseAction::Confirm);
+    }
+
+    #[test]
+    fn a_window_among_several_closes_without_asking() {
+        assert_eq!(close_action(false, true, false), CloseAction::Close);
     }
 
     #[test]
     fn close_is_immediate_without_confirm_before_quit() {
-        assert_eq!(close_action(false, false), CloseAction::Close);
+        assert_eq!(close_action(false, false, true), CloseAction::Close);
+        assert_eq!(close_action(false, false, false), CloseAction::Close);
     }
 
     #[test]
     fn native_confirmation_means_close_immediately() {
-        assert_eq!(close_action(true, true), CloseAction::Close);
-        assert_eq!(close_action(true, false), CloseAction::Close);
+        assert_eq!(close_action(true, true, true), CloseAction::Close);
+        assert_eq!(close_action(true, false, true), CloseAction::Close);
     }
 
     #[test]
