@@ -170,6 +170,8 @@ struct Proc {
     stderr: Arc<Mutex<String>>,
     reader: Option<std::thread::JoinHandle<()>>,
     reported: bool,
+    /// Temp key / askpass files of this ssh, removed when it is reaped.
+    _secrets: crate::ssh_secrets::SecretFiles,
 }
 
 /// Child `ssh` processes keyed by tunnel id. Dropping the registry kills
@@ -190,6 +192,13 @@ impl TunnelRegistry {
     /// Spawn `cmd` for tunnel `id`, replacing any process already there.
     pub fn start(&mut self, id: &str, mut cmd: Command) -> Result<(), String> {
         self.stop(id);
+        // Before spawning: a failed spawn drops it and removes the files.
+        let secrets =
+            crate::ssh_secrets::SecretFiles::new(crate::ssh_secrets::launch_secrets(
+                cmd.get_args().filter_map(|a| a.to_str()),
+                cmd.get_envs()
+                    .filter_map(|(k, v)| Some((k.to_str()?, v?.to_str()?))),
+            ));
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -243,6 +252,7 @@ impl TunnelRegistry {
                 stderr,
                 reader,
                 reported: false,
+                _secrets: secrets,
             },
         );
         Ok(())
@@ -960,6 +970,33 @@ mod tests {
         assert!(message.contains("already in use"), "{message}");
         assert!(!r.is_active("b"));
         assert!(r.poll().is_empty());
+    }
+
+    /// A login that fails never reaches ssh's `LocalCommand`: reaping the
+    /// process is what removes its temp key and askpass secret.
+    #[test]
+    fn a_failed_tunnel_removes_its_temp_secrets() {
+        use crate::ssh_secrets::{private_temp_dir, write_private_file};
+        let key = private_temp_dir(crate::ssh_secrets::IDENTITY_DIR)
+            .unwrap()
+            .join(format!("{}.pem", uuid::Uuid::new_v4()));
+        write_private_file(&key, b"key").unwrap();
+        let secret = private_temp_dir(crate::ssh_secrets::ASKPASS_DIR)
+            .unwrap()
+            .join(format!("{}.secret", uuid::Uuid::new_v4()));
+        write_private_file(&secret, b"pass").unwrap();
+        let mut cmd = sh("echo 'Permission denied (publickey).' >&2; exit 255");
+        cmd.arg("-i").arg(&key);
+        cmd.env(crate::ssh_secrets::ASKPASS_FILE_ENV, &secret);
+        let mut r = TunnelRegistry::new(Duration::from_millis(500));
+        r.start("k", cmd).unwrap();
+        assert!(key.exists(), "removed before ssh could read it");
+        assert!(wait_for(|| r
+            .poll()
+            .iter()
+            .any(|e| matches!(e, TunnelEvent::Exited { .. }))));
+        assert!(!key.exists(), "temp key left on disk after a failed login");
+        assert!(!secret.exists(), "askpass secret left on disk");
     }
 
     #[test]

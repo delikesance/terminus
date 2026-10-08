@@ -1,13 +1,14 @@
 //! Appearance tab: font, size stepper, cursor, theme and a live preview.
 //!
-//! Font, size and cursor are written to the config file the app hot-reloads
-//! (`[fonts] family/size`, `[cursor] shape`). The chrome has no light theme
-//! yet, so Light and System are shown disabled with a note.
+//! Font, size, cursor and theme are written to the config file the app
+//! hot-reloads (`[fonts] family/size`, `[cursor] shape`, `[appearance]
+//! theme`). System follows the OS light/dark preference live.
 
 use super::{column, Key, Measure, SettingsAction};
 use crate::components::input::{field_layout, FieldKind, FieldLayout};
 use crate::components::selection::{SegmentedLayout, SegmentedSize};
 use crate::geom::Rect;
+use crate::theme::ThemeMode;
 
 pub const LEFT_WIDTH: f32 = 420.0;
 pub const COLUMN_GAP: f32 = 28.0;
@@ -26,7 +27,8 @@ pub const MENU_ROW_H: f32 = 36.0;
 pub const MENU_PAD: f32 = 4.0;
 pub const MENU_MAX_ROWS: usize = 8;
 pub const PREVIEW_HEIGHT: f32 = 150.0;
-pub const THEME_NOTE: &str = "Light and System themes are not available yet.";
+/// Shown under the theme control while System is selected.
+pub const THEME_NOTE: &str = "Follows your system's light or dark setting.";
 pub const DEFAULT_FONT_LABEL: &str = "Default";
 
 /// Families offered first even if the system lists them among many others.
@@ -118,9 +120,31 @@ impl ThemeChoice {
         }
     }
 
-    /// Only Dark has a chrome theme behind it.
-    pub fn available(self) -> bool {
-        self == ThemeChoice::Dark
+    /// Value of `[appearance] theme`.
+    pub fn config_value(self) -> &'static str {
+        match self {
+            ThemeChoice::Dark => "dark",
+            ThemeChoice::Light => "light",
+            ThemeChoice::System => "system",
+        }
+    }
+
+    pub fn from_config(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "light" => ThemeChoice::Light,
+            "system" => ThemeChoice::System,
+            _ => ThemeChoice::Dark,
+        }
+    }
+
+    /// The palette to show: System defers to the OS (`system`, dark when
+    /// the platform does not say).
+    pub fn resolve(self, system: Option<ThemeMode>) -> ThemeMode {
+        match self {
+            ThemeChoice::Dark => ThemeMode::Dark,
+            ThemeChoice::Light => ThemeMode::Light,
+            ThemeChoice::System => system.unwrap_or_default(),
+        }
     }
 }
 
@@ -397,13 +421,13 @@ impl AppearanceState {
                 self.cursor = c;
                 Some(SettingsAction::SetCursor(c))
             }
-            // Disabled choices are inert.
             Some(AppearanceTarget::Theme(i)) => {
                 let t = ThemeChoice::ALL[i];
-                if t.available() {
-                    self.theme = t;
+                if t == self.theme {
+                    return None;
                 }
-                None
+                self.theme = t;
+                Some(SettingsAction::SetTheme(t))
             }
             None => None,
         }
@@ -589,15 +613,47 @@ mod tests {
     }
 
     #[test]
-    fn light_and_system_are_inert() {
+    fn theme_segments_persist_a_change_only() {
         let mut s = state();
         let l = s.layout(CONTENT, &mut test_measure);
-        for i in [1, 2] {
+        for (i, t) in [(1, ThemeChoice::Light), (2, ThemeChoice::System)] {
             let (x, y) = center(l.theme.segments[i]);
+            assert_eq!(
+                s.press(CONTENT, &mut test_measure, x, y),
+                Some(SettingsAction::SetTheme(t))
+            );
+            assert_eq!(s.theme, t);
             assert_eq!(s.press(CONTENT, &mut test_measure, x, y), None);
-            assert_eq!(s.theme, ThemeChoice::Dark);
         }
-        assert!(!ThemeChoice::Light.available());
+    }
+
+    #[test]
+    fn system_follows_the_os_and_defaults_to_dark() {
+        assert_eq!(
+            ThemeChoice::Dark.resolve(Some(ThemeMode::Light)),
+            ThemeMode::Dark
+        );
+        assert_eq!(
+            ThemeChoice::Light.resolve(Some(ThemeMode::Dark)),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            ThemeChoice::System.resolve(Some(ThemeMode::Light)),
+            ThemeMode::Light
+        );
+        assert_eq!(
+            ThemeChoice::System.resolve(Some(ThemeMode::Dark)),
+            ThemeMode::Dark
+        );
+        assert_eq!(ThemeChoice::System.resolve(None), ThemeMode::Dark);
+    }
+
+    #[test]
+    fn theme_config_values_round_trip() {
+        for t in ThemeChoice::ALL {
+            assert_eq!(ThemeChoice::from_config(t.config_value()), t);
+        }
+        assert_eq!(ThemeChoice::from_config("Solarized"), ThemeChoice::Dark);
     }
 
     #[test]

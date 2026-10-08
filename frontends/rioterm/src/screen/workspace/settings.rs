@@ -184,6 +184,7 @@ impl Screen<'_> {
             SettingsAction::SetFont(_)
             | SettingsAction::SetFontSize(_)
             | SettingsAction::SetCursor(_)
+            | SettingsAction::SetTheme(_)
             | SettingsAction::SetCheckUpdates(_)
             | SettingsAction::SetAutoInstall(_) => {
                 // The config watcher hot-reloads the file: live preview.
