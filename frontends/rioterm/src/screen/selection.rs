@@ -1,13 +1,11 @@
 //! `Screen` selection surface, split out of `screen/mod.rs`.
 
 use super::Screen;
-use crate::context;
 use crate::crosswords::grid::Scroll;
 use crate::crosswords::pos::{Pos, Side};
 use crate::crosswords::Mode;
 use crate::selection::{Selection, SelectionType};
 use rio_backend::clipboard::{Clipboard, ClipboardType};
-use rio_window::event::ElementState;
 
 impl Screen<'_> {
     #[inline]

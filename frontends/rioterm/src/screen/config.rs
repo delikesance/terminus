@@ -2,11 +2,10 @@
 
 use super::{window_should_be_opaque, Screen};
 use crate::bindings::FontSizeAction;
-use crate::context;
 use crate::context::renderable::RenderableContent;
 use crate::layout::ContextDimension;
 use crate::renderer::utils::padding_top_from_config;
-use crate::renderer::{island, Renderer};
+use crate::renderer::Renderer;
 use rio_backend::config::layout::Margin;
 use rio_backend::error::{RioError, RioErrorLevel, RioErrorType};
 

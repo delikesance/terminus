@@ -209,6 +209,7 @@ pub fn paint_card(
 
 /// `under` is the opaque colour behind the row (used to flatten the
 /// translucent drop fill and to fill outlined glyphs).
+#[allow(clippy::too_many_arguments)]
 pub fn paint_file_row(
     s: &mut Sugarloaf,
     theme: &ChromeTheme,

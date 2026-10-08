@@ -101,7 +101,7 @@ pub enum VaultUnlockHit {
     Consume,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct VaultUnlockPrompt {
     open: bool,
     passphrase: TextDraft,
@@ -117,24 +117,6 @@ pub struct VaultUnlockPrompt {
     confirm_focused: bool,
     /// Name of the host this unlock is for, when known.
     host_label: Option<String>,
-}
-
-impl Default for VaultUnlockPrompt {
-    fn default() -> Self {
-        Self {
-            creating: false,
-            confirm: TextDraft::default(),
-            confirm_focused: false,
-            host_label: None,
-            open: false,
-            passphrase: TextDraft::default(),
-            visible: false,
-            remember: false,
-            error: None,
-            pending: None,
-            unlocking: false,
-        }
-    }
 }
 
 impl VaultUnlockPrompt {

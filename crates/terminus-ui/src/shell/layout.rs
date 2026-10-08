@@ -137,6 +137,7 @@ mod tests {
     use crate::shell::workspace::SettingsPage;
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn the_smallest_window_still_leaves_room_for_a_grid() {
         // The OS may shrink the window to its minimum; the terminal must
         // keep a real grid beside the chrome there, not one or two cells.

@@ -70,9 +70,8 @@ impl Screen<'_> {
                 }
                 let opened = match result.clone() {
                     Ok(auth) => self.sftp_host_row(&id).and_then(|host| {
-                        if other_pane && self.sftp.is_some() {
+                        if let (true, Some(session)) = (other_pane, self.sftp.as_mut()) {
                             let (password, identity) = auth;
-                            let session = self.sftp.as_mut().expect("checked");
                             session.open_other_host(&host, password, identity)
                         } else {
                             self.show_sftp_browser(&host, Some(auth), focus)

@@ -172,10 +172,10 @@ pub enum PaneKind {
     Sftp,
 }
 
-/// Sidebar and activity-bar metrics live in `terminus_ui` — see
-/// `terminus_ui::activity_bar::WIDTH` / `terminus_ui::sidebar::WIDTH`.
-/// Duplicating them here would let the reserved margin and the painted
-/// panel drift apart.
+// Sidebar and activity-bar metrics live in `terminus_ui` — see
+// `terminus_ui::activity_bar::WIDTH` / `terminus_ui::sidebar::WIDTH`.
+// Duplicating them here would let the reserved margin and the painted
+// panel drift apart.
 
 pub struct ContextGridItem<T: EventListener> {
     pub val: Context<T>,
@@ -193,6 +193,7 @@ impl<T: rio_backend::event::EventListener> ContextGridItem<T> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn set_pane_kind(&mut self, kind: PaneKind) {
         self.pane_kind = kind;
     }
@@ -1106,6 +1107,7 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
         self.inner.get(&self.current)
     }
 
+    #[allow(dead_code)]
     pub fn current_item_mut(&mut self) -> Option<&mut ContextGridItem<T>> {
         self.inner.get_mut(&self.current)
     }

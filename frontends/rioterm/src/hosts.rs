@@ -35,10 +35,11 @@ use terminus_core::models::{Group, Host};
 use terminus_core::wsl::{self, WslDistro};
 use terminus_core::Store;
 use terminus_ui::os_icons::HostStatus;
-use terminus_ui::sidebar::{Badge, HostItem, Row, SessionItem};
+use terminus_ui::sidebar::{Badge, HostItem, Row};
 use uuid::Uuid;
 
 /// Legacy WSL section label (no longer emitted by [`sidebar_rows`]).
+#[allow(dead_code)]
 pub const WSL_SECTION: &str = "Windows (WSL)";
 /// Section label above this computer and WSL distros.
 pub const LOCAL_SECTION: &str = terminus_ui::sidebar::LOCAL_SECTION;
@@ -746,6 +747,7 @@ enum Command {
     CreateSnippet(terminus_ui::snippets::SnippetItem),
     DeleteSnippet(String),
     /// Persist without SSH probe (tests / legacy).
+    #[allow(dead_code)]
     Create(HostDraft),
     /// Probe SSH, then persist (+ seal password) on success.
     ProbeAndCreate(HostDraft),
@@ -820,6 +822,7 @@ enum Command {
     /// Load the managed private key PEM for a host (key auth).
     ResolveHostIdentity {
         id: String,
+        #[allow(clippy::type_complexity)]
         reply: Sender<Result<Option<(String, Option<String>)>, String>>,
     },
     /// SFTP credentials for a host, answered as [`HostEvent::SftpAuth`]
@@ -892,7 +895,7 @@ enum HostEvent {
 
 /// UI-side handle to the host database.
 pub struct HostRepository {
-    pub(crate) commands: Sender<Command>,
+    commands: Sender<Command>,
     events: Receiver<HostEvent>,
     hosts: Vec<HostRow>,
     groups: Vec<(String, String, i64)>,
@@ -1003,6 +1006,7 @@ impl HostRepository {
         self.vault_message.take()
     }
 
+    #[allow(dead_code)]
     pub fn vault_message(&self) -> Option<&str> {
         self.vault_message.as_deref()
     }
@@ -1062,10 +1066,12 @@ impl HostRepository {
         &self.platform
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.hosts.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.hosts.is_empty()
     }
@@ -1199,11 +1205,13 @@ impl HostRepository {
     }
 
     /// Generate and persist a new Ed25519 managed SSH key.
+    #[allow(dead_code)]
     pub fn create_ssh_key(&mut self, name: &str) {
         self.create_ssh_key_with_pem(name, None);
     }
 
     /// Generate, or import `pem` when provided.
+    #[allow(dead_code)]
     pub fn create_ssh_key_with_pem(&mut self, name: &str, pem: Option<String>) {
         self.import_ssh_key(name, pem, None);
     }
@@ -1254,6 +1262,7 @@ impl HostRepository {
     }
 
     /// Persist without probing (tests). Prefer [`Self::probe_and_create`] in UI.
+    #[allow(dead_code)]
     pub fn create(&mut self, draft: &HostDraft) -> Result<(), String> {
         match draft.normalize() {
             Ok(normalized) => {
@@ -1380,7 +1389,6 @@ impl HostRepository {
                 Ok(HostEvent::SnippetsLoaded(snippets)) => {
                     self.snippet_items = snippets;
                 }
-                Ok(HostEvent::SnippetsLoaded(_)) => {}
                 Ok(HostEvent::VaultStatus {
                     unlocked,
                     configured,
@@ -1647,7 +1655,7 @@ fn worker(
             Command::DeleteSnippet(id_str) => {
                 let r = runtime.block_on(async {
                     if let Ok(id_uuid) = uuid::Uuid::parse_str(&id_str) {
-                        let mut all = store.list_snippets().await.unwrap_or_default();
+                        let all = store.list_snippets().await.unwrap_or_default();
                         if let Some(mut snip) = all.into_iter().find(|s| s.id == id_uuid)
                         {
                             let now = chrono::Utc::now();
@@ -2945,8 +2953,80 @@ fn reorder_group(
 }
 
 /// Where the database file for `dir` lives (used by tests and diagnostics).
+#[allow(dead_code)]
 pub fn database_path(dir: &Path) -> PathBuf {
     dir.join("terminus.db")
+}
+
+fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
+    let mut mapped = Vec::new();
+    if let Ok(snippets) = runtime.block_on(store.list_snippets()) {
+        for s in snippets {
+            mapped.push(terminus_ui::snippets::SnippetItem {
+                id: s.id.to_string(),
+                name: s.title,
+                cmd: s.content,
+                desc: s.shortcut.unwrap_or_default(),
+            });
+        }
+    }
+    HostEvent::SnippetsLoaded(mapped)
+}
+
+fn load_collapsed_groups(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+) -> HashSet<String> {
+    match runtime.block_on(store.get_setting(COLLAPSED_GROUPS_SETTING)) {
+        Ok(Some(raw)) => decode_collapsed_groups(&raw),
+        _ => HashSet::new(),
+    }
+}
+
+/// Set `group_id` in the persisted collapsed-groups set to an explicit state.
+///
+/// Idempotent: inserting an already-present id or removing an absent id is a
+/// no-op on the set, so the final stored state matches `collapsed` exactly.
+/// Returns `Err(message)` if the write fails; the caller should revert local
+/// visual state and surface the message.
+fn set_collapsed_group_setting(
+    runtime: &tokio::runtime::Runtime,
+    store: &Store,
+    group_id: &str,
+    collapsed: bool,
+) -> Result<(), String> {
+    let mut groups = load_collapsed_groups(runtime, store);
+    if collapsed {
+        groups.insert(group_id.to_string());
+    } else {
+        groups.remove(group_id);
+    }
+    let encoded = encode_collapsed_groups(&groups);
+    runtime
+        .block_on(store.set_setting(COLLAPSED_GROUPS_SETTING, &encoded))
+        .map_err(|err| {
+            tracing::warn!(
+                group_id = %group_id,
+                collapsed = %collapsed,
+                error = %err,
+                "could not persist group collapse state"
+            );
+            err.to_string()
+        })
+}
+
+fn encode_collapsed_groups(groups: &HashSet<String>) -> String {
+    let mut ids: Vec<&str> = groups.iter().map(String::as_str).collect();
+    ids.sort_unstable();
+    ids.join("\n")
+}
+
+fn decode_collapsed_groups(raw: &str) -> HashSet<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -4191,75 +4271,4 @@ mod tests {
         drop(repo);
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-fn list_snippets(runtime: &tokio::runtime::Runtime, store: &Store) -> HostEvent {
-    let mut mapped = Vec::new();
-    if let Ok(snippets) = runtime.block_on(store.list_snippets()) {
-        for s in snippets {
-            mapped.push(terminus_ui::snippets::SnippetItem {
-                id: s.id.to_string(),
-                name: s.title,
-                cmd: s.content,
-                desc: s.shortcut.unwrap_or_default(),
-            });
-        }
-    }
-    HostEvent::SnippetsLoaded(mapped)
-}
-
-fn load_collapsed_groups(
-    runtime: &tokio::runtime::Runtime,
-    store: &Store,
-) -> HashSet<String> {
-    match runtime.block_on(store.get_setting(COLLAPSED_GROUPS_SETTING)) {
-        Ok(Some(raw)) => decode_collapsed_groups(&raw),
-        _ => HashSet::new(),
-    }
-}
-
-/// Set `group_id` in the persisted collapsed-groups set to an explicit state.
-///
-/// Idempotent: inserting an already-present id or removing an absent id is a
-/// no-op on the set, so the final stored state matches `collapsed` exactly.
-/// Returns `Err(message)` if the write fails; the caller should revert local
-/// visual state and surface the message.
-fn set_collapsed_group_setting(
-    runtime: &tokio::runtime::Runtime,
-    store: &Store,
-    group_id: &str,
-    collapsed: bool,
-) -> Result<(), String> {
-    let mut groups = load_collapsed_groups(runtime, store);
-    if collapsed {
-        groups.insert(group_id.to_string());
-    } else {
-        groups.remove(group_id);
-    }
-    let encoded = encode_collapsed_groups(&groups);
-    runtime
-        .block_on(store.set_setting(COLLAPSED_GROUPS_SETTING, &encoded))
-        .map_err(|err| {
-            tracing::warn!(
-                group_id = %group_id,
-                collapsed = %collapsed,
-                error = %err,
-                "could not persist group collapse state"
-            );
-            err.to_string()
-        })
-}
-
-fn encode_collapsed_groups(groups: &HashSet<String>) -> String {
-    let mut ids: Vec<&str> = groups.iter().map(String::as_str).collect();
-    ids.sort_unstable();
-    ids.join("\n")
-}
-
-fn decode_collapsed_groups(raw: &str) -> HashSet<String> {
-    raw.lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
 }

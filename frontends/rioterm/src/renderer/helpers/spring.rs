@@ -1,6 +1,7 @@
 #[derive(Clone)]
 pub struct Spring {
     pub position: f32,
+    #[allow(dead_code)]
     pub velocity: f32,
 }
 
@@ -14,6 +15,7 @@ impl Spring {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.position = 0.0;
         self.velocity = 0.0;
@@ -21,6 +23,7 @@ impl Spring {
 
     /// Advance by variable `dt`. Returns `true` while still moving.
     #[inline]
+    #[allow(dead_code)]
     pub fn update(&mut self, dt: f32, animation_length: f32) -> bool {
         if animation_length <= dt {
             self.reset();

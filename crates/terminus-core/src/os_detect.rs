@@ -193,7 +193,6 @@ pub fn canonical_os_id(raw: &str) -> String {
         | "opensuse_leap"
         | "opensuse_tumbleweed"
         | "opensuseleap"
-        | "opensuse_tumbleweed"
         | "suse"
         | "sles"
         | "sled"

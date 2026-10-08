@@ -407,6 +407,7 @@ pub fn paint_gallery(
             "For 2\u{2013}4 mutually exclusive choices that switch something immediately.",
         );
         by = headers(sugarloaf, theme, x, by, col_w, &cols);
+        #[allow(clippy::type_complexity)]
         let rows: [(&str, Vec<(Vec<&str>, usize)>, SegmentedSize); 3] = [
             (
                 "Three options",

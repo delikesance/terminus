@@ -947,7 +947,7 @@ impl SshSession {
             return Ok(());
         }
         self.channel
-            .data(&data[..])
+            .data(data)
             .await
             .map_err(|e| Error::SshError(format!("channel write failed: {e}")))
     }
@@ -1031,8 +1031,6 @@ async fn authenticate(
     let method = auth.method.unwrap_or_else(|| {
         if auth.identity_pem.is_some() || auth.identity_path.is_some() {
             HostAuthMethod::Key
-        } else if auth.password.is_some() {
-            HostAuthMethod::Password
         } else {
             HostAuthMethod::Password
         }
@@ -1062,10 +1060,10 @@ async fn authenticate(
             if ok {
                 return Ok(());
             }
-            return Err(Error::SshError(format!(
+            Err(Error::SshError(format!(
                 "authentication refused for user {}",
                 auth.username
-            )));
+            )))
         }
         HostAuthMethod::Key => authenticate_key(handle, auth).await,
         HostAuthMethod::Password => authenticate_password(handle, auth).await,

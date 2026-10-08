@@ -2,9 +2,6 @@
 
 use super::Screen;
 use crate::bindings::FontSizeAction;
-use crate::context;
-use crate::hosts;
-use crate::renderer::island;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
 use rio_backend::crosswords::pos::Direction;
 

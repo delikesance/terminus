@@ -212,7 +212,7 @@ impl AppearanceState {
         if list.is_empty() {
             list = installed;
         }
-        if !self.font.is_empty() && !list.iter().any(|f| *f == self.font) {
+        if !self.font.is_empty() && !list.contains(&self.font) {
             list.push(self.font.clone());
         }
         list.sort_by_key(|n| n.to_ascii_lowercase());

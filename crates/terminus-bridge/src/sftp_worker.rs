@@ -12,7 +12,7 @@ mod walk_remote;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -23,7 +23,6 @@ use tracing::{debug, warn};
 
 use crate::folder_diff::{
     plan_differential, ConflictAction, ConflictPolicy, DiffAction, FileNode,
-    FOLDER_SYNC_CACHE_NAME,
 };
 
 pub use crate::folder_diff::ConflictAction as SftpConflictAction;
@@ -279,11 +278,8 @@ impl SftpWorker {
     /// Drain pending events without blocking.
     pub fn drain(&self) -> Vec<SftpEvent> {
         let mut out = Vec::new();
-        loop {
-            match self.events.try_recv() {
-                Ok(event) => out.push(event),
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        while let Ok(event) = self.events.try_recv() {
+            out.push(event);
         }
         out
     }
@@ -422,7 +418,6 @@ fn worker(
         let mut right_conn: Option<SftpConnection> = None;
         let mut edit_sessions: Vec<EditSession> = Vec::new();
         let mut next_edit_id: u64 = 1;
-        let conflicts = Arc::new(conflicts);
 
         loop {
             match commands.recv_timeout(Duration::from_millis(500)) {
@@ -471,6 +466,7 @@ struct EditSession {
     stable_polls: u8,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_command(
     cmd: SftpCommand,
     left_conn: &mut Option<SftpConnection>,
@@ -479,7 +475,7 @@ async fn handle_command(
     next_edit_id: &mut u64,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conflicts: &Receiver<ConflictReply>,
 ) -> bool {
     match cmd {
         SftpCommand::ResolveConflict { .. } | SftpCommand::CancelTransfer => {
@@ -723,6 +719,7 @@ fn cleanup_edit_temp(local_path: &Path) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_edit_remote(
     left: &Option<SftpConnection>,
     right: &Option<SftpConnection>,
@@ -791,7 +788,7 @@ async fn start_edit_remote(
 }
 
 async fn poll_edit_sessions(
-    sessions: &mut Vec<EditSession>,
+    sessions: &mut [EditSession],
     left: &Option<SftpConnection>,
     right: &Option<SftpConnection>,
     events: &Sender<SftpEvent>,
@@ -869,6 +866,7 @@ async fn poll_edit_sessions(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn transfer(
     left: &Option<SftpConnection>,
     right: &Option<SftpConnection>,
@@ -879,7 +877,7 @@ async fn transfer(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conflicts: &Receiver<ConflictReply>,
 ) -> Result<(), String> {
     let from_remote = side_is_remote(left, right, from_side);
     let to_remote = side_is_remote(left, right, to_side);
@@ -992,6 +990,7 @@ fn same_local_file(a: &str, b: &str) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn transfer_file(
     left: &Option<SftpConnection>,
     right: &Option<SftpConnection>,
@@ -1654,6 +1653,7 @@ fn extract_local_archive(
 /// Remote side archives in one shot via native `tar`/`zip` or PowerShell
 /// `Compress-Archive`. If the remote has none of these tools, the transfer
 /// fails with a clear error (no per-file SFTP fallback).
+#[allow(clippy::too_many_arguments)]
 async fn transfer_folder(
     left: &Option<SftpConnection>,
     right: &Option<SftpConnection>,
@@ -1664,7 +1664,7 @@ async fn transfer_folder(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conflicts: &Receiver<ConflictReply>,
 ) -> Result<(), String> {
     let from_remote = side_is_remote(left, right, from_side);
     let to_remote = side_is_remote(left, right, to_side);
@@ -2168,7 +2168,7 @@ async fn transfer_download(
 // --- Differential folder download (size-first + BLAKE3) ---------------------
 
 fn drain_stale_conflicts(conflicts: &Receiver<ConflictReply>) {
-    while let Ok(_) = conflicts.try_recv() {}
+    while conflicts.try_recv().is_ok() {}
 }
 
 fn wait_conflict_reply(
@@ -2217,6 +2217,7 @@ fn join_rel_remote(root: &str, relative: &str) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ask_conflict(
     conflicts: &Receiver<ConflictReply>,
     events: &Sender<SftpEvent>,
@@ -2432,7 +2433,7 @@ async fn transfer_folder_differential_to_local(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conflicts: &Receiver<ConflictReply>,
 ) -> Result<(), String> {
     drain_stale_conflicts(conflicts);
     emit(
@@ -2593,6 +2594,7 @@ async fn transfer_folder_differential_to_local(
 
 /// Remote→remote differential: stage through local temp for file copies; zip
 /// subtrees via the existing archive pipeline.
+#[allow(clippy::too_many_arguments)]
 async fn transfer_folder_differential_remote_to_remote(
     from: &SftpConnection,
     to: &SftpConnection,
@@ -2601,7 +2603,7 @@ async fn transfer_folder_differential_remote_to_remote(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Arc<Receiver<ConflictReply>>,
+    conflicts: &Receiver<ConflictReply>,
 ) -> Result<(), String> {
     drain_stale_conflicts(conflicts);
     emit(

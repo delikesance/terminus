@@ -468,6 +468,7 @@ fn normalize_name(name: &str) -> String {
 /// terminal. There is nothing to hide on the WSL side, so the flag is
 /// Windows-only.
 fn wsl_probe(exe: &Path) -> std::process::Command {
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut command = std::process::Command::new(exe);
 
     #[cfg(target_os = "windows")]
