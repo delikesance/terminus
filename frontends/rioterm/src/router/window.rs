@@ -18,6 +18,13 @@ pub const DEFAULT_MINIMUM_WINDOW_WIDTH: i32 =
 ))]
 pub const APPLICATION_ID: &str = "Terminus";
 
+/// Whether the window runs without OS decorations and draws its own
+/// title bar (island / shell header + caption buttons). Tab navigation
+/// only; plain navigation keeps the native decorations.
+pub fn uses_custom_titlebar(config: &Config) -> bool {
+    config.navigation.is_enabled()
+}
+
 pub fn create_window_builder(
     title: &str,
     config: &Config,
@@ -84,6 +91,14 @@ pub fn create_window_builder(
         use rio_window::platform::wayland::WindowAttributesExtWayland;
         let app_name = app_id.unwrap_or(APPLICATION_ID);
         window_builder = window_builder.with_name(app_name.to_lowercase(), app_name);
+    }
+
+    // Wayland (GNOME/Mutter) has no server-side decorations, so
+    // rio-window would draw its own grey fallback bar above the app's
+    // header. Tab mode paints its own caption buttons instead.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    if uses_custom_titlebar(config) {
+        window_builder = window_builder.with_decorations(false);
     }
 
     #[cfg(target_os = "windows")]
@@ -298,4 +313,24 @@ pub fn configure_window(winit_window: &Window, config: &Config) {
     }
 
     winit_window.set_blur(config.window.blur.into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rio_backend::config::navigation::NavigationMode;
+
+    #[test]
+    fn tab_navigation_uses_the_custom_titlebar() {
+        let mut config = Config::default();
+        config.navigation.mode = NavigationMode::Tab;
+        assert!(uses_custom_titlebar(&config));
+    }
+
+    #[test]
+    fn plain_navigation_keeps_native_decorations() {
+        let mut config = Config::default();
+        config.navigation.mode = NavigationMode::Plain;
+        assert!(!uses_custom_titlebar(&config));
+    }
 }
