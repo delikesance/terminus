@@ -61,3 +61,17 @@ __terminus_preexec() {
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd __terminus_precmd
 add-zsh-hook preexec __terminus_preexec
+
+# `ssh` passes our TERM to the remote, and no host ships a terminfo entry for
+# `xterm-rio`: the line editor then cannot move the cursor and `tput`/`htop`
+# fail. Advertise the entry every host has, for this one command only. A
+# `ssh` function or alias of your own is left alone (and `function ssh`
+# rather than `ssh()`, which zsh would alias-expand into a parse error).
+if (( ! ${+functions[ssh]} && ! ${+aliases[ssh]} )); then
+  function ssh {
+    case ${TERM-} in
+      (xterm-rio|rio) TERM=xterm-256color command ssh "$@" ;;
+      (*) command ssh "$@" ;;
+    esac
+  }
+fi
