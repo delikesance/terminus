@@ -164,7 +164,10 @@ mod tests {
             std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
         let dir = install(&base).unwrap();
         let Ok(mut child) = Command::new("sh")
-            .args(["-c", "exec bash --noprofile --norc -i 2>&1"])
+            // `--noediting`: without readline the output is the same whether
+            // bash was built with it (Ubuntu, CI) or not (nixpkgs `bash`), so
+            // typed input is never echoed back into the stream.
+            .args(["-c", "exec bash --noprofile --norc --noediting -i 2>&1"])
             .envs(local_env(&dir, None))
             .env("PS1", "$ ")
             .env("HISTCONTROL", "ignorespace")
@@ -191,7 +194,10 @@ mod tests {
         let a = "\x1b]133;A\x07";
         let b = "\x1b]133;B\x07";
         let c = "\x1b]133;C\x07";
-        assert!(text.contains(&format!("{a}bash")), "{text:?}");
+        // A comes before the first prompt; what bash prints ahead of it
+        // (job-control warnings without a tty) varies by environment.
+        let first_a = text.find(a).expect("no prompt start mark");
+        assert!(first_a < text.find(&format!("$ {b}")).unwrap(), "{text:?}");
         assert!(
             text.contains(&format!("$ {b}\x1b]633;E;echo hi\x07{c}hi")),
             "{text:?}"
