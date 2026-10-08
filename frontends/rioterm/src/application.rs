@@ -834,6 +834,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     }
                 }
             }
+            RioEventType::Rio(RioEvent::ChildExited(route_id, status)) => {
+                if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    // An SSH tab whose link dropped stays open with a
+                    // "Connection lost" card instead of closing.
+                    if route.window.screen.note_child_exit(route_id, status) {
+                        route.request_overlay_redraw();
+                    }
+                }
+            }
             RioEventType::Rio(RioEvent::CloseTerminal(route_id)) => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
                     route
@@ -842,6 +851,12 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         .sugarloaf
                         .font_library()
                         .remove_glyph_registry(route_id);
+                    if route.window.screen.is_connection_lost(route_id) {
+                        // Kept for its Reconnect card (see `ChildExited`);
+                        // closing it is the card's or the tab's ×.
+                        route.request_overlay_redraw();
+                        return;
+                    }
                     // A host session that dies while connecting reports why.
                     route.window.screen.note_session_exit(route_id);
 
@@ -1906,6 +1921,16 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     }
                                     ChromeAction::DismissConnection => {
                                         route.window.screen.force_end_connecting();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    lost @ (ChromeAction::ReconnectSession(_)
+                                    | ChromeAction::CloseLostSession(_)) => {
+                                        route.window.screen.run_lost_session_action(
+                                            lost,
+                                            &mut self.router.clipboard,
+                                        );
+                                        let _ = route.window.screen.pump_chrome();
                                         route.request_overlay_redraw();
                                         return;
                                     }
