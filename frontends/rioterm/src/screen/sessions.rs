@@ -11,6 +11,25 @@ use rio_backend::config::Shell;
 use rio_backend::event::EventProxy;
 use terminus_ui::sidebar::Badge;
 
+/// What the pane a split opens should run.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SplitTarget {
+    /// The app's own shell, as a split always did.
+    Local,
+    /// The session of this sidebar row (an ssh host or a WSL distro): the
+    /// same launch as opening that row again.
+    Row(String),
+}
+
+/// Which session a split of a pane opened from `host_id` should start.
+pub(super) fn split_target(host_id: Option<&str>) -> SplitTarget {
+    match host_id {
+        None => SplitTarget::Local,
+        Some(id) if id == hosts::LOCAL_ID => SplitTarget::Local,
+        Some(id) => SplitTarget::Row(id.to_string()),
+    }
+}
+
 impl Screen<'_> {
     pub fn split_right_with_config(&mut self, config: rio_backend::config::Config) {
         // Allocate panel id; position lands on `ContextDimension`
@@ -30,17 +49,53 @@ impl Screen<'_> {
     }
 
     pub fn split_right(&mut self) {
-        let rich_text_id = next_rich_text_id();
-        self.context_manager
-            .split(rich_text_id, false, &mut self.sugarloaf);
-
-        self.mark_dirty();
+        self.split_focused(false);
     }
 
     pub fn split_down(&mut self) {
+        self.split_focused(true);
+    }
+
+    /// Split the focused pane. A pane that runs a sidebar row's session
+    /// (ssh host, WSL distro) opens the new half on the same row, through
+    /// the same launch as opening it again; anything else is a local shell.
+    fn split_focused(&mut self, split_down: bool) {
         let rich_text_id = next_rich_text_id();
-        self.context_manager
-            .split(rich_text_id, true, &mut self.sugarloaf);
+        let target = split_target(self.context_manager.current().host_id.as_deref());
+        let SplitTarget::Row(id) = target else {
+            self.context_manager
+                .split(rich_text_id, split_down, &mut self.sugarloaf);
+            self.mark_dirty();
+            return;
+        };
+
+        // Never fall back to a local shell for a host pane: a locked vault
+        // or a missing credential is reported instead.
+        let (shell, env) = match self.shell_for_row(&id) {
+            Ok(launch) => launch,
+            Err(err) => {
+                self.chrome.panel.error = Some(err);
+                self.mark_dirty();
+                return;
+            }
+        };
+
+        let label = self.host_row_label(&id);
+        self.begin_session_connecting(&id);
+        match self.context_manager.split_with_shell(
+            rich_text_id,
+            split_down,
+            &mut self.sugarloaf,
+            shell,
+            env,
+            Some(id.clone()),
+        ) {
+            Ok(()) => self.host_store.detect_os(&id),
+            Err(err) => {
+                self.end_session_connecting();
+                self.chrome.panel.error = Some(format!("{label}: {err}"));
+            }
+        }
 
         self.mark_dirty();
     }
