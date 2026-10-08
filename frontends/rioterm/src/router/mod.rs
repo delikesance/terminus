@@ -407,7 +407,9 @@ impl Route<'_> {
 
     #[inline]
     pub fn quit(&mut self) {
-        // process::exit skips Drop: stop the tunnels' ssh processes first.
+        // process::exit skips Drop: save the tabs and stop the tunnels'
+        // ssh processes first.
+        self.window.screen.save_tabs_now();
         if let Some(tunnels) = self.window.screen.tunnels.as_mut() {
             tunnels.shutdown();
         }
