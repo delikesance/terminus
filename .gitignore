@@ -42,3 +42,6 @@ Terminus/
 
 # Local secrets (release signing passphrase); never commit
 .env
+
+# graphify outputs and cache
+graphify-out/
