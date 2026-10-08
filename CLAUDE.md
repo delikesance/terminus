@@ -44,6 +44,9 @@ Opus on call.
 - Always run `cargo fmt --all` and
   `cargo clippy --workspace --all-targets --locked -- -D warnings` before pushing: CI
   (`.github/workflows/ci.yml`) fails on either.
+- The `typesafe` plugin (TypeSafe's Jev decision API docs) is enabled from the
+  `typesafe-ai/skills` marketplace once the folder is trusted. Code that calls the
+  API reads the key from `TYPESAFE_API_KEY`; never commit it.
 - Override per session with `claude --model <m>`, `--effort <level>` or
   `--advisor <m>`; `/advisor off` turns the advisor off.
 

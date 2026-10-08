@@ -2,5 +2,16 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "model": "sonnet",
   "effortLevel": "high",
-  "advisorModel": "opus"
+  "advisorModel": "opus",
+  "extraKnownMarketplaces": {
+    "typesafe-ai": {
+      "source": {
+        "source": "github",
+        "repo": "typesafe-ai/skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "typesafe@typesafe-ai": true
+  }
 }
