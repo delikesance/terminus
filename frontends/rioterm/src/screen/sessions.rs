@@ -401,25 +401,28 @@ impl Screen<'_> {
     /// A session's process exited with `status` (`RioEvent::ChildExited`,
     /// which arrives just before its `CloseTerminal`).
     ///
-    /// When an SSH host tab's `ssh` gave up on its link (exit 255: the
-    /// laptop slept, the network changed, the server restarted), the tab is
-    /// kept behind a "Connection lost" card that offers Reconnect, instead
-    /// of vanishing. A remote `exit` passes the shell's own status and
-    /// closes the tab as before. Returns whether the tab was kept.
+    /// When an SSH host session's `ssh` gave up on its link (exit 255) or
+    /// the local `ssh` was killed by a signal, it is kept behind a card that
+    /// says so and offers Reconnect, instead of vanishing. In a split tab
+    /// only that pane is kept: the card covers the dead pane and its
+    /// siblings stay live. Every other end closes as before: exit 0, no
+    /// reported status, and any other exit code, which is the remote
+    /// shell's last command status after the user left (`exit`, Ctrl-D).
+    ///
+    /// A user-initiated close never reaches the card: dropping a `Context`
+    /// SIGHUPs its ssh, but the context is already out of the grid by then
+    /// and route ids are never reused, so the late `ChildExited` finds no
+    /// route (`tab_of_route`). Returns whether the session was kept.
     pub fn note_child_exit(&mut self, route_id: usize, status: Option<i32>) -> bool {
-        if !terminus_ui::lost_session::ssh_exit_is_connection_loss(exit_code(status)) {
+        let end = session_end(status);
+        if !end.keeps_tab() {
             return false;
         }
         let Some(tab) = self.tab_of_route(route_id) else {
             return false;
         };
-        let grid = &mut self.context_manager.contexts_mut()[tab];
-        // A split panel dying only removes that panel; host sessions are
-        // whole tabs.
-        if grid.len() != 1 {
-            return false;
-        }
-        let Some(host_id) = grid
+        let whole_tab = self.context_manager.contexts_mut()[tab].len() == 1;
+        let Some(host_id) = self.context_manager.contexts_mut()[tab]
             .get_by_route_id(route_id)
             .and_then(|item| item.context().host_id.clone())
         else {
@@ -451,10 +454,13 @@ impl Screen<'_> {
             return false;
         };
         let output = lines_up_to_cursor(item.context(), 8);
-        item.context_mut().connection_lost = Some(terminus_ui::LostSession::new(
-            route_id, &host_id, &name, &output,
-        ));
-        tracing::info!("ssh session for {host_id} lost its connection");
+        let Some(card) = terminus_ui::LostSession::ended(
+            route_id, &host_id, &name, &output, end, whole_tab,
+        ) else {
+            return false;
+        };
+        item.context_mut().connection_lost = Some(card);
+        tracing::info!("ssh session for {host_id} ended: {}", end.status_text());
         self.mark_dirty();
         true
     }
@@ -475,19 +481,41 @@ impl Screen<'_> {
     }
 
     /// Mirror the front tab's lost-connection card into the chrome, keeping
-    /// its hover/focus while the same tab stays in front. Runs every frame,
+    /// its hover/focus while the same session stays shown. Runs every frame,
     /// so a tab switch (from any of the places that switch) shows the right
-    /// card or none.
+    /// card or none, and a split tab's card follows its pane through
+    /// resizes and divider drags.
     pub(super) fn sync_lost_session(&mut self) {
-        let front = self.context_manager.current().connection_lost.as_ref();
-        let same = match (front, self.chrome.lost.as_ref()) {
+        let scale = self.sugarloaf.scale_factor();
+        let grid = self.context_manager.current_grid_mut();
+        let margin = grid.get_scaled_margin();
+        let split = grid.len() > 1;
+        let pane = grid.lost_pane();
+        let front = pane.and_then(|pane| {
+            let lost = grid
+                .get_by_route_id(pane.route_id)?
+                .context_mut()
+                .connection_lost
+                .as_mut()?;
+            // The close button says what it closes now, split or not.
+            lost.set_whole_tab(!split);
+            Some(lost.clone())
+        });
+        let same = match (front.as_ref(), self.chrome.lost.as_ref()) {
             (Some(want), Some(shown)) => want.route_id == shown.route_id,
             (None, None) => true,
             _ => false,
         };
         if !same {
-            self.chrome.lost = front.cloned();
+            self.chrome.lost = front;
+        } else if let Some(shown) = self.chrome.lost.as_mut() {
+            shown.set_whole_tab(!split);
         }
+        // A whole-tab card covers the content; a split pane's covers the pane.
+        self.chrome.lost_pane = pane.filter(|_| split).map(|pane| {
+            pane_chrome_rect(pane.layout_rect, margin.left, margin.top, scale)
+        });
+        self.chrome.lost_pane_unfocused = pane.is_some_and(|pane| !pane.focused);
     }
 
     /// Run the lost-connection card's Reconnect / Close tab.
@@ -504,7 +532,11 @@ impl Screen<'_> {
             }
             terminus_ui::ChromeAction::CloseLostSession(route_id) => {
                 if let Some(tab) = self.tab_of_route(route_id) {
-                    self.close_tab_at(tab, clipboard);
+                    if self.context_manager.contexts_mut()[tab].len() > 1 {
+                        self.close_lost_pane(route_id);
+                    } else {
+                        self.close_tab_at(tab, clipboard);
+                    }
                 }
             }
             _ => return,
@@ -530,6 +562,9 @@ impl Screen<'_> {
         else {
             return Ok(());
         };
+        // One pane of a split tab: its siblings stay, the fresh session
+        // opens as a tab of its own and only the dead pane goes.
+        let split = self.context_manager.contexts_mut()[tab].len() > 1;
         let title = self.context_manager.custom_title(tab).map(str::to_string);
         if tab != self.context_manager.current_index() {
             self.focus_session(tab, clipboard);
@@ -539,6 +574,10 @@ impl Screen<'_> {
         // No new tab: the vault prompt took over and opens one on unlock;
         // the dead tab stays until then.
         if self.context_manager.len() == before {
+            return Ok(());
+        }
+        if split {
+            self.close_lost_pane(route_id);
             return Ok(());
         }
         // A name the user gave the tab survives the reconnect.
@@ -558,6 +597,16 @@ impl Screen<'_> {
         }
         self.mark_dirty();
         Ok(())
+    }
+
+    /// Remove just the dead pane `route_id` from its split tab; the other
+    /// panes (and the tab) stay.
+    fn close_lost_pane(&mut self, route_id: usize) {
+        self.clear_selection();
+        let _ = self
+            .context_manager
+            .should_close_context_manager(route_id, &mut self.sugarloaf);
+        self.mark_dirty();
     }
 
     /// Public dismiss from the connection modal's Close button.
@@ -986,6 +1035,43 @@ pub(super) fn exit_code(status: Option<i32>) -> Option<i32> {
     }
 }
 
+/// The signal that killed the process in a `ChildExited` status, if one did.
+pub(super) fn exit_signal(status: Option<i32>) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.and_then(|raw| std::process::ExitStatus::from_raw(raw).signal())
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows reports an exit code only.
+        let _ = status;
+        None
+    }
+}
+
+/// How the session's process ended, from its `ChildExited` status.
+pub(super) fn session_end(status: Option<i32>) -> terminus_ui::lost_session::SessionEnd {
+    terminus_ui::lost_session::classify_exit(exit_code(status), exit_signal(status))
+}
+
+/// A pane's `layout_rect` (physical pixels, relative to the grid root) as
+/// the chrome's logical rect: offset by the grid margin, then unscaled the
+/// way `apply_taffy_layout` positions the pane.
+pub(super) fn pane_chrome_rect(
+    layout_rect: [f32; 4],
+    margin_left: f32,
+    margin_top: f32,
+    scale: f32,
+) -> terminus_ui::geom::Rect {
+    terminus_ui::geom::Rect {
+        x: (layout_rect[0] + margin_left) / scale,
+        y: (layout_rect[1] + margin_top) / scale,
+        width: layout_rect[2] / scale,
+        height: layout_rect[3] / scale,
+    }
+}
+
 /// True when the session's grid already shows something other than blank
 /// cells — the cue that the connecting overlay can retire.
 pub(super) fn terminal_has_printable_output(ctx: &context::Context<EventProxy>) -> bool {
@@ -1007,7 +1093,8 @@ pub(super) fn terminal_has_printable_output(ctx: &context::Context<EventProxy>) 
 
 #[cfg(test)]
 mod tests {
-    use super::exit_code;
+    use super::{exit_code, exit_signal, pane_chrome_rect, session_end};
+    use terminus_ui::lost_session::SessionEnd;
 
     #[test]
     #[cfg(unix)]
@@ -1018,5 +1105,36 @@ mod tests {
         // Killed by SIGHUP: no exit code, so never "connection lost".
         assert_eq!(exit_code(Some(libc::SIGHUP)), None);
         assert_eq!(exit_code(None), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exit_signal_decodes_the_raw_wait_status() {
+        assert_eq!(exit_signal(Some(libc::SIGKILL)), Some(9));
+        assert_eq!(exit_signal(Some(libc::SIGHUP)), Some(1));
+        // A normal exit has a code, not a signal.
+        assert_eq!(exit_signal(Some(1 << 8)), None);
+        assert_eq!(exit_signal(Some(0)), None);
+        assert_eq!(exit_signal(None), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_end_classifies_raw_wait_statuses() {
+        assert_eq!(session_end(Some(0)), SessionEnd::Clean);
+        assert_eq!(session_end(Some(255 << 8)), SessionEnd::ConnectionLost);
+        assert_eq!(session_end(Some(1 << 8)), SessionEnd::Exited(1));
+        assert_eq!(session_end(Some(libc::SIGKILL)), SessionEnd::Signaled(9));
+        assert_eq!(session_end(None), SessionEnd::Unknown);
+    }
+
+    #[test]
+    fn pane_rect_is_the_layout_rect_offset_by_the_margin_and_unscaled() {
+        // Physical layout rect [x, y, w, h] with a 20x10 physical margin at 2x.
+        let rect = pane_chrome_rect([100.0, 40.0, 600.0, 300.0], 20.0, 10.0, 2.0);
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (60.0, 25.0, 300.0, 150.0)
+        );
     }
 }

@@ -208,6 +208,13 @@ pub struct Chrome {
     /// dropped. The frontend keeps one per dead tab and mirrors the front
     /// tab's here.
     pub lost: Option<LostSession>,
+    /// Where `lost`'s card sits when its session is one pane of a split
+    /// tab: that pane's rect. `None` for a whole-tab session, whose card
+    /// covers the Terminal content.
+    pub lost_pane: Option<crate::geom::Rect>,
+    /// The dead pane is not the focused one: its card is clickable but the
+    /// keys belong to the live pane in focus.
+    pub lost_pane_unfocused: bool,
     /// Right-click context menu, when open.
     pub context_menu: Option<ContextMenu>,
     /// Unscaled height reserved above the chrome by the tab strip, so
@@ -238,6 +245,8 @@ impl Default for Chrome {
             vault_configured: true,
             connection: None,
             lost: None,
+            lost_pane: None,
+            lost_pane_unfocused: false,
             context_menu: None,
             top_inset: 0.0,
             panel_visible: true,
@@ -462,7 +471,7 @@ impl Chrome {
             && self.connection.is_none()
             && self.shell.view().shows_terminal()
             && self.modal_paint_stack().is_empty())
-        .then(|| self.connection_area())
+        .then(|| self.lost_pane.unwrap_or_else(|| self.connection_area()))
     }
 
     fn lost_action(route_id: usize, outcome: LostOutcome) -> ChromeAction {
@@ -473,10 +482,18 @@ impl Chrome {
         }
     }
 
+    /// Whether keys go to the lost-connection card (shown, and its pane is
+    /// the focused one).
+    pub fn lost_takes_keys(&self) -> bool {
+        self.lost_area().is_some() && !self.lost_pane_unfocused
+    }
+
     /// Keyboard on the lost-connection card: `Some` while it is shown (the
     /// session behind it is gone, so every key stops here), `None` otherwise.
     pub fn handle_lost_key(&mut self, key: DialogKey) -> Option<ChromeAction> {
-        self.lost_area()?;
+        if !self.lost_takes_keys() {
+            return None;
+        }
         let lost = self.lost.as_mut()?;
         let outcome = lost.key(key);
         Some(Self::lost_action(lost.route_id, outcome))
@@ -2297,6 +2314,59 @@ mod tests {
         assert_eq!(
             chrome.handle_lost_key(DialogKey::Enter),
             Some(ChromeAction::CloseLostSession(4))
+        );
+    }
+
+    #[test]
+    fn split_pane_card_covers_only_its_pane() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.set_window_size(1200.0, 800.0);
+        let content = chrome.shell.content_rect();
+        let pane = crate::geom::Rect {
+            x: content.x,
+            y: content.y,
+            width: content.width / 2.0,
+            height: content.height,
+        };
+        chrome.lost = Some(LostSession::new(5, "id-0", "host-0", &[]));
+        let whole_tab_area = chrome.lost_area().unwrap();
+        assert_eq!(whole_tab_area, content);
+
+        chrome.lost_pane = Some(pane);
+        assert_eq!(chrome.lost_area(), Some(pane));
+
+        // A click in the live half is not swallowed by the card.
+        let (lx, ly) = (content.x + content.width * 0.75, content.y + 40.0);
+        let with_card = chrome.handle_press(1200.0, 800.0, lx, ly);
+        chrome.lost = None;
+        let without_card = chrome.handle_press(1200.0, 800.0, lx, ly);
+        assert_eq!(with_card, without_card);
+        chrome.lost = Some(LostSession::new(5, "id-0", "host-0", &[]));
+
+        // The card's buttons are laid out inside the pane.
+        let layout = chrome.lost.as_ref().unwrap().layout_in(pane).dialog;
+        assert!(layout.dialog.right() <= pane.right());
+        let (rx, ry) = centre(&layout.confirm);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, rx, ry),
+            ChromeAction::ReconnectSession(5)
+        );
+    }
+
+    #[test]
+    fn keys_skip_the_card_of_an_unfocused_dead_pane() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.set_window_size(1200.0, 800.0);
+        chrome.lost = Some(LostSession::new(5, "id-0", "host-0", &[]));
+        chrome.lost_pane = Some(chrome.shell.content_rect());
+        chrome.lost_pane_unfocused = true;
+        assert_eq!(chrome.handle_lost_key(DialogKey::Enter), None);
+        assert!(!chrome.lost_takes_keys());
+        chrome.lost_pane_unfocused = false;
+        assert!(chrome.lost_takes_keys());
+        assert_eq!(
+            chrome.handle_lost_key(DialogKey::Enter),
+            Some(ChromeAction::ReconnectSession(5))
         );
     }
 
