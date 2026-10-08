@@ -1573,6 +1573,14 @@ mod grid_size_tests {
         }
     }
 
+    /// Expected size once the window minimum (chrome + grid) applies.
+    fn at_least((w, h): (u32, u32), scale: f32) -> (u32, u32) {
+        (
+            w.max((DEFAULT_MINIMUM_WINDOW_WIDTH as f32 * scale).ceil() as u32),
+            h.max((DEFAULT_MINIMUM_WINDOW_HEIGHT as f32 * scale).ceil() as u32),
+        )
+    }
+
     fn panel_zero() -> Panel {
         Panel {
             padding: Margin::all(0.0),
@@ -1593,7 +1601,7 @@ mod grid_size_tests {
                 &dim,
                 win(1000, 600)
             ),
-            (800, 600)
+            at_least((800, 600), 2.0)
         );
     }
 
@@ -1609,7 +1617,7 @@ mod grid_size_tests {
                 &dim,
                 win(1000, 600)
             ),
-            (1000, 480)
+            at_least((1000, 480), 2.0)
         );
     }
 
@@ -1639,7 +1647,7 @@ mod grid_size_tests {
                 &dim,
                 win(1000, 600)
             ),
-            (1000, 600)
+            at_least((1000, 600), 2.0)
         );
     }
 
@@ -1671,7 +1679,7 @@ mod grid_size_tests {
         let dim = make_dim(10.0, 20.0, 1.0, Margin::new(4.0, 3.0, 5.0, 2.0));
         assert_eq!(
             compute_window_size_from_grid(Some(10), Some(5), &panel, &dim, win(500, 300)),
-            (300, 200)
+            at_least((300, 200), 1.0)
         );
     }
 
@@ -1686,7 +1694,10 @@ mod grid_size_tests {
                 &dim,
                 win(50, 50)
             ),
-            (300, 200)
+            (
+                DEFAULT_MINIMUM_WINDOW_WIDTH as u32,
+                DEFAULT_MINIMUM_WINDOW_HEIGHT as u32
+            )
         );
     }
 }

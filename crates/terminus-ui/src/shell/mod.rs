@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use crate::components::navigation::TabSize;
 use crate::geom::Rect;
 pub use header::{HeaderGeom, HeaderTab};
-pub use layout::{grid_insets, Insets, ShellLayout};
+pub use layout::{grid_insets, min_window_size, Insets, ShellLayout};
 pub use pills::{PillsGeom, PillsHit, SessionPill};
 pub use workspace::{SettingsPage, Workspace, WorkspaceView};
 

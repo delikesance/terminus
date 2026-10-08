@@ -513,6 +513,19 @@ impl Screen<'_> {
         &mut self.context_manager
     }
 
+    /// After sleep/hibernate the GPU can hand back blank textures while the
+    /// CPU-side caches still believe their glyphs are uploaded (boxes
+    /// instead of text). Forget every cached glyph so the next frame
+    /// re-rasterizes and re-uploads.
+    pub fn on_system_resume(&mut self) {
+        self.sugarloaf.invalidate_gpu_caches();
+        self.grid_rasterizer.clear_font_caches();
+        for grid in self.grids.values_mut() {
+            grid.clear_atlas();
+        }
+        self.mark_dirty();
+    }
+
     #[inline]
     pub fn mark_dirty(&mut self) {
         self.context_manager
@@ -637,7 +650,40 @@ mod tests {
             shell.args.last().map(String::as_str),
             Some("alice@box.example")
         );
-        assert!(env.is_none());
+        assert!(env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM")));
+    }
+
+    /// `ssh` forwards the local `$TERM` in its pty request. Ours is
+    /// `xterm-rio`, which remote hosts don't have a terminfo entry for, so
+    /// readline falls back to dumb mode and garbles history recall.
+    #[test]
+    fn ssh_shell_advertises_a_term_remotes_know() {
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        for (auth, password, identity) in [
+            ("gssapi", None, None),
+            ("key", None, Some(pem)),
+            ("password", Some("secret"), None),
+        ] {
+            let host = host_row(auth);
+            let (shell, env) =
+                ssh_shell(&host, password, identity, None).expect("ssh shell");
+            let env = env.expect("ssh env");
+            let term = env
+                .iter()
+                .find(|(k, _)| k == "TERM")
+                .map(|(_, v)| v.as_str());
+            assert_eq!(term, Some("xterm-256color"), "{auth}");
+            if let Some(path) =
+                shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1])
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            if let Some((_, secret)) =
+                env.iter().find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            {
+                let _ = std::fs::remove_file(secret);
+            }
+        }
     }
 
     #[test]
@@ -651,7 +697,7 @@ mod tests {
             .args
             .iter()
             .any(|a| a == "PreferredAuthentications=publickey"));
-        assert!(env.is_none());
+        assert!(env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM")));
         // Cleanup the temp identity we just wrote.
         if let Some(path) = shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1]) {
             let _ = std::fs::remove_file(path);
