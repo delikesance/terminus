@@ -30,7 +30,6 @@ impl Screen<'_> {
     /// Start the tunnel `key` (id or name) of the machine on screen; a
     /// running one is left alone. For the command palette; `Err` is a
     /// message for a toast.
-    #[allow(dead_code)] // not wired to the palette yet
     pub(crate) fn start_tunnel(&mut self, key: &str) -> Result<(), String> {
         let mut ctl = self
             .tunnels
@@ -51,7 +50,6 @@ impl Screen<'_> {
 
     /// Stop the tunnel `key` (id or name) of any machine; stopping a
     /// stopped one is fine. For the command palette.
-    #[allow(dead_code)] // not wired to the palette yet
     pub(crate) fn stop_tunnel(&mut self, key: &str) -> Result<(), String> {
         self.tunnels
             .as_mut()
