@@ -138,8 +138,10 @@ pub async fn open_remote_sqlite_pool(uri: &str) -> Result<SqlitePool> {
 /// Sync engine state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SyncStatus {
     /// No remote endpoint configured.
+    #[default]
     Unconfigured,
     /// Configured and idle.
     Idle,
@@ -204,12 +206,6 @@ impl SyncStatus {
                 | (Error, Offline)
                 | (Offline, Error)
         )
-    }
-}
-
-impl Default for SyncStatus {
-    fn default() -> Self {
-        SyncStatus::Unconfigured
     }
 }
 
@@ -497,9 +493,7 @@ impl SyncEngine {
             return Err(Error::SyncError("no remote backend attached".to_string()));
         }
 
-        if let Err(err) = self.transition_to(SyncStatus::Syncing).await {
-            return Err(err);
-        }
+        self.transition_to(SyncStatus::Syncing).await?;
 
         let started = Instant::now();
         let mut report = SyncReport::started_now();

@@ -3,8 +3,10 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::renderer::scrollbar;
-use rio_backend::sugarloaf::text::DrawOpts;
+// Most of this upstream Rio module is superseded by the Terminus chrome;
+// what is left unused is kept to ease upstream merges.
+#![allow(dead_code)]
+
 use rio_backend::sugarloaf::Sugarloaf;
 use std::time::Instant;
 

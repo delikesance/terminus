@@ -116,7 +116,11 @@ pub fn paint_header(
     }
     let rects = view_tabs::layout(h.tabs.x, h.tabs.y, &sizes);
     for (rect, &(label, active, badge)) in rects.iter().zip(tabs) {
-        let state = if active { TabState::Active } else { TabState::Default };
+        let state = if active {
+            TabState::Active
+        } else {
+            TabState::Default
+        };
         paint_view_tab(sugarloaf, theme, rect, label, badge, state);
     }
     h.bounds.height

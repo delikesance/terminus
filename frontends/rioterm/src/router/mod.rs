@@ -50,6 +50,7 @@ pub enum Modal {
     /// A non-terminal route (the welcome / config screens).
     Route,
     /// TOFU host key approval dialog (blocks SSH handshake).
+    #[allow(dead_code)]
     TofuHostKeyApproval,
     /// Vault unlock passphrase entry.
     VaultUnlock,
@@ -59,6 +60,7 @@ pub enum Modal {
     /// Settings modal (SQL Sync text fields).
     Settings,
     /// SFTP dual-pane browser overlay.
+    #[allow(dead_code)]
     SftpPane,
 }
 
@@ -788,39 +790,36 @@ impl Route<'_> {
                                 }
                             }
                             Key::Named(NamedKey::Enter) => {
-                                match self
+                                if let Ok(name) = self
                                     .window
                                     .screen
                                     .chrome
                                     .settings
                                     .take_key_draft_label()
                                 {
-                                    Ok(name) => {
-                                        let pem = self
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .key_pem
-                                            .value
-                                            .clone();
-                                        let pem = if pem.trim().is_empty() {
-                                            None
-                                        } else {
-                                            Some(pem)
-                                        };
-                                        let passphrase = self
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .key_draft_passphrase();
-                                        self.window
-                                            .screen
-                                            .host_store
-                                            .import_ssh_key(&name, pem, passphrase);
-                                    }
-                                    Err(_) => {}
+                                    let pem = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .key_pem
+                                        .value
+                                        .clone();
+                                    let pem = if pem.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(pem)
+                                    };
+                                    let passphrase = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .key_draft_passphrase();
+                                    self.window
+                                        .screen
+                                        .host_store
+                                        .import_ssh_key(&name, pem, passphrase);
                                 }
                             }
                             Key::Named(NamedKey::Space) => {
@@ -1033,10 +1032,7 @@ impl Route<'_> {
             // Terminus overlays (TOFU host-key approval, vault unlock,
             // SFTP dual-pane): scaffolding placeholders — swallow input
             // until their handlers land (see milestone.md).
-            Modal::TofuHostKeyApproval
-            | Modal::VaultUnlock
-            | Modal::SftpPane
-            | Modal::AddSnippet => true,
+            Modal::TofuHostKeyApproval | Modal::SftpPane => true,
         }
     }
 }

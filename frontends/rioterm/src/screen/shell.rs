@@ -14,6 +14,7 @@ impl Screen<'_> {
     /// `None` shell means "the app's own shell", which is the local row and the
     /// only case the terminal already knows how to start. The optional env is
     /// for SSH password hosts (`SSH_ASKPASS`).
+    #[allow(clippy::type_complexity)]
     pub(super) fn shell_for_row(
         &self,
         id: &str,
@@ -113,6 +114,7 @@ pub(super) const REMOTE_TERM: &str = "xterm-256color";
 ///
 /// When the host's auth method is `gssapi`, OpenSSH is forced onto
 /// `gssapi-with-mic` (Kerberos ticket cache) with pubkey/password disabled.
+#[allow(clippy::type_complexity)]
 pub(super) fn ssh_shell(
     host: &hosts::HostRow,
     password: Option<&str>,

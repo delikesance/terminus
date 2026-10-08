@@ -8,13 +8,13 @@ use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::theme::ChromeTheme;
 
 pub mod button;
-pub mod input;
-pub mod selection;
-pub mod navigation;
-pub mod list;
 pub mod feedback;
-pub mod overlay;
 pub mod identity;
+pub mod input;
+pub mod list;
+pub mod navigation;
+pub mod overlay;
+pub mod selection;
 
 /// Where a component paints when it is embedded in another surface (a
 /// dialog, a menu) instead of the gallery wells: the sugarloaf `order`
@@ -179,7 +179,10 @@ mod tests {
     #[test]
     fn selector_picks_named_sections_and_drops_unknown() {
         assert_eq!(selected_sections("button"), vec!["button"]);
-        assert_eq!(selected_sections("Button, list,nope"), vec!["button", "list"]);
+        assert_eq!(
+            selected_sections("Button, list,nope"),
+            vec!["button", "list"]
+        );
         assert!(selected_sections("nope").is_empty());
     }
 

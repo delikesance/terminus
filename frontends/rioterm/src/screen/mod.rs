@@ -37,7 +37,6 @@ use crate::crosswords::grid::Scroll;
 use crate::crosswords::pos::Pos;
 use crate::crosswords::Mode;
 use crate::hints::HintState;
-use crate::hosts;
 use crate::layout::ContextDimension;
 use crate::mouse::{calculate_mouse_position, Mouse};
 use crate::renderer::utils::padding_top_from_config;
@@ -55,7 +54,6 @@ use rio_backend::sugarloaf::{
     SugarloafWindowSize,
 };
 use rio_window::event::Modifiers;
-use rio_window::keyboard::ModifiersState;
 use std::error::Error;
 use touch::TouchPurpose;
 
@@ -350,12 +348,11 @@ impl Screen<'_> {
         // The chrome reserves its own strip on the left; the grid margin
         // carries it so the terminal reflows beside the rail instead of
         // being painted over.
-        let chrome = {
-            let mut chrome = terminus_ui::chrome::Chrome::default();
-            // The rail starts under the tab strip rather than behind
-            // it, so it lines up with the terminal's own top margin.
-            chrome.top_inset = padding_y_top;
-            chrome
+        // The rail starts under the tab strip rather than behind
+        // it, so it lines up with the terminal's own top margin.
+        let chrome = terminus_ui::chrome::Chrome {
+            top_inset: padding_y_top,
+            ..Default::default()
         };
         let chrome_left = chrome.reserved_width();
 
@@ -604,10 +601,12 @@ impl Screen<'_> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::hint_actions::post_process_hyperlink_uri;
     use super::shell::{ssh_shell, GSSAPI_SSH_OPTIONS};
     use super::*;
+    use crate::hosts;
     use chrono::Utc;
 
     fn host_row(auth_method: &str) -> hosts::HostRow {

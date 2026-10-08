@@ -25,21 +25,12 @@ pub enum AssistantOverlayAction {
     OpenDocs,
 }
 
+#[derive(Default)]
 pub struct AssistantOverlay {
     error: Option<RioError>,
     hovered_button: Option<AssistantOverlayAction>,
     /// Geometry of the last painted toast: hit-testing walks exactly this.
     last_layout: Option<ToastLayout>,
-}
-
-impl Default for AssistantOverlay {
-    fn default() -> Self {
-        Self {
-            error: None,
-            hovered_button: None,
-            last_layout: None,
-        }
-    }
 }
 
 impl AssistantOverlay {

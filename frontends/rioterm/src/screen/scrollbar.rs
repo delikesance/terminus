@@ -1,7 +1,6 @@
 //! `Screen` scrollbar surface, split out of `screen/mod.rs`.
 
 use super::Screen;
-use crate::context;
 use crate::crosswords::grid::Scroll;
 use crate::crosswords::Mode;
 use rio_window::event::ElementState;

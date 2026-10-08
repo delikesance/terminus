@@ -12,6 +12,7 @@ use crate::messenger::Messenger;
 
 /// Specifies the kind of session a context should open.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum SessionSpec {
     /// Launch a local shell via teletypewriter PTY.
     Local {
@@ -886,6 +887,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn custom_color(&self, index: usize) -> Option<[f32; 4]> {
         self.contexts.get(index).and_then(|grid| grid.custom_color)
     }
@@ -1314,6 +1316,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn add_context(&mut self, redirect: bool, rich_text_id: usize) {
         let _ =
             self.add_context_with_shell(redirect, rich_text_id, None, None, None, None);

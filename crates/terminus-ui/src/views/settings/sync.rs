@@ -39,7 +39,7 @@ pub enum SyncTarget {
     Save,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SyncState {
     /// Index into [`SQL_ENGINES`].
     pub engine: usize,
@@ -49,19 +49,6 @@ pub struct SyncState {
     /// Inline validation under the field.
     pub field_error: Option<String>,
     pub hover: Option<SyncTarget>,
-}
-
-impl Default for SyncState {
-    fn default() -> Self {
-        Self {
-            engine: 0,
-            uri: TextDraft::default(),
-            focused: false,
-            status: SyncStatus::default(),
-            field_error: None,
-            hover: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -412,9 +399,11 @@ mod tests {
 
     #[test]
     fn snapshot_does_not_clobber_a_field_being_edited() {
-        let mut s = SyncState::default();
-        s.focused = true;
-        s.uri = TextDraft::new("sqlite:./typing");
+        let mut s = SyncState {
+            focused: true,
+            uri: TextDraft::new("sqlite:./typing"),
+            ..Default::default()
+        };
         s.apply_snapshot("sqlite:./stored.db", SyncStatus::default());
         assert_eq!(s.uri.value, "sqlite:./typing");
         s.focused = false;

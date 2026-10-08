@@ -186,6 +186,7 @@ impl Application<'_> {
         );
     }
 
+    #[allow(dead_code)]
     fn dispatch_sidebar_intent(&mut self, intent: terminus_ui::sidebar::SidebarIntent) {
         use terminus_ui::sidebar::SidebarIntent;
         match intent {
@@ -1442,8 +1443,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let logical_w =
                                     route.window.screen.sugarloaf.window_size().width
                                         / scale;
-                                let x = route.window.screen.mouse.x as f32 / scale as f32;
-                                let y = route.window.screen.mouse.y as f32 / scale as f32;
+                                let x = route.window.screen.mouse.x as f32 / scale;
+                                let y = route.window.screen.mouse.y as f32 / scale;
                                 let on_action = crate::renderer::island::title_bar_hit(
                                     logical_w, x, y,
                                 )
@@ -1672,7 +1673,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::SubmitAddSnippet(values) => {
+                                    ChromeAction::SubmitAddSnippet(_values) => {
                                         route.window.screen.submit_snippet_form();
                                         route.request_overlay_redraw();
                                         return;
@@ -2300,12 +2301,6 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::RunSnippet(cmd) => {
-                                        let line = format!("{cmd}\r");
-                                        route.window.screen.paste(&line, false);
-                                        route.request_overlay_redraw();
-                                        return;
-                                    }
                                     // Toggling the panel changes the margin
                                     // `chrome_press` already re-applied; the
                                     // grid re-layout marks itself dirty, but a
@@ -2399,15 +2394,13 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         .screen
                                         .sftp_bounds()
                                         .is_some_and(|b| b.contains(mx, my))
-                                {
-                                    if route
+                                    && route
                                         .window
                                         .screen
                                         .handle_sftp_context_press(mx, my)
-                                    {
-                                        route.request_overlay_redraw();
-                                        return;
-                                    }
+                                {
+                                    route.request_overlay_redraw();
+                                    return;
                                 }
 
                                 match route.window.screen.chrome_context_press(mx, my) {
@@ -2415,7 +2408,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::SubmitAddSnippet(values) => {
+                                    ChromeAction::SubmitAddSnippet(_values) => {
                                         route.window.screen.submit_snippet_form();
                                         route.request_overlay_redraw();
                                         return;
@@ -2437,7 +2430,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    other => {
+                                    _other => {
                                         route.request_overlay_redraw();
                                         return;
                                     }
