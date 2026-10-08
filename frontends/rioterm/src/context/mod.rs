@@ -1955,6 +1955,49 @@ pub mod test {
         assert_eq!(cm.index_after_close(1), 0);
     }
 
+    /// A user-initiated close drops the `Context` (SIGHUP to its ssh), and
+    /// the resulting late `ChildExited` is looked up by route id. That
+    /// lookup must find nothing: the route left the grid with the context,
+    /// and ids are never handed out twice, so it cannot hit a newer tab.
+    #[test]
+    fn a_closed_tabs_route_is_gone_and_never_reused() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(8, VoidListener {}, window_id).unwrap();
+        cm.add_context(false, 0);
+        cm.add_context(false, 0);
+        let closed = cm.contexts[1].current().route_id;
+        assert!(cm.get_by_route_id(closed).is_some());
+
+        cm.contexts.remove(1);
+        assert!(cm.get_by_route_id(closed).is_none());
+
+        cm.add_context(false, 0);
+        cm.add_context(false, 0);
+        let routes: Vec<usize> =
+            cm.contexts.iter().map(|g| g.current().route_id).collect();
+        assert!(!routes.contains(&closed));
+        let mut unique = routes.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), routes.len());
+    }
+
+    #[test]
+    fn a_grid_reports_the_pane_behind_its_card() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(2, VoidListener {}, window_id).unwrap();
+        assert_eq!(cm.contexts[0].lost_pane(), None);
+
+        let route_id = cm.contexts[0].current().route_id;
+        cm.contexts[0].current_mut().connection_lost =
+            Some(terminus_ui::LostSession::new(route_id, "h", "host", &[]));
+        let lost = cm.contexts[0].lost_pane().expect("card on the only pane");
+        assert_eq!(lost.route_id, route_id);
+        assert!(lost.focused);
+    }
+
     #[test]
     fn is_pinned_survives_when_current_pane_is_not_the_root() {
         // Grid-level `pinned` is the source of truth so a split on the home

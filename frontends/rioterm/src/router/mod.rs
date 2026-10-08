@@ -229,7 +229,7 @@ impl Route<'_> {
     ) -> bool {
         use rio_window::event::ElementState;
         use terminus_ui::components::overlay::DialogKey;
-        if self.window.screen.chrome.lost_area().is_none() {
+        if !self.window.screen.chrome.lost_takes_keys() {
             return false;
         }
         let key = match &key_event.logical_key {

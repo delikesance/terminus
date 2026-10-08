@@ -9,7 +9,6 @@ pub mod managed_key;
 pub mod models;
 pub mod os_detect;
 pub mod saved_tabs;
-pub mod session;
 pub mod sftp;
 pub mod shell_integration;
 pub mod ssh;
@@ -31,7 +30,6 @@ pub use models::*;
 pub use os_detect::{
     parse_os_id, parse_remote_os_probe, REMOTE_OS_PROBE_SCRIPT, UNKNOWN_OS,
 };
-pub use session::{OutputSink, SessionManager, SessionSpec};
 pub use ssh::{
     connect_sftp, connect_sftp_for_host, default_known_hosts_path, detect_remote_os,
     fingerprint_of, probe_options_from_host, probe_ssh_auth, HostKeyOutcome,
