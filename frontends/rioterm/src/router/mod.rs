@@ -1457,6 +1457,7 @@ impl<'a> RouteWindow<'a> {
             raw_window_handle: winit_window.window_handle().unwrap().into(),
             raw_display_handle: winit_window.display_handle().unwrap().into(),
             window_id: winit_window.id(),
+            quake,
         };
 
         let screen = Screen::new(properties, config, event_proxy, font_library, open_url)
