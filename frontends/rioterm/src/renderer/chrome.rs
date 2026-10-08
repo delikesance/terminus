@@ -1517,10 +1517,6 @@ fn rect_union(a: Rect, b: Rect) -> Rect {
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
-fn rgba_u8(r: u8, g: u8, b: u8, a: f32) -> [f32; 4] {
-    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a]
-}
-
 /// Accent insertion bar showing where a dragged host/group will land.
 pub(crate) fn paint_host_drag_insertion_bar(
     sugarloaf: &mut Sugarloaf,
