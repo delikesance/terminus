@@ -110,6 +110,7 @@ impl Screen<'_> {
         }
 
         self.tick_session_connecting();
+        self.sync_lost_session();
         let host_drag_action = self.tick_host_drag_animation();
         if let Some(action) = host_drag_action {
             self.apply_host_drag_action(action);

@@ -690,6 +690,38 @@ mod tests {
         }
     }
 
+    /// Without keepalives a laptop that slept leaves ssh waiting forever on
+    /// a dead socket: the tab freezes instead of saying the link is gone.
+    #[test]
+    fn ssh_shell_sends_keepalives_so_a_dead_link_ends_the_session() {
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        for (auth, password, identity) in [
+            ("gssapi", None, None),
+            ("key", None, Some(pem)),
+            ("password", Some("secret"), None),
+        ] {
+            let host = host_row(auth);
+            let (shell, env) =
+                ssh_shell(&host, password, identity, None).expect("ssh shell");
+            let has =
+                |opt: &str| shell.args.windows(2).any(|w| w[0] == "-o" && w[1] == opt);
+            assert!(has("ServerAliveInterval=15"), "{auth}");
+            assert!(has("ServerAliveCountMax=3"), "{auth}");
+            if let Some(path) =
+                shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1])
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            if let Some((_, secret)) = env
+                .iter()
+                .flatten()
+                .find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            {
+                let _ = std::fs::remove_file(secret);
+            }
+        }
+    }
+
     #[test]
     fn key_ssh_shell_passes_identity_file() {
         let host = host_row("key");

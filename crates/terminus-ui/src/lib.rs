@@ -28,6 +28,7 @@ pub mod dialog_form;
 pub mod geom;
 pub mod icons;
 pub mod loading;
+pub mod lost_session;
 pub mod os_icons;
 pub mod overlap;
 pub mod palette_view;
@@ -62,6 +63,7 @@ pub use icons::{Cmd, Icon, IconPlacement};
 pub use loading::{
     breath_ring, orbit_dots, phase as loading_phase, shimmer_bar, OrbitDot,
 };
+pub use lost_session::{LostOutcome, LostSession};
 pub use os_icons::{HostStatus, OsGlyph};
 pub use overlap::{
     assert_no_overlaps, assert_panel_no_overlaps, find_overlaps, rects_overlap,
