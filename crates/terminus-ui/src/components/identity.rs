@@ -158,6 +158,10 @@ pub fn tile_style_with(
             let fill = brand_fill(brand);
             ([fill[0], fill[1], fill[2], brand_tint_alpha(brand)], fill)
         }
+        // The lilac mark is too pale on paper: use the muted text ink.
+        TileGlyph::Local if theme.is_light() => {
+            (theme.raised, crate::theme::unit_color(theme.text_muted))
+        }
         TileGlyph::Local => (theme.raised, LOCAL_FG),
         TileGlyph::Unknown => {
             let f = theme.text_faint;
@@ -462,6 +466,18 @@ mod tests {
         for g in [TileGlyph::Local, TileGlyph::Unknown, TileGlyph::Os(Debian)] {
             assert_eq!(tile_style(g, true), (t.accent, t.on_accent));
         }
+    }
+
+    #[test]
+    fn local_mark_is_dark_ink_on_the_light_theme() {
+        let t = ChromeTheme::violet_paper();
+        let (bg, fg) = tile_style_with(&t, TileGlyph::Local, false);
+        assert_eq!(bg, t.raised);
+        assert!(relative_luminance(fg) < 0.2, "{fg:?}");
+        assert_eq!(
+            tile_style_with(&ChromeTheme::violet_ink(), TileGlyph::Local, false).1,
+            LOCAL_FG
+        );
     }
 
     #[test]

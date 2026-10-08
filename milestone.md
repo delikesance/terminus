@@ -54,7 +54,7 @@ pour le shell CLI.
 | `SessionSpec::Ssh` + `SshTransport` | 📎 dette | Crate prêt ; branchement = 1.4-debt |
 | Palette `Hosts` | ✅ | `Open Host…` + fuzzy inline dans Commands |
 | Port-forward UI | ❌ | `ForwardRuntime` core seul |
-| Thèmes `TerminusUiColors` | ❌ | Un seul `ChromeTheme::apple_hig()` |
+| Thèmes `TerminusUiColors` | ⚠️ | `violet_ink` (sombre) + `violet_paper` (clair), Réglages > Apparence : Sombre / Clair / Système (suit l’OS en direct) |
 | `TerminusCoreService` bridge | ❌ | Stub commenté |
 
 ---
@@ -84,7 +84,7 @@ Légende : ✅ fait · ⚠️ partiel · ❌ pas commencé
 | **3.3** | Host Inspector | ❌ | — |
 | **3.4** | Session recall | ❌ | API core `SessionManager` non branchée UI |
 | **3.5** | WSL reconnect | ⚠️ | Discover / launch OK ; pas d’auto-reconnect |
-| **4.1** | Thèmes Terminus (×7) | ❌ | Thème chrome unique |
+| **4.1** | Thèmes Terminus (×7) | ⚠️ | 2 thèmes chrome (sombre/clair) + mode Système ; 7 presets à faire |
 | **4.2** | WCAG AA / reduced-motion | ❌ | — |
 | **4.3** | Keyboard-only audit | ⚠️ | Forms / settings / SFTP navigables ; pas d’audit documenté |
 | **4.4** | Perf regression | ❌ | Pas de benches 100+ hôtes |
