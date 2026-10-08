@@ -3715,7 +3715,23 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     }
                                     route.request_overlay_redraw();
                                 }
+                                terminus_ui::PendingVaultAction::RestoreTabs(tabs) => {
+                                    route.window.screen.reopen_saved_tabs(
+                                        tabs,
+                                        &mut self.router.clipboard,
+                                    );
+                                    route.request_redraw();
+                                }
                             }
+                        }
+
+                        // The hosts just loaded: reopen last launch's tabs.
+                        if route
+                            .window
+                            .screen
+                            .restore_saved_tabs_if_due(&mut self.router.clipboard)
+                        {
+                            route.request_redraw();
                         }
 
                         // Update IME cursor position after rendering to ensure it's current

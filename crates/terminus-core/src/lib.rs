@@ -8,6 +8,7 @@ pub mod machine;
 pub mod managed_key;
 pub mod models;
 pub mod os_detect;
+pub mod saved_tabs;
 pub mod session;
 pub mod shell_integration;
 pub mod sftp;

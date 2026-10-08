@@ -127,6 +127,19 @@ impl Screen<'_> {
         env: Option<Vec<(String, String)>>,
         host_id: Option<String>,
     ) -> Result<(), String> {
+        self.create_tab_in(clipboard, shell, env, host_id, None)
+    }
+
+    /// `create_tab_with_shell`, starting the shell in `start_dir` rather
+    /// than wherever a new tab would start.
+    pub(super) fn create_tab_in(
+        &mut self,
+        clipboard: &mut Clipboard,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+        host_id: Option<String>,
+        start_dir: Option<String>,
+    ) -> Result<(), String> {
         let redirect = true;
 
         // We resize the current tab ahead to prepare the
@@ -155,6 +168,7 @@ impl Screen<'_> {
             shell,
             env,
             host_id,
+            start_dir,
         );
         if opened.is_err() {
             self.resize_top_or_bottom_line(num_tabs);
@@ -256,15 +270,7 @@ impl Screen<'_> {
             Err(err) => return Err(err),
         };
 
-        let label = self
-            .chrome
-            .panel
-            .rows
-            .iter()
-            .filter_map(terminus_ui::sidebar::Row::host)
-            .find(|item| item.id == id)
-            .map(|item| item.name.clone())
-            .unwrap_or_else(|| id.to_string());
+        let label = self.host_row_label(id);
 
         // Local shells come up instantly; WSL distros and SSH hosts can
         // sit on a blank PTY for a while, so they get the connecting
@@ -277,21 +283,7 @@ impl Screen<'_> {
         match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
-                let row = self
-                    .chrome
-                    .panel
-                    .rows
-                    .iter()
-                    .filter_map(terminus_ui::sidebar::Row::host)
-                    .find(|item| item.id == id);
-                let os_id = row.and_then(|item| item.os_id.clone());
-                let endpoint = row
-                    .map(|item| item.endpoint.clone())
-                    .filter(|e| !e.is_empty());
-                self.context_manager
-                    .set_custom_title(tab_index, Some(label));
-                self.context_manager.set_tab_os_id(tab_index, os_id);
-                self.context_manager.set_tab_host_label(tab_index, endpoint);
+                self.dress_host_tab(tab_index, id, label);
                 // Background: classify remote OS and update sidebar / tab glyphs.
                 self.host_store.detect_os(id);
                 Ok(())
@@ -303,6 +295,38 @@ impl Screen<'_> {
                 Err(format!("{label}: {err}"))
             }
         }
+    }
+
+    /// The sidebar's name for a row id, or the id itself.
+    pub(super) fn host_row_label(&self, id: &str) -> String {
+        self.chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|item| item.id == id)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Give a tab just opened for host row `id` its label, OS glyph and
+    /// endpoint.
+    pub(super) fn dress_host_tab(&mut self, tab_index: usize, id: &str, label: String) {
+        let row = self
+            .chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|item| item.id == id);
+        let os_id = row.and_then(|item| item.os_id.clone());
+        let endpoint = row
+            .map(|item| item.endpoint.clone())
+            .filter(|e| !e.is_empty());
+        self.context_manager
+            .set_custom_title(tab_index, Some(label));
+        self.context_manager.set_tab_os_id(tab_index, os_id);
+        self.context_manager.set_tab_host_label(tab_index, endpoint);
     }
 
     pub(super) fn begin_session_connecting(&mut self, id: &str) {
@@ -607,15 +631,7 @@ impl Screen<'_> {
             }
             Err(err) => return Err(err),
         };
-        let label = self
-            .chrome
-            .panel
-            .rows
-            .iter()
-            .filter_map(terminus_ui::sidebar::Row::host)
-            .find(|item| item.id == id)
-            .map(|item| item.name.clone())
-            .unwrap_or_else(|| id.to_string());
+        let label = self.host_row_label(id);
 
         let animate = id != hosts::LOCAL_ID;
         if animate {
@@ -625,21 +641,7 @@ impl Screen<'_> {
         match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
-                let row = self
-                    .chrome
-                    .panel
-                    .rows
-                    .iter()
-                    .filter_map(terminus_ui::sidebar::Row::host)
-                    .find(|item| item.id == id);
-                let os_id = row.and_then(|item| item.os_id.clone());
-                let endpoint = row
-                    .map(|item| item.endpoint.clone())
-                    .filter(|e| !e.is_empty());
-                self.context_manager
-                    .set_custom_title(tab_index, Some(label));
-                self.context_manager.set_tab_os_id(tab_index, os_id);
-                self.context_manager.set_tab_host_label(tab_index, endpoint);
+                self.dress_host_tab(tab_index, id, label);
                 self.host_store.detect_os(id);
                 Ok(())
             }
