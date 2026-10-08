@@ -82,6 +82,10 @@ pub struct Context<T: EventListener> {
     pub host_label: Option<String>,
     /// Home "This computer" tab — cannot be closed.
     pub pinned: bool,
+    /// Temp key / askpass files of the ssh session this tab runs, removed
+    /// when the tab goes away (a login that failed never runs ssh's own
+    /// `LocalCommand` cleanup).
+    _ssh_secrets: crate::ssh_secrets::SecretFiles,
     _io_thread: Option<JoinHandle<(Machine<teletypewriter::Pty, T>, performer::State)>>,
 }
 
@@ -200,6 +204,7 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         os_id: None,
         host_label: None,
         pinned: false,
+        _ssh_secrets: Default::default(),
         _io_thread: None,
     }
 }
@@ -264,6 +269,17 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 dimension,
             ));
         }
+
+        // Taken first, so a session that fails to spawn drops it too.
+        let ssh_secrets =
+            crate::ssh_secrets::SecretFiles::new(crate::ssh_secrets::launch_secrets(
+                config.shell.args.iter().map(String::as_str),
+                config
+                    .env
+                    .iter()
+                    .flatten()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            ));
 
         let cols: u16 = dimension.columns.try_into().unwrap_or(MIN_COLUMNS as u16);
         let rows: u16 = dimension.lines.try_into().unwrap_or(MIN_LINES as u16);
@@ -384,6 +400,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             os_id: None,
             host_label: None,
             pinned: false,
+            _ssh_secrets: ssh_secrets,
             _io_thread: io_thread,
         })
     }
