@@ -18,6 +18,7 @@ mod keys;
 mod mouse;
 mod palette;
 mod render;
+mod saved_tabs;
 mod scrollbar;
 mod search;
 mod selection;
@@ -85,6 +86,8 @@ pub struct Screen<'screen> {
     pending_host_connect: bool,
     /// After a vault-unlock prompt succeeds, retry this action once.
     pending_vault_continue: Option<terminus_ui::PendingVaultAction>,
+    /// Tabs saved for the next launch; see `screen/saved_tabs.rs`.
+    saved_tabs: saved_tabs::SavedTabsState,
     /// When the sidebar's connecting indicator started. Drives the orbit
     /// phase and the clear-when-ready timer. Paired with
     /// `chrome.panel.connecting_id` / `chrome.connection`.
@@ -458,6 +461,7 @@ impl Screen<'_> {
             pending_host_select: None,
             pending_host_connect: false,
             pending_vault_continue: None,
+            saved_tabs: saved_tabs::SavedTabsState::default(),
             connecting_started: None,
             connecting_step_at: None,
             connecting_success_at: None,
