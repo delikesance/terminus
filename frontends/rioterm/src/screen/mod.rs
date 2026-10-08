@@ -17,6 +17,7 @@ mod island;
 mod keys;
 mod mouse;
 mod palette;
+mod palette_tunnels;
 mod render;
 mod saved_tabs;
 mod scrollbar;
