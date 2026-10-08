@@ -193,6 +193,9 @@ pub struct ScreenWindowProperties {
     pub raw_window_handle: RawWindowHandle,
     pub raw_display_handle: RawDisplayHandle,
     pub window_id: rio_window::window::WindowId,
+    /// The quake dropdown: no title bar, so no caption buttons.
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    pub quake: bool,
 }
 
 #[inline]
@@ -369,8 +372,10 @@ impl Screen<'_> {
         // Caption buttons only where the window has no OS decorations.
         #[cfg(not(any(target_os = "macos", windows)))]
         {
-            chrome.shell.window_controls =
-                crate::router::window::uses_custom_titlebar(config);
+            chrome.shell.window_controls = crate::router::window::shows_caption_buttons(
+                crate::router::window::uses_custom_titlebar(config),
+                window_properties.quake,
+            );
         }
         let chrome_left = chrome.reserved_width();
 
