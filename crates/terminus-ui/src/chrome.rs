@@ -455,11 +455,13 @@ impl Chrome {
 
     /// Where the lost-connection card is shown: the Terminal view's content,
     /// unless connection progress already covers it. `None` when there is
-    /// no card or another view is in front.
+    /// no card, another view is in front, or a dialog sits over it (that
+    /// dialog owns the pointer and the keys).
     pub fn lost_area(&self) -> Option<crate::geom::Rect> {
         (self.lost.is_some()
             && self.connection.is_none()
-            && self.shell.view().shows_terminal())
+            && self.shell.view().shows_terminal()
+            && self.modal_paint_stack().is_empty())
         .then(|| self.connection_area())
     }
 
@@ -2313,6 +2315,15 @@ mod tests {
         chrome.connection = Some(ConnectionSequence::start_ssh("id-0", "host-0", "SSH"));
         assert!(chrome.lost_area().is_none());
         chrome.connection = None;
+        // A dialog over the terminal (add snippet, add host) owns the
+        // pointer and keys, not the card under it.
+        chrome.snippet_form.inner.closing = false;
+        assert!(chrome.lost_area().is_none());
+        chrome.snippet_form.inner.closing = true;
+        chrome.open_add_host();
+        assert!(chrome.lost_area().is_none());
+        chrome.form.close();
+        assert!(chrome.lost_area().is_some());
         chrome.show_view(crate::shell::WorkspaceView::Home);
         assert!(chrome.lost_area().is_none());
         assert_eq!(chrome.handle_lost_key(DialogKey::Enter), None);

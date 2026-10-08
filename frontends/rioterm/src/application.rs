@@ -845,18 +845,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             }
             RioEventType::Rio(RioEvent::CloseTerminal(route_id)) => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
-                    if route.window.screen.is_connection_lost(route_id) {
-                        // Kept for its Reconnect card (see `ChildExited`);
-                        // closing it is the card's or the tab's ×.
-                        route.request_overlay_redraw();
-                        return;
-                    }
                     route
                         .window
                         .screen
                         .sugarloaf
                         .font_library()
                         .remove_glyph_registry(route_id);
+                    if route.window.screen.is_connection_lost(route_id) {
+                        // Kept for its Reconnect card (see `ChildExited`);
+                        // closing it is the card's or the tab's ×.
+                        route.request_overlay_redraw();
+                        return;
+                    }
                     // A host session that dies while connecting reports why.
                     route.window.screen.note_session_exit(route_id);
 
