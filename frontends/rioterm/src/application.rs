@@ -101,8 +101,9 @@ impl Application<'_> {
 
     /// Close one window, as a native close request does. Shared by
     /// `CloseRequested` and the in-app Close button so both honour
-    /// confirm-before-quit and leave the other windows running; the app
-    /// exits only with its last window.
+    /// confirm-before-quit (asked for the last window only, as Windows'
+    /// WM_CLOSE does) and leave the other windows running; the app exits
+    /// with its last window.
     fn close_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -116,7 +117,12 @@ impl Application<'_> {
         // Either way, by the time we see `CloseRequested`
         // the user has already confirmed — just close.
         let native_confirm = cfg!(any(target_os = "macos", target_os = "windows"));
-        match close_action(native_confirm, self.config.confirm_before_quit) {
+        let is_last_window = self.router.routes.len() <= 1;
+        match close_action(
+            native_confirm,
+            self.config.confirm_before_quit,
+            is_last_window,
+        ) {
             CloseAction::Confirm => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
                     route.confirm_quit();
