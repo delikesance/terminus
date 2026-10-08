@@ -112,7 +112,33 @@ impl Screen<'_> {
             return;
         }
 
+        // `>` completion: fill the query, keep the palette open.
+        if self.renderer.command_palette.complete_selected_op() {
+            return;
+        }
+
+        if let Some((id, op)) = self.renderer.command_palette.get_selected_tunnel() {
+            use crate::renderer::command_palette::TunnelOp;
+            self.renderer.command_palette.set_enabled(false);
+            let done = match op {
+                TunnelOp::Show => {
+                    self.show_view(terminus_ui::shell::WorkspaceView::Tunnels);
+                    return;
+                }
+                TunnelOp::Start => self.palette_tunnel_start(&id),
+                TunnelOp::Stop => self.palette_tunnel_stop(&id),
+            };
+            match done {
+                Ok(notice) => self.chrome.panel.notice = Some(notice),
+                Err(err) => self.chrome.panel.error = Some(err),
+            }
+            return;
+        }
+
         match self.renderer.command_palette.get_selected_action() {
+            Some(PaletteAction::Prefill(text)) => {
+                self.renderer.command_palette.set_query(text.to_string());
+            }
             Some(PaletteAction::ListFonts) => {
                 let fonts = self.sugarloaf.font_family_names();
                 self.renderer.command_palette.enter_fonts_mode(fonts);
@@ -434,6 +460,9 @@ impl Screen<'_> {
             }
             PaletteAction::FilterServers => {
                 self.chrome.panel.filter_focused = true;
+            }
+            PaletteAction::Prefill(_) => {
+                // Handled in confirm_palette_selection (stay-open prefill).
             }
         }
     }
