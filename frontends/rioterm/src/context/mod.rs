@@ -86,6 +86,10 @@ pub struct Context<T: EventListener> {
     /// when the tab goes away (a login that failed never runs ssh's own
     /// `LocalCommand` cleanup).
     _ssh_secrets: crate::ssh_secrets::SecretFiles,
+    /// Set when this host session's ssh exited because the link dropped:
+    /// the tab stays open behind a "Connection lost" card instead of
+    /// closing (`Screen::note_child_exit`).
+    pub connection_lost: Option<terminus_ui::LostSession>,
     _io_thread: Option<JoinHandle<(Machine<teletypewriter::Pty, T>, performer::State)>>,
 }
 
@@ -208,6 +212,7 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         host_label: None,
         pinned: false,
         _ssh_secrets: Default::default(),
+        connection_lost: None,
         _io_thread: None,
     }
 }
@@ -404,6 +409,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             host_label: None,
             pinned: false,
             _ssh_secrets: ssh_secrets,
+            connection_lost: None,
             _io_thread: io_thread,
         })
     }

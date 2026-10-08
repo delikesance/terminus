@@ -216,6 +216,39 @@ impl Route<'_> {
         self.request_overlay_redraw();
     }
 
+    /// Keys on a tab whose connection dropped: Enter runs the card's
+    /// focused button (Reconnect first), Tab/arrows move focus. Other keys
+    /// fall through so shortcuts (switch tab, close tab) still work; typing
+    /// reaches nothing, the session behind the card is gone.
+    fn lost_session_key(
+        &mut self,
+        key_event: &rio_window::event::KeyEvent,
+        clipboard: &mut Clipboard,
+    ) -> bool {
+        use rio_window::event::ElementState;
+        use terminus_ui::components::overlay::DialogKey;
+        if self.window.screen.chrome.lost_area().is_none() {
+            return false;
+        }
+        let key = match &key_event.logical_key {
+            Key::Named(NamedKey::Escape) => DialogKey::Escape,
+            Key::Named(NamedKey::Enter) => DialogKey::Enter,
+            Key::Named(NamedKey::Tab)
+            | Key::Named(NamedKey::ArrowLeft)
+            | Key::Named(NamedKey::ArrowRight) => DialogKey::Tab,
+            _ => return false,
+        };
+        if key_event.state == ElementState::Pressed {
+            if let Some(action) = self.window.screen.chrome.handle_lost_key(key) {
+                self.window
+                    .screen
+                    .run_lost_session_action(action, clipboard);
+            }
+            self.request_overlay_redraw();
+        }
+        true
+    }
+
     /// The modal overlay currently owning keyboard/IME input, in
     /// dispatch priority order. THE roster for KEYBOARD AND IME
     /// dispatch: `has_key_wait`, `modal_owns_input`, and
@@ -457,7 +490,7 @@ impl Route<'_> {
         // existing handling. `active_modal` already checked each
         // overlay's open state.
         let Some(modal) = self.active_modal() else {
-            return false;
+            return self.lost_session_key(key_event, clipboard);
         };
         match modal {
             Modal::IslandRename => {
