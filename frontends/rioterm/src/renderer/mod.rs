@@ -21,11 +21,11 @@ pub(crate) fn rgb_u8(color: [f32; 4]) -> [u8; 3] {
 
 pub mod assistant;
 pub mod chrome;
-pub mod components;
 pub mod command_palette;
+pub mod components;
 pub mod confirm_quit;
-pub mod dialogs;
 pub mod custom_cursor;
+pub mod dialogs;
 pub mod helpers;
 pub mod island;
 pub mod screens;
@@ -904,7 +904,6 @@ impl Renderer {
             (window_size.width, window_size.height, scale_factor),
         );
 
-
         // Terminus chrome (activity rail, host panel, add-host editor).
         // Painted from the same rectangles the mouse hit-tests against;
         // its orders (4..7, and 30 for the editor) put it above the grid
@@ -1537,4 +1536,3 @@ mod grid_cell_bg_tests {
         );
     }
 }
-

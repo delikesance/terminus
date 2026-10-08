@@ -72,7 +72,9 @@ pub(super) fn parse_semantic_prompt(
 /// Parse the command-boundary subcommands of OSC 133: `B` ends the prompt
 /// (the command line starts at the cursor), `C` is emitted right after the
 /// command line is submitted and before its output.
-pub(super) fn parse_prompt_phase(params: &[&[u8]]) -> Option<super::handler::PromptPhase> {
+pub(super) fn parse_prompt_phase(
+    params: &[&[u8]],
+) -> Option<super::handler::PromptPhase> {
     use super::handler::PromptPhase;
     match *params.get(1)?.first()? {
         b'B' => Some(PromptPhase::CommandStart),

@@ -160,8 +160,10 @@ impl Screen<'_> {
                             || self.modifiers.state().super_key() =>
                     {
                         if c.eq_ignore_ascii_case("a") {
-                            if let Some(edit) =
-                                self.sftp.as_mut().and_then(|s| s.state.name_edit.as_mut())
+                            if let Some(edit) = self
+                                .sftp
+                                .as_mut()
+                                .and_then(|s| s.state.name_edit.as_mut())
                             {
                                 edit.draft.select_all();
                                 self.mark_dirty();

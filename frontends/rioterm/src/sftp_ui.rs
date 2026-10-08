@@ -15,8 +15,8 @@ use terminus_core::ssh::{
 };
 use terminus_ui::sftp_pane::{
     join_remote, parent_path, SftpBackend, SftpClickResult, SftpConflictKind, SftpDrag,
-    SftpFocus, SftpHit, SftpNameKind, SftpPaneState, SftpRow,
-    SftpSideState, SFTP_DRAG_THRESHOLD,
+    SftpFocus, SftpHit, SftpNameKind, SftpPaneState, SftpRow, SftpSideState,
+    SFTP_DRAG_THRESHOLD,
 };
 
 use crate::hosts::HostRow;
@@ -1180,5 +1180,4 @@ mod tests {
         s.close();
         let _ = std::fs::remove_dir_all(root);
     }
-
 }
