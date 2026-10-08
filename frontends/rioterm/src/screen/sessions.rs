@@ -401,13 +401,18 @@ impl Screen<'_> {
     /// A session's process exited with `status` (`RioEvent::ChildExited`,
     /// which arrives just before its `CloseTerminal`).
     ///
-    /// When an SSH host session's `ssh` ends in any way but a clean logout
-    /// (exit 255 when the link dropped, another non-zero status, a signal),
-    /// it is kept behind a card that says how it ended and offers Reconnect,
-    /// instead of vanishing. In a split tab only that pane is kept: the card
-    /// covers the dead pane and its siblings stay live. A clean `exit` (or a
-    /// platform that reports no status) closes as before. Returns whether
-    /// the session was kept.
+    /// When an SSH host session's `ssh` gave up on its link (exit 255) or
+    /// the local `ssh` was killed by a signal, it is kept behind a card that
+    /// says so and offers Reconnect, instead of vanishing. In a split tab
+    /// only that pane is kept: the card covers the dead pane and its
+    /// siblings stay live. Every other end closes as before: exit 0, no
+    /// reported status, and any other exit code, which is the remote
+    /// shell's last command status after the user left (`exit`, Ctrl-D).
+    ///
+    /// A user-initiated close never reaches the card: dropping a `Context`
+    /// SIGHUPs its ssh, but the context is already out of the grid by then
+    /// and route ids are never reused, so the late `ChildExited` finds no
+    /// route (`tab_of_route`). Returns whether the session was kept.
     pub fn note_child_exit(&mut self, route_id: usize, status: Option<i32>) -> bool {
         let end = session_end(status);
         if !end.keeps_tab() {
@@ -449,9 +454,12 @@ impl Screen<'_> {
             return false;
         };
         let output = lines_up_to_cursor(item.context(), 8);
-        item.context_mut().connection_lost = Some(terminus_ui::LostSession::ended(
+        let Some(card) = terminus_ui::LostSession::ended(
             route_id, &host_id, &name, &output, end, whole_tab,
-        ));
+        ) else {
+            return false;
+        };
+        item.context_mut().connection_lost = Some(card);
         tracing::info!("ssh session for {host_id} ended: {}", end.status_text());
         self.mark_dirty();
         true
