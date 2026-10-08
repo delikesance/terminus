@@ -400,6 +400,51 @@ mod tests {
         assert_ssh_downgrades_rio_term("fish", &text);
     }
 
+    /// A user's `ssh` alias stays in charge, and our definition must not
+    /// trip over it: shells alias-expand `ssh() {`, which is a syntax error
+    /// printed at every new tab.
+    #[cfg(unix)]
+    #[test]
+    fn bash_and_zsh_keep_a_user_ssh_alias() {
+        let base =
+            std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
+        let dir = install(&base).unwrap();
+        let rc = base.join("bashrc");
+        std::fs::write(&rc, "alias ssh='echo aliased'\n").unwrap();
+        let mut env = local_env(&dir, None);
+        env.push(("PATH".into(), fake_ssh(&base)));
+        env.push(("TERM".into(), "xterm-rio".into()));
+        let rc = rc.to_string_lossy().into_owned();
+        let bash = run_shell(
+            "bash",
+            &["--noprofile", "--rcfile", &rc, "-i"],
+            &env,
+            "ssh box\nexit\n",
+        );
+        let zsh_env = vec![
+            ("HOME".to_string(), base.to_string_lossy().into_owned()),
+            ("PATH".into(), fake_ssh(&base)),
+            ("TERM".into(), "xterm-rio".into()),
+        ];
+        let zsh = run_shell(
+            "zsh",
+            &["-f", "-i", "-s"],
+            &zsh_env,
+            &format!(
+                "alias ssh='echo aliased'\nsource '{}'\nssh box\nexit\n",
+                dir.join("terminus.zsh").display()
+            ),
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        for (name, text) in [("bash", bash), ("zsh", zsh)] {
+            let Some(text) = text else { continue };
+            assert!(text.contains("aliased box"), "{name}: {text:?}");
+            assert!(!text.contains("syntax error"), "{name}: {text:?}");
+            assert!(!text.contains("parse error"), "{name}: {text:?}");
+            assert!(!text.contains("remote-term="), "{name}: {text:?}");
+        }
+    }
+
     /// A user's own `ssh` function (or alias) wins over ours.
     #[cfg(unix)]
     #[test]
