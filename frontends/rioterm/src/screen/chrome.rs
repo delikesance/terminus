@@ -558,7 +558,9 @@ impl Screen<'_> {
                 window.set_maximized(next);
                 self.window_maximized = next;
             }
-            WindowButton::Close => self.context_manager.quit(),
+            // Closing is app-level (`Application::close_window`), which
+            // handles it before this is reached.
+            WindowButton::Close => {}
         }
     }
 

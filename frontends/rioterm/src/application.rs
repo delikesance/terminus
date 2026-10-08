@@ -1,6 +1,7 @@
 use crate::event::{ClickState, EventPayload, EventProxy, RioEvent, RioEventType};
 use crate::ime::{Preedit, PreeditCursor};
 use crate::renderer::utils::update_colors_based_on_theme;
+use crate::router::window::{close_action, exits_after_close, CloseAction};
 use crate::router::{routes::RoutePath, Router};
 use crate::scheduler::{Scheduler, TimerId, Topic};
 use crate::screen::touch::on_touch;
@@ -95,6 +96,44 @@ impl Application<'_> {
             quake_previous_app: None,
             host_persistence: None,
             pending_group_toggle: None,
+        }
+    }
+
+    /// Close one window, as a native close request does. Shared by
+    /// `CloseRequested` and the in-app Close button so both honour
+    /// confirm-before-quit (asked for the last window only, as Windows'
+    /// WM_CLOSE does) and leave the other windows running; the app exits
+    /// with its last window.
+    fn close_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: rio_backend::event::WindowId,
+    ) {
+        // macOS: Cmd+Q quit confirmation is handled by
+        // `applicationShouldTerminate` in rio-window.
+        // Windows: per-window close confirmation is handled
+        // by `MessageBoxW` in rio-window's WM_CLOSE handler
+        // (see `set_confirm_before_quit` plumbing).
+        // Either way, by the time we see `CloseRequested`
+        // the user has already confirmed — just close.
+        let native_confirm = cfg!(any(target_os = "macos", target_os = "windows"));
+        let is_last_window = self.router.routes.len() <= 1;
+        match close_action(
+            native_confirm,
+            self.config.confirm_before_quit,
+            is_last_window,
+        ) {
+            CloseAction::Confirm => {
+                if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    route.confirm_quit();
+                }
+            }
+            CloseAction::Close => {
+                self.router.routes.remove(&window_id);
+                if exits_after_close(self.router.routes.len()) {
+                    event_loop.exit();
+                }
+            }
         }
     }
 
@@ -1357,31 +1396,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
 
         match event {
             WindowEvent::CloseRequested => {
-                // macOS: Cmd+Q quit confirmation is handled by
-                // `applicationShouldTerminate` in rio-window.
-                // Windows: per-window close confirmation is handled
-                // by `MessageBoxW` in rio-window's WM_CLOSE handler
-                // (see `set_confirm_before_quit` plumbing).
-                // Either way, by the time we see `CloseRequested`
-                // the user has already confirmed — just close.
-                if cfg!(any(target_os = "macos", target_os = "windows")) {
-                    self.router.routes.remove(&window_id);
-                    if self.router.routes.is_empty() {
-                        event_loop.exit();
-                    }
-                    return;
-                }
-
-                if self.config.confirm_before_quit {
-                    route.confirm_quit();
-                    return;
-                } else {
-                    self.router.routes.remove(&window_id);
-                }
-
-                if self.router.routes.is_empty() {
-                    event_loop.exit();
-                }
+                self.close_window(event_loop, window_id);
             }
 
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -1669,6 +1684,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                             &route.window.winit_window,
                                             chrome_press,
                                         );
+                                        return;
+                                    }
+                                    // Not on Windows: its Close posts WM_CLOSE,
+                                    // which arrives as `CloseRequested`.
+                                    #[cfg(not(target_os = "windows"))]
+                                    ChromeAction::WindowControl(
+                                        terminus_ui::shell::WindowButton::Close,
+                                    ) => {
+                                        self.close_window(event_loop, window_id);
                                         return;
                                     }
                                     ChromeAction::WindowControl(button) => {
