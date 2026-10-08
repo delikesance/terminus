@@ -126,6 +126,7 @@ pub(super) fn ssh_shell(
     };
 
     let mut args = vec!["-p".to_string(), host.port.to_string()];
+    push_o_options(&mut args, KEEPALIVE_SSH_OPTIONS);
     // `ssh` forwards our `$TERM` in its pty request. The local one is
     // usually `xterm-rio`, which remote hosts have no terminfo for: readline
     // then can't move the cursor and history recall piles lines on top of
@@ -210,6 +211,16 @@ pub(super) fn ssh_shell(
         Some(env),
     ))
 }
+
+/// OpenSSH `-o` values that make a dead link end the session.
+///
+/// After a sleep or a server restart nothing ever arrives on the socket,
+/// and without keepalives ssh waits on it forever: the tab just freezes.
+/// Probing every 15s and giving up after 3 misses makes ssh exit with 255
+/// within about 45s, which the tab turns into "Connection lost" with a
+/// Reconnect button (`Screen::note_child_exit`).
+pub(super) const KEEPALIVE_SSH_OPTIONS: &[&str] =
+    &["ServerAliveInterval=15", "ServerAliveCountMax=3"];
 
 /// OpenSSH `-o` values that force Kerberos `gssapi-with-mic` for a session.
 pub(super) const GSSAPI_SSH_OPTIONS: &[&str] = &[
