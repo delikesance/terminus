@@ -19,6 +19,26 @@ impl Screen<'_> {
         &self,
         id: &str,
     ) -> Result<(Option<Shell>, Option<Vec<(String, String)>>), String> {
+        self.shell_for_row_with(id, true)
+    }
+
+    /// Like [`Self::shell_for_row`] but for callers that append their own
+    /// remote command or no command at all (image paste, tunnels): the args
+    /// end with the destination.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn plain_shell_for_row(
+        &self,
+        id: &str,
+    ) -> Result<(Option<Shell>, Option<Vec<(String, String)>>), String> {
+        self.shell_for_row_with(id, false)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn shell_for_row_with(
+        &self,
+        id: &str,
+        interactive: bool,
+    ) -> Result<(Option<Shell>, Option<Vec<(String, String)>>), String> {
         if id == hosts::LOCAL_ID {
             return Ok((None, None));
         }
@@ -74,12 +94,15 @@ impl Screen<'_> {
                             }
                         }
                     };
-                let (shell, env) = ssh_shell(
+                let (mut shell, env) = ssh_shell(
                     host,
                     password.as_deref(),
                     identity.as_ref().map(|(pem, _)| pem.as_str()),
                     identity.as_ref().and_then(|(_, pass)| pass.as_deref()),
                 )?;
+                if interactive {
+                    interactive_truecolor_login(&mut shell);
+                }
                 Ok((Some(shell), env))
             }
             None => Err(format!("No session is configured for {id}")),
@@ -133,7 +156,16 @@ pub(super) fn ssh_shell(
     // usually `xterm-rio`, which remote hosts have no terminfo for: readline
     // then can't move the cursor and history recall piles lines on top of
     // each other. Advertise the entry every remote ships instead.
-    let mut env = vec![("TERM".to_string(), REMOTE_TERM.to_string())];
+    //
+    // `COLORTERM` is how a remote program learns this terminal does
+    // truecolor. `ssh` only sends it when asked (the server must also list it
+    // in `AcceptEnv`); without it, programs such as chalk/rich fall back to the
+    // 256-color palette and the same UI looks flat compared with a local tab.
+    push_o_options(&mut args, COLORTERM_SSH_OPTIONS);
+    let mut env = vec![
+        ("TERM".to_string(), REMOTE_TERM.to_string()),
+        ("COLORTERM".to_string(), "truecolor".to_string()),
+    ];
     let mut secrets: Vec<std::path::PathBuf> = Vec::new();
 
     if let Some(password) = password {
@@ -223,6 +255,33 @@ pub(super) fn ssh_shell(
 /// Reconnect button (`Screen::note_child_exit`).
 pub(super) const KEEPALIVE_SSH_OPTIONS: &[&str] =
     &["ServerAliveInterval=15", "ServerAliveCountMax=3"];
+
+/// Make an interactive SSH tab start the remote login shell with
+/// `COLORTERM=truecolor`.
+///
+/// `SendEnv` only works when the server lists `COLORTERM` in `AcceptEnv`,
+/// which Debian/Ubuntu do not. Setting it in the remote command works on any
+/// server: `exec env COLORTERM=truecolor $SHELL -l` replaces the command
+/// shell with the user's login shell, as sshd would have started it. The
+/// words carry no quotes or `;` because on Windows the args reach `ssh.exe`
+/// joined by plain spaces; `ssh` joins them again for the remote shell, and
+/// `exec`/`env` parse the same in bash, zsh, fish and csh.
+///
+/// Call it only for the interactive tab: image paste and tunnels append
+/// their own command after the destination. A command also needs `-t`, and
+/// sshd skips the MOTD and "Last login" line for command sessions.
+pub(super) fn interactive_truecolor_login(shell: &mut Shell) {
+    let Some(end_of_options) = shell.args.iter().position(|a| a == "--") else {
+        return;
+    };
+    shell.args.insert(end_of_options, "-t".into());
+    shell
+        .args
+        .extend(["exec", "env", "COLORTERM=truecolor", "$SHELL", "-l"].map(String::from));
+}
+
+/// OpenSSH `-o` value that asks ssh to send `COLORTERM` to the remote.
+pub(super) const COLORTERM_SSH_OPTIONS: &[&str] = &["SendEnv=COLORTERM"];
 
 /// OpenSSH `-o` values that force Kerberos `gssapi-with-mic` for a session.
 pub(super) const GSSAPI_SSH_OPTIONS: &[&str] = &[

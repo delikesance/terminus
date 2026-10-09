@@ -15,7 +15,7 @@ impl Screen<'_> {
         host_id: &str,
         item: &TunnelItem,
     ) -> Result<Command, String> {
-        let (shell, env) = self.shell_for_row(host_id)?;
+        let (shell, env) = self.plain_shell_for_row(host_id)?;
         let shell = shell
             .filter(|s| s.program.as_deref() == Some("ssh"))
             .ok_or_else(|| "Tunnels need an SSH server".to_string())?;
