@@ -635,7 +635,7 @@ impl Screen<'_> {
 #[cfg(test)]
 mod tests {
     use super::hint_actions::post_process_hyperlink_uri;
-    use super::shell::{ssh_shell, GSSAPI_SSH_OPTIONS};
+    use super::shell::{interactive_truecolor_login, ssh_shell, GSSAPI_SSH_OPTIONS};
     use super::*;
     use crate::hosts;
     use chrono::Utc;
@@ -781,6 +781,46 @@ mod tests {
             {
                 let _ = std::fs::remove_file(secret);
             }
+        }
+    }
+
+    /// Most sshd configs (Debian/Ubuntu: `AcceptEnv LANG LC_*`) drop a
+    /// forwarded `COLORTERM`, so the interactive tab also starts the login
+    /// shell itself with the variable set. Paste and tunnels reuse the plain
+    /// args and expect the destination to stay last, so this is a separate
+    /// step. No quotes and no `;`: Windows hands ssh the args joined by plain
+    /// spaces, and ssh then re-joins them for the remote shell.
+    #[test]
+    fn interactive_tab_starts_the_remote_login_shell_with_truecolor() {
+        let host = host_row("gssapi");
+        let (mut shell, _) = ssh_shell(&host, None, None, None).expect("shell");
+        let plain = shell.args.clone();
+        interactive_truecolor_login(&mut shell);
+
+        let dash_dash = shell.args.iter().position(|a| a == "--").expect("--");
+        assert!(
+            shell.args[..dash_dash].iter().any(|a| a == "-t"),
+            "a remote command needs a forced pty, got {:?}",
+            shell.args
+        );
+        assert_eq!(
+            &shell.args[dash_dash..],
+            [
+                "--",
+                "alice@box.example",
+                "exec",
+                "env",
+                "COLORTERM=truecolor",
+                "$SHELL",
+                "-l"
+            ]
+        );
+        // Everything else is untouched.
+        let mut without_t = shell.args.clone();
+        without_t.retain(|a| a != "-t");
+        assert_eq!(&without_t[..plain.len()], &plain[..]);
+        for arg in &shell.args {
+            assert!(!arg.contains('"') && !arg.contains(';'), "{arg}");
         }
     }
 

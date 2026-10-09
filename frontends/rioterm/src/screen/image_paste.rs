@@ -131,7 +131,7 @@ impl Screen<'_> {
         name: &str,
         png: Vec<u8>,
     ) -> Result<(), String> {
-        let (shell, env) = self.shell_for_row(id)?;
+        let (shell, env) = self.plain_shell_for_row(id)?;
         let shell = shell.ok_or("not an SSH host")?;
         let program = shell.program.unwrap_or_else(|| "ssh".to_string());
         let remote_path = remote_paste_path(name);
