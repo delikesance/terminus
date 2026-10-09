@@ -1,14 +1,16 @@
 //! Confirmation dialog painter (Confirm / Destructive / With-option).
 
-use crate::renderer::components::button::paint_button_in_rect;
+use crate::renderer::components::button::{button_state, paint_button_in_rect};
+use crate::renderer::components::selection::paint_checkbox_on;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::overlay::{self as ov, DialogFocus, DialogKind};
+use terminus_ui::components::selection::ControlState;
 use terminus_ui::confirm::{ConfirmLayout, ConfirmSpec};
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 
-use super::{button_state, dialog_layer, paint_checkbox_row, paint_shadow, DEPTH, ORDER};
+use super::{dialog_layer, paint_shadow, DEPTH, ORDER};
 use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
@@ -68,13 +70,14 @@ pub fn paint_confirm(
         );
     }
     if let (Some(row), Some(label)) = (l.option.as_ref(), spec.option.as_deref()) {
-        paint_checkbox_row(
+        paint_checkbox_on(
             sugarloaf,
             theme,
-            row,
+            (row.x, row.y),
             label,
             view.option_checked,
-            DEPTH + 0.05,
+            ControlState::Default,
+            dialog_layer(theme),
         );
     }
     let confirm_kind = if spec.kind == DialogKind::Destructive {

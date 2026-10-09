@@ -35,6 +35,11 @@ fn weight(kind: ButtonKind) -> UiWeight {
     }
 }
 
+/// Button state from the flags a dialog tracks.
+pub fn button_state(focused: bool, hovered: bool) -> ButtonState {
+    ButtonState::resolve(hovered, false, focused, false)
+}
+
 /// Measure `label` for `kind`/`size` and build the spec at `origin`.
 pub fn label_spec(
     sugarloaf: &mut Sugarloaf,

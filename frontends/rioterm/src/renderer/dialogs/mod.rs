@@ -8,12 +8,9 @@
 //! are pinned to the gallery's own order).
 
 use rio_backend::sugarloaf::Sugarloaf;
-use terminus_ui::components::button::ButtonState;
-use terminus_ui::components::selection::ControlState;
 use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
 
-use crate::renderer::components::selection::paint_checkbox_on;
 use crate::renderer::components::Layer;
 
 pub mod confirm;
@@ -26,11 +23,6 @@ pub mod vault;
 pub const ORDER: u8 = 30;
 /// Base depth of a modal panel; children add small offsets.
 pub const DEPTH: f32 = 0.1;
-
-/// Y that vertically centres a text line of `size` in `rect`.
-pub fn text_y(rect: &Rect, size: f32) -> f32 {
-    rect.y + (rect.height - size * 1.25) / 2.0
-}
 
 /// Soft drop shadow under a rounded panel (layered translucent rects).
 pub fn paint_shadow(sugarloaf: &mut Sugarloaf, r: &Rect, rad: f32, depth: f32) {
@@ -56,35 +48,6 @@ pub fn dialog_layer(theme: &ChromeTheme) -> Layer {
         depth: DEPTH + 0.05,
         backdrop: theme.dialog,
     }
-}
-
-/// Button state from the flags a dialog tracks.
-pub fn button_state(focused: bool, hovered: bool) -> ButtonState {
-    ButtonState::resolve(hovered, false, focused, false)
-}
-
-/// Checkbox + label at the top-left of `row`.
-pub fn paint_checkbox_row(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    row: &Rect,
-    label: &str,
-    checked: bool,
-    depth: f32,
-) {
-    paint_checkbox_on(
-        sugarloaf,
-        theme,
-        (row.x, row.y),
-        label,
-        checked,
-        ControlState::Default,
-        Layer {
-            order: ORDER,
-            depth,
-            backdrop: theme.dialog,
-        },
-    );
 }
 
 /// Input box in the Input component's look (46px field: fill, border,
