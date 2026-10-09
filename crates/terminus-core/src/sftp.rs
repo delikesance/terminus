@@ -721,10 +721,15 @@ impl SftpSession {
     /// Recursively delete a remote path (files and directory trees).
     pub async fn remove_recursive(&self, path: &str) -> Result<()> {
         let resolved = self.resolve(path)?;
-        match self
-            .op("stat", self.inner.symlink_metadata(resolved.clone()))
+        let stat = timeout(self.timeout, self.inner.symlink_metadata(resolved.clone()))
             .await
-        {
+            .map_err(|_| {
+                Error::TimeoutError(format!(
+                    "sftp stat timed out after {:?}",
+                    self.timeout
+                ))
+            })?;
+        match stat {
             Ok(metadata) if metadata.is_dir() => {
                 let entries = self.list(&resolved).await?;
                 for entry in entries {
@@ -737,7 +742,8 @@ impl SftpSession {
                 self.remove(&resolved).await
             }
             Ok(_) => self.remove(&resolved).await,
-            Err(_) => self.remove(&resolved).await,
+            Err(err) if is_no_such_file(&err) => Ok(()),
+            Err(err) => Err(Error::SshError(format!("sftp stat: {err}"))),
         }
     }
 
@@ -871,6 +877,14 @@ fn parent_path(resolved: &str) -> Option<String> {
     }
 }
 
+fn is_no_such_file(err: &russh_sftp::client::error::Error) -> bool {
+    matches!(
+        err,
+        russh_sftp::client::error::Error::Status(status)
+            if status.status_code == russh_sftp::protocol::StatusCode::NoSuchFile
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,6 +987,24 @@ mod tests {
             modified: None,
         };
         assert_eq!(entry.extension().as_deref(), Some("txt"));
+    }
+
+    #[test]
+    fn only_no_such_file_counts_as_already_gone() {
+        use russh_sftp::client::error::Error as SftpError;
+        use russh_sftp::protocol::{Status, StatusCode};
+
+        let status = |status_code| {
+            SftpError::Status(Status {
+                id: 0,
+                status_code,
+                error_message: String::new(),
+                language_tag: String::new(),
+            })
+        };
+        assert!(is_no_such_file(&status(StatusCode::NoSuchFile)));
+        assert!(!is_no_such_file(&status(StatusCode::PermissionDenied)));
+        assert!(!is_no_such_file(&SftpError::Timeout));
     }
 
     #[test]

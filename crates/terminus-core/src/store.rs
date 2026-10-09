@@ -1,6 +1,6 @@
 //! Local persistence layer (SQLx/SQLite).
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
     SqlitePool,
 };
 use std::path::PathBuf;
@@ -103,7 +103,8 @@ impl Store {
         let options = SqliteConnectOptions::new()
             .filename(&db_path)
             .create_if_missing(true)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(8)

@@ -48,6 +48,13 @@ impl SavedTabs {
         }
     }
 
+    /// Keep tabs that could not be reopened yet (vault locked) in the list,
+    /// after the open ones so `active` still points at the same tab.
+    pub fn with_unrestored(mut self, unrestored: &[SavedTab]) -> Self {
+        self.tabs.extend_from_slice(unrestored);
+        self
+    }
+
     /// Read the saved tabs. A missing, unreadable or newer file is treated
     /// as "nothing to restore": a launch never fails over it.
     pub fn load(path: &Path) -> Option<Self> {
@@ -118,6 +125,20 @@ mod tests {
             host_id: host_id.to_string(),
             ..SavedTab::default()
         }
+    }
+
+    #[test]
+    fn unrestored_tabs_survive_an_autosave() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let held = [tab("locked-host")];
+        SavedTabs::new(vec![tab("local")], 0)
+            .with_unrestored(&held)
+            .save(&path)
+            .unwrap();
+        let loaded = SavedTabs::load(&path).unwrap();
+        assert_eq!(loaded.tabs, vec![tab("local"), tab("locked-host")]);
+        assert_eq!(loaded.active, 0);
     }
 
     #[test]

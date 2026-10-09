@@ -132,6 +132,8 @@ impl ConfirmSpec {
 pub enum ConfirmAction {
     DeleteHost(String),
     DeleteGroup(String),
+    /// Remove the SFTP selection (the frontend knows which row).
+    SftpDelete,
     /// Quit the application (confirmed by the frontend, not the chrome).
     Quit,
 }
@@ -194,6 +196,25 @@ impl ConfirmPrompt {
                 "Delete",
             ),
             ConfirmAction::DeleteHost(id.to_string()),
+        )
+    }
+
+    /// Remove a file or folder from an SFTP pane.
+    pub fn sftp_delete(name: &str, is_dir: bool) -> Self {
+        let body = if is_dir {
+            "This folder and everything inside it is removed. This cannot be undone."
+        } else {
+            "This cannot be undone."
+        };
+        Self::new(
+            ConfirmSpec::new(
+                DialogKind::Destructive,
+                &format!("Delete {name}?"),
+                body.to_string(),
+                "Cancel",
+                "Delete",
+            ),
+            ConfirmAction::SftpDelete,
         )
     }
 
