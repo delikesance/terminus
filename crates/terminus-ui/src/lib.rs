@@ -15,6 +15,7 @@
 //! focus model here means they can be tested without a window, a GPU or
 //! a database.
 
+pub mod action_menu;
 pub mod add_host;
 pub mod add_snippet;
 pub mod anim;
@@ -22,7 +23,6 @@ pub mod chrome;
 pub mod components;
 pub mod confirm;
 pub mod connection;
-pub mod context_menu;
 pub mod dialog_form;
 pub mod geom;
 pub mod icons;
@@ -44,6 +44,7 @@ pub mod vault_unlock;
 pub mod views;
 pub mod window_edge;
 
+pub use action_menu::{ActionMenu, ContextAction, ContextItem};
 pub use add_host::{
     auth_method_label, AddHostForm, AddHostHit, AddHostLayout, AddHostStep, Field,
     FormInput, FormOutcome, HostFormValues, AUTH_METHODS, BASE_FIELDS, STEPS,
@@ -53,10 +54,6 @@ pub use chrome::{Chrome, ChromeAction, ChromeCursor, ModalPaintLayer};
 pub use components::input::{FieldPaint, TextDraft, TextEdit, TextMoveKind};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
-};
-pub use context_menu::{
-    ContextAction, ContextItem, ContextMenu, ContextMenuHit,
-    ITEM_HEIGHT as CONTEXT_ITEM_HEIGHT, MENU_PAD_X, MENU_RADIUS,
 };
 pub use geom::Rect;
 pub use icons::{Cmd, Icon, IconPlacement};

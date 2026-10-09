@@ -5,10 +5,9 @@
 //! rect functions the pointer hit-tests. Specs come from the design board
 //! `COverlays` (violet ink).
 //!
-//! The older [`crate::context_menu::ContextMenu`] stays as is (host/SFTP
-//! actions); [`Menu`] here is the design-system menu with disabled rows and
-//! separators and keeps its semantics: a press returns Item / Consume /
-//! Dismiss, height derives from the entries, `clamped` keeps it on screen.
+//! [`Menu`] is the single context menu (disabled rows, separators): a press
+//! returns Item / Consume / Dismiss, height derives from the entries, width
+//! grows with the longest label, `clamped` keeps it on screen.
 
 use crate::geom::Rect;
 
@@ -299,6 +298,8 @@ pub const MENU_ITEM_PAD_X: f32 = 10.0;
 /// 1px rule with 5px margins above and below.
 pub const SEPARATOR_HEIGHT: f32 = 11.0;
 const WINDOW_MARGIN: f32 = 8.0;
+/// Approximate label advance; the ui never measures fonts.
+const LABEL_ESTIMATE: f32 = 7.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryState {
@@ -371,6 +372,7 @@ pub struct Menu {
     pub y: f32,
     pub entries: Vec<MenuEntry>,
     pub hover: Option<usize>,
+    width: f32,
 }
 
 impl Menu {
@@ -378,11 +380,16 @@ impl Menu {
         if entries.is_empty() {
             return None;
         }
+        let width = entries
+            .iter()
+            .map(|e| e.label.chars().count() as f32 * LABEL_ESTIMATE + 24.0)
+            .fold(MENU_WIDTH, f32::max);
         Some(Self {
             x,
             y,
             entries,
             hover: None,
+            width,
         })
     }
 
@@ -400,7 +407,7 @@ impl Menu {
     }
 
     pub fn rect(&self) -> Rect {
-        Rect::new(self.x, self.y, MENU_WIDTH, self.height())
+        Rect::new(self.x, self.y, self.width, self.height())
     }
 
     pub fn clamped(mut self, window_width: f32, window_height: f32) -> Self {
@@ -427,7 +434,7 @@ impl Menu {
         Some(Rect::new(
             self.x + MENU_PAD,
             y,
-            MENU_WIDTH - 2.0 * MENU_PAD,
+            self.width - 2.0 * MENU_PAD,
             Self::entry_height(e),
         ))
     }
@@ -939,6 +946,17 @@ mod tests {
         assert!((m.height() - expected).abs() < 0.01);
         assert_eq!(m.rect().width, MENU_WIDTH);
         assert_eq!(Menu::open(0.0, 0.0, vec![]), None);
+    }
+
+    #[test]
+    fn menu_widens_for_a_long_label_and_stays_clamped() {
+        let label = "A very long context menu label that overflows the default width";
+        let m = Menu::open(900.0, 0.0, vec![MenuEntry::item(label)]).unwrap();
+        assert!(m.rect().width > MENU_WIDTH);
+        let r = m.item_rect(0).unwrap();
+        assert_eq!(r.width, m.rect().width - 2.0 * MENU_PAD);
+        let clamped = m.clamped(1000.0, 700.0);
+        assert!(clamped.rect().right() <= 1000.0 - 8.0 + 0.01);
     }
 
     #[test]

@@ -20,7 +20,6 @@ use rio_backend::sugarloaf::Sugarloaf;
 
 use terminus_ui::chrome::Chrome;
 use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonState};
-use terminus_ui::context_menu::ContextMenu;
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Cmd, Icon, IconPlacement, LUCIDE_STROKE};
 use terminus_ui::loading::{breath_ring, orbit_dots};
@@ -104,7 +103,9 @@ pub fn render(
     );
 
     if let Some(menu) = chrome.context_menu.as_ref() {
-        render_context_menu(sugarloaf, menu, theme, device_scale);
+        sugarloaf.begin_overlay();
+        super::components::overlay::paint_menu(sugarloaf, theme, menu);
+        sugarloaf.end_overlay();
     }
 
     // Insertion bar while dragging, then ghost at max z-order.
@@ -2490,15 +2491,6 @@ fn draw_text(
     sugarloaf
         .text_mut()
         .draw(x, y, text, &opts(size, color, bold));
-}
-
-fn render_context_menu(
-    sugarloaf: &mut Sugarloaf,
-    menu: &ContextMenu,
-    theme: &ChromeTheme,
-    _device_scale: f32,
-) {
-    super::dialogs::context_menu::paint_context_menu(sugarloaf, menu, theme);
 }
 
 #[allow(dead_code)]

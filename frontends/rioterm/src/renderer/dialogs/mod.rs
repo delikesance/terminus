@@ -15,7 +15,6 @@ use crate::renderer::components::Layer;
 
 pub mod confirm;
 pub mod connection;
-pub mod context_menu;
 pub mod snippet;
 pub mod vault;
 

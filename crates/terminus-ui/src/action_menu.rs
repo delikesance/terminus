@@ -1,23 +1,10 @@
-//! Floating right-click context menu: paint-free geometry and hit-testing.
-//!
-//! [`ContextMenu`] is the reusable chrome component for any pointer-anchored
-//! list of actions. Height is always derived from `items.len()` via
-//! [`ContextMenu::height`] — never a fixed shell — so host (3 rows) and group
-//! (2 rows) menus paint at different sizes. Callers build items then
-//! [`ContextMenu::open`] / [`ContextMenu::clamped`]; the painter only consumes
-//! [`ContextMenu::rect`] and [`ContextMenu::item_rect`].
+//! Context menu whose rows carry a [`ContextAction`]: builders for the host,
+//! group, session, edit and SFTP menus on top of the generic
+//! [`Menu`], which owns geometry, hit-testing and painting.
 
-use crate::geom::Rect;
+use std::ops::{Deref, DerefMut};
 
-pub const ITEM_HEIGHT: f32 = 36.0;
-pub const MENU_PAD_Y: f32 = 6.0;
-pub const MENU_PAD_X: f32 = 6.0;
-pub const MENU_MIN_WIDTH: f32 = 236.0;
-pub const MENU_RADIUS: f32 = 12.0;
-/// Divider row (1px line with 5px margins) before a flagged item.
-pub const SEPARATOR_HEIGHT: f32 = 11.0;
-/// Approximate label advance used before the painter measures glyphs.
-const LABEL_ESTIMATE: f32 = 7.0;
+use crate::components::overlay::{Menu, MenuEntry};
 
 /// What selecting a context-menu row should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,44 +87,55 @@ impl ContextItem {
     }
 }
 
-/// What a press on an open context menu hit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContextMenuHit {
-    /// An item row.
-    Item(usize),
-    /// Inside the menu chrome but not on a row.
-    Consume,
-    /// Outside the menu — dismiss.
-    Dismiss,
-}
-
-/// Live context menu.
+/// A [`Menu`] plus the action of each of its entries (`None` for separators).
 #[derive(Debug, Clone, PartialEq)]
-pub struct ContextMenu {
-    pub x: f32,
-    pub y: f32,
-    pub items: Vec<ContextItem>,
-    pub hover: Option<usize>,
-    /// Measured (or estimated) width of the widest label.
-    width: f32,
+pub struct ActionMenu {
+    menu: Menu,
+    actions: Vec<Option<ContextAction>>,
 }
 
-impl ContextMenu {
+impl Deref for ActionMenu {
+    type Target = Menu;
+
+    fn deref(&self) -> &Menu {
+        &self.menu
+    }
+}
+
+impl DerefMut for ActionMenu {
+    fn deref_mut(&mut self) -> &mut Menu {
+        &mut self.menu
+    }
+}
+
+impl ActionMenu {
     pub fn open(x: f32, y: f32, items: Vec<ContextItem>) -> Option<Self> {
-        if items.is_empty() {
-            return None;
+        let mut entries = Vec::new();
+        let mut actions = Vec::new();
+        for item in items {
+            if item.separator_before {
+                entries.push(MenuEntry::separator());
+                actions.push(None);
+            }
+            let entry = MenuEntry::item(item.label);
+            entries.push(if item.danger { entry.danger() } else { entry });
+            actions.push(Some(item.action));
         }
-        let width = items
-            .iter()
-            .map(|i| i.label.chars().count() as f32 * LABEL_ESTIMATE + 24.0)
-            .fold(MENU_MIN_WIDTH, f32::max);
         Some(Self {
-            x,
-            y,
-            items,
-            hover: None,
-            width,
+            menu: Menu::open(x, y, entries)?,
+            actions,
         })
+    }
+
+    /// Clamp the menu into the window so it never hangs off-screen.
+    pub fn clamped(mut self, window_width: f32, window_height: f32) -> Self {
+        self.menu = self.menu.clamped(window_width, window_height);
+        self
+    }
+
+    /// Action of entry `index`; `None` for separators and out-of-range indices.
+    pub fn take_action(&self, index: usize) -> Option<ContextAction> {
+        self.actions.get(index)?.clone()
     }
 
     /// Host row context: edit, SFTP, rename, or delete the stored host.
@@ -268,173 +266,48 @@ impl ContextMenu {
             ],
         )
     }
-
-    pub fn set_measured_width(&mut self, width: f32) {
-        self.width = width.max(MENU_MIN_WIDTH);
-    }
-
-    /// Dynamic shell height: vertical pad + one row per item.
-    pub fn height(&self) -> f32 {
-        let seps = self.items.iter().filter(|i| i.separator_before).count();
-        Self::height_for(self.items.len()) + seps as f32 * SEPARATOR_HEIGHT
-    }
-
-    /// Height for `n` items (same formula as [`Self::height`]).
-    pub fn height_for(item_count: usize) -> f32 {
-        MENU_PAD_Y * 2.0 + item_count as f32 * ITEM_HEIGHT
-    }
-
-    /// Clamp the menu into the window so it never hangs off-screen.
-    pub fn clamped(mut self, window_width: f32, window_height: f32) -> Self {
-        let w = self.width;
-        let h = self.height();
-        if self.x + w > window_width - 8.0 {
-            self.x = (window_width - w - 8.0).max(8.0);
-        }
-        if self.y + h > window_height - 8.0 {
-            self.y = (window_height - h - 8.0).max(8.0);
-        }
-        self.x = self.x.max(8.0);
-        self.y = self.y.max(8.0);
-        self
-    }
-
-    pub fn rect(&self) -> Rect {
-        Rect::new(self.x, self.y, self.width, self.height())
-    }
-
-    /// Top of row `index` (after any dividers above it).
-    fn row_top(&self, index: usize) -> f32 {
-        let seps = self.items[..=index]
-            .iter()
-            .filter(|i| i.separator_before)
-            .count();
-        self.y + MENU_PAD_Y + index as f32 * ITEM_HEIGHT + seps as f32 * SEPARATOR_HEIGHT
-    }
-
-    pub fn item_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.items.len() {
-            return None;
-        }
-        Some(Rect::new(
-            self.x + MENU_PAD_X,
-            self.row_top(index),
-            self.width - 2.0 * MENU_PAD_X,
-            ITEM_HEIGHT,
-        ))
-    }
-
-    /// The divider above row `index`, if it has one.
-    pub fn separator_rect(&self, index: usize) -> Option<Rect> {
-        let item = self.items.get(index)?;
-        item.separator_before.then(|| {
-            Rect::new(
-                self.x + MENU_PAD_X,
-                self.row_top(index) - SEPARATOR_HEIGHT,
-                self.width - 2.0 * MENU_PAD_X,
-                SEPARATOR_HEIGHT,
-            )
-        })
-    }
-
-    pub fn hit_test(&self, x: f32, y: f32) -> ContextMenuHit {
-        if !self.rect().contains(x, y) {
-            return ContextMenuHit::Dismiss;
-        }
-        for i in 0..self.items.len() {
-            if let Some(r) = self.item_rect(i) {
-                if r.contains(x, y) {
-                    return ContextMenuHit::Item(i);
-                }
-            }
-        }
-        ContextMenuHit::Consume
-    }
-
-    pub fn set_hover(&mut self, index: Option<usize>) -> bool {
-        if self.hover == index {
-            return false;
-        }
-        self.hover = index;
-        true
-    }
-
-    pub fn hover_at(&mut self, x: f32, y: f32) -> bool {
-        let mut hover = None;
-        for i in 0..self.items.len() {
-            if let Some(r) = self.item_rect(i) {
-                if r.contains(x, y) {
-                    hover = Some(i);
-                    break;
-                }
-            }
-        }
-        self.set_hover(hover)
-    }
-
-    pub fn take_action(&self, index: usize) -> Option<ContextAction> {
-        self.items.get(index).map(|i| i.action.clone())
-    }
-
-    /// Relabel item `index`, widening the menu so the new label fits.
-    pub fn set_label(&mut self, index: usize, label: impl Into<String>) {
-        if let Some(item) = self.items.get_mut(index) {
-            item.label = label.into();
-            let needed = item.label.chars().count() as f32 * LABEL_ESTIMATE + 24.0;
-            self.width = self.width.max(needed);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use crate::components::overlay::{
+        EntryState, MenuHit, MENU_PAD, MENU_WIDTH, SEPARATOR_HEIGHT,
+    };
+
+    fn labels(menu: &ActionMenu) -> Vec<&str> {
+        menu.entries.iter().map(|e| e.label.as_str()).collect()
+    }
+
     #[test]
     fn a_host_menu_leads_with_connecting() {
-        let menu = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
-        assert_eq!(menu.items[0].label, "New session");
-        assert!(menu.items.iter().any(|i| i.label == "Copy SSH command"));
+        let menu = ActionMenu::for_host(10.0, 10.0, "h1").unwrap();
+        assert_eq!(menu.entries[0].label, "New session");
+        assert!(labels(&menu).contains(&"Copy SSH command"));
     }
 
     #[test]
-    fn matches_the_design_menu_metrics() {
-        assert_eq!(MENU_PAD_Y, 6.0);
-        assert_eq!(ITEM_HEIGHT, 36.0);
-        assert_eq!(MENU_MIN_WIDTH, 236.0);
-        assert_eq!(MENU_RADIUS, 12.0);
-        assert_eq!(SEPARATOR_HEIGHT, 11.0);
-    }
-
-    #[test]
-    fn height_scales_with_items_and_separators() {
-        assert_eq!(ContextMenu::height_for(0), MENU_PAD_Y * 2.0);
-        assert_eq!(
-            ContextMenu::height_for(2),
-            MENU_PAD_Y * 2.0 + 2.0 * ITEM_HEIGHT
-        );
-        let group = ContextMenu::for_group(10.0, 10.0, "g1").unwrap();
-        let host = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
-        assert_eq!(group.items.len(), 4);
-        assert_eq!(host.items.len(), 6);
-        let seps =
-            |m: &ContextMenu| m.items.iter().filter(|i| i.separator_before).count();
+    fn separators_become_actionless_entries_and_danger_is_kept() {
+        let group = ActionMenu::for_group(10.0, 10.0, "g1").unwrap();
+        let host = ActionMenu::for_host(10.0, 10.0, "h1").unwrap();
+        assert_eq!(group.entries.len(), 6);
+        assert_eq!(host.entries.len(), 7);
+        let seps = |m: &ActionMenu| m.entries.iter().filter(|e| e.separator).count();
         assert!(seps(&host) >= 1 && seps(&group) == 2);
-        assert_eq!(
-            host.height(),
-            ContextMenu::height_for(6) + seps(&host) as f32 * SEPARATOR_HEIGHT
-        );
         assert!(group.height() < host.height());
-        assert_eq!(group.rect().height, group.height());
-        // The last row ends exactly one pad above the bottom edge.
-        let last = host.item_rect(5).unwrap();
-        assert!((last.bottom() + MENU_PAD_Y - host.rect().bottom()).abs() < 0.01);
+        assert_eq!(group.rect().width, MENU_WIDTH);
+        let last = host.item_rect(6).unwrap();
+        assert!((last.bottom() + MENU_PAD - host.rect().bottom()).abs() < 0.01);
+        assert_eq!(host.entries[6].state, EntryState::Danger);
     }
 
     #[test]
     fn group_menu_offers_open_close_rename_delete_in_order() {
-        let menu = ContextMenu::for_group(0.0, 0.0, "g").unwrap();
-        let actions: Vec<_> = (0..4).filter_map(|i| menu.take_action(i)).collect();
+        let menu = ActionMenu::for_group(0.0, 0.0, "g").unwrap();
+        let actions: Vec<_> = (0..menu.entries.len())
+            .filter_map(|i| menu.take_action(i))
+            .collect();
         assert_eq!(
             actions,
             [
@@ -448,91 +321,82 @@ mod tests {
 
     #[test]
     fn a_separator_pushes_later_rows_down_and_is_not_clickable() {
-        let menu = ContextMenu::for_group(0.0, 0.0, "g").unwrap();
-        let rename = menu.item_rect(2).unwrap();
-        let delete = menu.item_rect(3).unwrap();
+        let menu = ActionMenu::for_group(0.0, 0.0, "g").unwrap();
+        let rename = menu.item_rect(3).unwrap();
+        let delete = menu.item_rect(5).unwrap();
         assert_eq!(delete.y - rename.bottom(), SEPARATOR_HEIGHT);
         let mid = rename.bottom() + SEPARATOR_HEIGHT / 2.0;
-        assert_eq!(menu.hit_test(rename.x + 4.0, mid), ContextMenuHit::Consume);
-        assert_eq!(
-            menu.separator_rect(3).map(|r| r.height),
-            Some(SEPARATOR_HEIGHT)
-        );
+        assert_eq!(menu.hit_test(rename.x + 4.0, mid), MenuHit::Consume);
+        assert_eq!(menu.take_action(4), None);
         assert_eq!(menu.separator_rect(1), None);
     }
 
     #[test]
     fn host_menu_hits_delete_and_dismisses_outside() {
-        let menu = ContextMenu::for_host(100.0, 100.0, "h1").unwrap();
-        assert_eq!(menu.items.len(), 6);
-        let item = menu.item_rect(5).unwrap();
-        assert_eq!(
-            menu.hit_test(item.x + 2.0, item.y + 2.0),
-            ContextMenuHit::Item(5)
-        );
-        assert_eq!(menu.hit_test(0.0, 0.0), ContextMenuHit::Dismiss);
+        let menu = ActionMenu::for_host(100.0, 100.0, "h1").unwrap();
+        let item = menu.item_rect(6).unwrap();
+        assert_eq!(menu.hit_test(item.x + 2.0, item.y + 2.0), MenuHit::Item(6));
+        assert_eq!(menu.hit_test(0.0, 0.0), MenuHit::Dismiss);
         let id = || "h1".to_string();
         let expected = [
-            ContextAction::NewSession(id()),
-            ContextAction::OpenSftp(id()),
-            ContextAction::CopySshCommand(id()),
-            ContextAction::EditHost(id()),
-            ContextAction::RenameHost(id()),
-            ContextAction::DeleteHost(id()),
+            Some(ContextAction::NewSession(id())),
+            Some(ContextAction::OpenSftp(id())),
+            Some(ContextAction::CopySshCommand(id())),
+            None,
+            Some(ContextAction::EditHost(id())),
+            Some(ContextAction::RenameHost(id())),
+            Some(ContextAction::DeleteHost(id())),
         ];
         for (i, action) in expected.into_iter().enumerate() {
-            assert_eq!(menu.take_action(i), Some(action), "item {i}");
+            assert_eq!(menu.take_action(i), action, "entry {i}");
         }
     }
 
     #[test]
     fn clamps_into_the_window() {
-        let menu = ContextMenu::for_host(2000.0, 2000.0, "h1")
+        let menu = ActionMenu::for_host(2000.0, 2000.0, "h1")
             .unwrap()
             .clamped(800.0, 600.0);
-        assert!(menu.x + menu.width <= 800.0);
-        assert!(menu.y + menu.height() <= 600.0);
+        assert!(menu.rect().right() <= 800.0);
+        assert!(menu.rect().bottom() <= 600.0);
     }
 
     #[test]
     fn sftp_empty_menu() {
-        let menu = ContextMenu::for_sftp_empty(10.0, 10.0).unwrap();
+        let menu = ActionMenu::for_sftp_empty(10.0, 10.0).unwrap();
         assert_eq!(menu.take_action(0), Some(ContextAction::SftpNewFolder));
         assert_eq!(menu.take_action(1), Some(ContextAction::SftpRefresh));
     }
 
     #[test]
     fn host_menu_includes_open_sftp_other_pane() {
-        let menu = ContextMenu::for_host_with_sftp(10.0, 10.0, "h1", true).unwrap();
-        assert!(menu
-            .items
-            .iter()
-            .any(|i| { matches!(i.action, ContextAction::OpenSftpOtherPane(_)) }));
-        assert!(menu
-            .items
-            .iter()
-            .any(|i| { matches!(i.action, ContextAction::OpenSftp(_)) }));
+        let menu = ActionMenu::for_host_with_sftp(10.0, 10.0, "h1", true).unwrap();
+        let has = |f: fn(&ContextAction) -> bool| {
+            (0..menu.entries.len()).any(|i| menu.take_action(i).is_some_and(|a| f(&a)))
+        };
+        assert!(has(|a| matches!(a, ContextAction::OpenSftpOtherPane(_))));
+        assert!(has(|a| matches!(a, ContextAction::OpenSftp(_))));
     }
 
     #[test]
     fn sftp_dir_menu_offers_open() {
-        let menu = ContextMenu::for_sftp_entry(10.0, 10.0, true, Some("Download"), true)
-            .unwrap();
+        let menu =
+            ActionMenu::for_sftp_entry(10.0, 10.0, true, Some("Download"), true).unwrap();
         assert_eq!(menu.take_action(0), Some(ContextAction::SftpOpen));
     }
 
     #[test]
     fn sftp_file_menu_offers_edit_when_allowed() {
         let remote =
-            ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true)
+            ActionMenu::for_sftp_entry(10.0, 10.0, false, Some("Download"), true)
                 .unwrap();
         assert_eq!(remote.take_action(0), Some(ContextAction::SftpEdit));
         assert_eq!(remote.take_action(1), Some(ContextAction::SftpTransfer));
         let local =
-            ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), true).unwrap();
+            ActionMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), true).unwrap();
         assert_eq!(local.take_action(0), Some(ContextAction::SftpEdit));
-        let dirs = ContextMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), false)
-            .unwrap();
+        let dirs =
+            ActionMenu::for_sftp_entry(10.0, 10.0, false, Some("Upload"), false).unwrap();
         assert_ne!(dirs.take_action(0), Some(ContextAction::SftpEdit));
     }
 }

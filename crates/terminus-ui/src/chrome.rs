@@ -7,11 +7,11 @@
 //! this state and never own any of it, so a repaint can never disagree
 //! with a hit-test.
 
+use crate::action_menu::{ActionMenu, ContextAction};
 use crate::add_host::{AddHostForm, AddHostHit, FormInput, FormOutcome};
-use crate::components::overlay::DialogKey;
+use crate::components::overlay::{DialogKey, MenuHit};
 use crate::confirm::{ConfirmAction, ConfirmOutcome, ConfirmPrompt};
 use crate::connection::{ConnectionHit, ConnectionSequence};
-use crate::context_menu::{ContextAction, ContextMenu, ContextMenuHit};
 use crate::lost_session::{LostOutcome, LostSession};
 use crate::settings::{SettingsHit, SettingsModal, SettingsTab};
 use crate::sidebar::{HostItem, HostPanel, PanelHit, Row};
@@ -222,7 +222,7 @@ pub struct Chrome {
     /// keys belong to the live pane in focus.
     pub lost_pane_unfocused: bool,
     /// Right-click context menu, when open.
-    pub context_menu: Option<ContextMenu>,
+    pub context_menu: Option<ActionMenu>,
     /// Unscaled height reserved above the chrome by the tab strip, so
     /// the rail starts under the tabs instead of behind them.
     pub top_inset: f32,
@@ -646,7 +646,7 @@ impl Chrome {
                 .iter()
                 .find(|p| p.tab_index == tab)
                 .is_some_and(|p| p.closable);
-            self.context_menu = ContextMenu::for_session(x, y, tab, closable)
+            self.context_menu = ActionMenu::for_session(x, y, tab, closable)
                 .map(|m| m.clamped(window_width, window_height));
             return ChromeAction::Consumed;
         }
@@ -661,7 +661,7 @@ impl Chrome {
                 .and_then(Row::host)
                 .filter(|h| h.stored)
                 .and_then(|h| {
-                    ContextMenu::for_host_with_sftp(x, y, h.id.clone(), sftp_open)
+                    ActionMenu::for_host_with_sftp(x, y, h.id.clone(), sftp_open)
                 }),
             Some(PanelHit::Group(index)) => self
                 .panel
@@ -671,7 +671,7 @@ impl Chrome {
                     Row::Group { id, .. } => Some(id.clone()),
                     _ => None,
                 })
-                .and_then(|id| ContextMenu::for_group(x, y, id)),
+                .and_then(|id| ActionMenu::for_group(x, y, id)),
             _ => None,
         };
 
@@ -726,13 +726,13 @@ impl Chrome {
     fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
         let menu = self.context_menu.as_mut()?;
         match menu.hit_test(x, y) {
-            ContextMenuHit::Dismiss => {
+            MenuHit::Dismiss => {
                 self.close_context_menu();
                 // Swallow the dismiss click so it does not open a host.
                 Some(ChromeAction::Consumed)
             }
-            ContextMenuHit::Consume => Some(ChromeAction::Consumed),
-            ContextMenuHit::Item(index) => {
+            MenuHit::Consume => Some(ChromeAction::Consumed),
+            MenuHit::Item(index) => {
                 // Deleting a host or group cannot be undone: ask first.
                 if let Some(prompt) = self.delete_prompt_for(index) {
                     self.open_confirm(prompt);
@@ -1366,10 +1366,8 @@ impl Chrome {
         }
         if let Some(menu) = self.context_menu.as_ref() {
             return match menu.hit_test(x, y) {
-                ContextMenuHit::Item(_) => ChromeCursor::Pointer,
-                ContextMenuHit::Consume | ContextMenuHit::Dismiss => {
-                    ChromeCursor::Default
-                }
+                MenuHit::Item(_) => ChromeCursor::Pointer,
+                MenuHit::Consume | MenuHit::Dismiss => ChromeCursor::Default,
             };
         }
         if self.vault_unlock.is_open() {
@@ -1991,7 +1989,7 @@ mod tests {
             ChromeAction::Consumed
         );
         let menu = chrome.context_menu.clone().expect("session menu");
-        let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+        let labels: Vec<&str> = menu.entries.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(labels, ["Rename", "Close"]);
 
         // "Rename" starts the inline draft on that pill.
@@ -2025,9 +2023,9 @@ mod tests {
             .context_menu
             .as_ref()
             .unwrap()
-            .items
+            .entries
             .iter()
-            .map(|i| i.label.clone())
+            .map(|e| e.label.clone())
             .collect();
         assert_eq!(labels, ["Rename"]);
     }
@@ -2098,11 +2096,9 @@ mod tests {
             chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
         assert_eq!(open, ChromeAction::Consumed);
         let menu = chrome.context_menu.as_ref().expect("menu open");
-        let delete = menu
-            .items
-            .iter()
+        let delete = (0..menu.entries.len())
             .position(|i| {
-                matches!(i.action, crate::context_menu::ContextAction::DeleteHost(_))
+                matches!(menu.take_action(i), Some(ContextAction::DeleteHost(_)))
             })
             .expect("delete item");
         let item = menu.item_rect(delete).unwrap();
@@ -2213,11 +2209,9 @@ mod tests {
         let row = chrome.panel.item_rect(0.0, 1);
         chrome.handle_context_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0, false);
         let menu = chrome.context_menu.as_ref().unwrap();
-        let delete = menu
-            .items
-            .iter()
+        let delete = (0..menu.entries.len())
             .position(|i| {
-                matches!(i.action, crate::context_menu::ContextAction::DeleteHost(_))
+                matches!(menu.take_action(i), Some(ContextAction::DeleteHost(_)))
             })
             .unwrap();
         let item = menu.item_rect(delete).unwrap();
