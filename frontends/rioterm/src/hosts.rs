@@ -150,6 +150,15 @@ pub struct HostRow {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Ids of the hosts filed under `group_id`, in list order.
+pub fn host_ids_in_group(hosts: &[HostRow], group_id: &str) -> Vec<String> {
+    hosts
+        .iter()
+        .filter(|host| host.group_id.as_deref() == Some(group_id))
+        .map(|host| host.id.clone())
+        .collect()
+}
+
 impl HostRow {
     /// What an open SFTP connection to this host depends on: address,
     /// port, user, auth method and key. A change makes it stale.
@@ -3065,6 +3074,22 @@ mod tests {
             // The sidebar error band shows two lines, ~64 characters.
             assert!(m.chars().count() <= 64, "{m}");
         }
+    }
+
+    #[test]
+    fn group_membership_excludes_other_groups_and_ungrouped_hosts() {
+        let in_group = |id: &str, group: Option<&str>| HostRow {
+            group_id: group.map(str::to_string),
+            ..host_row(id, id)
+        };
+        let hosts = [
+            in_group("a", Some("g1")),
+            in_group("b", Some("g2")),
+            in_group("c", None),
+            in_group("d", Some("g1")),
+        ];
+        assert_eq!(host_ids_in_group(&hosts, "g1"), ["a", "d"]);
+        assert!(host_ids_in_group(&hosts, "missing").is_empty());
     }
 
     fn temp_dir(tag: &str) -> PathBuf {

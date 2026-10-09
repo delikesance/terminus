@@ -515,8 +515,8 @@ pub struct HostPanel {
     pub selected: Option<usize>,
     /// Active session tab index, when known.
     pub selected_session: Option<usize>,
-    /// Host id whose session is currently starting (`wsl:…`, ssh id, …).
-    pub connecting_id: Option<String>,
+    /// Host ids whose sessions are currently starting (`wsl:…`, ssh id, …).
+    pub connecting_ids: Vec<String>,
     /// Transient success message ("Added web-01"), cleared by the caller.
     pub notice: Option<String>,
     pub error: Option<String>,
@@ -794,20 +794,35 @@ impl HostPanel {
         }
     }
 
-    /// Whether this host id is the one currently connecting.
+    /// Whether this host id is one of those currently connecting.
     pub fn is_connecting(&self, id: &str) -> bool {
-        self.connecting_id.as_deref() == Some(id)
+        self.connecting_ids
+            .iter()
+            .any(|connecting| connecting == id)
     }
 
-    /// Start (or replace) the connecting indicator for `id`.
+    /// Whether any host is connecting.
+    pub fn any_connecting(&self) -> bool {
+        !self.connecting_ids.is_empty()
+    }
+
+    /// Start the connecting indicator for `id`, next to any already running.
     pub fn begin_connecting(&mut self, id: impl Into<String>) {
-        self.connecting_id = Some(id.into());
+        let id = id.into();
+        if !self.is_connecting(&id) {
+            self.connecting_ids.push(id);
+        }
         self.error = None;
     }
 
-    /// Drop the connecting indicator.
-    pub fn end_connecting(&mut self) {
-        self.connecting_id = None;
+    /// Drop the connecting indicator of `id`.
+    pub fn end_connecting(&mut self, id: &str) {
+        self.connecting_ids.retain(|connecting| connecting != id);
+    }
+
+    /// Drop every connecting indicator.
+    pub fn end_all_connecting(&mut self) {
+        self.connecting_ids.clear();
     }
 
     /// Centre of the orbit indicator on the trailing edge of a host row.
@@ -1675,7 +1690,6 @@ impl HostPanel {
     pub fn set_rows(&mut self, rows: Vec<Row>) {
         let keep = self.selected_id().map(str::to_string);
         let keep_session = self.selected_session;
-        let connecting = self.connecting_id.clone();
         self.rows = rows;
         self.selected = keep.as_deref().and_then(|id| self.row_of_host(id));
         self.selected_session = keep_session.filter(|&tab| {
@@ -1684,13 +1698,9 @@ impl HostPanel {
                 .any(|r| r.session().is_some_and(|s| s.tab_index == tab))
         });
         self.hover = None;
-        if let Some(id) = connecting {
-            if self.row_of_host(&id).is_none() {
-                self.connecting_id = None;
-            } else {
-                self.connecting_id = Some(id);
-            }
-        }
+        let mut connecting = std::mem::take(&mut self.connecting_ids);
+        connecting.retain(|id| self.row_of_host(id).is_some());
+        self.connecting_ids = connecting;
         #[cfg(debug_assertions)]
         crate::overlap::assert_panel_no_overlaps(self, 0.0, 2000.0);
     }
@@ -2752,7 +2762,23 @@ mod tests {
 
         // Drops when the host vanishes.
         panel.set_rows(vec![]);
-        assert_eq!(panel.connecting_id, None);
+        assert!(!panel.any_connecting());
+    }
+
+    #[test]
+    fn several_hosts_can_connect_at_once() {
+        let mut panel = HostPanel::default();
+        panel.set_rows(grouped());
+        panel.begin_connecting("wsl:Ubuntu-24.04");
+        panel.begin_connecting("local");
+        panel.begin_connecting("local");
+        assert!(panel.is_connecting("wsl:Ubuntu-24.04") && panel.is_connecting("local"));
+
+        panel.end_connecting("local");
+        assert!(panel.is_connecting("wsl:Ubuntu-24.04") && !panel.is_connecting("local"));
+
+        panel.end_all_connecting();
+        assert!(!panel.any_connecting());
     }
 
     #[test]

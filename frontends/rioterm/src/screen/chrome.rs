@@ -46,6 +46,12 @@ impl Screen<'_> {
             .filter_map(|tab| tab.current().host_id.clone())
             .collect();
         let store_changed = self.retire_sftp_browsers(&open_host_ids) || store_changed;
+        let live_host_ids: Vec<String> = self
+            .context_manager
+            .contexts_mut()
+            .iter()
+            .flat_map(|tab| tab.live_host_ids())
+            .collect();
         let current = self.context_manager.current_index();
         let len = self.context_manager.len();
         let sessions: Vec<hosts::OpenSession> = (0..len)
@@ -77,7 +83,7 @@ impl Screen<'_> {
             self.host_store.groups(),
             &self.chrome.panel.collapsed_groups,
             &self.chrome.panel.collapsed_hosts,
-            &open_host_ids,
+            &live_host_ids,
             &sessions,
         );
         let mut rows_changed = rows != self.chrome.panel.rows;
