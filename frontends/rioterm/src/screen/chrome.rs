@@ -18,6 +18,7 @@ impl Screen<'_> {
     /// from the open tabs. Returns whether the chrome changed.
     pub fn pump_chrome(&mut self) -> bool {
         let update_changed = self.pump_updater();
+        let update_changed = self.pump_paste_errors() || update_changed;
         let store_changed = self.host_store.drain() || update_changed;
         let store_changed = self.settle_sftp_auth() || store_changed;
         // Apply the initial collapsed-groups seed from the DB exactly once.
@@ -263,6 +264,14 @@ impl Screen<'_> {
         &mut self,
     ) -> Option<terminus_ui::PendingVaultAction> {
         self.pending_vault_continue.take()
+    }
+
+    fn pump_paste_errors(&mut self) -> bool {
+        let Some(error) = self.paste_errors.take() else {
+            return false;
+        };
+        self.chrome.panel.error = Some(error);
+        true
     }
 
     /// Surface update progress on the sidebar notice band, and start a
