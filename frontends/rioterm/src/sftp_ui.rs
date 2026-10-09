@@ -564,10 +564,7 @@ impl ActiveSftp {
                 self.cd_parent(self.state.focus);
                 true
             }
-            SftpKey::Delete => {
-                self.remove_selected();
-                true
-            }
+            SftpKey::Delete => false,
             SftpKey::Mkdir => {
                 self.state.begin_mkdir();
                 true
@@ -824,6 +821,14 @@ impl ActiveSftp {
 
     pub fn remove_focused(&mut self) {
         self.remove_selected();
+    }
+
+    /// The confirmation to show before removing the selected row.
+    pub fn delete_prompt(&self) -> Option<terminus_ui::confirm::ConfirmPrompt> {
+        let row = self.state.selected(self.state.focus)?;
+        Some(terminus_ui::confirm::ConfirmPrompt::sftp_delete(
+            &row.name, row.is_dir,
+        ))
     }
 
     /// Type into the active name editor. Returns true when consumed.

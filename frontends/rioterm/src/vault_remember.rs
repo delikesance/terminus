@@ -66,15 +66,46 @@ fn write_fallback(passphrase: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let mut f = fs::File::create(&path).map_err(|e| e.to_string())?;
-    f.write_all(passphrase.as_bytes())
-        .map_err(|e| e.to_string())?;
+    write_private(&path, passphrase)
+}
+
+fn write_private(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut f = options.open(path).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        f.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
     }
-    Ok(())
+    f.write_all(contents.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::write_private;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn private_file_is_0600_even_when_it_already_existed() {
+        let path = std::env::temp_dir()
+            .join(format!("terminus-remember-{}", std::process::id()));
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, "secret").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 fn read_fallback() -> Option<String> {

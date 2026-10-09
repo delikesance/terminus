@@ -13,6 +13,7 @@
 
 pub mod folder_diff;
 pub mod modal_event_handlers;
+mod progress_throttle;
 pub mod sftp_worker;
 pub mod ssh_transport;
 pub mod terminus_bridge_impl;

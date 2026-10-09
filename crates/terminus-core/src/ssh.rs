@@ -472,8 +472,6 @@ impl client::Handler for ClientHandler {
             // Capture-only: the caller first probes, shows the user the
             // fingerprint, then reconnects with `ApproveFingerprint`.
             HostKeyOutcome::Unknown { fingerprint }
-        } else if matches!(self.policy, HostKeyPolicy::AcceptAll) {
-            HostKeyOutcome::Known { fingerprint }
         } else if recorded.is_empty() {
             match &self.policy {
                 HostKeyPolicy::Strict => HostKeyOutcome::Refused {
@@ -491,9 +489,8 @@ impl client::Handler for ClientHandler {
                     reason: format!("approved fingerprint was {approved}, server presented {fingerprint}"),
                 },
                 HostKeyPolicy::Tofu => HostKeyOutcome::Recorded { fingerprint },
-                HostKeyPolicy::Probe | HostKeyPolicy::AcceptAll => {
-                    unreachable!("handled above")
-                }
+                HostKeyPolicy::AcceptAll => HostKeyOutcome::Known { fingerprint },
+                HostKeyPolicy::Probe => unreachable!("handled above"),
             }
         } else {
             let body = server_public_key
@@ -523,14 +520,6 @@ impl client::Handler for ClientHandler {
 
         let accepted = decision.accepted();
         if accepted {
-            if let HostKeyOutcome::Recorded { .. } = decision {
-                if let Err(err) =
-                    self.known_hosts
-                        .record(&self.host, self.port, server_public_key)
-                {
-                    warn!(error = %err, host = %self.host, "could not persist host key");
-                }
-            }
             if matches!(
                 decision,
                 HostKeyOutcome::Approved { .. } | HostKeyOutcome::Recorded { .. }
@@ -1457,5 +1446,66 @@ mod tests {
                 || msg.contains("ssh"),
             "unexpected error: {err}"
         );
+    }
+
+    const RECORDED_KEY: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIHAaua3lZIlkQMUKDa8Ix39k1KNRzX1FvOmM3finEvB9";
+    const OTHER_KEY: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIJzqndyNUcW5Uxz66ydEvKfL5UfoVCGq0L/u4y6+0GJ9";
+
+    async fn check_with_policy(
+        policy: HostKeyPolicy,
+        recorded: Option<&str>,
+        presented: &str,
+        tag: &str,
+    ) -> (bool, Option<HostKeyOutcome>) {
+        let known_hosts = temp_known_hosts(tag);
+        if let Some(key) = recorded {
+            std::fs::write(known_hosts.path(), format!("h.test ssh-ed25519 {key}\n"))
+                .unwrap();
+        }
+        let outcome = Arc::new(Mutex::new(None));
+        let mut handler = ClientHandler {
+            host: "h.test".into(),
+            port: 22,
+            policy,
+            known_hosts: known_hosts.clone(),
+            outcome: Arc::clone(&outcome),
+        };
+        let key = PublicKey::from_openssh(&format!("ssh-ed25519 {presented}")).unwrap();
+        let accepted = client::Handler::check_server_key(&mut handler, &key)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_file(known_hosts.path());
+        let decision = outcome.lock().unwrap().clone();
+        (accepted, decision)
+    }
+
+    #[tokio::test]
+    async fn accept_all_rejects_a_changed_host_key() {
+        let (accepted, decision) = check_with_policy(
+            HostKeyPolicy::AcceptAll,
+            Some(RECORDED_KEY),
+            OTHER_KEY,
+            "aa-changed",
+        )
+        .await;
+        assert!(!accepted);
+        assert!(matches!(decision, Some(HostKeyOutcome::Changed { .. })));
+    }
+
+    #[tokio::test]
+    async fn accept_all_accepts_unknown_and_matching_hosts() {
+        let (unknown, _) =
+            check_with_policy(HostKeyPolicy::AcceptAll, None, OTHER_KEY, "aa-unknown")
+                .await;
+        let (matching, _) = check_with_policy(
+            HostKeyPolicy::AcceptAll,
+            Some(RECORDED_KEY),
+            RECORDED_KEY,
+            "aa-match",
+        )
+        .await;
+        assert!(unknown && matching);
     }
 }
