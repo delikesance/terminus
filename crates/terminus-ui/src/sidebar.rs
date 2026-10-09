@@ -20,6 +20,7 @@
 use std::collections::HashSet;
 
 use crate::components::input::TextDraft;
+use crate::components::scroll::VScroll;
 use crate::geom::Rect;
 use crate::icons::Icon;
 use crate::os_icons::HostStatus;
@@ -1573,21 +1574,19 @@ impl HostPanel {
     /// sized and placed like a scrollbar over the viewport. `None` while
     /// the whole list fits.
     pub fn scroll_thumb(&self, origin_y: f32, height: f32) -> Option<Rect> {
-        let max = self.max_scroll(origin_y, height);
-        if max <= 0.5 {
-            return None;
-        }
         let body = self.body_rect(origin_y, height);
-        let content = self.content_height().max(1.0);
-        let thumb_h = (body.height * body.height / content)
-            .clamp(SCROLL_THUMB_MIN.min(body.height), body.height);
-        let progress = (self.scroll / max).clamp(0.0, 1.0);
-        Some(Rect::new(
-            ORIGIN_X + WIDTH - SCROLL_THUMB_INSET - SCROLL_THUMB_WIDTH,
-            body.y + (body.height - thumb_h) * progress,
-            SCROLL_THUMB_WIDTH,
-            thumb_h,
-        ))
+        VScroll {
+            track: Rect::new(
+                ORIGIN_X + WIDTH - SCROLL_THUMB_INSET - SCROLL_THUMB_WIDTH,
+                body.y,
+                SCROLL_THUMB_WIDTH,
+                body.height,
+            ),
+            content: self.content_height(),
+            viewport: body.height,
+            min_thumb: SCROLL_THUMB_MIN,
+        }
+        .thumb(self.scroll)
     }
 
     /// Scroll the least needed for row `index` to be fully on screen.

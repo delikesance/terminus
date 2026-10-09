@@ -9,4 +9,5 @@ pub mod input;
 pub mod list;
 pub mod navigation;
 pub mod overlay;
+pub mod scroll;
 pub mod selection;
