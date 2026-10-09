@@ -73,6 +73,7 @@ pub struct Screen<'screen> {
     /// renderer) because the chrome, the keyboard and the painter all
     /// need it, and only the screen sees mouse and key events.
     pub host_store: crate::hosts::HostRepository,
+    pub paste_errors: image_paste::PasteErrors,
     /// Background release check / self-update.
     pub updater: crate::updater::Updater,
     /// Terminus chrome: activity rail, host panel and add-host editor.
@@ -470,6 +471,7 @@ impl Screen<'_> {
                 config.updates.into(),
                 host_wake.clone(),
             ),
+            paste_errors: image_paste::PasteErrors::new(host_wake.clone()),
             tunnels: Some(crate::tunnel_worker::TunnelController::spawn(
                 crate::hosts::data_dir(),
                 host_wake.clone(),
