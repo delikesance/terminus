@@ -10,10 +10,11 @@
 #[path = "walk_remote.rs"]
 mod walk_remote;
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use terminus_core::local_fs::{self, LocalEntry};
@@ -220,6 +221,37 @@ enum ConflictReply {
     Cancel,
 }
 
+/// Conflict replies shared with the transfer task, which runs off the command loop.
+struct ConflictInbox(Mutex<Receiver<ConflictReply>>);
+
+impl ConflictInbox {
+    fn try_recv(&self) -> Result<ConflictReply, TryRecvError> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_recv()
+    }
+
+    fn recv_timeout(&self, wait: Duration) -> Result<ConflictReply, RecvTimeoutError> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .recv_timeout(wait)
+    }
+}
+
+/// A copy queued for the transfer task, with the connections it was started on.
+struct TransferJob {
+    folder: bool,
+    from_side: SftpSide,
+    from_path: String,
+    to_side: SftpSide,
+    to_cwd: String,
+    name: String,
+    left: Option<Arc<SftpConnection>>,
+    right: Option<Arc<SftpConnection>>,
+}
+
 /// UI-side handle to the SFTP worker thread.
 pub struct SftpWorker {
     commands: Sender<SftpCommand>,
@@ -299,10 +331,10 @@ fn emit(
 }
 
 fn conn_mut<'a>(
-    left: &'a mut Option<SftpConnection>,
-    right: &'a mut Option<SftpConnection>,
+    left: &'a mut Option<Arc<SftpConnection>>,
+    right: &'a mut Option<Arc<SftpConnection>>,
     side: SftpSide,
-) -> &'a mut Option<SftpConnection> {
+) -> &'a mut Option<Arc<SftpConnection>> {
     match side {
         SftpSide::Left => left,
         SftpSide::Right => right,
@@ -310,19 +342,19 @@ fn conn_mut<'a>(
 }
 
 fn conn_ref<'a>(
-    left: &'a Option<SftpConnection>,
-    right: &'a Option<SftpConnection>,
+    left: &'a Option<Arc<SftpConnection>>,
+    right: &'a Option<Arc<SftpConnection>>,
     side: SftpSide,
 ) -> Option<&'a SftpConnection> {
     match side {
-        SftpSide::Left => left.as_ref(),
-        SftpSide::Right => right.as_ref(),
+        SftpSide::Left => left.as_deref(),
+        SftpSide::Right => right.as_deref(),
     }
 }
 
 fn side_is_remote(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     side: SftpSide,
 ) -> bool {
     conn_ref(left, right, side).is_some()
@@ -415,8 +447,15 @@ fn worker(
     };
 
     runtime.block_on(async move {
-        let mut left_conn: Option<SftpConnection> = None;
-        let mut right_conn: Option<SftpConnection> = None;
+        let (transfers, jobs) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(run_transfers(
+            jobs,
+            events.clone(),
+            wake.clone(),
+            Arc::new(ConflictInbox(Mutex::new(conflicts))),
+        ));
+        let mut left_conn: Option<Arc<SftpConnection>> = None;
+        let mut right_conn: Option<Arc<SftpConnection>> = None;
         let mut edit_sessions: Vec<EditSession> = Vec::new();
         let mut next_edit_id: u64 = 1;
 
@@ -431,7 +470,7 @@ fn worker(
                         &mut next_edit_id,
                         &events,
                         &wake,
-                        &conflicts,
+                        &transfers,
                     )
                     .await;
                     if should_break {
@@ -470,13 +509,13 @@ struct EditSession {
 #[allow(clippy::too_many_arguments)]
 async fn handle_command(
     cmd: SftpCommand,
-    left_conn: &mut Option<SftpConnection>,
-    right_conn: &mut Option<SftpConnection>,
+    left_conn: &mut Option<Arc<SftpConnection>>,
+    right_conn: &mut Option<Arc<SftpConnection>>,
     edit_sessions: &mut Vec<EditSession>,
     next_edit_id: &mut u64,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Receiver<ConflictReply>,
+    transfers: &tokio::sync::mpsc::UnboundedSender<TransferJob>,
 ) -> bool {
     match cmd {
         SftpCommand::ResolveConflict { .. } | SftpCommand::CancelTransfer => {
@@ -488,7 +527,7 @@ async fn handle_command(
             *conn_mut(left_conn, right_conn, side) = None;
             match connect_sftp_for_host(&opts).await {
                 Ok(conn) => {
-                    *conn_mut(left_conn, right_conn, side) = Some(conn);
+                    *conn_mut(left_conn, right_conn, side) = Some(Arc::new(conn));
                     emit(events, wake, SftpEvent::Ready { side });
                 }
                 Err(err) => {
@@ -599,26 +638,19 @@ async fn handle_command(
             to_cwd,
             name,
         } => {
-            match transfer(
-                left_conn, right_conn, from_side, &from_path, to_side, &to_cwd, &name,
-                events, wake, conflicts,
-            )
-            .await
-            {
-                Ok(()) => {
-                    let to_remote = side_is_remote(left_conn, right_conn, to_side);
-                    if to_remote {
-                        if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
-                            emit_listed_remote(events, wake, to_side, conn, &to_cwd)
-                                .await;
-                        }
-                    } else {
-                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd))
-                            .await;
-                    }
-                }
-                Err(err) => emit(events, wake, SftpEvent::Failed(err)),
-            }
+            queue_transfer(
+                transfers,
+                TransferJob {
+                    folder: false,
+                    from_side,
+                    from_path,
+                    to_side,
+                    to_cwd,
+                    name,
+                    left: left_conn.clone(),
+                    right: right_conn.clone(),
+                },
+            );
             false
         }
         SftpCommand::EditRemote {
@@ -651,26 +683,19 @@ async fn handle_command(
             to_cwd,
             name,
         } => {
-            match transfer_folder(
-                left_conn, right_conn, from_side, &from_path, to_side, &to_cwd, &name,
-                events, wake, conflicts,
-            )
-            .await
-            {
-                Ok(()) => {
-                    let to_remote = side_is_remote(left_conn, right_conn, to_side);
-                    if to_remote {
-                        if let Some(conn) = conn_ref(left_conn, right_conn, to_side) {
-                            emit_listed_remote(events, wake, to_side, conn, &to_cwd)
-                                .await;
-                        }
-                    } else {
-                        emit_listed_local(events, wake, to_side, Path::new(&to_cwd))
-                            .await;
-                    }
-                }
-                Err(err) => emit(events, wake, SftpEvent::Failed(err)),
-            }
+            queue_transfer(
+                transfers,
+                TransferJob {
+                    folder: true,
+                    from_side,
+                    from_path,
+                    to_side,
+                    to_cwd,
+                    name,
+                    left: left_conn.clone(),
+                    right: right_conn.clone(),
+                },
+            );
             false
         }
         SftpCommand::RemoveRemoteRecursive { side, path } => {
@@ -679,9 +704,19 @@ async fn handle_command(
                 return false;
             };
             let parent = parent_remote(&path);
-            match conn.remove_recursive(&path).await {
+            let removed = run_with_retry(
+                Operation::RecursiveRemove,
+                RetryPolicy::DEFAULT,
+                || async {
+                    conn.remove_recursive(&path)
+                        .await
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .await;
+            match removed {
                 Ok(()) => emit_listed_remote(events, wake, side, conn, &parent).await,
-                Err(err) => emit(events, wake, SftpEvent::Failed(err.to_string())),
+                Err(err) => emit(events, wake, SftpEvent::Failed(err)),
             }
             false
         }
@@ -692,6 +727,133 @@ async fn handle_command(
             emit(events, wake, SftpEvent::Closed);
             debug!("sftp worker closed");
             true
+        }
+    }
+}
+
+fn queue_transfer(
+    transfers: &tokio::sync::mpsc::UnboundedSender<TransferJob>,
+    job: TransferJob,
+) {
+    if transfers.send(job).is_err() {
+        warn!("sftp transfer task stopped");
+    }
+}
+
+/// Runs queued copies one at a time (they share one conflict channel) so the
+/// command loop keeps serving navigation meanwhile.
+async fn run_transfers(
+    mut jobs: tokio::sync::mpsc::UnboundedReceiver<TransferJob>,
+    events: Sender<SftpEvent>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    conflicts: Arc<ConflictInbox>,
+) {
+    while let Some(job) = jobs.recv().await {
+        run_transfer_job(&job, &events, &wake, &conflicts).await;
+    }
+}
+
+async fn run_transfer_job(
+    job: &TransferJob,
+    events: &Sender<SftpEvent>,
+    wake: &Option<Arc<dyn Fn() + Send + Sync>>,
+    conflicts: &ConflictInbox,
+) {
+    let TransferJob {
+        folder,
+        from_side,
+        from_path,
+        to_side,
+        to_cwd,
+        name,
+        left,
+        right,
+    } = job;
+    let result = if *folder {
+        transfer_folder(
+            left, right, *from_side, from_path, *to_side, to_cwd, name, events, wake,
+            conflicts,
+        )
+        .await
+    } else {
+        transfer(
+            left, right, *from_side, from_path, *to_side, to_cwd, name, events, wake,
+            conflicts,
+        )
+        .await
+    };
+    if let Err(err) = result {
+        emit(events, wake, SftpEvent::Failed(err));
+        return;
+    }
+    if let Some(conn) = conn_ref(left, right, *to_side) {
+        emit_listed_remote(events, wake, *to_side, conn, to_cwd).await;
+    } else {
+        emit_listed_local(events, wake, *to_side, Path::new(to_cwd)).await;
+    }
+}
+
+/// Operations whose outcome is the same when run again; only these are replayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operation {
+    /// Lands in a temp sibling, then renames over the target.
+    Download,
+    /// Streams into a temp sibling, then renames over the target.
+    Upload,
+    /// Same temp-then-replace write on the destination.
+    RemoteFileCopy,
+    ListRemote,
+    /// Writes straight onto the target: a replay could leave a mix.
+    LocalCopy,
+    RecursiveRemove,
+    RemoteArchiveCopy,
+}
+
+impl Operation {
+    fn is_idempotent(self) -> bool {
+        matches!(
+            self,
+            Self::Download | Self::Upload | Self::RemoteFileCopy | Self::ListRemote
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetryPolicy {
+    max_attempts: usize,
+    delay: Duration,
+}
+
+impl RetryPolicy {
+    const DEFAULT: Self = Self {
+        max_attempts: 3,
+        delay: Duration::from_millis(500),
+    };
+}
+
+async fn run_with_retry<T, F, Fut>(
+    op: Operation,
+    policy: RetryPolicy,
+    mut attempt: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let max_attempts = if op.is_idempotent() {
+        policy.max_attempts
+    } else {
+        1
+    };
+    let mut tried = 1;
+    loop {
+        match attempt().await {
+            Err(err) if tried < max_attempts => {
+                warn!(?op, tried, error = %err, "sftp operation failed, retrying");
+                tokio::time::sleep(policy.delay * tried as u32).await;
+                tried += 1;
+            }
+            outcome => return outcome,
         }
     }
 }
@@ -722,8 +884,8 @@ fn cleanup_edit_temp(local_path: &Path) {
 
 #[allow(clippy::too_many_arguments)]
 async fn start_edit_remote(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     side: SftpSide,
     remote_path: &str,
     name: &str,
@@ -790,8 +952,8 @@ async fn start_edit_remote(
 
 async fn poll_edit_sessions(
     sessions: &mut [EditSession],
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
@@ -869,8 +1031,8 @@ async fn poll_edit_sessions(
 
 #[allow(clippy::too_many_arguments)]
 async fn transfer(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     from_side: SftpSide,
     from_path: &str,
     to_side: SftpSide,
@@ -878,7 +1040,7 @@ async fn transfer(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Receiver<ConflictReply>,
+    conflicts: &ConflictInbox,
 ) -> Result<(), String> {
     let from_remote = side_is_remote(left, right, from_side);
     let to_remote = side_is_remote(left, right, to_side);
@@ -960,8 +1122,8 @@ async fn transfer(
 static SINGLE_FILE_CONFLICT_ID: AtomicU64 = AtomicU64::new(1 << 40);
 
 async fn destination_exists(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     to_side: SftpSide,
     to_cwd: &str,
     name: &str,
@@ -993,8 +1155,8 @@ fn same_local_file(a: &str, b: &str) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 async fn transfer_file(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     from_side: SftpSide,
     from_path: &str,
     to_side: SftpSide,
@@ -1014,13 +1176,19 @@ async fn transfer_file(
         (false, true) => {
             let conn =
                 conn_ref(left, right, to_side).ok_or_else(|| not_connected(to_side))?;
-            transfer_upload(conn, &from_path_local, &to_path_remote, events, wake).await
+            run_with_retry(Operation::Upload, RetryPolicy::DEFAULT, || {
+                transfer_upload(conn, &from_path_local, &to_path_remote, events, wake)
+            })
+            .await
         }
         // Remote → Local: download
         (true, false) => {
             let conn = conn_ref(left, right, from_side)
                 .ok_or_else(|| not_connected(from_side))?;
-            transfer_download(conn, from_path, &to_path_local, events, wake).await
+            run_with_retry(Operation::Download, RetryPolicy::DEFAULT, || {
+                transfer_download(conn, from_path, &to_path_local, events, wake)
+            })
+            .await
         }
         // Remote → Remote: chunked SFTP relay (no temp file).
         (true, true) => {
@@ -1037,20 +1205,27 @@ async fn transfer_file(
                     total: 0,
                 },
             );
-            let total = from_conn
-                .copy_to(from_path, to_conn, &to_path_remote, |n| {
-                    emit(
-                        events,
-                        wake,
-                        SftpEvent::TransferProgress {
-                            label: format!("Copy {name}"),
-                            done: n,
-                            total: 0,
-                        },
-                    );
-                })
-                .await
-                .map_err(|e| e.to_string())?;
+            let total = run_with_retry(
+                Operation::RemoteFileCopy,
+                RetryPolicy::DEFAULT,
+                || async {
+                    from_conn
+                        .copy_to(from_path, to_conn, &to_path_remote, |n| {
+                            emit(
+                                events,
+                                wake,
+                                SftpEvent::TransferProgress {
+                                    label: format!("Copy {name}"),
+                                    done: n,
+                                    total: 0,
+                                },
+                            );
+                        })
+                        .await
+                        .map_err(|e| e.to_string())
+                },
+            )
+            .await?;
             emit(
                 events,
                 wake,
@@ -1081,9 +1256,13 @@ async fn transfer_file(
                         .map_err(|e| e.to_string())?;
                 }
             }
-            let copied = tokio::fs::copy(&from_path_local, &to_path_local)
-                .await
-                .map_err(|e| e.to_string())?;
+            let copied =
+                run_with_retry(Operation::LocalCopy, RetryPolicy::DEFAULT, || async {
+                    tokio::fs::copy(&from_path_local, &to_path_local)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await?;
             emit(
                 events,
                 wake,
@@ -1656,8 +1835,8 @@ fn extract_local_archive(
 /// fails with a clear error (no per-file SFTP fallback).
 #[allow(clippy::too_many_arguments)]
 async fn transfer_folder(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     from_side: SftpSide,
     from_path: &str,
     to_side: SftpSide,
@@ -1665,7 +1844,7 @@ async fn transfer_folder(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Receiver<ConflictReply>,
+    conflicts: &ConflictInbox,
 ) -> Result<(), String> {
     let from_remote = side_is_remote(left, right, from_side);
     let to_remote = side_is_remote(left, right, to_side);
@@ -1838,9 +2017,11 @@ async fn transfer_folder_remote_to_remote(
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<(), String> {
-    transfer_folder_remote_to_remote_via_archive(
-        from, to, from_path, to_cwd, name, events, wake,
-    )
+    run_with_retry(Operation::RemoteArchiveCopy, RetryPolicy::DEFAULT, || {
+        transfer_folder_remote_to_remote_via_archive(
+            from, to, from_path, to_cwd, name, events, wake,
+        )
+    })
     .await
 }
 
@@ -2054,8 +2235,8 @@ fn unzip_local(zip_path: &Path, dest_cwd: &Path) -> Result<(), String> {
 
 /// Best-effort directory check: local via metadata; remote via `list` succeeding.
 async fn is_directory(
-    left: &Option<SftpConnection>,
-    right: &Option<SftpConnection>,
+    left: &Option<Arc<SftpConnection>>,
+    right: &Option<Arc<SftpConnection>>,
     side: SftpSide,
     path: &str,
     is_remote: bool,
@@ -2088,7 +2269,10 @@ async fn list_remote(
     conn: &SftpConnection,
     path: &str,
 ) -> Result<(String, Vec<SftpListEntry>), String> {
-    let entries = conn.list(path).await.map_err(|e| e.to_string())?;
+    let entries = run_with_retry(Operation::ListRemote, RetryPolicy::DEFAULT, || async {
+        conn.list(path).await.map_err(|e| e.to_string())
+    })
+    .await?;
     Ok((
         path.to_string(),
         entries.into_iter().map(SftpListEntry::from).collect(),
@@ -2176,12 +2360,12 @@ async fn transfer_download(
 
 // --- Differential folder download (size-first + BLAKE3) ---------------------
 
-fn drain_stale_conflicts(conflicts: &Receiver<ConflictReply>) {
+fn drain_stale_conflicts(conflicts: &ConflictInbox) {
     while conflicts.try_recv().is_ok() {}
 }
 
 fn wait_conflict_reply(
-    conflicts: &Receiver<ConflictReply>,
+    conflicts: &ConflictInbox,
     expect_id: u64,
 ) -> Result<(ConflictAction, bool), String> {
     loop {
@@ -2228,7 +2412,7 @@ fn join_rel_remote(root: &str, relative: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 async fn ask_conflict(
-    conflicts: &Receiver<ConflictReply>,
+    conflicts: &ConflictInbox,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
     policy: &mut ConflictPolicy,
@@ -2442,7 +2626,7 @@ async fn transfer_folder_differential_to_local(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Receiver<ConflictReply>,
+    conflicts: &ConflictInbox,
 ) -> Result<(), String> {
     drain_stale_conflicts(conflicts);
     emit(
@@ -2612,7 +2796,7 @@ async fn transfer_folder_differential_remote_to_remote(
     name: &str,
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
-    conflicts: &Receiver<ConflictReply>,
+    conflicts: &ConflictInbox,
 ) -> Result<(), String> {
     drain_stale_conflicts(conflicts);
     emit(
@@ -3270,5 +3454,119 @@ mod tests {
         assert!(listed, "ListLocal should still be processed");
         worker.send(SftpCommand::Close);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    fn wait_for_event<T>(
+        worker: &SftpWorker,
+        mut pick: impl FnMut(SftpEvent) -> Option<T>,
+    ) -> Option<T> {
+        for _ in 0..150 {
+            for event in worker.drain() {
+                if let Some(found) = pick(event) {
+                    return Some(found);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[test]
+    fn listing_is_served_while_a_transfer_waits_on_a_conflict() {
+        let dir = std::env::temp_dir().join(format!(
+            "terminus-sftp-nav-during-transfer-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (src, dst) = (dir.join("src"), dir.join("dst"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), b"new").unwrap();
+        std::fs::write(dst.join("a.txt"), b"old").unwrap();
+
+        let worker = SftpWorker::spawn(None);
+        worker.send(SftpCommand::Transfer {
+            from_side: SftpSide::Left,
+            from_path: src.join("a.txt").to_string_lossy().into_owned(),
+            to_side: SftpSide::Right,
+            to_cwd: dst.to_string_lossy().into_owned(),
+            name: "a.txt".into(),
+        });
+        let conflict = wait_for_event(&worker, |e| {
+            matches!(e, SftpEvent::Conflict { .. }).then_some(())
+        });
+        assert!(
+            conflict.is_some(),
+            "transfer should be waiting on a conflict"
+        );
+
+        worker.send(SftpCommand::ListLocal {
+            side: SftpSide::Left,
+            path: src.clone(),
+        });
+        let listed = wait_for_event(&worker, |e| {
+            matches!(e, SftpEvent::Listed { .. }).then_some(())
+        });
+        assert!(
+            listed.is_some(),
+            "navigation must not wait for the transfer"
+        );
+
+        worker.send(SftpCommand::CancelTransfer);
+        worker.send(SftpCommand::Close);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const NO_DELAY: RetryPolicy = RetryPolicy {
+        max_attempts: 3,
+        delay: Duration::ZERO,
+    };
+
+    async fn calls_until_ok(
+        op: Operation,
+        failures: usize,
+    ) -> (Result<(), String>, usize) {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let result = run_with_retry(op, NO_DELAY, || async {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            if n < failures {
+                Err("connection reset".to_string())
+            } else {
+                Ok(())
+            }
+        })
+        .await;
+        (result, calls.into_inner())
+    }
+
+    #[tokio::test]
+    async fn idempotent_operations_are_replayed_until_they_succeed() {
+        for op in [
+            Operation::Download,
+            Operation::Upload,
+            Operation::RemoteFileCopy,
+            Operation::ListRemote,
+        ] {
+            assert_eq!(calls_until_ok(op, 2).await, (Ok(()), 3), "{op:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_stops_at_the_attempt_limit_and_keeps_the_last_error() {
+        let (result, calls) = calls_until_ok(Operation::Download, 10).await;
+        assert_eq!(result, Err("connection reset".to_string()));
+        assert_eq!(calls, NO_DELAY.max_attempts);
+    }
+
+    #[tokio::test]
+    async fn non_idempotent_operations_are_never_replayed() {
+        for op in [
+            Operation::LocalCopy,
+            Operation::RecursiveRemove,
+            Operation::RemoteArchiveCopy,
+        ] {
+            let (result, calls) = calls_until_ok(op, 1).await;
+            assert!(result.is_err(), "{op:?}");
+            assert_eq!(calls, 1, "{op:?}");
+        }
     }
 }

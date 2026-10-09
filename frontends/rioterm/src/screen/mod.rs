@@ -92,8 +92,11 @@ pub struct Screen<'screen> {
     saved_tabs: saved_tabs::SavedTabsState,
     /// When the sidebar's connecting indicator started. Drives the orbit
     /// phase and the clear-when-ready timer. Paired with
-    /// `chrome.panel.connecting_id` / `chrome.connection`.
+    /// `chrome.panel.connecting_ids` / `chrome.connection`.
     connecting_started: Option<std::time::Instant>,
+    /// Hosts still coming up whose connection modal was taken over by a
+    /// later one (Open All), with when they started.
+    background_connecting: Vec<(String, std::time::Instant)>,
     /// When the connection modal last advanced a step (or started).
     connecting_step_at: Option<std::time::Instant>,
     /// When the success state was entered — dismiss after a short hold.
@@ -485,6 +488,7 @@ impl Screen<'_> {
             pending_vault_continue: None,
             saved_tabs: saved_tabs::SavedTabsState::default(),
             connecting_started: None,
+            background_connecting: Vec::new(),
             connecting_step_at: None,
             connecting_success_at: None,
             host_drag_anim_at: None,

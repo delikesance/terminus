@@ -11,6 +11,8 @@ use rio_backend::config::Shell;
 use rio_backend::event::EventProxy;
 use terminus_ui::sidebar::Badge;
 
+const BACKGROUND_CONNECT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// What the pane a split opens should run.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum SplitTarget {
@@ -363,6 +365,7 @@ impl Screen<'_> {
     }
 
     pub(super) fn begin_session_connecting(&mut self, id: &str) {
+        self.demote_connecting_modal();
         self.chrome.panel.begin_connecting(id);
         let now = std::time::Instant::now();
         self.connecting_started = Some(now);
@@ -415,8 +418,48 @@ impl Screen<'_> {
         });
     }
 
+    /// A new connection takes the modal: the one it replaces keeps its
+    /// sidebar indicator until its session speaks.
+    fn demote_connecting_modal(&mut self) {
+        let Some(host) = self.chrome.connection.as_ref().map(|c| c.host_id.clone())
+        else {
+            return;
+        };
+        let started = self
+            .connecting_started
+            .unwrap_or_else(std::time::Instant::now);
+        self.background_connecting.push((host, started));
+    }
+
+    /// Retire the indicators of demoted connections whose session printed,
+    /// vanished or took too long.
+    fn retire_background_connecting(&mut self) {
+        let pending = std::mem::take(&mut self.background_connecting);
+        for (host, started) in pending {
+            let printed = self.context_manager.contexts_mut().iter().any(|tab| {
+                tab.contexts().values().any(|item| {
+                    let ctx = item.context();
+                    ctx.host_id.as_deref() == Some(host.as_str())
+                        && terminal_has_printable_output(ctx)
+                })
+            });
+            let present = self
+                .context_manager
+                .contexts_mut()
+                .iter()
+                .any(|tab| tab.live_host_ids().contains(&host));
+            if printed || !present || started.elapsed() >= BACKGROUND_CONNECT_LIMIT {
+                self.chrome.panel.end_connecting(&host);
+            } else {
+                self.background_connecting.push((host, started));
+            }
+        }
+    }
+
     pub(super) fn end_session_connecting(&mut self) {
-        self.chrome.panel.end_connecting();
+        if let Some(conn) = self.chrome.connection.as_ref() {
+            self.chrome.panel.end_connecting(&conn.host_id);
+        }
         self.chrome.connection = None;
         self.connecting_started = None;
         self.connecting_step_at = None;
@@ -599,9 +642,16 @@ impl Screen<'_> {
         self.sync_lost_session();
     }
 
+    /// Whether launching `host_id` needs the vault passphrase first.
+    fn vault_locked_for(&self, host_id: &str) -> bool {
+        matches!(self.shell_for_row(host_id), Err(err) if err.contains("Unlock the vault"))
+    }
+
     /// Reopen the host of dead tab `route_id` in its place: a fresh session
     /// (with the connection progress) lands beside it, takes over its name,
     /// and the dead tab closes, so the new one sits where the old one was.
+    /// A dead pane of a split tab is replaced inside the split instead.
+    /// A locked vault prompts first and leaves the dead session until unlock.
     pub fn reconnect_lost_session(
         &mut self,
         route_id: usize,
@@ -617,22 +667,22 @@ impl Screen<'_> {
         else {
             return Ok(());
         };
-        // One pane of a split tab: its siblings stay, the fresh session
-        // opens as a tab of its own and only the dead pane goes.
-        let split = self.context_manager.contexts_mut()[tab].len() > 1;
+        if self.vault_locked_for(&host_id) {
+            self.open_vault_unlock_for(
+                terminus_ui::PendingVaultAction::ReconnectSession(route_id),
+            );
+            return Ok(());
+        }
+        if self.context_manager.contexts_mut()[tab].len() > 1 {
+            return self.reconnect_lost_pane(tab, route_id, &host_id, clipboard);
+        }
         let title = self.context_manager.custom_title(tab).map(str::to_string);
         if tab != self.context_manager.current_index() {
             self.focus_session(tab, clipboard);
         }
         let before = self.context_manager.len();
         self.add_host_session(&host_id, clipboard)?;
-        // No new tab: the vault prompt took over and opens one on unlock;
-        // the dead tab stays until then.
         if self.context_manager.len() == before {
-            return Ok(());
-        }
-        if split {
-            self.close_lost_pane(route_id);
             return Ok(());
         }
         // A name the user gave the tab survives the reconnect.
@@ -651,6 +701,36 @@ impl Screen<'_> {
             self.switch_visible_context(last, now);
         }
         self.mark_dirty();
+        Ok(())
+    }
+
+    /// Reconnect dead pane `route_id` of split tab `tab`: a fresh session
+    /// splits beside it, then the dead pane goes, so its siblings stay put.
+    fn reconnect_lost_pane(
+        &mut self,
+        tab: usize,
+        route_id: usize,
+        host_id: &str,
+        clipboard: &mut Clipboard,
+    ) -> Result<(), String> {
+        let (shell, env) = self.shell_for_row(host_id)?;
+        self.focus_session(tab, clipboard);
+        self.context_manager.contexts_mut()[tab].select_route_id(route_id);
+        let label = self.host_row_label(host_id);
+        self.begin_session_connecting(host_id);
+        if let Err(err) = self.context_manager.split_with_shell(
+            next_rich_text_id(),
+            false,
+            &mut self.sugarloaf,
+            shell,
+            env,
+            Some(host_id.to_string()),
+        ) {
+            self.end_session_connecting();
+            return Err(format!("{label}: {err}"));
+        }
+        self.host_store.detect_os(host_id);
+        self.close_lost_pane(route_id);
         Ok(())
     }
 
@@ -673,9 +753,10 @@ impl Screen<'_> {
     ///
     /// Returns whether the chrome still needs continuous redraws.
     pub(super) fn tick_session_connecting(&mut self) -> bool {
+        self.retire_background_connecting();
         if self.chrome.connection.is_none() {
             self.connecting_started = None;
-            return false;
+            return !self.background_connecting.is_empty();
         }
         let Some(started) = self.connecting_started else {
             return false;
@@ -752,7 +833,7 @@ impl Screen<'_> {
             if let Some(conn) = self.chrome.connection.as_mut() {
                 conn.mark_success();
             }
-            self.chrome.panel.end_connecting();
+            self.chrome.panel.end_connecting(&id);
             self.connecting_success_at = Some(std::time::Instant::now());
         }
 
@@ -926,6 +1007,47 @@ impl Screen<'_> {
     /// Delete a stored host and close the tabs opened from it: they would
     /// otherwise live on with no sidebar row to reach them by.
     pub fn delete_host_closing_sessions(&mut self, id: &str, clipboard: &mut Clipboard) {
+        self.close_host_sessions(id, clipboard);
+        if let Some(tunnels) = self.tunnels.as_mut() {
+            tunnels.host_deleted(id);
+        }
+        self.host_store.delete_host(id);
+    }
+
+    /// Open a session on every host of group `group_id`; reports the first
+    /// host that could not open.
+    pub fn open_group_sessions(
+        &mut self,
+        group_id: &str,
+        clipboard: &mut Clipboard,
+    ) -> Result<(), String> {
+        let mut first_error = None;
+        for id in self.group_host_ids(group_id) {
+            if let Err(err) = self.open_host_session(&id, clipboard) {
+                first_error.get_or_insert(err);
+            }
+            if self.chrome.vault_unlock_is_open() {
+                self.open_vault_unlock_for(terminus_ui::PendingVaultAction::OpenGroup(
+                    group_id.to_string(),
+                ));
+                break;
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Close the tabs opened from the hosts of group `group_id`.
+    pub fn close_group_sessions(&mut self, group_id: &str, clipboard: &mut Clipboard) {
+        for id in self.group_host_ids(group_id) {
+            self.close_host_sessions(&id, clipboard);
+        }
+    }
+
+    fn group_host_ids(&self, group_id: &str) -> Vec<String> {
+        hosts::host_ids_in_group(self.host_store.hosts(), group_id)
+    }
+
+    fn close_host_sessions(&mut self, id: &str, clipboard: &mut Clipboard) {
         for index in (0..self.context_manager.len()).rev() {
             let from_host = self
                 .context_manager
@@ -937,10 +1059,6 @@ impl Screen<'_> {
                 self.close_tab_at(index, clipboard);
             }
         }
-        if let Some(tunnels) = self.tunnels.as_mut() {
-            tunnels.host_deleted(id);
-        }
-        self.host_store.delete_host(id);
     }
 
     pub fn close_tab(&mut self, clipboard: &mut Clipboard) {

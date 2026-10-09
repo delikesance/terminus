@@ -2110,6 +2110,25 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
+                                    ChromeAction::OpenGroup(id) => {
+                                        let result =
+                                            route.window.screen.open_group_sessions(
+                                                &id,
+                                                &mut self.router.clipboard,
+                                            );
+                                        route.window.screen.chrome.panel.error =
+                                            result.err();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    ChromeAction::CloseGroup(id) => {
+                                        route.window.screen.close_group_sessions(
+                                            &id,
+                                            &mut self.router.clipboard,
+                                        );
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
                                     ChromeAction::DeleteGroup(id) => {
                                         route.window.screen.host_store.delete_group(&id);
                                         route.request_overlay_redraw();
@@ -3768,6 +3787,25 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                                 Some(err);
                                         }
                                     }
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::OpenGroup(id) => {
+                                    let result = route.window.screen.open_group_sessions(
+                                        &id,
+                                        &mut self.router.clipboard,
+                                    );
+                                    route.window.screen.chrome.panel.error = result.err();
+                                    route.request_overlay_redraw();
+                                }
+                                terminus_ui::PendingVaultAction::ReconnectSession(
+                                    route_id,
+                                ) => {
+                                    route.window.screen.run_lost_session_action(
+                                        terminus_ui::ChromeAction::ReconnectSession(
+                                            route_id,
+                                        ),
+                                        &mut self.router.clipboard,
+                                    );
                                     route.request_overlay_redraw();
                                 }
                                 terminus_ui::PendingVaultAction::SubmitHostForm => {
