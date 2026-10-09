@@ -5618,6 +5618,7 @@ dependencies = [
  "wgpu",
  "windows-sys 0.60.2",
  "winres",
+ "zbus",
 ]
 
 [[package]]
