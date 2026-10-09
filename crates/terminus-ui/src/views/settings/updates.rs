@@ -27,6 +27,9 @@ pub enum UpdateStatus {
     Downloading {
         version: String,
     },
+    Installing {
+        version: String,
+    },
     ReadyToRestart {
         version: String,
     },
@@ -45,6 +48,9 @@ impl UpdateStatus {
             UpdateStatus::Downloading { version } => {
                 format!("Downloading {version}\u{2026}")
             }
+            UpdateStatus::Installing { version } => {
+                format!("Installing {version}\u{2026}")
+            }
             UpdateStatus::ReadyToRestart { version } => {
                 format!("Restart to finish updating to {version}.")
             }
@@ -59,7 +65,9 @@ impl UpdateStatus {
     fn busy(&self) -> bool {
         matches!(
             self,
-            UpdateStatus::Checking | UpdateStatus::Downloading { .. }
+            UpdateStatus::Checking
+                | UpdateStatus::Downloading { .. }
+                | UpdateStatus::Installing { .. }
         )
     }
 }

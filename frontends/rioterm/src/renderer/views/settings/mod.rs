@@ -162,6 +162,9 @@ pub fn update_status(state: &crate::updater::UpdateState) -> UpdateStatus {
         S::Downloading { version } => UpdateStatus::Downloading {
             version: version.clone(),
         },
+        S::Installing { version } => UpdateStatus::Installing {
+            version: version.clone(),
+        },
         S::ReadyToRestart { version } | S::InstallerReady { version, .. } => {
             UpdateStatus::ReadyToRestart {
                 version: version.clone(),
