@@ -28,6 +28,7 @@ pub mod confirm_quit;
 pub mod custom_cursor;
 pub mod dialogs;
 pub mod helpers;
+pub mod icons;
 pub mod island;
 pub mod screens;
 pub mod scrollbar;
