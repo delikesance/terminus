@@ -538,6 +538,16 @@ pub fn parse_tags(text: &str) -> Vec<String> {
     tags
 }
 
+/// A value ssh would take for an option (`-oProxyCommand=…`) or split on.
+fn reject_option_like(label: &str, value: &str) -> Result<(), String> {
+    if value.starts_with('-')
+        || value.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!("{label} cannot start with '-' or contain spaces"));
+    }
+    Ok(())
+}
+
 impl HostDraft {
     /// Validate and normalise into a storable host.
     ///
@@ -548,6 +558,7 @@ impl HostDraft {
         if hostname.is_empty() {
             return Err("Hostname is required".to_string());
         }
+        reject_option_like("Hostname", hostname)?;
         let port = parse_port(&self.port)?;
         let name = match self.name.trim() {
             "" => hostname.to_string(),
@@ -557,6 +568,7 @@ impl HostDraft {
             "" => "root".to_string(),
             user => user.to_string(),
         };
+        reject_option_like("Username", &username)?;
 
         let method = match terminus_core::parse_host_auth_method(&self.auth_method) {
             Ok(ok) => ok.method,
@@ -3492,6 +3504,27 @@ mod tests {
         let rows = sidebar_rows(&platform, &[], &[], &empty, &empty, &[], &[]);
         assert_eq!(labels(&rows), vec![LOCAL_SECTION, HOSTS_SECTION]);
         assert_eq!(hosts_of(&rows).len(), 1);
+    }
+
+    #[test]
+    fn normalize_rejects_hostnames_and_usernames_ssh_would_parse_as_options() {
+        for (hostname, username) in [
+            ("-oProxyCommand=touch /tmp/x", "root"),
+            ("-oProxyCommand=x", "root"),
+            ("box host", "root"),
+            ("bo\nx", "root"),
+            ("box", "-oProxyCommand=x"),
+            ("box", "ro ot"),
+            ("box", "a\tb"),
+        ] {
+            let draft = HostDraft {
+                hostname: hostname.to_string(),
+                username: username.to_string(),
+                auth_method: "gssapi".to_string(),
+                ..HostDraft::default()
+            };
+            assert!(draft.normalize().is_err(), "{hostname:?} {username:?}");
+        }
     }
 
     #[test]

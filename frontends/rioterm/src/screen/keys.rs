@@ -211,6 +211,17 @@ impl Screen<'_> {
                 _ => None,
             };
             if let Some(action) = action {
+                if action == SftpKey::Delete {
+                    let prompt = self
+                        .sftp
+                        .as_ref()
+                        .and_then(crate::sftp_ui::ActiveSftp::delete_prompt);
+                    if let Some(prompt) = prompt {
+                        self.chrome.open_confirm(prompt);
+                        self.mark_dirty();
+                    }
+                    return;
+                }
                 if let Some(session) = self.sftp.as_mut() {
                     if session.handle_key(action) {
                         self.mark_dirty();

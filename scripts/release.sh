@@ -6,6 +6,8 @@
 # cargo-xwin, the Windows MSVC std, fontconfig, krb5, gh, nfpm, minisign, nix
 # and tar). Linux compilation runs in Docker against distro libraries,
 # never against the Nix shell's libraries. A running Docker daemon is required.
+# Without Nix (`make release-linux`), --linux-only needs only docker, gh,
+# minisign, openssl and python3; nfpm then runs from its container image.
 # Updates are signed with minisign: see scripts/sign-release.sh.
 # The convenient entry point is the flake app:
 #
@@ -99,6 +101,17 @@ export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-false}"
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-16}"
 export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
 
+# nfpm from PATH (Nix release shell), else its official container image.
+NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:v2.43.0}"
+run_nfpm() {
+    if command -v nfpm >/dev/null 2>&1; then
+        VERSION="$VERSION" nfpm "$@"
+        return
+    fi
+    docker run --rm --user "$(id -u):$(id -g)" -e VERSION="$VERSION" \
+        -v "$ROOT:$ROOT" -w "$ROOT" "$NFPM_IMAGE" "$@"
+}
+
 DIST_DIR="$ROOT/dist"
 # Start empty: files left by an earlier build (another version's .deb/.rpm)
 # would otherwise be picked up by the globs below and published again.
@@ -133,11 +146,7 @@ if [[ "$WINDOWS_ONLY" == "0" ]]; then
     # Users: pkgs.callPackage ./terminus.nix { }
     if [[ -f "$ROOT/misc/nix/terminus-bin.nix.in" ]]; then
         echo "Generating dist/terminus.nix for NixOS users..."
-        if ! command -v nix >/dev/null 2>&1; then
-            echo "release.sh: 'nix' is required to hash the tarball for terminus.nix" >&2
-            exit 1
-        fi
-        TARBALL_HASH="$(nix hash file --type sha256 --sri "$TARBALL")"
+        TARBALL_HASH="sha256-$(openssl dgst -sha256 -binary "$TARBALL" | base64 -w0)"
         sed \
             -e "s|@VERSION@|${VERSION}|g" \
             -e "s|@TARBALL_HASH@|${TARBALL_HASH}|g" \
@@ -149,16 +158,13 @@ if [[ "$WINDOWS_ONLY" == "0" ]]; then
     fi
 
     # Debian/Ubuntu (.deb) and Fedora/RHEL (.rpm) packages via nfpm.
-    if command -v nfpm >/dev/null 2>&1; then
-        echo "Packaging .deb and .rpm with nfpm..."
-        VERSION="$VERSION" nfpm package -p deb -f misc/nfpm-terminus.yaml -t "$DIST_DIR"
-        VERSION="$VERSION" nfpm package -p rpm -f misc/nfpm-terminus.yaml -t "$DIST_DIR"
-        for f in "$DIST_DIR"/terminus_*.deb "$DIST_DIR"/terminus-*.rpm; do
-            [[ -f "$f" ]] && UPLOAD+=("$f")
-        done
-    else
-        echo "release.sh: nfpm not found; skipping .deb/.rpm packaging" >&2
-    fi
+    echo "Packaging .deb and .rpm with nfpm..."
+    for format in deb rpm; do
+        run_nfpm package -p "$format" -f misc/nfpm-terminus.yaml -t "$DIST_DIR"
+    done
+    for f in "$DIST_DIR"/terminus_*.deb "$DIST_DIR"/terminus-*.rpm; do
+        [[ -f "$f" ]] && UPLOAD+=("$f")
+    done
 
     echo "Linux artifacts written."
 fi

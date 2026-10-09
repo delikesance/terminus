@@ -363,3 +363,15 @@ async fn open_adds_every_column_a_very_old_hosts_table_lacks() {
         .expect("saving a host works on the upgraded table");
     assert_eq!(store.list_hosts().await.unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn open_uses_write_ahead_logging() {
+    let store = Store::open(temp_dir("wal")).await.expect("open");
+
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(store.pool())
+        .await
+        .expect("pragma");
+
+    assert_eq!(mode, "wal");
+}
