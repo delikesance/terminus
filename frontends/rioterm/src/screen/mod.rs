@@ -705,7 +705,9 @@ mod tests {
             shell.args.last().map(String::as_str),
             Some("alice@box.example")
         );
-        assert!(env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM")));
+        assert!(
+            env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM" || k == "COLORTERM"))
+        );
     }
 
     /// `ssh` forwards the local `$TERM` in its pty request. Ours is
@@ -728,6 +730,47 @@ mod tests {
                 .find(|(k, _)| k == "TERM")
                 .map(|(_, v)| v.as_str());
             assert_eq!(term, Some("xterm-256color"), "{auth}");
+            if let Some(path) =
+                shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1])
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            if let Some((_, secret)) =
+                env.iter().find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            {
+                let _ = std::fs::remove_file(secret);
+            }
+        }
+    }
+
+    /// A remote program only knows the terminal does truecolor if
+    /// `COLORTERM` reaches it; `ssh` sends nothing unless asked. Without it
+    /// the same program that shows exact colors in a local tab drops to the
+    /// 256-color palette over SSH (flat greys, washed-out reds).
+    #[test]
+    fn ssh_shell_forwards_colorterm_so_remotes_keep_truecolor() {
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        for (auth, password, identity) in [
+            ("gssapi", None, None),
+            ("key", None, Some(pem)),
+            ("password", Some("secret"), None),
+        ] {
+            let host = host_row(auth);
+            let (shell, env) =
+                ssh_shell(&host, password, identity, None).expect("ssh shell");
+            let env = env.expect("ssh env");
+            assert!(
+                shell
+                    .args
+                    .windows(2)
+                    .any(|w| w[0] == "-o" && w[1] == "SendEnv=COLORTERM"),
+                "{auth}: ssh must be told to send COLORTERM"
+            );
+            let colorterm = env
+                .iter()
+                .find(|(k, _)| k == "COLORTERM")
+                .map(|(_, v)| v.as_str());
+            assert_eq!(colorterm, Some("truecolor"), "{auth}");
             if let Some(path) =
                 shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1])
             {
@@ -784,7 +827,9 @@ mod tests {
             .args
             .iter()
             .any(|a| a == "PreferredAuthentications=publickey"));
-        assert!(env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM")));
+        assert!(
+            env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM" || k == "COLORTERM"))
+        );
         // Cleanup the temp identity we just wrote.
         if let Some(path) = shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1]) {
             let _ = std::fs::remove_file(path);
