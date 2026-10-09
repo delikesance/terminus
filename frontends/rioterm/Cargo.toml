@@ -75,6 +75,7 @@ keyring = { version = "3", default-features = false, features = ["apple-native"]
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 keyring = { version = "3", default-features = false, features = ["linux-native"] }
+zbus = { workspace = true, features = ["blocking"] }
 
 [build-dependencies]
 cfg_aliases = "0.2.1"
