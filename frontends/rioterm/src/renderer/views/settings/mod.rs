@@ -9,7 +9,8 @@ use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::views::settings::{
-    config_edit, CursorStyle, Page, SettingsAction, SettingsView, UpdateStatus,
+    config_edit, CursorStyle, Page, SettingsAction, SettingsView, ThemeChoice,
+    UpdateStatus,
 };
 
 use crate::renderer::ui_text::{measure_ui_text, UiWeight};
@@ -137,6 +138,8 @@ pub fn load_config(view: &mut SettingsView, config: &rio_backend::config::Config
     );
     view.appearance.cursor =
         CursorStyle::from_config(&format!("{:?}", config.cursor.shape));
+    view.appearance.theme =
+        ThemeChoice::from_config(config.theme_preference().config_value());
     view.updates.check = config.updates.check;
     view.updates.auto_install = config.updates.auto_install;
 }
@@ -225,6 +228,21 @@ mod tests {
         assert_eq!(view.appearance.size, 13.0);
         assert_eq!(view.appearance.cursor, CursorStyle::Beam);
         assert!(!view.updates.check && !view.updates.auto_install);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn every_theme_choice_loads_back_as_itself() {
+        let path = tmp("theme");
+        for choice in ThemeChoice::ALL {
+            persist_at(&path, &SettingsAction::SetTheme(choice)).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut config: rio_backend::config::Config = toml::from_str(&text).unwrap();
+            config.resolve_appearance();
+            let mut view = SettingsView::new("0.0.0");
+            load_config(&mut view, &config);
+            assert_eq!(view.appearance.theme, choice, "{text}");
+        }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

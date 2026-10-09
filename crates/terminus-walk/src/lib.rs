@@ -265,7 +265,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn meta_roundtrip_and_snapshot() {

@@ -28,8 +28,10 @@ pub mod dialog_form;
 pub mod geom;
 pub mod icons;
 pub mod loading;
+pub mod lost_session;
 pub mod os_icons;
 pub mod overlap;
+pub mod palette_query;
 pub mod palette_view;
 pub mod screens;
 pub mod settings;
@@ -42,6 +44,7 @@ pub mod theme;
 pub mod tokens;
 pub mod vault_unlock;
 pub mod views;
+pub mod window_edge;
 
 pub use add_host::{
     auth_method_label, AddHostForm, AddHostHit, AddHostLayout, AddHostStep, Field,
@@ -62,6 +65,7 @@ pub use icons::{Cmd, Icon, IconPlacement};
 pub use loading::{
     breath_ring, orbit_dots, phase as loading_phase, shimmer_bar, OrbitDot,
 };
+pub use lost_session::{LostOutcome, LostSession};
 pub use os_icons::{HostStatus, OsGlyph};
 pub use overlap::{
     assert_no_overlaps, assert_panel_no_overlaps, find_overlaps, rects_overlap,

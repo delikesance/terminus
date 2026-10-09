@@ -86,7 +86,7 @@ pub fn paint_field(
     let col = |x: [f32; 4]| if disabled { over(backdrop, x, k) } else { x };
     let colu = |x: [u8; 4]| if disabled { over_u8(backdrop, x, k) } else { x };
 
-    if let Some(label) = c.label.and_then(|l| layout.label.map(|r| (l, r))) {
+    if let Some(label) = c.label.zip(layout.label) {
         draw_ui_text(
             sugarloaf,
             label.1.x,
@@ -337,6 +337,7 @@ pub fn paint_gallery(
         content_h,
     );
     let gy = y + WELL_PAD + WELL_TITLE * 1.3 + space::XL;
+    #[allow(clippy::type_complexity)]
     let states: [(&str, FieldState, &str, &str, Option<&str>, &str); 6] = [
         (
             "Default",

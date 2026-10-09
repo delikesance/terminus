@@ -18,6 +18,53 @@ pub const DEFAULT_MINIMUM_WINDOW_WIDTH: i32 =
 ))]
 pub const APPLICATION_ID: &str = "Terminus";
 
+/// Whether the window runs without OS decorations and draws its own
+/// title bar (island / shell header + caption buttons). Tab navigation
+/// only; plain navigation keeps the native decorations.
+pub fn uses_custom_titlebar(config: &Config) -> bool {
+    config.navigation.is_enabled()
+}
+
+/// Whether the window draws its own min / max / close buttons. The
+/// quake dropdown is a transient overlay without a title bar, so it
+/// never gets them even when the config asks for a custom title bar.
+#[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+pub fn shows_caption_buttons(custom_titlebar: bool, quake: bool) -> bool {
+    custom_titlebar && !quake
+}
+
+/// What closing a single window does.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CloseAction {
+    /// Drop the window now.
+    Close,
+    /// Show the confirm-before-quit dialog first.
+    Confirm,
+}
+
+/// How a close request (native `CloseRequested` or our own Close
+/// button) is handled. macOS and Windows confirm natively before the
+/// event reaches us, so there it is always `Close`. Elsewhere the in-app
+/// dialog runs only for the last window (like Windows' WM_CLOSE): closing
+/// one of several windows must not prompt, and confirming the dialog
+/// quits the app.
+pub fn close_action(
+    native_confirm: bool,
+    confirm_before_quit: bool,
+    is_last_window: bool,
+) -> CloseAction {
+    if native_confirm || !confirm_before_quit || !is_last_window {
+        CloseAction::Close
+    } else {
+        CloseAction::Confirm
+    }
+}
+
+/// The app exits when the last window is gone.
+pub fn exits_after_close(remaining_windows: usize) -> bool {
+    remaining_windows == 0
+}
+
 pub fn create_window_builder(
     title: &str,
     config: &Config,
@@ -84,6 +131,14 @@ pub fn create_window_builder(
         use rio_window::platform::wayland::WindowAttributesExtWayland;
         let app_name = app_id.unwrap_or(APPLICATION_ID);
         window_builder = window_builder.with_name(app_name.to_lowercase(), app_name);
+    }
+
+    // Wayland (GNOME/Mutter) has no server-side decorations, so
+    // rio-window would draw its own grey fallback bar above the app's
+    // header. Tab mode paints its own caption buttons instead.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    if uses_custom_titlebar(config) {
+        window_builder = window_builder.with_decorations(false);
     }
 
     #[cfg(target_os = "windows")]
@@ -298,4 +353,65 @@ pub fn configure_window(winit_window: &Window, config: &Config) {
     }
 
     winit_window.set_blur(config.window.blur.into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rio_backend::config::navigation::NavigationMode;
+
+    #[test]
+    fn tab_navigation_uses_the_custom_titlebar() {
+        let mut config = Config::default();
+        config.navigation.mode = NavigationMode::Tab;
+        assert!(uses_custom_titlebar(&config));
+    }
+
+    #[test]
+    fn plain_navigation_keeps_native_decorations() {
+        let mut config = Config::default();
+        config.navigation.mode = NavigationMode::Plain;
+        assert!(!uses_custom_titlebar(&config));
+    }
+
+    #[test]
+    fn quake_window_never_shows_caption_buttons() {
+        assert!(!shows_caption_buttons(true, true));
+        assert!(!shows_caption_buttons(false, true));
+    }
+
+    #[test]
+    fn regular_window_shows_caption_buttons_with_custom_titlebar() {
+        assert!(shows_caption_buttons(true, false));
+        assert!(!shows_caption_buttons(false, false));
+    }
+
+    #[test]
+    fn last_window_asks_first_when_confirm_before_quit_is_on() {
+        assert_eq!(close_action(false, true, true), CloseAction::Confirm);
+    }
+
+    #[test]
+    fn a_window_among_several_closes_without_asking() {
+        assert_eq!(close_action(false, true, false), CloseAction::Close);
+    }
+
+    #[test]
+    fn close_is_immediate_without_confirm_before_quit() {
+        assert_eq!(close_action(false, false, true), CloseAction::Close);
+        assert_eq!(close_action(false, false, false), CloseAction::Close);
+    }
+
+    #[test]
+    fn native_confirmation_means_close_immediately() {
+        assert_eq!(close_action(true, true, true), CloseAction::Close);
+        assert_eq!(close_action(true, false, true), CloseAction::Close);
+    }
+
+    #[test]
+    fn app_exits_only_with_the_last_window() {
+        assert!(exits_after_close(0));
+        assert!(!exits_after_close(1));
+        assert!(!exits_after_close(3));
+    }
 }

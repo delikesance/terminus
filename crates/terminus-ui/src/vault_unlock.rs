@@ -52,6 +52,8 @@ pub enum PendingVaultAction {
         host_id: String,
         other_pane: bool,
     },
+    /// Reopen the tabs from the last launch that need a saved password.
+    RestoreTabs(Vec<terminus_core::saved_tabs::SavedTab>),
 }
 
 impl PendingVaultAction {
@@ -69,6 +71,9 @@ impl PendingVaultAction {
             Self::CreateVault => "Choose a passphrase for the new vault.",
             Self::UnlockVault => {
                 "Enter your vault passphrase to use saved passwords and keys."
+            }
+            Self::RestoreTabs(_) => {
+                "Enter your vault passphrase to reopen the tabs from last time."
             }
         }
     }
@@ -96,7 +101,7 @@ pub enum VaultUnlockHit {
     Consume,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct VaultUnlockPrompt {
     open: bool,
     passphrase: TextDraft,
@@ -112,24 +117,6 @@ pub struct VaultUnlockPrompt {
     confirm_focused: bool,
     /// Name of the host this unlock is for, when known.
     host_label: Option<String>,
-}
-
-impl Default for VaultUnlockPrompt {
-    fn default() -> Self {
-        Self {
-            creating: false,
-            confirm: TextDraft::default(),
-            confirm_focused: false,
-            host_label: None,
-            open: false,
-            passphrase: TextDraft::default(),
-            visible: false,
-            remember: false,
-            error: None,
-            pending: None,
-            unlocking: false,
-        }
-    }
 }
 
 impl VaultUnlockPrompt {
@@ -695,6 +682,24 @@ mod tests {
             HINT_GAP + HINT_HEIGHT
         );
         assert!(err.hint_rect().bottom() <= err.unlock_button_rect().y);
+    }
+
+    #[test]
+    fn restoring_tabs_explains_why_the_vault_is_needed() {
+        let tabs = vec![terminus_core::saved_tabs::SavedTab {
+            host_id: "h1".into(),
+            ..Default::default()
+        }];
+        let mut prompt = VaultUnlockPrompt::default();
+        prompt.open(PendingVaultAction::RestoreTabs(tabs.clone()));
+        assert_eq!(
+            prompt.subtitle(),
+            "Enter your vault passphrase to reopen the tabs from last time."
+        );
+        assert_eq!(
+            prompt.take_pending_on_success(),
+            Some(PendingVaultAction::RestoreTabs(tabs))
+        );
     }
 
     #[test]

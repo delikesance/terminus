@@ -1,6 +1,7 @@
 use crate::event::{ClickState, EventPayload, EventProxy, RioEvent, RioEventType};
 use crate::ime::{Preedit, PreeditCursor};
 use crate::renderer::utils::update_colors_based_on_theme;
+use crate::router::window::{close_action, exits_after_close, CloseAction};
 use crate::router::{routes::RoutePath, Router};
 use crate::scheduler::{Scheduler, TimerId, Topic};
 use crate::screen::touch::on_touch;
@@ -98,6 +99,44 @@ impl Application<'_> {
         }
     }
 
+    /// Close one window, as a native close request does. Shared by
+    /// `CloseRequested` and the in-app Close button so both honour
+    /// confirm-before-quit (asked for the last window only, as Windows'
+    /// WM_CLOSE does) and leave the other windows running; the app exits
+    /// with its last window.
+    fn close_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: rio_backend::event::WindowId,
+    ) {
+        // macOS: Cmd+Q quit confirmation is handled by
+        // `applicationShouldTerminate` in rio-window.
+        // Windows: per-window close confirmation is handled
+        // by `MessageBoxW` in rio-window's WM_CLOSE handler
+        // (see `set_confirm_before_quit` plumbing).
+        // Either way, by the time we see `CloseRequested`
+        // the user has already confirmed — just close.
+        let native_confirm = cfg!(any(target_os = "macos", target_os = "windows"));
+        let is_last_window = self.router.routes.len() <= 1;
+        match close_action(
+            native_confirm,
+            self.config.confirm_before_quit,
+            is_last_window,
+        ) {
+            CloseAction::Confirm => {
+                if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    route.confirm_quit();
+                }
+            }
+            CloseAction::Close => {
+                self.router.routes.remove(&window_id);
+                if exits_after_close(self.router.routes.len()) {
+                    event_loop.exit();
+                }
+            }
+        }
+    }
+
     fn skip_window_event(event: &WindowEvent) -> bool {
         matches!(
             event,
@@ -186,6 +225,7 @@ impl Application<'_> {
         );
     }
 
+    #[allow(dead_code)]
     fn dispatch_sidebar_intent(&mut self, intent: terminus_ui::sidebar::SidebarIntent) {
         use terminus_ui::sidebar::SidebarIntent;
         match intent {
@@ -467,10 +507,9 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             unix,
             not(any(target_os = "redox", target_family = "wasm", target_os = "macos"))
         ))]
-        if cause == StartCause::Init
-            && self.config.adaptive_colors.is_some()
-            && self.config.force_theme.is_none()
-        {
+        // Started even under `force-theme`: Settings can switch to System
+        // at runtime, and `ThemeChanged` is ignored while a theme is forced.
+        if cause == StartCause::Init && self.config.adaptive_colors.is_some() {
             use rio_window::platform::linux::ActiveEventLoopExtLinux;
             event_loop.start_system_theme_monitor();
         }
@@ -835,6 +874,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                     }
                 }
             }
+            RioEventType::Rio(RioEvent::ChildExited(route_id, status)) => {
+                if let Some(route) = self.router.routes.get_mut(&window_id) {
+                    // An SSH tab whose link dropped stays open with a
+                    // "Connection lost" card instead of closing.
+                    if route.window.screen.note_child_exit(route_id, status) {
+                        route.request_overlay_redraw();
+                    }
+                }
+            }
             RioEventType::Rio(RioEvent::CloseTerminal(route_id)) => {
                 if let Some(route) = self.router.routes.get_mut(&window_id) {
                     route
@@ -843,6 +891,12 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                         .sugarloaf
                         .font_library()
                         .remove_glyph_registry(route_id);
+                    if route.window.screen.is_connection_lost(route_id) {
+                        // Kept for its Reconnect card (see `ChildExited`);
+                        // closing it is the card's or the tab's ×.
+                        route.request_overlay_redraw();
+                        return;
+                    }
                     // A host session that dies while connecting reports why.
                     route.window.screen.note_session_exit(route_id);
 
@@ -1342,31 +1396,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
 
         match event {
             WindowEvent::CloseRequested => {
-                // macOS: Cmd+Q quit confirmation is handled by
-                // `applicationShouldTerminate` in rio-window.
-                // Windows: per-window close confirmation is handled
-                // by `MessageBoxW` in rio-window's WM_CLOSE handler
-                // (see `set_confirm_before_quit` plumbing).
-                // Either way, by the time we see `CloseRequested`
-                // the user has already confirmed — just close.
-                if cfg!(any(target_os = "macos", target_os = "windows")) {
-                    self.router.routes.remove(&window_id);
-                    if self.router.routes.is_empty() {
-                        event_loop.exit();
-                    }
-                    return;
-                }
-
-                if self.config.confirm_before_quit {
-                    route.confirm_quit();
-                    return;
-                } else {
-                    self.router.routes.remove(&window_id);
-                }
-
-                if self.router.routes.is_empty() {
-                    event_loop.exit();
-                }
+                self.close_window(event_loop, window_id);
             }
 
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -1398,6 +1428,16 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
+                // Frameless Linux window: an edge press starts a resize.
+                if state == ElementState::Pressed
+                    && button == MouseButton::Left
+                    && route.window.screen.frameless_edge_press(
+                        &route.window.winit_window,
+                        self.router.quake_window_id == Some(window_id),
+                    )
+                {
+                    return;
+                }
                 if state == ElementState::Pressed
                     && button == MouseButton::Left
                     && route.window.screen.renderer.confirm_quit.is_active()
@@ -1428,8 +1468,8 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                 let logical_w =
                                     route.window.screen.sugarloaf.window_size().width
                                         / scale;
-                                let x = route.window.screen.mouse.x as f32 / scale as f32;
-                                let y = route.window.screen.mouse.y as f32 / scale as f32;
+                                let x = route.window.screen.mouse.x as f32 / scale;
+                                let y = route.window.screen.mouse.y as f32 / scale;
                                 let on_action = crate::renderer::island::title_bar_hit(
                                     logical_w, x, y,
                                 )
@@ -1646,6 +1686,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         );
                                         return;
                                     }
+                                    // Not on Windows: its Close posts WM_CLOSE,
+                                    // which arrives as `CloseRequested`.
+                                    #[cfg(not(target_os = "windows"))]
+                                    ChromeAction::WindowControl(
+                                        terminus_ui::shell::WindowButton::Close,
+                                    ) => {
+                                        self.close_window(event_loop, window_id);
+                                        return;
+                                    }
                                     ChromeAction::WindowControl(button) => {
                                         route.window.screen.apply_header_control(
                                             &route.window.winit_window,
@@ -1658,7 +1707,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::SubmitAddSnippet(values) => {
+                                    ChromeAction::SubmitAddSnippet(_values) => {
                                         route.window.screen.submit_snippet_form();
                                         route.request_overlay_redraw();
                                         return;
@@ -1907,6 +1956,16 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     }
                                     ChromeAction::DismissConnection => {
                                         route.window.screen.force_end_connecting();
+                                        route.request_overlay_redraw();
+                                        return;
+                                    }
+                                    lost @ (ChromeAction::ReconnectSession(_)
+                                    | ChromeAction::CloseLostSession(_)) => {
+                                        route.window.screen.run_lost_session_action(
+                                            lost,
+                                            &mut self.router.clipboard,
+                                        );
+                                        let _ = route.window.screen.pump_chrome();
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -2276,12 +2335,6 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::RunSnippet(cmd) => {
-                                        let line = format!("{cmd}\r");
-                                        route.window.screen.paste(&line, false);
-                                        route.request_overlay_redraw();
-                                        return;
-                                    }
                                     // Toggling the panel changes the margin
                                     // `chrome_press` already re-applied; the
                                     // grid re-layout marks itself dirty, but a
@@ -2375,15 +2428,13 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         .screen
                                         .sftp_bounds()
                                         .is_some_and(|b| b.contains(mx, my))
-                                {
-                                    if route
+                                    && route
                                         .window
                                         .screen
                                         .handle_sftp_context_press(mx, my)
-                                    {
-                                        route.request_overlay_redraw();
-                                        return;
-                                    }
+                                {
+                                    route.request_overlay_redraw();
+                                    return;
                                 }
 
                                 match route.window.screen.chrome_context_press(mx, my) {
@@ -2391,7 +2442,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    ChromeAction::SubmitAddSnippet(values) => {
+                                    ChromeAction::SubmitAddSnippet(_values) => {
                                         route.window.screen.submit_snippet_form();
                                         route.request_overlay_redraw();
                                         return;
@@ -2413,7 +2464,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         route.request_overlay_redraw();
                                         return;
                                     }
-                                    other => {
+                                    _other => {
                                         route.request_overlay_redraw();
                                         return;
                                     }
@@ -2433,6 +2484,15 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     }
                                     return;
                                 }
+                            }
+
+                            // Frameless Linux window: the compositor's window
+                            // menu on the empty header.
+                            if route.window.screen.frameless_header_menu(
+                                &route.window.winit_window,
+                                self.router.quake_window_id == Some(window_id),
+                            ) {
+                                return;
                             }
 
                             let handled_by_island =
@@ -2804,6 +2864,17 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                 route.window.screen.mouse.x = x;
                 route.window.screen.mouse.y = y;
                 route.window.screen.mouse.raw_y = position.y;
+
+                // Frameless Linux window: edges and corners own the pointer.
+                if let Some(repaint) = route.window.screen.frameless_edge_hover(
+                    &route.window.winit_window,
+                    self.router.quake_window_id == Some(window_id),
+                ) {
+                    if repaint {
+                        route.request_overlay_redraw();
+                    }
+                    return;
+                }
 
                 if route.window.screen.renderer.confirm_quit.is_active() {
                     let scale = route.window.screen.sugarloaf.scale_factor();
@@ -3715,7 +3786,23 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                     }
                                     route.request_overlay_redraw();
                                 }
+                                terminus_ui::PendingVaultAction::RestoreTabs(tabs) => {
+                                    route.window.screen.reopen_saved_tabs(
+                                        tabs,
+                                        &mut self.router.clipboard,
+                                    );
+                                    route.request_redraw();
+                                }
                             }
+                        }
+
+                        // The hosts just loaded: reopen last launch's tabs.
+                        if route
+                            .window
+                            .screen
+                            .restore_saved_tabs_if_due(&mut self.router.clipboard)
+                        {
+                            route.request_redraw();
                         }
 
                         // Update IME cursor position after rendering to ensure it's current
@@ -3845,6 +3932,7 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
         // replace it with a safe no-op placeholder.
         self.router.clipboard = Clipboard::new_nop();
 
+        crate::ssh_secrets::shred_all();
         std::process::exit(0);
     }
 }

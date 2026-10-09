@@ -164,7 +164,10 @@ mod tests {
             std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
         let dir = install(&base).unwrap();
         let Ok(mut child) = Command::new("sh")
-            .args(["-c", "exec bash --noprofile --norc -i 2>&1"])
+            // `--noediting`: without readline the output is the same whether
+            // bash was built with it (Ubuntu, CI) or not (nixpkgs `bash`), so
+            // typed input is never echoed back into the stream.
+            .args(["-c", "exec bash --noprofile --norc --noediting -i 2>&1"])
             .envs(local_env(&dir, None))
             .env("PS1", "$ ")
             .env("HISTCONTROL", "ignorespace")
@@ -191,7 +194,10 @@ mod tests {
         let a = "\x1b]133;A\x07";
         let b = "\x1b]133;B\x07";
         let c = "\x1b]133;C\x07";
-        assert!(text.contains(&format!("{a}bash")), "{text:?}");
+        // A comes before the first prompt; what bash prints ahead of it
+        // (job-control warnings without a tty) varies by environment.
+        let first_a = text.find(a).expect("no prompt start mark");
+        assert!(first_a < text.find(&format!("$ {b}")).unwrap(), "{text:?}");
         assert!(
             text.contains(&format!("$ {b}\x1b]633;E;echo hi\x07{c}hi")),
             "{text:?}"
@@ -258,5 +264,215 @@ mod tests {
         );
         assert!(text.contains("\x1b]133;D;1\x07"), "{text:?}");
         assert!(!text.contains("read-only"), "{text:?}");
+    }
+
+    /// A directory holding a fake `ssh` that prints the `TERM` it was
+    /// started with, i.e. the one a real `ssh` would put in its pty request.
+    #[cfg(unix)]
+    fn fake_ssh(base: &Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = base.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let ssh = bin.join("ssh");
+        std::fs::write(&ssh, "#!/bin/sh\necho \"remote-term=$TERM args=$*\"\n").unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
+    /// Feed `script` to an interactive shell and return what it printed.
+    /// `None` when the shell is not installed.
+    #[cfg(unix)]
+    fn run_shell(
+        program: &str,
+        args: &[&str],
+        env: &[(String, String)],
+        script: &str,
+    ) -> Option<String> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(program)
+            .args(args)
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .env("HISTFILE", "/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        Some(
+            String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr),
+        )
+    }
+
+    /// `ssh` typed (or pasted from "Copy SSH command") in a local tab must
+    /// not hand the remote our own `xterm-rio`: no host has its terminfo, so
+    /// readline, `tput` and `htop` break there. Other TERMs pass untouched.
+    #[cfg(unix)]
+    fn assert_ssh_downgrades_rio_term(name: &str, text: &str) {
+        let remote = format!("remote-term={} args=-p 22 box", crate::ssh::DEFAULT_TERM);
+        assert_eq!(text.matches(&remote).count(), 2, "{name}: {text:?}");
+        assert!(
+            text.contains("remote-term=screen args=box"),
+            "{name}: {text:?}"
+        );
+        assert!(!text.contains("remote-term=xterm-rio"), "{name}: {text:?}");
+        assert!(!text.contains("remote-term=rio "), "{name}: {text:?}");
+        // Only the ssh child sees the change, not the local shell.
+        assert!(text.contains("local-term=xterm-rio"), "{name}: {text:?}");
+    }
+
+    #[cfg(unix)]
+    const SSH_SCRIPT: &str = "ssh -p 22 box\n\
+        TERM=rio ssh -p 22 box\n\
+        TERM=screen ssh box\n\
+        echo local-term=$TERM\n\
+        exit\n";
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_ssh_advertises_a_term_remotes_know() {
+        let base =
+            std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
+        let dir = install(&base).unwrap();
+        let mut env = local_env(&dir, None);
+        env.push(("PATH".into(), fake_ssh(&base)));
+        env.push(("TERM".into(), "xterm-rio".into()));
+        let text = run_shell("bash", &["--noprofile", "--norc", "-i"], &env, SSH_SCRIPT);
+        let _ = std::fs::remove_dir_all(&base);
+        let Some(text) = text else { return };
+        assert_ssh_downgrades_rio_term("bash", &text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zsh_ssh_advertises_a_term_remotes_know() {
+        let base =
+            std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
+        let dir = install(&base).unwrap();
+        let env = vec![
+            ("HOME".to_string(), base.to_string_lossy().into_owned()),
+            ("PATH".into(), fake_ssh(&base)),
+            ("TERM".into(), "xterm-rio".into()),
+        ];
+        let script = format!(
+            "source '{}'\n{SSH_SCRIPT}",
+            dir.join("terminus.zsh").display()
+        );
+        let text = run_shell("zsh", &["-f", "-i", "-s"], &env, &script);
+        let _ = std::fs::remove_dir_all(&base);
+        let Some(text) = text else { return };
+        assert_ssh_downgrades_rio_term("zsh", &text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fish_ssh_advertises_a_term_remotes_know() {
+        let base =
+            std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
+        let dir = install(&base).unwrap();
+        let env = vec![
+            ("HOME".to_string(), base.to_string_lossy().into_owned()),
+            (
+                "XDG_CONFIG_HOME".into(),
+                base.join("config").to_string_lossy().into_owned(),
+            ),
+            (
+                "XDG_DATA_HOME".into(),
+                base.join("data").to_string_lossy().into_owned(),
+            ),
+            ("PATH".into(), fake_ssh(&base)),
+            ("TERM".into(), "xterm-rio".into()),
+        ];
+        let script = format!(
+            "source '{}'\n{}",
+            dir.join("terminus.fish").display(),
+            SSH_SCRIPT.replace("$TERM", "$TERM;")
+        );
+        let text = run_shell("fish", &["--no-config", "-i"], &env, &script);
+        let _ = std::fs::remove_dir_all(&base);
+        let Some(text) = text else { return };
+        assert_ssh_downgrades_rio_term("fish", &text);
+    }
+
+    /// A user's `ssh` alias stays in charge, and our definition must not
+    /// trip over it: shells alias-expand `ssh() {`, which is a syntax error
+    /// printed at every new tab.
+    #[cfg(unix)]
+    #[test]
+    fn bash_and_zsh_keep_a_user_ssh_alias() {
+        let base =
+            std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
+        let dir = install(&base).unwrap();
+        let rc = base.join("bashrc");
+        std::fs::write(&rc, "alias ssh='echo aliased'\n").unwrap();
+        let mut env = local_env(&dir, None);
+        env.push(("PATH".into(), fake_ssh(&base)));
+        env.push(("TERM".into(), "xterm-rio".into()));
+        let rc = rc.to_string_lossy().into_owned();
+        let bash = run_shell(
+            "bash",
+            &["--noprofile", "--rcfile", &rc, "-i"],
+            &env,
+            "ssh box\nexit\n",
+        );
+        let zsh_env = vec![
+            ("HOME".to_string(), base.to_string_lossy().into_owned()),
+            ("PATH".into(), fake_ssh(&base)),
+            ("TERM".into(), "xterm-rio".into()),
+        ];
+        let zsh = run_shell(
+            "zsh",
+            &["-f", "-i", "-s"],
+            &zsh_env,
+            &format!(
+                "alias ssh='echo aliased'\nsource '{}'\nssh box\nexit\n",
+                dir.join("terminus.zsh").display()
+            ),
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        for (name, text) in [("bash", bash), ("zsh", zsh)] {
+            let Some(text) = text else { continue };
+            assert!(text.contains("aliased box"), "{name}: {text:?}");
+            assert!(!text.contains("syntax error"), "{name}: {text:?}");
+            assert!(!text.contains("parse error"), "{name}: {text:?}");
+            assert!(!text.contains("remote-term="), "{name}: {text:?}");
+        }
+    }
+
+    /// A user's own `ssh` function (or alias) wins over ours.
+    #[cfg(unix)]
+    #[test]
+    fn bash_keeps_a_user_defined_ssh() {
+        let base =
+            std::env::temp_dir().join(format!("terminus-si-{}", uuid::Uuid::new_v4()));
+        let dir = install(&base).unwrap();
+        let rc = base.join("bashrc");
+        std::fs::write(&rc, "ssh() { echo mine; }\n").unwrap();
+        let mut env = local_env(&dir, None);
+        env.push(("PATH".into(), fake_ssh(&base)));
+        env.push(("TERM".into(), "xterm-rio".into()));
+        let rc = rc.to_string_lossy().into_owned();
+        let text = run_shell(
+            "bash",
+            &["--noprofile", "--rcfile", &rc, "-i"],
+            &env,
+            "ssh box\nexit\n",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        let Some(text) = text else { return };
+        assert!(text.contains("mine"), "{text:?}");
+        assert!(!text.contains("remote-term="), "{text:?}");
     }
 }

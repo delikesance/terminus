@@ -26,4 +26,34 @@ impl Screen<'_> {
         cmd.envs(env);
         Ok(cmd)
     }
+
+    /// Start the tunnel `key` (id or name) of the machine on screen; a
+    /// running one is left alone. For the command palette; `Err` is a
+    /// message for a toast.
+    pub(crate) fn start_tunnel(&mut self, key: &str) -> Result<(), String> {
+        let mut ctl = self
+            .tunnels
+            .take()
+            .ok_or_else(|| "Tunnels are not available".to_string())?;
+        let host = ctl.host_id().map(str::to_string);
+        let result = {
+            let this = &*self;
+            let mut spawn = |item: &TunnelItem| match &host {
+                Some(h) => this.tunnel_command(h, item),
+                None => Err("Tunnels need an SSH server".to_string()),
+            };
+            ctl.start_tunnel(key, &mut spawn)
+        };
+        self.tunnels = Some(ctl);
+        result
+    }
+
+    /// Stop the tunnel `key` (id or name) of any machine; stopping a
+    /// stopped one is fine. For the command palette.
+    pub(crate) fn stop_tunnel(&mut self, key: &str) -> Result<(), String> {
+        self.tunnels
+            .as_mut()
+            .ok_or_else(|| "Tunnels are not available".to_string())?
+            .stop_tunnel(key)
+    }
 }

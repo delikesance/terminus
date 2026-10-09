@@ -486,7 +486,7 @@ fn number(toks: &[Tok], i: &mut usize, d: &str) -> f32 {
 }
 
 /// Read one SVG arc flag (`0` or `1`), peeling a glued digit when needed.
-fn take_arc_flag(toks: &mut Vec<Tok>, i: &mut usize, d: &str) -> bool {
+fn take_arc_flag(toks: &mut [Tok], i: &mut usize, d: &str) -> bool {
     let Some(Tok::Num { value, raw }) = toks.get(*i).cloned() else {
         panic!("expected an arc flag in {d:?}");
     };
@@ -528,7 +528,7 @@ fn take_arc_flag(toks: &mut Vec<Tok>, i: &mut usize, d: &str) -> bool {
 /// separator (`a 10 10 0 012.5 0` ≡ large=0 sweep=1 x=2.5). When the next
 /// token is a multi-digit number starting with flag digits, peel them off
 /// and leave the remainder as the next number token.
-fn arc_flags(toks: &mut Vec<Tok>, i: &mut usize, d: &str) -> (bool, bool) {
+fn arc_flags(toks: &mut [Tok], i: &mut usize, d: &str) -> (bool, bool) {
     let large = take_arc_flag(toks, i, d);
     let sweep = take_arc_flag(toks, i, d);
     (large, sweep)

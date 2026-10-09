@@ -19,10 +19,7 @@ use rio_backend::sugarloaf::text::{CoverageMask, DrawOpts};
 use rio_backend::sugarloaf::Sugarloaf;
 
 use terminus_ui::chrome::Chrome;
-use terminus_ui::connection::{NodeVisual, STEP_COUNT};
-use terminus_ui::context_menu::{
-    ContextMenu, ITEM_HEIGHT as CTX_ITEM_HEIGHT, MENU_PAD_X, MENU_RADIUS,
-};
+use terminus_ui::context_menu::ContextMenu;
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Cmd, Icon, IconPlacement, LUCIDE_STROKE};
 use terminus_ui::loading::{breath_ring, orbit_dots};
@@ -39,10 +36,12 @@ const ORDER_DIALOG_POPOVER: u8 = 31;
 /// Host-drag phantom — above dialogs, rail, sticky header, everything.
 const ORDER_GHOST: u8 = 50;
 
+#[allow(dead_code)]
 const DEPTH_BG: f32 = 0.05;
 const DEPTH_CONTENT: f32 = 0.06;
 /// Sticky drawer header (title + search) painted after the scrollable list
 /// so host cards slide underneath instead of over it.
+#[allow(dead_code)]
 const DEPTH_STICKY: f32 = 0.085;
 const DEPTH_DIALOG: f32 = 0.1;
 const DEPTH_DIALOG_BG: f32 = 0.2;
@@ -58,15 +57,17 @@ const TITLE_SIZE: f32 = 12.0;
 const ROW_TITLE_SIZE: f32 = 13.0;
 /// Secondary labels / endpoints — one step smaller than the title.
 const ROW_SUB_SIZE: f32 = 11.0;
-/// Section labels are headings: small, faint and letter-spaced by case.
-
+#[allow(dead_code)]
 const DIALOG_TITLE_SIZE: f32 = 14.0;
+#[allow(dead_code)]
 const CAPTION_SIZE: f32 = 11.0;
 /// Mock inputs are `text-xs` (12px).
+#[allow(dead_code)]
 const INPUT_SIZE: f32 = 12.0;
 const HINT_SIZE: f32 = 11.0;
 
 const BORDER_WIDTH: f32 = 1.0;
+#[allow(dead_code)]
 const INPUT_PAD_X: f32 = 10.0;
 const CARET_WIDTH: f32 = 1.5;
 
@@ -394,6 +395,7 @@ pub(crate) fn paint_search_field(
 /// straight dashes and corner arcs stay anti-aliased. Corners are a
 /// chain of overlapping circular pills along the quarter-circle —
 /// `sugarloaf.arc` still ignores paint order, so we cannot use it here.
+#[allow(clippy::too_many_arguments)]
 fn draw_dashed_rounded_rect(
     sugarloaf: &mut Sugarloaf,
     x: f32,
@@ -1093,7 +1095,7 @@ fn render_settings_modal(
                 paint_surface(
                     sugarloaf,
                     &pill,
-                    rgba_u8(0x10, 0xb9, 0x81, 0.10),
+                    with_alpha(theme.success, 0.12),
                     None,
                     8.0,
                     DEPTH_DIALOG + 0.03,
@@ -1106,7 +1108,7 @@ fn render_settings_modal(
                     content_y + 2.0,
                     "Connected",
                     HINT_SIZE,
-                    [0x34, 0xd3, 0x99, 255],
+                    terminus_ui::theme::text_color(theme.success),
                     false,
                 );
             }
@@ -1489,6 +1491,7 @@ fn text_blocked_by(cover: Option<&Rect>, item: &Rect) -> bool {
 /// painted underneath — sugarloaf text always composites above quads.
 /// Prefer [`Sugarloaf::begin_overlay`] for full dialogs; this cover remains
 /// for sidebar host-row labels under the add-host panel.
+#[allow(dead_code)]
 fn add_host_label_cover(
     chrome: &Chrome,
     window_width: f32,
@@ -1505,16 +1508,13 @@ fn add_host_label_cover(
     Some(cover)
 }
 
+#[allow(dead_code)]
 fn rect_union(a: Rect, b: Rect) -> Rect {
     let x0 = a.x.min(b.x);
     let y0 = a.y.min(b.y);
     let x1 = a.right().max(b.right());
     let y1 = a.bottom().max(b.bottom());
     Rect::new(x0, y0, x1 - x0, y1 - y0)
-}
-
-fn rgba_u8(r: u8, g: u8, b: u8, a: f32) -> [f32; 4] {
-    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a]
 }
 
 /// Accent insertion bar showing where a dragged host/group will land.
@@ -1658,10 +1658,12 @@ enum DialogBorderMode {
     /// Stroke occupies `dialog`; fill is inset (settings modal).
     Inset,
     /// Stroke expands outside `dialog`; fill is the content rect (add-host / connection).
+    #[allow(dead_code)]
     Outward,
 }
 
 /// Full-window scrim + bordered dialog panel.
+#[allow(clippy::too_many_arguments)]
 fn paint_dialog_shell(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -1713,6 +1715,7 @@ fn paint_dialog_shell(
 /// When a border is requested the outer shell is accent-colored; the fill
 /// must be **opaque**. A translucent `accent_soft` over that shell reads as
 /// a solid blue brick (the bug on selected hosts / sessions).
+#[allow(dead_code)]
 fn paint_floating_surface(
     sugarloaf: &mut Sugarloaf,
     card: &Rect,
@@ -1736,6 +1739,7 @@ fn paint_floating_surface(
 ///
 /// `composite_alpha` matches [`paint_floating_surface`]: translucent fills are
 /// composited over a dark card base so washes stay soft.
+#[allow(clippy::too_many_arguments)]
 fn paint_surface(
     sugarloaf: &mut Sugarloaf,
     card: &Rect,
@@ -1760,6 +1764,7 @@ fn paint_surface(
 }
 
 /// Like [`paint_surface`], with an explicit border stroke width.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_surface_stroke(
     sugarloaf: &mut Sugarloaf,
     card: &Rect,
@@ -1854,6 +1859,7 @@ pub(crate) fn paint_hairline_h(
 }
 
 /// 1px vertical separator.
+#[allow(dead_code)]
 pub(crate) fn paint_hairline_v(
     sugarloaf: &mut Sugarloaf,
     x: f32,
@@ -1892,6 +1898,7 @@ pub(crate) fn paint_caret(
 }
 
 /// Shared labeled text-field card (Settings SqlSync, SFTP name, …).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_field_card(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -1919,6 +1926,7 @@ pub(crate) fn paint_field_card(
 }
 
 /// Field card with explicit depth/order (SFTP toolbar vs dialog chrome).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_field_card_at(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -2204,6 +2212,7 @@ pub(crate) fn paint_scrim(
 }
 
 /// Straight stroke (e.g. reset-swatch slash).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_line(
     sugarloaf: &mut Sugarloaf,
     x0: f32,
@@ -2241,6 +2250,7 @@ fn paint_bordered_badge(
 }
 
 /// Dashed CTA row: wash fill, dashed stroke, bordered badge, title + subtitle.
+#[allow(clippy::too_many_arguments)]
 fn paint_dashed_cta(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -2320,8 +2330,6 @@ fn paint_dashed_cta(
     }
 }
 
-/// Corner radius of the soft OS/folder badge tile.
-
 pub(crate) fn paint_new_group_form(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
@@ -2342,7 +2350,12 @@ pub(crate) fn paint_new_group_form(
     paint_surface(
         sugarloaf,
         &form,
-        with_alpha([1.0, 1.0, 1.0, 1.0], 0.025),
+        // A faint lift off the panel: lighter on ink, darker on paper.
+        if theme.is_light() {
+            with_alpha([0.0, 0.0, 0.0, 1.0], 0.025)
+        } else {
+            with_alpha([1.0, 1.0, 1.0, 1.0], 0.025)
+        },
         Some(theme.panel_border),
         10.0,
         DEPTH_CONTENT + 0.02,
@@ -2467,6 +2480,7 @@ fn draw_text(
 /// When `paint_text` is false, only the card/input quads are drawn —
 /// used while a popover covers the card so UI text (always last pass)
 /// does not bleed through the menu.
+#[allow(clippy::too_many_arguments)]
 fn paint_settings_field_card(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -2500,8 +2514,11 @@ fn render_context_menu(
     super::dialogs::context_menu::paint_context_menu(sugarloaf, menu, theme);
 }
 
+#[allow(dead_code)]
 const CTX_MENU_BG_KIND: u32 = 0x01;
+#[allow(dead_code)]
 const CTX_MENU_BORDER_KIND: u32 = 0x02;
+#[allow(dead_code)]
 const CTX_MENU_HOVER_KIND: u32 = 0x10;
 
 /// Atlas key for a rounded-rect mask.
@@ -2510,6 +2527,7 @@ const CTX_MENU_HOVER_KIND: u32 = 0x10;
 /// every bit that distinguishes shapes must fit in 32 bits. Packing height in
 /// the high half of a u64 was truncated away — host (h=104) and group (h=72)
 /// menus then shared one atlas slot (`side` is max(w,h) and usually the width).
+#[allow(dead_code)]
 fn ctx_menu_mask_id(kind: u32, content_w: f32, content_h: f32) -> u64 {
     let w = content_w.round().clamp(1.0, 0xFFF as f32) as u32;
     let h = content_h.round().clamp(1.0, 0xFFF as f32) as u32;
@@ -2518,6 +2536,7 @@ fn ctx_menu_mask_id(kind: u32, content_w: f32, content_h: f32) -> u64 {
     id as u64
 }
 
+#[allow(dead_code)]
 fn rasterize_rounded_rect_mask(
     size: u16,
     content_w: f32,
@@ -2531,8 +2550,10 @@ fn rasterize_rounded_rect_mask(
     let h = content_h.min(size as f32).max(1.0);
     let r = radius.min(w * 0.5).min(h * 0.5).max(0.0);
     let path = rounded_rect_path(0.0, 0.0, w, h, r)?;
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = true;
+    let mut paint = tiny_skia::Paint {
+        anti_alias: true,
+        ..Default::default()
+    };
     paint.set_color_rgba8(255, 255, 255, 255);
     if stroke_only {
         let stroke = tiny_skia::Stroke {
@@ -2559,6 +2580,7 @@ fn rasterize_rounded_rect_mask(
     rio_backend::sugarloaf::text::CoverageMask::new(size, bytes)
 }
 
+#[allow(dead_code)]
 fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
     let mut b = tiny_skia::PathBuilder::new();
     if r <= 0.5 {
@@ -2739,8 +2761,10 @@ fn rasterize_icon(icon: Icon, size: u16) -> Option<CoverageMask> {
     let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
 
     let stroke_width = LUCIDE_STROKE * unit;
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = true;
+    let mut paint = tiny_skia::Paint {
+        anti_alias: true,
+        ..Default::default()
+    };
     paint.set_color_rgba8(255, 255, 255, 255);
     let stroke = tiny_skia::Stroke {
         width: stroke_width,
@@ -2812,8 +2836,10 @@ fn rasterize_os_glyph(glyph: OsGlyph, size: u16) -> Option<CoverageMask> {
 
     let path = builder.finish()?;
     let mut pixmap = tiny_skia::Pixmap::new(size as u32, size as u32)?;
-    let mut paint = tiny_skia::Paint::default();
-    paint.anti_alias = true;
+    let mut paint = tiny_skia::Paint {
+        anti_alias: true,
+        ..Default::default()
+    };
     paint.set_color_rgba8(255, 255, 255, 255);
     pixmap.fill_path(
         &path,
@@ -2828,6 +2854,7 @@ fn rasterize_os_glyph(glyph: OsGlyph, size: u16) -> Option<CoverageMask> {
 }
 
 /// Soft overlay over the terminal while a host session is starting.
+#[allow(dead_code)]
 fn success_color() -> [f32; 4] {
     // Emerald-500 — matches the Termius mock's validated state.
     [16.0 / 255.0, 185.0 / 255.0, 129.0 / 255.0, 1.0]
@@ -3036,6 +3063,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn chrome_orders_sit_above_the_grid_and_below_the_overlays() {
         // The terminal grid paints at order 3; the command palette,
         // search and hint tooltip at 20. Chrome goes in between, and the
@@ -3049,6 +3077,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn the_dialog_depth_is_above_the_scrim() {
         assert!(DEPTH_DIALOG_BG > DEPTH_DIALOG);
     }

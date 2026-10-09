@@ -36,11 +36,26 @@ fn fade(c: [f32; 4], backdrop: [f32; 4], state: ControlState) -> [f32; 4] {
 }
 
 fn fade_text(c: [u8; 4], state: ControlState) -> [u8; 4] {
-    [c[0], c[1], c[2], (c[3] as f32 * state.opacity()).round() as u8]
+    [
+        c[0],
+        c[1],
+        c[2],
+        (c[3] as f32 * state.opacity()).round() as u8,
+    ]
 }
 
 fn fill(sugarloaf: &mut Sugarloaf, r: &Rect, color: [f32; 4], radius: f32, d: f32) {
-    sugarloaf.rounded_rect(None, r.x, r.y, r.width, r.height, color, DEPTH + d, radius, ORDER);
+    sugarloaf.rounded_rect(
+        None,
+        r.x,
+        r.y,
+        r.width,
+        r.height,
+        color,
+        DEPTH + d,
+        radius,
+        ORDER,
+    );
 }
 
 /// Focus ring (2px canvas gap + 2px accent) around `r` with corner `radius`.
@@ -69,7 +84,13 @@ pub fn paint_segmented(
         .map(|o| measure_ui_text(sugarloaf, o, size.font_size(), UiWeight::Medium))
         .collect();
     let layout = SegmentedLayout::new(origin.0, origin.1, &widths, size);
-    fill(sugarloaf, &layout.track, theme.surface, SEGMENT_TRACK_RADIUS, 0.0);
+    fill(
+        sugarloaf,
+        &layout.track,
+        theme.surface,
+        SEGMENT_TRACK_RADIUS,
+        0.0,
+    );
     for (i, (seg, label)) in layout.segments.iter().zip(options).enumerate() {
         let on = i == selected;
         if on {
@@ -107,8 +128,20 @@ pub fn paint_toggle(
     } else {
         (theme.line, rgba_u8(theme.text_muted))
     };
-    fill(sugarloaf, &track, fade(bg, theme.canvas, state), TOGGLE_HEIGHT * 0.5, 0.02);
-    fill(sugarloaf, &knob, fade(kc, theme.canvas, state), knob.width * 0.5, 0.03);
+    fill(
+        sugarloaf,
+        &track,
+        fade(bg, theme.canvas, state),
+        TOGGLE_HEIGHT * 0.5,
+        0.02,
+    );
+    fill(
+        sugarloaf,
+        &knob,
+        fade(kc, theme.canvas, state),
+        knob.width * 0.5,
+        0.03,
+    );
     track
 }
 
@@ -149,10 +182,26 @@ pub fn paint_checkbox_on(
     if state == ControlState::Focus {
         let (inner, outer) = focus_ring_rects(&b);
         let ring = |s: &mut Sugarloaf, r: &Rect, c: [f32; 4], rad: f32, d: f32| {
-            s.rounded_rect(None, r.x, r.y, r.width, r.height, c, layer.depth + d, rad, layer.order)
+            s.rounded_rect(
+                None,
+                r.x,
+                r.y,
+                r.width,
+                r.height,
+                c,
+                layer.depth + d,
+                rad,
+                layer.order,
+            )
         };
         ring(sugarloaf, &outer, theme.accent, CHECKBOX_RADIUS + 4.0, 0.0);
-        ring(sugarloaf, &inner, layer.backdrop, CHECKBOX_RADIUS + 2.0, 0.01);
+        ring(
+            sugarloaf,
+            &inner,
+            layer.backdrop,
+            CHECKBOX_RADIUS + 2.0,
+            0.01,
+        );
     }
     let (bg, border) = if checked {
         (theme.accent, theme.accent)
@@ -238,7 +287,11 @@ pub fn paint_choice(
         fade_text(theme.text, state),
         UiWeight::Medium,
     );
-    let sub_color = if selected { theme.selected_subtle_text } else { theme.text_muted };
+    let sub_color = if selected {
+        theme.selected_subtle_text
+    } else {
+        theme.text_muted
+    };
     draw_ui_text(
         sugarloaf,
         rect.x + CHOICE_PAD,
@@ -269,7 +322,15 @@ fn begin_section(
     let x = panel.x + PANEL_PAD;
     let y = panel.y + PANEL_PAD;
     draw_ui_text(sugarloaf, x, y, title, 18.0, theme.text, UiWeight::SemiBold);
-    draw_ui_text(sugarloaf, x, y + 28.0, note, 13.0, theme.text_muted, UiWeight::Regular);
+    draw_ui_text(
+        sugarloaf,
+        x,
+        y + 28.0,
+        note,
+        13.0,
+        theme.text_muted,
+        UiWeight::Regular,
+    );
     y + 28.0 + 19.0 + ROW_GAP
 }
 
@@ -284,7 +345,15 @@ fn headers(
 ) -> f32 {
     for (i, c) in cols.iter().enumerate() {
         let cx = x + LABEL_COL + COL_GAP + i as f32 * (col_w + COL_GAP);
-        draw_ui_text(sugarloaf, cx, y, c, 12.0, theme.text_muted, UiWeight::Medium);
+        draw_ui_text(
+            sugarloaf,
+            cx,
+            y,
+            c,
+            12.0,
+            theme.text_muted,
+            UiWeight::Medium,
+        );
     }
     y + 12.0 * 1.4 + ROW_GAP
 }
@@ -318,8 +387,17 @@ pub fn paint_gallery(
         let cols = ["First selected", "Middle selected", "Last selected"];
         let col_w = (inner - LABEL_COL - cols.len() as f32 * COL_GAP) / cols.len() as f32;
         let top = y;
-        let panel_h = PANEL_PAD * 2.0 + 28.0 + 19.0 + ROW_GAP + 12.0 * 1.4 + ROW_GAP
-            + 40.0 + ROW_GAP + 40.0 + ROW_GAP + 34.0;
+        let panel_h = PANEL_PAD * 2.0
+            + 28.0
+            + 19.0
+            + ROW_GAP
+            + 12.0 * 1.4
+            + ROW_GAP
+            + 40.0
+            + ROW_GAP
+            + 40.0
+            + ROW_GAP
+            + 34.0;
         let panel = Rect::new(origin.0, top, width, panel_h);
         let mut by = begin_section(
             sugarloaf,
@@ -329,10 +407,13 @@ pub fn paint_gallery(
             "For 2\u{2013}4 mutually exclusive choices that switch something immediately.",
         );
         by = headers(sugarloaf, theme, x, by, col_w, &cols);
+        #[allow(clippy::type_complexity)]
         let rows: [(&str, Vec<(Vec<&str>, usize)>, SegmentedSize); 3] = [
             (
                 "Three options",
-                (0..3).map(|i| (vec!["Local", "Remote", "Dynamic"], i)).collect(),
+                (0..3)
+                    .map(|i| (vec!["Local", "Remote", "Dynamic"], i))
+                    .collect(),
                 SegmentedSize::Medium,
             ),
             (
@@ -370,7 +451,12 @@ pub fn paint_gallery(
     {
         let cols = ["On", "Off", "Focus", "Disabled on", "Disabled off"];
         let col_w = (inner - LABEL_COL - cols.len() as f32 * COL_GAP) / cols.len() as f32;
-        let panel_h = PANEL_PAD * 2.0 + 28.0 + 19.0 + ROW_GAP + 12.0 * 1.4 + ROW_GAP
+        let panel_h = PANEL_PAD * 2.0
+            + 28.0
+            + 19.0
+            + ROW_GAP
+            + 12.0 * 1.4
+            + ROW_GAP
             + TOGGLE_HEIGHT;
         let panel = Rect::new(origin.0, y, width, panel_h);
         let mut by = begin_section(
@@ -400,7 +486,8 @@ pub fn paint_gallery(
     {
         let cols = ["Checked", "Unchecked", "Focus", "Disabled"];
         let col_w = (inner - LABEL_COL - cols.len() as f32 * COL_GAP) / cols.len() as f32;
-        let panel_h = PANEL_PAD * 2.0 + 28.0 + 19.0 + ROW_GAP + 12.0 * 1.4 + ROW_GAP + 20.0;
+        let panel_h =
+            PANEL_PAD * 2.0 + 28.0 + 19.0 + ROW_GAP + 12.0 * 1.4 + ROW_GAP + 20.0;
         let panel = Rect::new(origin.0, y, width, panel_h);
         let mut by = begin_section(
             sugarloaf,
@@ -419,7 +506,14 @@ pub fn paint_gallery(
         ];
         for (i, (on, st)) in cells.into_iter().enumerate() {
             let cx = x + LABEL_COL + COL_GAP + i as f32 * (col_w + COL_GAP);
-            paint_checkbox(sugarloaf, theme, (cx, by), "Remember on this computer", on, st);
+            paint_checkbox(
+                sugarloaf,
+                theme,
+                (cx, by),
+                "Remember on this computer",
+                on,
+                st,
+            );
         }
         y += panel_h + 20.0;
     }
@@ -428,7 +522,12 @@ pub fn paint_gallery(
     {
         let cols = ["Selected", "Hover", "Default", "Disabled"];
         let col_w = (inner - LABEL_COL - cols.len() as f32 * COL_GAP) / cols.len() as f32;
-        let panel_h = PANEL_PAD * 2.0 + 28.0 + 19.0 + ROW_GAP + 12.0 * 1.4 + ROW_GAP
+        let panel_h = PANEL_PAD * 2.0
+            + 28.0
+            + 19.0
+            + ROW_GAP
+            + 12.0 * 1.4
+            + ROW_GAP
             + terminus_ui::components::selection::CHOICE_HEIGHT;
         let panel = Rect::new(origin.0, y, width, panel_h);
         let mut by = begin_section(

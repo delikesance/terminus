@@ -965,7 +965,7 @@ mod tests {
         let sep = m.separator_rect(4).unwrap();
         assert_eq!(m.hit_test(sep.x + 2.0, sep.y + 2.0), MenuHit::Consume);
         assert_eq!(m.hit_test(900.0, 900.0), MenuHit::Dismiss);
-        assert!(m.hover_at(x, y) == false && m.hover.is_none());
+        assert!(!m.hover_at(x, y) && m.hover.is_none());
         let (x, y) = c(m.item_rect(1).unwrap());
         assert!(m.hover_at(x, y));
         assert_eq!(m.hover, Some(1));

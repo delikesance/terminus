@@ -32,7 +32,9 @@ dist/
 sugarloaf/src/**/*.spv
 
 # Claude Code worktrees/session data
-.claude/
+.claude/*
+!.claude/settings.json
+!.claude/agents/
 
 # Local dev-loop state (generated): config playground, logs, pid, watch stamps
 .dev/
@@ -40,3 +42,6 @@ Terminus/
 
 # Local secrets (release signing passphrase); never commit
 .env
+
+# graphify outputs and cache
+graphify-out/

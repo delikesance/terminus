@@ -2,9 +2,6 @@
 
 use super::Screen;
 use crate::bindings::FontSizeAction;
-use crate::context;
-use crate::hosts;
-use crate::renderer::island;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
 use rio_backend::crosswords::pos::Direction;
 
@@ -38,7 +35,11 @@ impl Screen<'_> {
             }
             Ok(None) => {
                 // "Add server …" on the empty result: hand the query to the wizard.
-                if self.renderer.command_palette.add_server_hit(mouse_x, mouse_y) {
+                if self
+                    .renderer
+                    .command_palette
+                    .add_server_hit(mouse_x, mouse_y)
+                {
                     self.palette_add_server();
                     self.mark_dirty();
                 }
@@ -111,7 +112,33 @@ impl Screen<'_> {
             return;
         }
 
+        // `>` completion: fill the query, keep the palette open.
+        if self.renderer.command_palette.complete_selected_op() {
+            return;
+        }
+
+        if let Some((id, op)) = self.renderer.command_palette.get_selected_tunnel() {
+            use crate::renderer::command_palette::TunnelOp;
+            self.renderer.command_palette.set_enabled(false);
+            let done = match op {
+                TunnelOp::Show => {
+                    self.show_view(terminus_ui::shell::WorkspaceView::Tunnels);
+                    return;
+                }
+                TunnelOp::Start => self.palette_tunnel_start(&id),
+                TunnelOp::Stop => self.palette_tunnel_stop(&id),
+            };
+            match done {
+                Ok(notice) => self.chrome.panel.notice = Some(notice),
+                Err(err) => self.chrome.panel.error = Some(err),
+            }
+            return;
+        }
+
         match self.renderer.command_palette.get_selected_action() {
+            Some(PaletteAction::Prefill(text)) => {
+                self.renderer.command_palette.set_query(text.to_string());
+            }
             Some(PaletteAction::ListFonts) => {
                 let fonts = self.sugarloaf.font_family_names();
                 self.renderer.command_palette.enter_fonts_mode(fonts);
@@ -365,8 +392,7 @@ impl Screen<'_> {
                 self.copy_selection(ClipboardType::Clipboard, clipboard);
             }
             PaletteAction::Paste => {
-                let content = clipboard.get(ClipboardType::Clipboard);
-                self.paste(&content, true);
+                self.paste_clipboard_or_image(clipboard);
             }
             PaletteAction::SearchForward => {
                 self.start_search(Direction::Right);
@@ -434,6 +460,9 @@ impl Screen<'_> {
             }
             PaletteAction::FilterServers => {
                 self.chrome.panel.filter_focused = true;
+            }
+            PaletteAction::Prefill(_) => {
+                // Handled in confirm_palette_selection (stay-open prefill).
             }
         }
     }

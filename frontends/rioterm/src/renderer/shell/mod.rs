@@ -180,6 +180,23 @@ pub fn paint(
             connecting_phase.unwrap_or(0.0),
         );
     }
+    if let (Some(area), Some(lost)) = (chrome.lost_area(), chrome.lost.as_ref()) {
+        // A session whose link dropped: dim its terminal and offer
+        // Reconnect over it, laid out where the chrome hit-tests it.
+        crate::renderer::dialogs::confirm::paint_confirm(
+            sugarloaf,
+            theme,
+            &lost.spec,
+            &lost.layout_in(area),
+            crate::renderer::dialogs::confirm::ConfirmView {
+                // Keys go to the live pane in focus, not to this card.
+                focus: (!chrome.lost_pane_unfocused).then_some(lost.focus),
+                hover: lost.hover,
+                option_checked: false,
+            },
+            true,
+        );
+    }
     header::paint(sugarloaf, chrome, theme, device_scale);
     pills::paint(sugarloaf, chrome, theme, device_scale);
 }

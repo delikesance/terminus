@@ -6235,6 +6235,7 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
+    #[allow(clippy::type_complexity)]
     struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>);
 
     impl EventListener for Recorder {

@@ -8,7 +8,7 @@
 //! **Status:** library + tests are ready, but rioterm does **not** open host
 //! tabs through this type yet. Interactive sessions use system `ssh` in a local
 //! PTY (`screen::ssh_shell`, milestone Option A). Wiring this transport into
-//! `SessionSpec::Ssh` is roadmap **1.4-debt**.
+//! host tabs is roadmap **1.4-debt**.
 //!
 //! corcovado (Rio's poll loop: a thread with a mio fork) and russh (tokio)
 //! cannot share a reactor, so the two halves are kept strictly apart and talk
@@ -733,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn pump_waits_for_the_terminal_to_catch_up() {
-        let (mut transport, mut pump) = pair();
+        let (mut transport, pump) = pair();
         let chunk = vec![b'x'; 64 * 1024];
 
         // Fill past the budget: the pump must not be able to push more until

@@ -1,14 +1,7 @@
 //! `Screen` render surface, split out of `screen/mod.rs`.
 
 use super::Screen;
-use crate::context;
-use crate::context::renderable::Cursor;
-use crate::crosswords::pos::Pos;
-use crate::layout::ContextDimension;
-use crate::renderer::Renderer;
 use crate::screen::hint::HintMatches;
-use crate::selection::Selection;
-use rio_backend::crosswords::pos::Line;
 
 impl Screen<'_> {
     pub(crate) fn render(&mut self) -> Option<crate::context::renderable::WindowUpdate> {
@@ -110,6 +103,7 @@ impl Screen<'_> {
         }
 
         self.tick_session_connecting();
+        self.sync_lost_session();
         let host_drag_action = self.tick_host_drag_animation();
         if let Some(action) = host_drag_action {
             self.apply_host_drag_action(action);

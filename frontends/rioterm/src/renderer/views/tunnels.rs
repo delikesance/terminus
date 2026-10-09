@@ -209,10 +209,7 @@ fn paint_list(
             state.hover,
             Hover::Card(j) | Hover::Toggle(j) | Hover::Delete(j) if j == i
         );
-        let detail = match (&item.status, &item.error) {
-            (TunnelStatus::Failed, Some(err)) => format!("Failed \u{2014} {err}"),
-            _ => item.route(),
-        };
+        let detail = item.detail();
         let toggle = if item.status.is_active() {
             "Stop"
         } else {
@@ -466,6 +463,7 @@ fn preview_item(
         dest_port: dest.1,
         status,
         error: error.map(String::from),
+        stats: None,
     }
 }
 
@@ -510,6 +508,10 @@ fn preview_state(variant: &str) -> TunnelsState {
                 None,
             ),
         ];
+        s.items[0].stats = Some(TunnelStats {
+            uptime_secs: 3 * 3600 + 12 * 60,
+            connections: Some(2),
+        });
     }
     match variant {
         "new" => s.open_new(),

@@ -122,7 +122,13 @@ pub fn paint_button_on(
     let fg = with_alpha(c.fg, opacity);
     if let (Some(icon), Some(r)) = (icon, spec.icon_rect()) {
         let scale = sugarloaf.scale_factor();
-        draw_icon(sugarloaf, icon, IconPlacement::new(r.x, r.y, r.width), fg, scale);
+        draw_icon(
+            sugarloaf,
+            icon,
+            IconPlacement::new(r.x, r.y, r.width),
+            fg,
+            scale,
+        );
     }
     if let Some((x, y)) = spec.label_origin() {
         draw_ui_text(
@@ -182,6 +188,7 @@ struct Well {
     cols: Vec<f32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn begin_well(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
@@ -205,15 +212,7 @@ fn begin_well(
     );
     let x = origin.0 + WELL_PAD;
     let mut y = origin.1 + WELL_PAD;
-    draw_ui_text(
-        sugarloaf,
-        x,
-        y,
-        title,
-        18.0,
-        theme.text,
-        UiWeight::SemiBold,
-    );
+    draw_ui_text(sugarloaf, x, y, title, 18.0, theme.text, UiWeight::SemiBold);
     y += 18.0 + 6.0;
     draw_ui_text(
         sugarloaf,
@@ -239,7 +238,12 @@ fn begin_well(
     }
 }
 
-fn header_row(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, well: &Well, heads: &[&str]) -> f32 {
+fn header_row(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    well: &Well,
+    heads: &[&str],
+) -> f32 {
     for (i, h) in heads.iter().enumerate() {
         draw_ui_text(
             sugarloaf,
@@ -254,7 +258,14 @@ fn header_row(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, well: &Well, heads
     font_size::CAPTION + ROW_GAP
 }
 
-fn row_label(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, well: &Well, y: f32, h: f32, s: &str) {
+fn row_label(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    well: &Well,
+    y: f32,
+    h: f32,
+    s: &str,
+) {
     draw_ui_text(
         sugarloaf,
         well.x,
@@ -268,7 +279,11 @@ fn row_label(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, well: &Well, y: f32
 
 /// Height of a well with `rows` rows of height `row_h` and a header.
 fn well_height(rows: usize, row_h: f32, has_header: bool) -> f32 {
-    let head = if has_header { font_size::CAPTION + ROW_GAP } else { 0.0 };
+    let head = if has_header {
+        font_size::CAPTION + ROW_GAP
+    } else {
+        0.0
+    };
     let body = rows as f32 * row_h + rows.saturating_sub(1) as f32 * ROW_GAP;
     // title + note block, then grid, with focus-ring slack under the last row.
     2.0 * WELL_PAD + 18.0 + 6.0 + font_size::LABEL + 4.0 + WELL_GAP + head + body
@@ -300,14 +315,17 @@ pub fn paint_gallery(
     ];
     let h = well_height(rows.len(), ButtonSize::Large.height(), true);
     let well = begin_well(
-        sugarloaf, theme, (origin.0, y), width, h, "Kinds × states", KIND_NOTE, 5,
-    );
-    let mut ry = well.y + header_row(
         sugarloaf,
         theme,
-        &well,
-        &ButtonState::ALL.map(state_name),
+        (origin.0, y),
+        width,
+        h,
+        "Kinds × states",
+        KIND_NOTE,
+        5,
     );
+    let mut ry =
+        well.y + header_row(sugarloaf, theme, &well, &ButtonState::ALL.map(state_name));
     for (kind, label, icon) in rows {
         let bh = ButtonSize::Large.height();
         row_label(sugarloaf, theme, &well, ry, bh, kind_name(kind));
@@ -330,10 +348,24 @@ pub fn paint_gallery(
     let rows: [(&str, ButtonKind, &str, Option<Icon>); 3] = [
         ("Primary", ButtonKind::Primary, "New snippet", None),
         ("Secondary", ButtonKind::Secondary, "Copy public key", None),
-        ("With icon", ButtonKind::Primary, "Add server", Some(Icon::Plus)),
+        (
+            "With icon",
+            ButtonKind::Primary,
+            "Add server",
+            Some(Icon::Plus),
+        ),
     ];
     let h = well_height(rows.len(), ButtonSize::Large.height(), true);
-    let well = begin_well(sugarloaf, theme, (origin.0, y), width, h, "Sizes", SIZE_NOTE, 3);
+    let well = begin_well(
+        sugarloaf,
+        theme,
+        (origin.0, y),
+        width,
+        h,
+        "Sizes",
+        SIZE_NOTE,
+        3,
+    );
     let mut ry = well.y
         + header_row(
             sugarloaf,
@@ -347,7 +379,14 @@ pub fn paint_gallery(
         for (i, size) in ButtonSize::ALL.iter().enumerate() {
             // Align centres of the three sizes on the row.
             let by = ry + (bh - size.height()) * 0.5;
-            let spec = label_spec(sugarloaf, (well.cols[i], by), kind, *size, label, icon.is_some());
+            let spec = label_spec(
+                sugarloaf,
+                (well.cols[i], by),
+                kind,
+                *size,
+                label,
+                icon.is_some(),
+            );
             paint_button(sugarloaf, theme, &spec, ButtonState::Default, label, icon);
         }
         ry += bh + ROW_GAP;
@@ -356,19 +395,41 @@ pub fn paint_gallery(
 
     // ---- Icon buttons ----
     let rows: [(&str, ButtonKind, ButtonSize, &str, Icon); 3] = [
-        ("Quiet · 36", ButtonKind::Quiet, ButtonSize::Medium, "Split right", Icon::Columns2),
-        ("Secondary · 36", ButtonKind::Secondary, ButtonSize::Medium, "Delete key", Icon::Trash2),
-        ("Quiet · 30", ButtonKind::Quiet, ButtonSize::Small, "Close", Icon::X),
+        (
+            "Quiet · 36",
+            ButtonKind::Quiet,
+            ButtonSize::Medium,
+            "Split right",
+            Icon::Columns2,
+        ),
+        (
+            "Secondary · 36",
+            ButtonKind::Secondary,
+            ButtonSize::Medium,
+            "Delete key",
+            Icon::Trash2,
+        ),
+        (
+            "Quiet · 30",
+            ButtonKind::Quiet,
+            ButtonSize::Small,
+            "Close",
+            Icon::X,
+        ),
     ];
     let h = well_height(rows.len(), ButtonSize::Medium.height(), true);
-    let well = begin_well(sugarloaf, theme, (origin.0, y), width, h, "Icon buttons", ICON_NOTE, 5);
-    let mut ry = well.y
-        + header_row(
-            sugarloaf,
-            theme,
-            &well,
-            &ButtonState::ALL.map(state_name),
-        );
+    let well = begin_well(
+        sugarloaf,
+        theme,
+        (origin.0, y),
+        width,
+        h,
+        "Icon buttons",
+        ICON_NOTE,
+        5,
+    );
+    let mut ry =
+        well.y + header_row(sugarloaf, theme, &well, &ButtonState::ALL.map(state_name));
     for (name, kind, size, label, icon) in rows {
         let bh = ButtonSize::Medium.height();
         row_label(sugarloaf, theme, &well, ry, bh, name);

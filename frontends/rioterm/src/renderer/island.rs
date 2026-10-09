@@ -6,6 +6,10 @@
 // island.rs was originally retired from boo editor
 // which is licensed under MIT license.
 
+// Most of this upstream Rio module is superseded by the Terminus chrome;
+// what is left unused is kept to ease upstream merges.
+#![allow(dead_code)]
+
 use crate::context::ContextManager;
 use crate::renderer::helpers::spring::Spring;
 use rio_backend::event::{EventProxy, ProgressReport, ProgressState};
@@ -292,9 +296,7 @@ pub fn tab_strip_layout_from_widths(
             *w *= scale;
         }
     } else if available <= 0.0 {
-        for w in &mut widths {
-            *w = 0.0;
-        }
+        widths.fill(0.0);
     }
 
     TabStripLayout {
@@ -311,7 +313,7 @@ pub fn tab_strip_layout(
     num_tabs: usize,
     max_tab_width: f32,
 ) -> TabStripLayout {
-    let n = num_tabs.max(0);
+    let n = num_tabs;
     let natural = tab_slot_width_for_content(48.0, false, true)
         .min(max_tab_width.max(MIN_TAB_WIDTH))
         .max(MIN_TAB_WIDTH);
@@ -979,7 +981,7 @@ impl Island {
         sugarloaf: &mut Sugarloaf,
         dimensions: (f32, f32, f32),
         context_manager: &ContextManager<EventProxy>,
-        bg_color: [f32; 4],
+        _bg_color: [f32; 4],
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         window_maximized: bool,
     ) {

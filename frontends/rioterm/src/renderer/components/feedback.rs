@@ -29,6 +29,7 @@ fn text_at_center(
 
 /// `chrome::paint_surface` is private; this is the same thing via the
 /// public stroke variant.
+#[allow(clippy::too_many_arguments)]
 fn paint_surface(
     sugarloaf: &mut Sugarloaf,
     rect: &Rect,
@@ -303,6 +304,7 @@ const CELL_GAP: f32 = 24.0;
 
 /// Paint a titled well; `content_h` is the height of the body, `body`
 /// paints it at the given origin.
+#[allow(clippy::too_many_arguments)]
 fn section(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,

@@ -145,6 +145,27 @@ impl Default for BorderConfig {
     }
 }
 
+/// A pane whose session ended behind a card (see `Context::connection_lost`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LostPane {
+    pub route_id: usize,
+    /// The pane's `layout_rect`, relative to the grid's root container.
+    pub layout_rect: [f32; 4],
+    /// Whether this is the grid's focused pane.
+    pub focused: bool,
+}
+
+/// The route whose card shows among `panes` (route id, has a card,
+/// focused), top to bottom: the focused pane's card when it has one, else
+/// the first dead pane's.
+fn pick_lost_route(panes: &[(usize, bool, bool)]) -> Option<usize> {
+    panes
+        .iter()
+        .find(|(_, lost, focused)| *lost && *focused)
+        .or_else(|| panes.iter().find(|(_, lost, _)| *lost))
+        .map(|(route_id, _, _)| *route_id)
+}
+
 pub struct ContextGrid<T: EventListener> {
     pub width: f32,
     pub height: f32,
@@ -156,6 +177,9 @@ pub struct ContextGrid<T: EventListener> {
     pub custom_color: Option<[f32; 4]>,
     /// Home "This computer" tab — cannot be closed (survives splits).
     pub pinned: bool,
+    /// Focus clock reading from the last time this tab came to the front
+    /// (0: never); see `ContextManager::host_tab_to_restore`.
+    pub last_focused: u64,
     scale: f32,
     inner: FxHashMap<NodeId, ContextGridItem<T>>,
     pub root: Option<NodeId>,
@@ -172,10 +196,10 @@ pub enum PaneKind {
     Sftp,
 }
 
-/// Sidebar and activity-bar metrics live in `terminus_ui` — see
-/// `terminus_ui::activity_bar::WIDTH` / `terminus_ui::sidebar::WIDTH`.
-/// Duplicating them here would let the reserved margin and the painted
-/// panel drift apart.
+// Sidebar and activity-bar metrics live in `terminus_ui` — see
+// `terminus_ui::activity_bar::WIDTH` / `terminus_ui::sidebar::WIDTH`.
+// Duplicating them here would let the reserved margin and the painted
+// panel drift apart.
 
 pub struct ContextGridItem<T: EventListener> {
     pub val: Context<T>,
@@ -193,6 +217,7 @@ impl<T: rio_backend::event::EventListener> ContextGridItem<T> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn set_pane_kind(&mut self, kind: PaneKind) {
         self.pane_kind = kind;
     }
@@ -291,6 +316,7 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
             custom_title: None,
             custom_color: None,
             pinned: false,
+            last_focused: 0,
             scale,
             width,
             height,
@@ -324,6 +350,33 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    /// The pane whose "Connection lost" / "Session ended" card shows for
+    /// this tab, if any pane has one.
+    pub fn lost_pane(&self) -> Option<LostPane> {
+        let keys = self.get_ordered_keys();
+        let panes: Vec<(usize, bool, bool)> = keys
+            .iter()
+            .filter_map(|key| {
+                let item = self.inner.get(key)?;
+                Some((
+                    item.val.route_id,
+                    item.val.connection_lost.is_some(),
+                    *key == self.current,
+                ))
+            })
+            .collect();
+        let route_id = pick_lost_route(&panes)?;
+        let item = self
+            .inner
+            .values()
+            .find(|item| item.val.route_id == route_id)?;
+        Some(LostPane {
+            route_id,
+            layout_rect: item.layout_rect,
+            focused: self.current().route_id == route_id,
+        })
     }
 
     pub fn panel_count(&self) -> usize {
@@ -1106,6 +1159,7 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
         self.inner.get(&self.current)
     }
 
+    #[allow(dead_code)]
     pub fn current_item_mut(&mut self) -> Option<&mut ContextGridItem<T>> {
         self.inner.get_mut(&self.current)
     }

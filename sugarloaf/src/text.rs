@@ -410,6 +410,7 @@ impl Text {
         self.draw_mask_to(true, x, y, artwork_id, size, color, rasterize)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_mask_to<F>(
         &mut self,
         late: bool,
@@ -1011,9 +1012,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             let raster = mask.raster();
             return state.atlas_grayscale.insert(key, raster).or_else(|| {
                 if state.atlas_grayscale.grow() {
@@ -1030,9 +1029,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             let raster = mask.raster();
             return state.atlas_grayscale.insert(key, raster).or_else(|| {
                 if state
@@ -1052,9 +1049,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             return state.atlas_grayscale.insert(key, mask.raster());
         }
 
@@ -1064,9 +1059,7 @@ impl Text {
             if let Some(slot) = state.atlas_grayscale.lookup(key) {
                 return Some(slot);
             }
-            let Some(mask) = rasterize(size) else {
-                return None;
-            };
+            let mask = rasterize(size)?;
             return state.atlas_grayscale.insert(key, mask.raster());
         }
 

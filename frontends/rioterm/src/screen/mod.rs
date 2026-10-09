@@ -10,14 +10,18 @@ mod chrome;
 pub(crate) mod chrome_input;
 mod clipboard;
 mod config;
+mod frameless;
 pub mod hint;
 mod hint_actions;
 mod history;
+mod image_paste;
 mod island;
 mod keys;
 mod mouse;
 mod palette;
+mod palette_tunnels;
 mod render;
+mod saved_tabs;
 mod scrollbar;
 mod search;
 mod selection;
@@ -36,7 +40,6 @@ use crate::crosswords::grid::Scroll;
 use crate::crosswords::pos::Pos;
 use crate::crosswords::Mode;
 use crate::hints::HintState;
-use crate::hosts;
 use crate::layout::ContextDimension;
 use crate::mouse::{calculate_mouse_position, Mouse};
 use crate::renderer::utils::padding_top_from_config;
@@ -54,7 +57,6 @@ use rio_backend::sugarloaf::{
     SugarloafWindowSize,
 };
 use rio_window::event::Modifiers;
-use rio_window::keyboard::ModifiersState;
 use std::error::Error;
 use touch::TouchPurpose;
 
@@ -85,6 +87,8 @@ pub struct Screen<'screen> {
     pending_host_connect: bool,
     /// After a vault-unlock prompt succeeds, retry this action once.
     pending_vault_continue: Option<terminus_ui::PendingVaultAction>,
+    /// Tabs saved for the next launch; see `screen/saved_tabs.rs`.
+    saved_tabs: saved_tabs::SavedTabsState,
     /// When the sidebar's connecting indicator started. Drives the orbit
     /// phase and the clear-when-ready timer. Paired with
     /// `chrome.panel.connecting_id` / `chrome.connection`.
@@ -126,6 +130,14 @@ pub struct Screen<'screen> {
     /// Whether Tab navigation may drag the window from the chrome band.
     /// True whenever the custom title bar is active (Tab mode).
     pub allow_manual_dragging: bool,
+    /// The window runs without OS decorations (see
+    /// `router::window::uses_custom_titlebar`). On Linux this turns on
+    /// edge resizing, the header window menu and the caption buttons.
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    pub custom_titlebar: bool,
+    /// The pointer is on a resize edge (resize cursor showing).
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    on_resize_edge: bool,
     /// Last known maximized state — drives the Windows caption restore icon.
     pub window_maximized: bool,
     last_chrome_press: Option<ChromePress>,
@@ -181,6 +193,9 @@ pub struct ScreenWindowProperties {
     pub raw_window_handle: RawWindowHandle,
     pub raw_display_handle: RawDisplayHandle,
     pub window_id: rio_window::window::WindowId,
+    /// The quake dropdown: no title bar, so no caption buttons.
+    #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
+    pub quake: bool,
 }
 
 #[inline]
@@ -347,13 +362,21 @@ impl Screen<'_> {
         // The chrome reserves its own strip on the left; the grid margin
         // carries it so the terminal reflows beside the rail instead of
         // being painted over.
-        let chrome = {
-            let mut chrome = terminus_ui::chrome::Chrome::default();
-            // The rail starts under the tab strip rather than behind
-            // it, so it lines up with the terminal's own top margin.
-            chrome.top_inset = padding_y_top;
-            chrome
+        // The rail starts under the tab strip rather than behind
+        // it, so it lines up with the terminal's own top margin.
+        #[allow(unused_mut)]
+        let mut chrome = terminus_ui::chrome::Chrome {
+            top_inset: padding_y_top,
+            ..Default::default()
         };
+        // Caption buttons only where the window has no OS decorations.
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            chrome.shell.window_controls = crate::router::window::shows_caption_buttons(
+                crate::router::window::uses_custom_titlebar(config),
+                window_properties.quake,
+            );
+        }
         let chrome_left = chrome.reserved_width();
 
         let padding_right = crate::renderer::utils::padding_right_from_config(
@@ -458,6 +481,7 @@ impl Screen<'_> {
             pending_host_select: None,
             pending_host_connect: false,
             pending_vault_continue: None,
+            saved_tabs: saved_tabs::SavedTabsState::default(),
             connecting_started: None,
             connecting_step_at: None,
             connecting_success_at: None,
@@ -467,6 +491,8 @@ impl Screen<'_> {
             last_ime_cursor_pos: None,
             resize_state: None,
             allow_manual_dragging: config.navigation.is_enabled(),
+            custom_titlebar: crate::router::window::uses_custom_titlebar(config),
+            on_resize_edge: false,
             window_maximized: false,
             last_chrome_press: None,
             last_close_press: None,
@@ -600,12 +626,12 @@ impl Screen<'_> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::hint_actions::post_process_hyperlink_uri;
-    #[cfg(unix)]
-    use super::shell::private_temp_dir;
     use super::shell::{ssh_shell, GSSAPI_SSH_OPTIONS};
     use super::*;
+    use crate::hosts;
     use chrono::Utc;
 
     fn host_row(auth_method: &str) -> hosts::HostRow {
@@ -624,6 +650,19 @@ mod tests {
             sort_order: 0,
             updated_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn split_target_follows_the_focused_pane_host() {
+        use super::sessions::{split_target, SplitTarget};
+        assert_eq!(split_target(None), SplitTarget::Local);
+        assert_eq!(split_target(Some(hosts::LOCAL_ID)), SplitTarget::Local);
+        assert_eq!(
+            split_target(Some("9c1e")),
+            SplitTarget::Row("9c1e".to_string())
+        );
+        let wsl = format!("{}Ubuntu", hosts::WSL_PREFIX);
+        assert_eq!(split_target(Some(&wsl)), SplitTarget::Row(wsl.clone()));
     }
 
     #[test]
@@ -686,6 +725,38 @@ mod tests {
         }
     }
 
+    /// Without keepalives a laptop that slept leaves ssh waiting forever on
+    /// a dead socket: the tab freezes instead of saying the link is gone.
+    #[test]
+    fn ssh_shell_sends_keepalives_so_a_dead_link_ends_the_session() {
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        for (auth, password, identity) in [
+            ("gssapi", None, None),
+            ("key", None, Some(pem)),
+            ("password", Some("secret"), None),
+        ] {
+            let host = host_row(auth);
+            let (shell, env) =
+                ssh_shell(&host, password, identity, None).expect("ssh shell");
+            let has =
+                |opt: &str| shell.args.windows(2).any(|w| w[0] == "-o" && w[1] == opt);
+            assert!(has("ServerAliveInterval=15"), "{auth}");
+            assert!(has("ServerAliveCountMax=3"), "{auth}");
+            if let Some(path) =
+                shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1])
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            if let Some((_, secret)) = env
+                .iter()
+                .flatten()
+                .find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            {
+                let _ = std::fs::remove_file(secret);
+            }
+        }
+    }
+
     #[test]
     fn key_ssh_shell_passes_identity_file() {
         let host = host_row("key");
@@ -702,6 +773,65 @@ mod tests {
         if let Some(path) = shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1]) {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// The key only has to exist until ssh has authenticated: ssh's own
+    /// `LocalCommand` deletes it (and the passphrase file) at that point.
+    #[cfg(unix)]
+    #[test]
+    fn key_ssh_shell_deletes_its_secrets_once_connected() {
+        let host = host_row("key");
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        let (shell, env) =
+            ssh_shell(&host, None, Some(pem), Some("pass")).expect("key shell");
+        let key = shell
+            .args
+            .windows(2)
+            .find(|w| w[0] == "-i")
+            .map(|w| w[1].clone())
+            .unwrap();
+        let env = env.unwrap();
+        let secret = env
+            .iter()
+            .find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert!(shell.args.iter().any(|a| a == "PermitLocalCommand=yes"));
+        let local = shell
+            .args
+            .iter()
+            .find_map(|a| a.strip_prefix("LocalCommand="))
+            .expect("LocalCommand option");
+        assert!(local.contains(&key), "{local}");
+        assert!(local.contains(&secret), "{local}");
+        // The destination stays last (tunnels rely on it).
+        assert_eq!(
+            shell.args.last().map(String::as_str),
+            Some("alice@box.example")
+        );
+        crate::ssh_secrets::shred(std::path::Path::new(&key));
+        crate::ssh_secrets::shred(std::path::Path::new(&secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_ssh_shell_deletes_its_secret_once_connected() {
+        let host = host_row("password");
+        let (shell, env) =
+            ssh_shell(&host, Some("secret"), None, None).expect("password shell");
+        let secret = env
+            .unwrap()
+            .into_iter()
+            .find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            .map(|(_, v)| v)
+            .unwrap();
+        let local = shell
+            .args
+            .iter()
+            .find_map(|a| a.strip_prefix("LocalCommand="))
+            .expect("LocalCommand option");
+        assert!(local.contains(&secret), "{local}");
+        crate::ssh_secrets::shred(std::path::Path::new(&secret));
     }
 
     #[test]
@@ -761,9 +891,9 @@ mod tests {
     fn private_temp_dir_tightens_a_loose_existing_dir() {
         use std::os::unix::fs::PermissionsExt;
         let name = format!("test-loose-{}", uuid::Uuid::new_v4());
-        let dir = private_temp_dir(&name).unwrap();
+        let dir = crate::ssh_secrets::private_temp_dir(&name).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let again = private_temp_dir(&name).unwrap();
+        let again = crate::ssh_secrets::private_temp_dir(&name).unwrap();
         assert_eq!(again, dir);
         assert_eq!(
             std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
