@@ -18,12 +18,12 @@ pub mod sync;
 pub mod updates;
 
 use crate::components::button::{ButtonKind, ButtonSize, ButtonSpec};
+use crate::components::input::{TextDraft, TextEdit, TextMoveKind};
 use crate::components::overlay::{
     self as ov, dialog_layout_at, wrap_text, DialogFocus, DialogHit, DialogKind,
     DialogLayout,
 };
 use crate::geom::Rect;
-use crate::text_field::{TextDraft, TextEdit, TextMoveKind};
 
 pub use appearance::{AppearanceState, CursorStyle, ThemeChoice};
 pub use keys::{DraftField, DraftMode, KeyDraft, KeysState};

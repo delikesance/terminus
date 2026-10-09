@@ -771,7 +771,7 @@ fn render_settings_modal(
                         "Key label (e.g. Laptop Ed25519)",
                         focused,
                     );
-                    paint_settings_field_card(
+                    paint_field_card(
                         sugarloaf,
                         theme,
                         field,
@@ -813,7 +813,7 @@ fn render_settings_modal(
                             focused,
                         )
                     };
-                    paint_settings_field_card(
+                    paint_field_card(
                         sugarloaf,
                         theme,
                         pem_card,
@@ -856,7 +856,7 @@ fn render_settings_modal(
                             selection: None,
                         }
                     };
-                    paint_settings_field_card(
+                    paint_field_card(
                         sugarloaf,
                         theme,
                         pass_card,
@@ -1146,7 +1146,7 @@ fn render_settings_modal(
             let status_row = chrome.settings.status_row_rect(window_width, window_height);
 
             // Engine selector card
-            paint_settings_field_card(
+            paint_field_card(
                 sugarloaf,
                 theme,
                 engine_card,
@@ -1179,7 +1179,7 @@ fn render_settings_modal(
             // the opaque menu (same pattern as tab-drag title hiding).
             let uri_paint = chrome.settings.uri_field_paint();
             let uri_paint_text = !chrome.settings.engine_menu_open;
-            paint_settings_field_card(
+            paint_field_card(
                 sugarloaf,
                 theme,
                 uri_card,
@@ -1213,7 +1213,7 @@ fn render_settings_modal(
 
             // Passphrase field
             let pass_paint = chrome.settings.passphrase_field_paint();
-            paint_settings_field_card(
+            paint_field_card(
                 sugarloaf,
                 theme,
                 pass_card,
@@ -1931,7 +1931,14 @@ pub(crate) fn paint_caret(
     );
 }
 
-/// Shared labeled text-field card (Settings SqlSync, SFTP name, …).
+/// Shared settings field card (label + input row).
+///
+/// `trailing_slot` reserves space on the right of the input for an
+/// adornment (e.g. passphrase eye) so value text never overlaps it.
+///
+/// When `paint_text` is false, only the card/input quads are drawn,
+/// used while a popover covers the card so UI text (always last pass)
+/// does not bleed through the menu.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_field_card(
     sugarloaf: &mut Sugarloaf,
@@ -1944,36 +1951,7 @@ pub(crate) fn paint_field_card(
     trailing_slot: f32,
     paint_text: bool,
 ) {
-    paint_field_card_at(
-        sugarloaf,
-        theme,
-        card,
-        label,
-        value,
-        focused,
-        placeholder,
-        trailing_slot,
-        paint_text,
-        DEPTH_DIALOG,
-        ORDER_DIALOG,
-    );
-}
-
-/// Field card with explicit depth/order (SFTP toolbar vs dialog chrome).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn paint_field_card_at(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    card: Rect,
-    label: &str,
-    value: &str,
-    focused: bool,
-    placeholder: bool,
-    trailing_slot: f32,
-    paint_text: bool,
-    depth: f32,
-    order: u8,
-) {
+    let (depth, order) = (DEPTH_DIALOG, ORDER_DIALOG);
     paint_surface(
         sugarloaf,
         &card,
@@ -2512,39 +2490,6 @@ fn draw_text(
     sugarloaf
         .text_mut()
         .draw(x, y, text, &opts(size, color, bold));
-}
-
-/// Shared settings field card (label + input row).
-///
-/// `trailing_slot` reserves space on the right of the input for an
-/// adornment (e.g. passphrase eye) so value text never overlaps it.
-///
-/// When `paint_text` is false, only the card/input quads are drawn —
-/// used while a popover covers the card so UI text (always last pass)
-/// does not bleed through the menu.
-#[allow(clippy::too_many_arguments)]
-fn paint_settings_field_card(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    card: Rect,
-    label: &str,
-    value: &str,
-    focused: bool,
-    placeholder: bool,
-    trailing_slot: f32,
-    paint_text: bool,
-) {
-    paint_field_card(
-        sugarloaf,
-        theme,
-        card,
-        label,
-        value,
-        focused,
-        placeholder,
-        trailing_slot,
-        paint_text,
-    );
 }
 
 fn render_context_menu(

@@ -13,6 +13,7 @@ use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius, space};
 
+use super::Layer;
 use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{
     draw_mono_text, draw_ui_text, measure_mono_text, measure_ui_text, UiWeight,
@@ -20,7 +21,9 @@ use crate::renderer::ui_text::{
 
 const ORDER: u8 = 7;
 const DEPTH_RING: f32 = 0.05;
-const DEPTH_BOX: f32 = 0.1;
+const BOX_ABOVE_RING: f32 = 0.05;
+const CARET_ABOVE_BOX: f32 = 0.02;
+const DEPTH_BOX: f32 = DEPTH_RING + BOX_ABOVE_RING;
 
 /// Content of one text field.
 pub struct FieldContent<'a> {
@@ -81,6 +84,30 @@ pub fn paint_field(
     backdrop: [f32; 4],
     device_scale: f32,
 ) {
+    let layer = Layer {
+        order: ORDER,
+        depth: DEPTH_RING,
+        backdrop,
+    };
+    paint_field_at(sugarloaf, theme, layout, c, layer, device_scale);
+}
+
+/// [`paint_field`] on an explicit order/depth; `layer.depth` is the focus
+/// ring, the box and caret sit above it.
+pub fn paint_field_at(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    layout: &FieldLayout,
+    c: &FieldContent,
+    layer: Layer,
+    device_scale: f32,
+) {
+    let Layer {
+        order,
+        depth,
+        backdrop,
+    } = layer;
+    let box_depth = depth + BOX_ABOVE_RING;
     let disabled = c.state == FieldState::Disabled;
     let k = if disabled { ui::DISABLED_OPACITY } else { 1.0 };
     let col = |x: [f32; 4]| if disabled { over(backdrop, x, k) } else { x };
@@ -107,8 +134,8 @@ pub fn paint_field(
             None,
             radius::CONTROL + ui::FOCUS_RING,
             0.0,
-            DEPTH_RING,
-            ORDER,
+            depth,
+            order,
             false,
         );
     }
@@ -119,8 +146,8 @@ pub fn paint_field(
         Some(col(ui::border_color(theme, c.state))),
         radius::CONTROL,
         1.0,
-        DEPTH_BOX,
-        ORDER,
+        box_depth,
+        order,
         false,
     );
 
@@ -148,8 +175,8 @@ pub fn paint_field(
             sugarloaf,
             &ui::caret_rect(layout, c.kind, w),
             theme.accent,
-            DEPTH_BOX + 0.02,
-            ORDER,
+            box_depth + CARET_ABOVE_BOX,
+            order,
         );
     }
 

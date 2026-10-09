@@ -4,9 +4,9 @@
 //! `content` rect the shell gives the view; the painter walks the same rects.
 
 use crate::components::input::{search_layout, SearchKind, SearchLayout, SEARCH_HEIGHT};
+use crate::components::input::{TextDraft, TextEdit};
 use crate::components::list::HISTORY_ROW_HEIGHT;
 use crate::geom::Rect;
-use crate::text_field::{TextDraft, TextEdit};
 
 /// Padding around the list (design: `padding: 20px 28px`).
 pub const PAD_X: f32 = 28.0;

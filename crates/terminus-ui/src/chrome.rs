@@ -556,7 +556,7 @@ impl Chrome {
 
     /// Replace the host-list filter text.
     pub fn set_filter(&mut self, filter: String) {
-        self.panel.filter = crate::text_field::TextDraft::new(filter);
+        self.panel.filter = crate::components::input::TextDraft::new(filter);
     }
 
     /// Current host-list filter text.
@@ -1757,7 +1757,10 @@ impl Chrome {
     }
 
     /// Shared text edit (Delete, caret, selection…) for the unlock prompt.
-    pub fn edit_vault_unlock(&mut self, edit: crate::text_field::TextEdit) -> bool {
+    pub fn edit_vault_unlock(
+        &mut self,
+        edit: crate::components::input::TextEdit,
+    ) -> bool {
         if !self.vault_unlock.is_open() {
             return false;
         }

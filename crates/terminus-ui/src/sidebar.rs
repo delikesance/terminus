@@ -19,10 +19,10 @@
 
 use std::collections::HashSet;
 
+use crate::components::input::TextDraft;
 use crate::geom::Rect;
 use crate::icons::Icon;
 use crate::os_icons::HostStatus;
-use crate::text_field::TextDraft;
 
 /// Sidebar width, in logical pixels.
 pub const WIDTH: f32 = crate::shell::layout::SIDEBAR_WIDTH;
@@ -1881,7 +1881,7 @@ impl HostPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_field::TextMoveKind;
+    use crate::components::input::TextMoveKind;
 
     #[test]
     fn section_label_and_geometry_helpers_are_consistent() {

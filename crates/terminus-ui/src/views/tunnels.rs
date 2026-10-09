@@ -18,11 +18,11 @@ use crate::components::input::{
     field_layout, FieldKind, FieldLayout, FIELD_HEIGHT, HELPER_HEIGHT, LABEL_GAP,
     LABEL_HEIGHT,
 };
+use crate::components::input::{TextDraft, TextEdit};
 use crate::components::list::CARD_HEIGHT;
 use crate::components::list::{card_hit, card_layout, CardHit, CardLayout, CardSpec};
 use crate::components::selection::{SegmentedLayout, SegmentedSize};
 use crate::geom::Rect;
-use crate::text_field::{TextDraft, TextEdit};
 use crate::tokens::height;
 
 /// Padding around the whole view.
@@ -963,8 +963,8 @@ impl TunnelsState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::input::TextMoveKind;
     use crate::geom::Rect;
-    use crate::text_field::TextMoveKind;
 
     fn content() -> Rect {
         Rect::new(260.0, 96.0, 1180.0, 804.0)

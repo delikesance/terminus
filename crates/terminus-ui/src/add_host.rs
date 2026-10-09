@@ -11,10 +11,10 @@
 //! so this crate stays independent of terminus-core's typed enum.
 
 use crate::components::input::{self as inp, FieldKind, FieldLayout};
+use crate::components::input::{TextDraft, TextEdit, TextMoveKind};
 use crate::components::overlay as ov;
 use crate::components::selection as sel;
 use crate::geom::Rect;
-use crate::text_field::{TextDraft, TextEdit, TextMoveKind};
 
 /// Canonical auth-method wire values, in cycle order.
 pub const AUTH_METHODS: [&str; 3] = ["key", "password", "gssapi"];

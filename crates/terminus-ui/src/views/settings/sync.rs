@@ -5,11 +5,11 @@
 use super::{button_spec, column, edit_draft, Key, Measure, SettingsAction};
 use crate::components::button::{ButtonKind, ButtonSize};
 use crate::components::feedback::StatusKind;
+use crate::components::input::TextDraft;
 use crate::components::input::{field_layout, FieldKind, FieldLayout, HELPER_HEIGHT};
 use crate::components::selection::{SegmentedLayout, SegmentedSize};
 use crate::geom::Rect;
 use crate::settings::{SQL_ENGINES, SQL_URI_MAX_BYTES};
-use crate::text_field::TextDraft;
 
 pub const INTRO: &str =
     "Keep your servers, groups and snippets in step across your computers.";

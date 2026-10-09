@@ -8,11 +8,11 @@ use std::cell::RefCell;
 
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonState};
+use terminus_ui::components::input::TextDraft;
 use terminus_ui::components::input::{FieldKind, FieldState};
 use terminus_ui::components::list::{CardState, CARD_RADIUS};
 use terminus_ui::components::selection::SegmentedSize;
 use terminus_ui::geom::Rect;
-use terminus_ui::text_field::TextDraft;
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::views::tunnels::*;
