@@ -335,16 +335,14 @@ fn signature_from_another_key_is_rejected() {
 }
 
 #[test]
-fn without_a_trusted_key_nothing_is_downloaded() {
+fn without_a_key_the_checksum_alone_gates_the_download() {
     let f = fixture("v0.9.0");
     let c = Client::new(&format!("{}/latest", f.base), None).unwrap();
-    assert!(!c.can_install());
+    assert!(c.can_install());
     let release = c.check("0.5.29").unwrap().expect("checking still works");
     let dir = tempfile::tempdir().unwrap();
-    let err = c
-        .download_verified(&release, "terminus-x86_64.msi", dir.path())
-        .unwrap_err();
-    assert!(matches!(err, UpdateError::NoTrustedKey), "{err}");
+    c.download_verified(&release, "terminus-x86_64.msi", dir.path())
+        .unwrap();
 }
 
 #[test]

@@ -7,8 +7,7 @@
 # and tar). Linux compilation runs in Docker against distro libraries,
 # never against the Nix shell's libraries. A running Docker daemon is required.
 # Without Nix (`make release-linux`), --linux-only needs only docker, gh,
-# minisign, openssl and python3; nfpm then runs from its container image.
-# Updates are signed with minisign: see scripts/sign-release.sh.
+# openssl and python3; nfpm then runs from its container image.
 # The convenient entry point is the flake app:
 #
 #   nix run .#release                 # build Linux + Windows and publish
@@ -229,10 +228,6 @@ fi
 echo "=== Checksums ==="
 (cd "$DIST_DIR" && sha256sum "${UPLOAD[@]##*/}" > checksums.txt)
 UPLOAD+=("$DIST_DIR/checksums.txt")
-
-# Signature the in-app updater verifies before installing anything.
-TERMINUS_RELEASE_TAG="$TAG" bash "$ROOT/scripts/sign-release.sh" "$DIST_DIR"
-[[ -f "$DIST_DIR/checksums.txt.minisig" ]] && UPLOAD+=("$DIST_DIR/checksums.txt.minisig")
 
 if [[ "$BUILD_ONLY" == "1" ]]; then
     echo "Build complete (no publish). Artifacts:"

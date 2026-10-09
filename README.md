@@ -23,7 +23,7 @@ interface on top.
 - **WSL aware**: distros are discovered automatically and listed next to your local shell.
 - **Encrypted vault**: credentials stay locked behind an Argon2id-derived key.
 - **Command palette**: fuzzy-search hosts and commands from the keyboard; tabs and splits included.
-- **Signed updates**: releases are verified with minisign and SHA-256 before they are applied.
+- **Self-updating**: releases are verified against their SHA-256 before they are applied.
 
 <p align="center">
   <img src="docs/assets/features.png" alt="Terminus features" width="100%">

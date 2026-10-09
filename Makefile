@@ -194,7 +194,7 @@ test:
 	make lint
 	RUST_BACKTRACE=full cargo test --release
 
-# Release without Nix: needs docker, gh, minisign, openssl and python3.
+# Release without Nix: needs docker, gh, openssl and python3.
 # release-linux builds and publishes the Linux artifacts; release also builds
 # Windows (cargo-xwin). ARGS is forwarded, e.g. make release-linux ARGS="--draft".
 .PHONY: release release-linux release-linux-build
