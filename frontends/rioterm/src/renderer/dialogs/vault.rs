@@ -1,5 +1,6 @@
 //! Vault unlock / create dialog.
 
+use crate::renderer::components::button::paint_button_in_rect;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::overlay as ov;
@@ -11,7 +12,7 @@ use terminus_ui::vault_unlock::{self as vu, VaultUnlockLayout};
 use terminus_ui::Chrome;
 
 use super::{
-    button_state, paint_button_rect, paint_checkbox_row, paint_shadow, paint_text_field,
+    button_state, dialog_layer, paint_checkbox_row, paint_shadow, paint_text_field,
     DEPTH, ORDER,
 };
 use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
@@ -191,7 +192,7 @@ pub fn paint_vault_unlock(
     }
 
     let (cancel, ok) = layout.button_rects("Cancel", prompt.action_label());
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &cancel,
@@ -199,10 +200,9 @@ pub fn paint_vault_unlock(
         ButtonSize::Large,
         button_state(false, false),
         "Cancel",
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &ok,
@@ -210,7 +210,6 @@ pub fn paint_vault_unlock(
         ButtonSize::Large,
         button_state(false, false),
         prompt.action_label(),
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
 }

@@ -265,6 +265,13 @@ impl ButtonSpec {
         }
     }
 
+    /// Label button filling `rect` horizontally and centred vertically.
+    pub fn in_rect(rect: Rect, kind: ButtonKind, size: ButtonSize) -> Self {
+        let label_width = rect.width - 2.0 * size.padding_x();
+        let y = rect.y + (rect.height - size.height()) * 0.5;
+        Self::label((rect.x, y), kind, size, label_width, false)
+    }
+
     pub fn width(&self) -> f32 {
         match self.content {
             ButtonContent::IconOnly => self.size.height(),
@@ -362,6 +369,16 @@ impl ButtonSpec {
     pub fn tooltip<'a>(&self, name: &'a str) -> Option<&'a str> {
         matches!(self.content, ButtonContent::IconOnly).then_some(name)
     }
+}
+
+/// Badge tile inset inside a dashed CTA row.
+pub fn dashed_cta_badge(cta: Rect, badge_size: f32, pad: f32) -> Rect {
+    Rect::new(
+        cta.x + pad,
+        cta.y + (cta.height - badge_size) * 0.5,
+        badge_size,
+        badge_size,
+    )
 }
 
 fn grow(r: Rect, by: f32) -> Rect {
@@ -507,5 +524,47 @@ mod tests {
         assert_eq!(c(Quiet, Hover).fill, Some(t.surface));
         assert_eq!(c(Quiet, Hover).fg, rgba(t.text));
         assert_eq!(c(Quiet, Pressed).fill, Some(t.raised));
+    }
+
+    #[test]
+    fn in_rect_keeps_width_and_centres_vertically() {
+        let rect = Rect::new(10.0, 20.0, 100.0, 40.0);
+        let r = ButtonSpec::in_rect(rect, ButtonKind::Primary, ButtonSize::Medium).rect();
+        assert_eq!((r.x, r.width, r.height), (10.0, 100.0, 36.0));
+        assert_eq!(r.y, 22.0);
+    }
+
+    #[test]
+    fn dashed_cta_badge_is_vertically_centered() {
+        let cta = Rect::new(0.0, 0.0, 200.0, 56.0);
+        let badge = dashed_cta_badge(cta, 32.0, 12.0);
+        assert!((badge.x - 12.0).abs() < 0.01);
+        assert!((badge.y - 12.0).abs() < 0.01);
+        assert!((badge.width - 32.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn hover_changes_primary_and_secondary_fill() {
+        let t = ChromeTheme::violet_ink();
+        for kind in [ButtonKind::Primary, ButtonKind::Secondary] {
+            let rest = colors(&t, kind, ButtonState::Default).fill;
+            assert_ne!(colors(&t, kind, ButtonState::Hover).fill, rest);
+        }
+    }
+
+    #[test]
+    fn primary_fill_is_accent_and_secondary_label_is_text() {
+        let t = ChromeTheme::violet_ink();
+        let primary = colors(&t, ButtonKind::Primary, ButtonState::Default);
+        assert_eq!(primary.fill, Some(t.accent));
+        let secondary = colors(&t, ButtonKind::Secondary, ButtonState::Default);
+        assert_eq!(secondary.fg, rgba(t.text));
+    }
+
+    #[test]
+    fn quiet_label_is_muted_until_hovered() {
+        let t = ChromeTheme::violet_ink();
+        let rest = colors(&t, ButtonKind::Quiet, ButtonState::Default).fg;
+        assert_eq!(rest, rgba(t.text_muted));
     }
 }

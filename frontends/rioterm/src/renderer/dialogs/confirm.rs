@@ -1,5 +1,6 @@
 //! Confirmation dialog painter (Confirm / Destructive / With-option).
 
+use crate::renderer::components::button::paint_button_in_rect;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::overlay::{self as ov, DialogFocus, DialogKind};
@@ -7,9 +8,7 @@ use terminus_ui::confirm::{ConfirmLayout, ConfirmSpec};
 use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 
-use super::{
-    button_state, paint_button_rect, paint_checkbox_row, paint_shadow, DEPTH, ORDER,
-};
+use super::{button_state, dialog_layer, paint_checkbox_row, paint_shadow, DEPTH, ORDER};
 use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
@@ -85,7 +84,7 @@ pub fn paint_confirm(
     };
     let hov = |f| view.hover == Some(f);
     let foc = |f| view.focus == Some(f);
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &l.cancel,
@@ -93,10 +92,9 @@ pub fn paint_confirm(
         ButtonSize::Large,
         button_state(foc(DialogFocus::Cancel), hov(DialogFocus::Cancel)),
         &spec.cancel,
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &l.confirm,
@@ -104,8 +102,7 @@ pub fn paint_confirm(
         ButtonSize::Large,
         button_state(foc(DialogFocus::Confirm), hov(DialogFocus::Confirm)),
         &spec.confirm,
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
 }
 

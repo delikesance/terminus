@@ -8,12 +8,11 @@
 //! are pinned to the gallery's own order).
 
 use rio_backend::sugarloaf::Sugarloaf;
-use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonSpec, ButtonState};
+use terminus_ui::components::button::ButtonState;
 use terminus_ui::components::selection::ControlState;
 use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
 
-use crate::renderer::components::button::paint_button_on;
 use crate::renderer::components::selection::paint_checkbox_on;
 use crate::renderer::components::Layer;
 
@@ -50,38 +49,13 @@ pub fn paint_shadow(sugarloaf: &mut Sugarloaf, r: &Rect, rad: f32, depth: f32) {
     }
 }
 
-/// Paint a button whose width came from `terminus_ui::confirm` (an
-/// estimate, shared with hit-testing) through the shared Button painter.
-///
-/// `backdrop` is the colour behind the button, used for the focus ring gap.
-#[allow(clippy::too_many_arguments)]
-pub fn paint_button_rect(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    rect: &Rect,
-    kind: ButtonKind,
-    size: ButtonSize,
-    state: ButtonState,
-    label: &str,
-    backdrop: [f32; 4],
-    depth: f32,
-) {
-    // Same width the layout used, so the spec rect equals the hit rect.
-    let label_w = rect.width - 2.0 * size.padding_x();
-    let spec = ButtonSpec::label((rect.x, rect.y), kind, size, label_w, false);
-    paint_button_on(
-        sugarloaf,
-        theme,
-        &spec,
-        state,
-        label,
-        None,
-        Layer {
-            order: ORDER,
-            depth,
-            backdrop,
-        },
-    );
+/// Layer of the buttons inside a re-skinned modal.
+pub fn dialog_layer(theme: &ChromeTheme) -> Layer {
+    Layer {
+        order: ORDER,
+        depth: DEPTH + 0.05,
+        backdrop: theme.dialog,
+    }
 }
 
 /// Button state from the flags a dialog tracks.
