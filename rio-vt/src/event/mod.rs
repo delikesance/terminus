@@ -130,6 +130,8 @@ pub enum RioEvent {
     PrepareRender(u64),
     PrepareRenderOnRoute(u64, usize),
     PrepareUpdateConfig,
+    /// The machine woke up from sleep/hibernate: GPU caches may be stale.
+    SystemResumed,
     /// New terminal content available.
     Render,
     /// New terminal content available per route.
@@ -335,6 +337,7 @@ impl Debug for RioEvent {
             RioEvent::MouseCursorDirty => write!(f, "MouseCursorDirty"),
             RioEvent::ResetTitle => write!(f, "ResetTitle"),
             RioEvent::PrepareUpdateConfig => write!(f, "PrepareUpdateConfig"),
+            RioEvent::SystemResumed => write!(f, "SystemResumed"),
             RioEvent::PrepareRender(millis) => write!(f, "PrepareRender({millis})"),
             RioEvent::PrepareRenderOnRoute(millis, route) => {
                 write!(f, "PrepareRender({millis} on route {route})")
