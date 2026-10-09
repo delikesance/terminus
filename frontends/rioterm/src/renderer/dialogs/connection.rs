@@ -17,7 +17,7 @@ use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::{Chrome, ConnectKind, ConnectionSequence, STEP_COUNT};
 
-use super::{dialog_layer, paint_shadow, DEPTH, ORDER};
+use super::{dialog_layer, paint_dialog_frame, DEPTH, ORDER};
 use crate::renderer::chrome::{draw_icon, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_mono_text, draw_ui_text, measure_ui_text, UiWeight};
 
@@ -94,18 +94,7 @@ pub fn paint_connection_in(
         local.height,
     );
 
-    paint_shadow(sugarloaf, &dialog, radius::DIALOG, DEPTH);
-    paint_surface_stroke(
-        sugarloaf,
-        &dialog,
-        theme.dialog,
-        Some(theme.dialog_line),
-        radius::DIALOG,
-        1.0,
-        DEPTH + 0.02,
-        ORDER,
-        false,
-    );
+    paint_dialog_frame(sugarloaf, theme, None, &dialog);
     if !glyphs {
         return;
     }

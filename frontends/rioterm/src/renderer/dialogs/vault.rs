@@ -13,8 +13,8 @@ use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::vault_unlock::{self as vu, VaultUnlockLayout};
 use terminus_ui::Chrome;
 
-use super::{dialog_layer, paint_shadow, paint_text_field, DEPTH, ORDER};
-use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
+use super::{dialog_layer, paint_dialog_frame, paint_text_field, DEPTH, ORDER};
+use crate::renderer::chrome::draw_icon;
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
 pub fn paint_vault_unlock(
@@ -27,25 +27,8 @@ pub fn paint_vault_unlock(
     let prompt = &chrome.vault_unlock;
     let layout = VaultUnlockLayout::for_prompt(window.0, window.1, prompt);
     let d = layout.rect();
-    paint_flat(
-        sugarloaf,
-        &terminus_ui::Rect::new(0.0, 0.0, window.0, window.1),
-        ov::SCRIM,
-        DEPTH - 0.02,
-        ORDER,
-    );
-    paint_shadow(sugarloaf, &d, radius::DIALOG, DEPTH);
-    paint_surface_stroke(
-        sugarloaf,
-        &d,
-        theme.dialog,
-        Some(theme.dialog_line),
-        radius::DIALOG,
-        1.0,
-        DEPTH + 0.02,
-        ORDER,
-        false,
-    );
+    let scrim = terminus_ui::Rect::new(0.0, 0.0, window.0, window.1);
+    paint_dialog_frame(sugarloaf, theme, Some(&scrim), &d);
     if !glyphs {
         return;
     }

@@ -41,6 +41,34 @@ pub fn paint_shadow(sugarloaf: &mut Sugarloaf, r: &Rect, rad: f32, depth: f32) {
     }
 }
 
+/// Shell of a re-skinned modal: optional scrim, shadow, bordered surface.
+pub fn paint_dialog_frame(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    scrim: Option<&Rect>,
+    dialog: &Rect,
+) {
+    use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
+    use terminus_ui::components::overlay::SCRIM;
+    use terminus_ui::tokens::radius;
+
+    if let Some(scrim) = scrim {
+        paint_flat(sugarloaf, scrim, SCRIM, DEPTH - 0.02, ORDER);
+    }
+    paint_shadow(sugarloaf, dialog, radius::DIALOG, DEPTH);
+    paint_surface_stroke(
+        sugarloaf,
+        dialog,
+        theme.dialog,
+        Some(theme.dialog_line),
+        radius::DIALOG,
+        1.0,
+        DEPTH + 0.02,
+        ORDER,
+        false,
+    );
+}
+
 /// Layer of the buttons inside a re-skinned modal.
 pub fn dialog_layer(theme: &ChromeTheme) -> Layer {
     Layer {
