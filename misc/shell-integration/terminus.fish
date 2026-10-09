@@ -56,3 +56,18 @@ function __terminus_cwd --on-variable PWD
     printf '\e]7;file://%s%s\a' (hostname) (string escape --style=url -- $PWD)
 end
 __terminus_cwd
+
+# `ssh` passes our TERM to the remote, and no host ships a terminfo entry for
+# `xterm-rio`: the line editor then cannot move the cursor and `tput`/`htop`
+# fail. Advertise the entry every host has, for this one command only. A
+# `ssh` function of your own is left alone.
+if not functions -q ssh
+    function ssh --wraps ssh
+        switch "$TERM"
+            case xterm-rio rio
+                TERM=xterm-256color command ssh $argv
+            case '*'
+                command ssh $argv
+        end
+    end
+end

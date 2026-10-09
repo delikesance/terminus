@@ -309,7 +309,8 @@ async fn seed_old_hosts_db(dir: &std::path::Path, columns: &str) {
     .unwrap();
 }
 
-const HOSTS_WITHOUT_OS_ID: &str = "id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL, \
+const HOSTS_WITHOUT_OS_ID: &str =
+    "id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL, \
     port INTEGER NOT NULL DEFAULT 22, username TEXT NOT NULL, \
     auth_method TEXT NOT NULL DEFAULT 'password', password TEXT, identity_id TEXT, \
     group_id TEXT, tags TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '', \
@@ -335,7 +336,10 @@ async fn open_adds_os_id_to_a_hosts_table_that_predates_it() {
         .into_iter()
         .map(|h| h.name)
         .collect();
-    assert!(names.contains(&"old".to_string()), "old rows survive: {names:?}");
+    assert!(
+        names.contains(&"old".to_string()),
+        "old rows survive: {names:?}"
+    );
     assert!(names.contains(&"new".to_string()), "{names:?}");
 }
 

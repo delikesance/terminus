@@ -8,12 +8,12 @@
 //! title is drawn with default tracking.
 
 use rio_backend::sugarloaf::Sugarloaf;
-use terminus_ui::components::overlay::{
-    self as ov, dialog_layout_at, stepper_segments, wrap_text, DialogFocus,
-    DialogKind, DialogLayout, Menu, MenuEntry, MenuVisual, Palette, PaletteGroup,
-    PaletteItem, PaletteLayout, PaletteRow,
-};
 use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonSpec, ButtonState};
+use terminus_ui::components::overlay::{
+    self as ov, dialog_layout_at, stepper_segments, wrap_text, DialogFocus, DialogKind,
+    DialogLayout, Menu, MenuEntry, MenuVisual, Palette, PaletteGroup, PaletteItem,
+    PaletteLayout, PaletteRow,
+};
 use terminus_ui::components::selection::ControlState;
 use terminus_ui::geom::Rect;
 
@@ -42,9 +42,22 @@ fn text_y(rect: &Rect, size: f32) -> f32 {
 /// Soft drop shadow under a rounded panel (layered translucent rects).
 fn paint_shadow(sugarloaf: &mut Sugarloaf, r: &Rect, rad: f32, depth: f32) {
     for (grow, dy, a) in [(14.0, 14.0, 0.07), (8.0, 12.0, 0.10), (3.0, 10.0, 0.14)] {
-        let s = Rect::new(r.x - grow, r.y + dy - grow, r.width + 2.0 * grow, r.height + 2.0 * grow);
+        let s = Rect::new(
+            r.x - grow,
+            r.y + dy - grow,
+            r.width + 2.0 * grow,
+            r.height + 2.0 * grow,
+        );
         sugarloaf.rounded_rect(
-            None, s.x, s.y, s.width, s.height, [0.0, 0.0, 0.0, a], depth, rad + grow, ORDER,
+            None,
+            s.x,
+            s.y,
+            s.width,
+            s.height,
+            [0.0, 0.0, 0.0, a],
+            depth,
+            rad + grow,
+            ORDER,
         );
     }
 }
@@ -75,7 +88,15 @@ pub fn dialog_layout_for(
         measure_ui_text(sugarloaf, s, font_size::BODY_SM, UiWeight::Regular)
     });
     let (cancel_w, confirm_w) = action_widths(sugarloaf, spec);
-    let layout = dialog_layout_at(at.0, at.1, spec.kind, lines.len(), cancel_w, confirm_w, window);
+    let layout = dialog_layout_at(
+        at.0,
+        at.1,
+        spec.kind,
+        lines.len(),
+        cancel_w,
+        confirm_w,
+        window,
+    );
     (layout, lines)
 }
 
@@ -95,7 +116,14 @@ fn action_spec(
     kind: ButtonKind,
     label: &str,
 ) -> ButtonSpec {
-    label_spec(sugarloaf, (rect.x, rect.y), kind, ButtonSize::Large, label, false)
+    label_spec(
+        sugarloaf,
+        (rect.x, rect.y),
+        kind,
+        ButtonSize::Large,
+        label,
+        false,
+    )
 }
 
 /// Widths of the (cancel, confirm) buttons, measured as Button components.
@@ -127,11 +155,23 @@ pub fn paint_dialog(
 ) {
     paint_shadow(sugarloaf, &layout.dialog, radius::DIALOG, DEPTH);
     paint_surface_stroke(
-        sugarloaf, &layout.dialog, theme.dialog, Some(theme.dialog_line), radius::DIALOG, 1.0,
-        DEPTH + 0.02, ORDER, false,
+        sugarloaf,
+        &layout.dialog,
+        theme.dialog,
+        Some(theme.dialog_line),
+        radius::DIALOG,
+        1.0,
+        DEPTH + 0.02,
+        ORDER,
+        false,
     );
     draw_ui_text(
-        sugarloaf, layout.title.x, layout.title.y, spec.title, font_size::TITLE, theme.text,
+        sugarloaf,
+        layout.title.x,
+        layout.title.y,
+        spec.title,
+        font_size::TITLE,
+        theme.text,
         UiWeight::SemiBold,
     );
     for (i, line) in lines.iter().enumerate() {
@@ -159,8 +199,18 @@ pub fn paint_dialog(
     let (cancel_kind, confirm_kind) = action_kinds(spec.kind);
     let layer = dialog_layer(theme, DEPTH + 0.05);
     for (rect, kind, label, which) in [
-        (&layout.cancel, cancel_kind, spec.cancel, DialogFocus::Cancel),
-        (&layout.confirm, confirm_kind, spec.confirm, DialogFocus::Confirm),
+        (
+            &layout.cancel,
+            cancel_kind,
+            spec.cancel,
+            DialogFocus::Cancel,
+        ),
+        (
+            &layout.confirm,
+            confirm_kind,
+            spec.confirm,
+            DialogFocus::Confirm,
+        ),
     ] {
         let button = action_spec(sugarloaf, rect, kind, label);
         let state = if focus == Some(which) {
@@ -194,15 +244,41 @@ pub fn paint_modal_dialog(
 // ---------------------------------------------------------------- stepper
 
 /// Paint the wizard stepper in `area` (see [`ov::STEPPER_HEIGHT`]).
-pub fn paint_stepper(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, area: Rect, step: usize) {
+pub fn paint_stepper(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    area: Rect,
+    step: usize,
+) {
     for seg in stepper_segments(area, step) {
-        let col = if seg.filled { theme.accent } else { theme.dialog_line };
+        let col = if seg.filled {
+            theme.accent
+        } else {
+            theme.dialog_line
+        };
         sugarloaf.rounded_rect(
-            None, seg.bar.x, seg.bar.y, seg.bar.width, seg.bar.height, col, DEPTH, 2.0, ORDER,
+            None,
+            seg.bar.x,
+            seg.bar.y,
+            seg.bar.width,
+            seg.bar.height,
+            col,
+            DEPTH,
+            2.0,
+            ORDER,
         );
-        let tc = if seg.current { theme.text } else { theme.text_faint };
+        let tc = if seg.current {
+            theme.text
+        } else {
+            theme.text_faint
+        };
         draw_ui_text(
-            sugarloaf, seg.label_rect.x, seg.label_rect.y, seg.label, font_size::CAPTION, tc,
+            sugarloaf,
+            seg.label_rect.x,
+            seg.label_rect.y,
+            seg.label,
+            font_size::CAPTION,
+            tc,
             UiWeight::Regular,
         );
     }
@@ -214,8 +290,15 @@ pub fn paint_menu(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, menu: &Menu) {
     let r = menu.rect();
     paint_shadow(sugarloaf, &r, ov::MENU_RADIUS, DEPTH);
     paint_surface_stroke(
-        sugarloaf, &r, theme.surface, Some(theme.line), ov::MENU_RADIUS, 1.0, DEPTH + 0.02,
-        ORDER, false,
+        sugarloaf,
+        &r,
+        theme.surface,
+        Some(theme.line),
+        ov::MENU_RADIUS,
+        1.0,
+        DEPTH + 0.02,
+        ORDER,
+        false,
     );
     for (i, entry) in menu.entries.iter().enumerate() {
         if let Some(sep) = menu.separator_rect(i) {
@@ -228,12 +311,21 @@ pub fn paint_menu(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, menu: &Menu) {
             );
             continue;
         }
-        let Some(row) = menu.item_rect(i) else { continue };
+        let Some(row) = menu.item_rect(i) else {
+            continue;
+        };
         let visual = menu.visual(i);
         if matches!(visual, MenuVisual::Hover | MenuVisual::DangerHover) {
             sugarloaf.rounded_rect(
-                None, row.x, row.y, row.width, row.height, theme.selected, DEPTH + 0.05,
-                ov::MENU_ITEM_RADIUS, ORDER,
+                None,
+                row.x,
+                row.y,
+                row.width,
+                row.height,
+                theme.selected,
+                DEPTH + 0.05,
+                ov::MENU_ITEM_RADIUS,
+                ORDER,
             );
         }
         let col = match visual {
@@ -242,7 +334,12 @@ pub fn paint_menu(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, menu: &Menu) {
             _ => theme.text,
         };
         draw_ui_text(
-            sugarloaf, row.x + ov::MENU_ITEM_PAD_X, text_y(&row, 14.0), &entry.label, 14.0, col,
+            sugarloaf,
+            row.x + ov::MENU_ITEM_PAD_X,
+            text_y(&row, 14.0),
+            &entry.label,
+            14.0,
+            col,
             UiWeight::Regular,
         );
     }
@@ -258,8 +355,15 @@ pub fn paint_palette(
 ) {
     paint_shadow(sugarloaf, &layout.panel, ov::PALETTE_RADIUS, DEPTH);
     paint_surface_stroke(
-        sugarloaf, &layout.panel, theme.dialog, Some(theme.dialog_line), ov::PALETTE_RADIUS,
-        1.0, DEPTH + 0.02, ORDER, false,
+        sugarloaf,
+        &layout.panel,
+        theme.dialog,
+        Some(theme.dialog_line),
+        ov::PALETTE_RADIUS,
+        1.0,
+        DEPTH + 0.02,
+        ORDER,
+        false,
     );
     // Query row.
     let q = &layout.query;
@@ -267,13 +371,20 @@ pub fn paint_palette(
     draw_icon(
         sugarloaf,
         Icon::Search,
-        IconPlacement::new(q.x + ov::PALETTE_QUERY_PAD_X, q.y + (q.height - icon) / 2.0, icon),
+        IconPlacement::new(
+            q.x + ov::PALETTE_QUERY_PAD_X,
+            q.y + (q.height - icon) / 2.0,
+            icon,
+        ),
         rgba8(theme.text_muted),
         sugarloaf.scale_factor(),
     );
     let (qtext, qcol) = if palette.query.is_empty() {
         (
-            palette.placeholder.as_deref().unwrap_or("Search servers and commands"),
+            palette
+                .placeholder
+                .as_deref()
+                .unwrap_or("Search servers and commands"),
             theme.text_faint,
         )
     } else {
@@ -314,8 +425,15 @@ pub fn paint_palette(
             PaletteRow::Item { rect, index } => {
                 if index == palette.selected {
                     sugarloaf.rounded_rect(
-                        None, rect.x, rect.y, rect.width, rect.height, theme.selected,
-                        DEPTH + 0.05, ov::PALETTE_ITEM_RADIUS, ORDER,
+                        None,
+                        rect.x,
+                        rect.y,
+                        rect.width,
+                        rect.height,
+                        theme.selected,
+                        DEPTH + 0.05,
+                        ov::PALETTE_ITEM_RADIUS,
+                        ORDER,
                     );
                 }
                 let item = palette
@@ -325,10 +443,20 @@ pub fn paint_palette(
                     .nth(index);
                 if let Some(item) = item {
                     draw_ui_text(
-                        sugarloaf, rect.x + ov::PALETTE_ITEM_PAD_X, text_y(&rect, 15.0), &item.label,
-                        15.0, theme.text, UiWeight::Regular,
+                        sugarloaf,
+                        rect.x + ov::PALETTE_ITEM_PAD_X,
+                        text_y(&rect, 15.0),
+                        &item.label,
+                        15.0,
+                        theme.text,
+                        UiWeight::Regular,
                     );
-                    let hw = measure_ui_text(sugarloaf, &item.hint, font_size::CAPTION, UiWeight::Regular);
+                    let hw = measure_ui_text(
+                        sugarloaf,
+                        &item.hint,
+                        font_size::CAPTION,
+                        UiWeight::Regular,
+                    );
                     draw_ui_text(
                         sugarloaf,
                         rect.right() - ov::PALETTE_ITEM_PAD_X - hw,
@@ -343,21 +471,57 @@ pub fn paint_palette(
         }
     }
     if let Some(e) = layout.empty {
-        let msg = format!("No server or command matches \u{201c}{}\u{201d}. ", palette.query);
+        let msg = format!(
+            "No server or command matches \u{201c}{}\u{201d}. ",
+            palette.query
+        );
         let x = e.x + ov::PALETTE_ITEM_PAD_X;
         let y = text_y(&e, 14.0);
-        let w = draw_ui_text(sugarloaf, x, y, &msg, 14.0, theme.text_muted, UiWeight::Regular);
+        let w = draw_ui_text(
+            sugarloaf,
+            x,
+            y,
+            &msg,
+            14.0,
+            theme.text_muted,
+            UiWeight::Regular,
+        );
         let link = palette.add_server_label();
-        let lw = draw_ui_text(sugarloaf, x + w, y, &link, 14.0, text_color(theme.accent), UiWeight::Regular);
-        paint_flat(sugarloaf, &Rect::new(x + w, y + 14.0 * 1.25, lw, 1.0), theme.accent, DEPTH + 0.05, ORDER);
+        let lw = draw_ui_text(
+            sugarloaf,
+            x + w,
+            y,
+            &link,
+            14.0,
+            text_color(theme.accent),
+            UiWeight::Regular,
+        );
+        paint_flat(
+            sugarloaf,
+            &Rect::new(x + w, y + 14.0 * 1.25, lw, 1.0),
+            theme.accent,
+            DEPTH + 0.05,
+            ORDER,
+        );
     }
     // Footer.
     let f = &layout.footer;
-    paint_flat(sugarloaf, &Rect::new(f.x + 1.0, f.y, f.width - 2.0, 1.0), theme.raised, DEPTH + 0.05, ORDER);
+    paint_flat(
+        sugarloaf,
+        &Rect::new(f.x + 1.0, f.y, f.width - 2.0, 1.0),
+        theme.raised,
+        DEPTH + 0.05,
+        ORDER,
+    );
     let mut x = f.x + ov::PALETTE_QUERY_PAD_X;
     for hint in ov::PALETTE_HINTS {
         let w = draw_ui_text(
-            sugarloaf, x, text_y(f, font_size::CAPTION), hint, font_size::CAPTION, theme.text_muted,
+            sugarloaf,
+            x,
+            text_y(f, font_size::CAPTION),
+            hint,
+            font_size::CAPTION,
+            theme.text_muted,
             UiWeight::Regular,
         );
         x += w + ov::PALETTE_FOOTER_GAP;
@@ -366,20 +530,57 @@ pub fn paint_palette(
 
 // ---------------------------------------------------------------- gallery
 
-fn caption(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, x: f32, y: f32, text: &str) -> f32 {
-    draw_ui_text(sugarloaf, x, y, text, font_size::CAPTION, theme.text_faint, UiWeight::Regular);
+fn caption(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    x: f32,
+    y: f32,
+    text: &str,
+) -> f32 {
+    draw_ui_text(
+        sugarloaf,
+        x,
+        y,
+        text,
+        font_size::CAPTION,
+        theme.text_faint,
+        UiWeight::Regular,
+    );
     font_size::CAPTION + 10.0
 }
 
-fn heading(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, x: f32, y: f32, text: &str) -> f32 {
+fn heading(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    x: f32,
+    y: f32,
+    text: &str,
+) -> f32 {
     draw_ui_text(sugarloaf, x, y, text, 18.0, theme.text, UiWeight::SemiBold);
     18.0 + 14.0
 }
 
-fn note(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, x: f32, y: f32, width: f32, text: &str) -> f32 {
-    let lines = wrap_text(text, width, |s| measure_ui_text(sugarloaf, s, 13.0, UiWeight::Regular));
+fn note(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    x: f32,
+    y: f32,
+    width: f32,
+    text: &str,
+) -> f32 {
+    let lines = wrap_text(text, width, |s| {
+        measure_ui_text(sugarloaf, s, 13.0, UiWeight::Regular)
+    });
     for (i, l) in lines.iter().enumerate() {
-        draw_ui_text(sugarloaf, x, y + i as f32 * 20.0, l, 13.0, theme.text_muted, UiWeight::Regular);
+        draw_ui_text(
+            sugarloaf,
+            x,
+            y + i as f32 * 20.0,
+            l,
+            13.0,
+            theme.text_muted,
+            UiWeight::Regular,
+        );
     }
     lines.len() as f32 * 20.0 + 8.0
 }
@@ -425,7 +626,8 @@ pub fn paint_gallery(
             row_h = 0.0;
         }
         let cap_h = caption(sugarloaf, theme, x, row_y, label);
-        let (layout, lines) = dialog_layout_for(sugarloaf, spec, (x, row_y + cap_h), window);
+        let (layout, lines) =
+            dialog_layout_for(sugarloaf, spec, (x, row_y + cap_h), window);
         let focus = (*label == "Destructive").then_some(DialogFocus::Cancel);
         paint_dialog(sugarloaf, theme, spec, &layout, &lines, focus);
         row_h = row_h.max(cap_h + layout.dialog.height);
@@ -433,9 +635,21 @@ pub fn paint_gallery(
     }
     y = row_y + row_h + 28.0;
     // Scrim swatch.
-    let cap_h = caption(sugarloaf, theme, ox, y, "Scrim · rgba(6,5,10,0.64) over the whole window, dialog centred");
+    let cap_h = caption(
+        sugarloaf,
+        theme,
+        ox,
+        y,
+        "Scrim · rgba(6,5,10,0.64) over the whole window, dialog centred",
+    );
     let sw = Rect::new(ox, y + cap_h, 140.0, 48.0);
-    paint_flat(sugarloaf, &Rect::new(sw.x, sw.y, sw.width / 2.0, sw.height), theme.surface, DEPTH, ORDER);
+    paint_flat(
+        sugarloaf,
+        &Rect::new(sw.x, sw.y, sw.width / 2.0, sw.height),
+        theme.surface,
+        DEPTH,
+        ORDER,
+    );
     paint_flat(sugarloaf, &sw, ov::SCRIM, DEPTH + 0.01, ORDER);
     y = sw.bottom() + 10.0;
     y += note(
@@ -448,14 +662,25 @@ pub fn paint_gallery(
     y += heading(sugarloaf, theme, ox, y, "Wizard stepper");
     for step in 1..=3 {
         let cap_h = caption(sugarloaf, theme, ox, y, &format!("Step {step}"));
-        paint_stepper(sugarloaf, theme, Rect::new(ox, y + cap_h, 380.0, ov::STEPPER_HEIGHT), step);
+        paint_stepper(
+            sugarloaf,
+            theme,
+            Rect::new(ox, y + cap_h, 380.0, ov::STEPPER_HEIGHT),
+            step,
+        );
         y += cap_h + ov::STEPPER_HEIGHT + 18.0;
     }
     y += 6.0;
 
     // --- Context menu ---
     y += heading(sugarloaf, theme, ox, y, "Context menu");
-    let cap_h = caption(sugarloaf, theme, ox, y, "Server menu · states: hover, default, disabled, danger");
+    let cap_h = caption(
+        sugarloaf,
+        theme,
+        ox,
+        y,
+        "Server menu · states: hover, default, disabled, danger",
+    );
     let mut menu = Menu::open(
         ox,
         y + cap_h,
@@ -476,7 +701,11 @@ pub fn paint_gallery(
     let mut danger = Menu::open(
         ox + ov::MENU_WIDTH + 160.0, // clear of the long caption above the first menu
         y + cap_h,
-        vec![MenuEntry::item("Edit server"), MenuEntry::separator(), MenuEntry::item("Delete").danger()],
+        vec![
+            MenuEntry::item("Edit server"),
+            MenuEntry::separator(),
+            MenuEntry::item("Delete").danger(),
+        ],
     )
     .expect("non-empty");
     danger.hover = Some(2);
@@ -495,7 +724,10 @@ pub fn paint_gallery(
         "spl",
         vec![PaletteGroup::new(
             "Commands",
-            vec![PaletteItem::new("Split Right", "Terminal"), PaletteItem::new("Split Down", "Terminal")],
+            vec![
+                PaletteItem::new("Split Right", "Terminal"),
+                PaletteItem::new("Split Down", "Terminal"),
+            ],
         )],
     );
     let cap_h = caption(sugarloaf, theme, ox, y, "Results · first item selected");

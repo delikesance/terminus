@@ -1,7 +1,6 @@
 //! `Screen` chrome surface, split out of `screen/mod.rs`.
 
 use super::{ChromePress, Screen};
-use crate::context;
 use crate::hosts;
 use rio_backend::config::layout::Margin;
 use rio_backend::event::ClickState;
@@ -24,7 +23,11 @@ impl Screen<'_> {
         // Apply the initial collapsed-groups seed from the DB exactly once.
         if let Some(seed) = self.host_store.take_collapsed_groups_seed() {
             self.chrome.panel.collapsed_groups = seed;
+            // The seed is the last answer of the first refresh: hosts and
+            // distros are known now, so last launch's tabs can reopen.
+            self.saved_tabs.hosts_known();
         }
+        self.autosave_tabs();
         let sftp_changed = self.sftp.as_mut().is_some_and(|s| s.pump());
         // Parked browsers (other machines) keep draining their workers.
         for parked in self.sftp_parked.iter_mut() {
@@ -297,7 +300,7 @@ impl Screen<'_> {
     pub fn chrome_press(&mut self, x: f32, y: f32) -> terminus_ui::chrome::ChromeAction {
         let (width, height) = self.chrome_viewport();
         let reserved_before = self.chrome.reserved_width();
-        let menu_was_open = self.chrome.context_menu.is_some();
+        let _menu_was_open = self.chrome.context_menu.is_some();
         self.commit_session_rename_unless_at(x, y);
         let action = self.chrome.handle_press(width, height, x, y);
         // Collapsing the rail or toggling the panel changes how much of
@@ -344,10 +347,9 @@ impl Screen<'_> {
         let (width, height) = self.chrome_viewport();
         let sftp_open = self.sftp.is_some();
         self.commit_session_rename_unless_at(x, y);
-        let action = self
-            .chrome
-            .handle_context_press(width, height, x, y, sftp_open);
-        action
+
+        self.chrome
+            .handle_context_press(width, height, x, y, sftp_open)
     }
 
     /// Right-click inside the Files view: open a file/folder context menu.
@@ -556,7 +558,9 @@ impl Screen<'_> {
                 window.set_maximized(next);
                 self.window_maximized = next;
             }
-            WindowButton::Close => self.context_manager.quit(),
+            // Closing is app-level (`Application::close_window`), which
+            // handles it before this is reached.
+            WindowButton::Close => {}
         }
     }
 

@@ -350,6 +350,8 @@ impl Screen<'_> {
         if !self.renderer.command_palette.is_enabled() {
             let hosts = self.palette_host_items();
             self.renderer.command_palette.set_hosts(hosts);
+            let tunnels = self.palette_tunnel_items();
+            self.renderer.command_palette.set_tunnels(tunnels);
             let shortcuts = self.palette_shortcuts();
             self.renderer.command_palette.set_shortcuts(shortcuts);
             self.renderer.command_palette.set_enabled(true);

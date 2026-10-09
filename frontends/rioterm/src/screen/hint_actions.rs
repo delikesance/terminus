@@ -1,18 +1,11 @@
 //! `Screen` hint actions surface, split out of `screen/mod.rs`.
 
 use super::Screen;
-use crate::context;
-use crate::context::renderable::Cursor;
 use crate::crosswords::grid::Dimensions;
-use crate::crosswords::pos::{Column, Pos};
-use crate::mouse::Mouse;
-use crate::renderer::Renderer;
+use crate::crosswords::pos::Pos;
 use core::fmt::Debug;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
-use rio_backend::config::Shell;
-use rio_backend::crosswords::pos::Line;
 use rio_backend::event::EventProxy;
-use rio_window::keyboard::ModifiersState;
 use rio_window::window::CursorIcon;
 use std::ffi::OsStr;
 

@@ -248,7 +248,7 @@ impl FilesState {
 
     /// Whether the selected machine's browser is waiting to open.
     pub fn is_connecting(&self) -> bool {
-        self.connecting.iter().any(|m| *m == self.machine_id)
+        self.connecting.contains(&self.machine_id)
     }
 
     /// The browser could not be opened (or its connection failed).
@@ -469,7 +469,10 @@ mod tests {
         s.begin_connecting("a");
         assert!(s.is_connecting());
         assert_eq!(s.body(), "Connecting to e2e local…");
-        assert!(s.cta_rect(content()).is_none(), "no Browse button meanwhile");
+        assert!(
+            s.cta_rect(content()).is_none(),
+            "no Browse button meanwhile"
+        );
         assert!(!s.take_auto_open(true), "no second request while waiting");
 
         // Another machine selected: its own state, not A's wait.

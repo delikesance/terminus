@@ -389,7 +389,7 @@ fn mock_tar_create(
 
     // Pack under a different root name: symlink on Unix, temp rename elsewhere.
     let link = parent.join(root_name);
-    let src = parent.join(base);
+    let _src = parent.join(base);
     #[cfg(unix)]
     {
         let _ = fs::remove_file(&link);
@@ -779,7 +779,7 @@ impl russh_sftp::server::Handler for FsSftp {
         let Opened::File { file } = opened else {
             return Err(StatusCode::Failure);
         };
-        let mut file = file.lock().map_err(|_| StatusCode::Failure)?;
+        let file = file.get_mut().map_err(|_| StatusCode::Failure)?;
         file.seek(SeekFrom::Start(offset))
             .map_err(|_| StatusCode::Failure)?;
         let mut buf = vec![0u8; len as usize];
@@ -802,7 +802,7 @@ impl russh_sftp::server::Handler for FsSftp {
         let Opened::File { file } = opened else {
             return Err(StatusCode::Failure);
         };
-        let mut file = file.lock().map_err(|_| StatusCode::Failure)?;
+        let file = file.get_mut().map_err(|_| StatusCode::Failure)?;
         file.seek(SeekFrom::Start(offset))
             .map_err(|_| StatusCode::Failure)?;
         file.write_all(&data).map_err(|_| StatusCode::Failure)?;

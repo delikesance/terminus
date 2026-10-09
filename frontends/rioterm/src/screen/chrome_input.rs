@@ -1,9 +1,6 @@
 //! `Screen` chrome input surface, split out of `screen/mod.rs`.
 
 use super::Screen;
-use crate::context;
-use crate::hosts;
-use rio_window::event::ElementState;
 use rio_window::keyboard::{Key, NamedKey};
 
 /// The one winit-key → [`TextEdit`] mapping for text fields: Backspace,

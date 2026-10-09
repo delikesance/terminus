@@ -1,5 +1,5 @@
 pub mod routes;
-mod window;
+pub(crate) mod window;
 use crate::event::EventProxy;
 use crate::router::window::{
     configure_window, create_window_builder, DEFAULT_MINIMUM_WINDOW_HEIGHT,
@@ -50,6 +50,7 @@ pub enum Modal {
     /// A non-terminal route (the welcome / config screens).
     Route,
     /// TOFU host key approval dialog (blocks SSH handshake).
+    #[allow(dead_code)]
     TofuHostKeyApproval,
     /// Vault unlock passphrase entry.
     VaultUnlock,
@@ -59,6 +60,7 @@ pub enum Modal {
     /// Settings modal (SQL Sync text fields).
     Settings,
     /// SFTP dual-pane browser overlay.
+    #[allow(dead_code)]
     SftpPane,
 }
 
@@ -214,6 +216,39 @@ impl Route<'_> {
             _ => {}
         }
         self.request_overlay_redraw();
+    }
+
+    /// Keys on a tab whose connection dropped: Enter runs the card's
+    /// focused button (Reconnect first), Tab/arrows move focus. Other keys
+    /// fall through so shortcuts (switch tab, close tab) still work; typing
+    /// reaches nothing, the session behind the card is gone.
+    fn lost_session_key(
+        &mut self,
+        key_event: &rio_window::event::KeyEvent,
+        clipboard: &mut Clipboard,
+    ) -> bool {
+        use rio_window::event::ElementState;
+        use terminus_ui::components::overlay::DialogKey;
+        if !self.window.screen.chrome.lost_takes_keys() {
+            return false;
+        }
+        let key = match &key_event.logical_key {
+            Key::Named(NamedKey::Escape) => DialogKey::Escape,
+            Key::Named(NamedKey::Enter) => DialogKey::Enter,
+            Key::Named(NamedKey::Tab)
+            | Key::Named(NamedKey::ArrowLeft)
+            | Key::Named(NamedKey::ArrowRight) => DialogKey::Tab,
+            _ => return false,
+        };
+        if key_event.state == ElementState::Pressed {
+            if let Some(action) = self.window.screen.chrome.handle_lost_key(key) {
+                self.window
+                    .screen
+                    .run_lost_session_action(action, clipboard);
+            }
+            self.request_overlay_redraw();
+        }
+        true
     }
 
     /// The modal overlay currently owning keyboard/IME input, in
@@ -407,11 +442,14 @@ impl Route<'_> {
 
     #[inline]
     pub fn quit(&mut self) {
-        // process::exit skips Drop: stop the tunnels' ssh processes first.
+        // process::exit skips Drop: save the tabs and stop the tunnels'
+        // ssh processes first.
+        self.window.screen.save_tabs_now();
         if let Some(tunnels) = self.window.screen.tunnels.as_mut() {
             tunnels.shutdown();
         }
         self.window.screen.updater.run_exit_action();
+        crate::ssh_secrets::shred_all();
         std::process::exit(0);
     }
 
@@ -454,7 +492,7 @@ impl Route<'_> {
         // existing handling. `active_modal` already checked each
         // overlay's open state.
         let Some(modal) = self.active_modal() else {
-            return false;
+            return self.lost_session_key(key_event, clipboard);
         };
         match modal {
             Modal::IslandRename => {
@@ -752,39 +790,36 @@ impl Route<'_> {
                                 }
                             }
                             Key::Named(NamedKey::Enter) => {
-                                match self
+                                if let Ok(name) = self
                                     .window
                                     .screen
                                     .chrome
                                     .settings
                                     .take_key_draft_label()
                                 {
-                                    Ok(name) => {
-                                        let pem = self
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .key_pem
-                                            .value
-                                            .clone();
-                                        let pem = if pem.trim().is_empty() {
-                                            None
-                                        } else {
-                                            Some(pem)
-                                        };
-                                        let passphrase = self
-                                            .window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .key_draft_passphrase();
-                                        self.window
-                                            .screen
-                                            .host_store
-                                            .import_ssh_key(&name, pem, passphrase);
-                                    }
-                                    Err(_) => {}
+                                    let pem = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .key_pem
+                                        .value
+                                        .clone();
+                                    let pem = if pem.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(pem)
+                                    };
+                                    let passphrase = self
+                                        .window
+                                        .screen
+                                        .chrome
+                                        .settings
+                                        .key_draft_passphrase();
+                                    self.window
+                                        .screen
+                                        .host_store
+                                        .import_ssh_key(&name, pem, passphrase);
                                 }
                             }
                             Key::Named(NamedKey::Space) => {
@@ -997,10 +1032,7 @@ impl Route<'_> {
             // Terminus overlays (TOFU host-key approval, vault unlock,
             // SFTP dual-pane): scaffolding placeholders — swallow input
             // until their handlers land (see milestone.md).
-            Modal::TofuHostKeyApproval
-            | Modal::VaultUnlock
-            | Modal::SftpPane
-            | Modal::AddSnippet => true,
+            Modal::TofuHostKeyApproval | Modal::SftpPane => true,
         }
     }
 }
@@ -1425,6 +1457,7 @@ impl<'a> RouteWindow<'a> {
             raw_window_handle: winit_window.window_handle().unwrap().into(),
             raw_display_handle: winit_window.display_handle().unwrap().into(),
             window_id: winit_window.id(),
+            quake,
         };
 
         let screen = Screen::new(properties, config, event_proxy, font_library, open_url)

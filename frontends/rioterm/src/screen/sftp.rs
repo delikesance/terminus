@@ -36,7 +36,8 @@ impl Screen<'_> {
             .iter()
             .any(|(id, other, _)| *id == host.id && *other == other_pane)
         {
-            self.sftp_pending.push((host.id.clone(), other_pane, selected));
+            self.sftp_pending
+                .push((host.id.clone(), other_pane, selected));
             self.host_store
                 .request_sftp_auth(&host.id, &host.auth_method);
         }
@@ -69,9 +70,8 @@ impl Screen<'_> {
                 }
                 let opened = match result.clone() {
                     Ok(auth) => self.sftp_host_row(&id).and_then(|host| {
-                        if other_pane && self.sftp.is_some() {
+                        if let (true, Some(session)) = (other_pane, self.sftp.as_mut()) {
                             let (password, identity) = auth;
-                            let session = self.sftp.as_mut().expect("checked");
                             session.open_other_host(&host, password, identity)
                         } else {
                             self.show_sftp_browser(&host, Some(auth), focus)

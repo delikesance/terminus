@@ -12,6 +12,7 @@ use crate::messenger::Messenger;
 
 /// Specifies the kind of session a context should open.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum SessionSpec {
     /// Launch a local shell via teletypewriter PTY.
     Local {
@@ -82,6 +83,14 @@ pub struct Context<T: EventListener> {
     pub host_label: Option<String>,
     /// Home "This computer" tab — cannot be closed.
     pub pinned: bool,
+    /// Temp key / askpass files of the ssh session this tab runs, removed
+    /// when the tab goes away (a login that failed never runs ssh's own
+    /// `LocalCommand` cleanup).
+    _ssh_secrets: crate::ssh_secrets::SecretFiles,
+    /// Set when this host session's ssh exited because the link dropped:
+    /// the tab stays open behind a "Connection lost" card instead of
+    /// closing (`Screen::note_child_exit`).
+    pub connection_lost: Option<terminus_ui::LostSession>,
     _io_thread: Option<JoinHandle<(Machine<teletypewriter::Pty, T>, performer::State)>>,
 }
 
@@ -163,6 +172,9 @@ pub struct ContextManager<T: EventListener> {
     window_id: WindowId,
     pub config: ContextManagerConfig,
     last_title_update: Option<Instant>,
+    /// Ticks every time a tab comes to the front, so each host's most
+    /// recently used tab can be found again.
+    focus_clock: u64,
 }
 
 pub fn create_dead_context<T: rio_backend::event::EventListener>(
@@ -200,6 +212,8 @@ pub fn create_dead_context<T: rio_backend::event::EventListener>(
         os_id: None,
         host_label: None,
         pinned: false,
+        _ssh_secrets: Default::default(),
+        connection_lost: None,
         _io_thread: None,
     }
 }
@@ -264,6 +278,17 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 dimension,
             ));
         }
+
+        // Taken first, so a session that fails to spawn drops it too.
+        let ssh_secrets =
+            crate::ssh_secrets::SecretFiles::new(crate::ssh_secrets::launch_secrets(
+                config.shell.args.iter().map(String::as_str),
+                config
+                    .env
+                    .iter()
+                    .flatten()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            ));
 
         let cols: u16 = dimension.columns.try_into().unwrap_or(MIN_COLUMNS as u16);
         let rows: u16 = dimension.lines.try_into().unwrap_or(MIN_LINES as u16);
@@ -384,6 +409,8 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             os_id: None,
             host_label: None,
             pinned: false,
+            _ssh_secrets: ssh_secrets,
+            connection_lost: None,
             _io_thread: io_thread,
         })
     }
@@ -477,6 +504,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             window_id,
             config: ctx_config,
             last_title_update: None,
+            focus_clock: 0,
         };
         manager.set_custom_title(0, Some("This computer".to_string()));
         if let Some(grid) = manager.contexts.get_mut(0) {
@@ -520,6 +548,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             window_id,
             config,
             last_title_update: None,
+            focus_clock: 0,
         })
     }
 
@@ -810,6 +839,30 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
     }
 
+    /// Sidebar row the tab was opened from.
+    pub fn tab_host_id(&self, index: usize) -> Option<&str> {
+        self.contexts
+            .get(index)
+            .and_then(|grid| grid.current().host_id.as_deref())
+    }
+
+    /// Directory the tab's foreground process is in, where the platform
+    /// can tell (not on Windows).
+    pub fn tab_working_dir(&self, index: usize) -> Option<String> {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let context = self.contexts.get(index)?.current();
+            teletypewriter::foreground_process_path(*context.main_fd, context.shell_pid)
+                .ok()
+                .map(|path| path.to_string_lossy().to_string())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = index;
+            None
+        }
+    }
+
     /// OS / distro hint for the tab at `index`, if the session came from a host.
     #[inline]
     pub fn tab_os_id(&self, index: usize) -> Option<&str> {
@@ -834,6 +887,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn custom_color(&self, index: usize) -> Option<[f32; 4]> {
         self.contexts.get(index).and_then(|grid| grid.custom_color)
     }
@@ -950,7 +1004,14 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         if context_id < self.contexts.len() {
             self.current_index = context_id;
             self.current_route = self.current().route_id;
+            self.mark_current_focused();
         }
+    }
+
+    /// Stamp the front tab as the most recently used one.
+    fn mark_current_focused(&mut self) {
+        self.focus_clock += 1;
+        self.contexts[self.current_index].last_focused = self.focus_clock;
     }
 
     #[inline]
@@ -1014,6 +1075,23 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             })
     }
 
+    /// The tab to bring forward when the user picks host `host_id` in
+    /// the sidebar, if it has any open.
+    pub fn host_tab_to_restore(&self, host_id: &str) -> Option<usize> {
+        let host_of = |i: usize| {
+            self.contexts[i]
+                .current()
+                .host_id
+                .as_deref()
+                .unwrap_or(crate::hosts::LOCAL_ID)
+        };
+        // The tab the user was last on wins; among tabs never brought to
+        // the front, the last one (max_by_key keeps the last of equals).
+        (0..self.contexts.len())
+            .filter(|&i| host_of(i) == host_id)
+            .max_by_key(|&i| self.contexts[i].last_focused)
+    }
+
     #[inline]
     pub fn current_index(&self) -> usize {
         self.current_index
@@ -1049,6 +1127,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
 
         self.current_route = self.current().route_id;
+        self.mark_current_focused();
     }
 
     #[inline]
@@ -1066,6 +1145,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         }
 
         self.current_route = self.current().route_id;
+        self.mark_current_focused();
     }
 
     #[inline]
@@ -1116,6 +1196,13 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         split_down: bool,
         sugarloaf: &mut Sugarloaf,
     ) {
+        // A split of a local pane stays local; failures are only logged.
+        let _ =
+            self.split_with_shell(rich_text_id, split_down, sugarloaf, None, None, None);
+    }
+
+    /// Working directory a split's new pane starts in.
+    fn split_working_dir(&self) -> Option<String> {
         let mut working_dir = self.config.working_dir.clone();
         if self.config.cwd {
             #[cfg(not(target_os = "windows"))]
@@ -1138,23 +1225,77 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 working_dir = None;
             }
         }
+        working_dir
+    }
 
+    /// The config a split's new pane is spawned with: the app's own, with
+    /// `shell` / `env` replacing its shell and environment when given (a
+    /// host pane's ssh command and askpass env).
+    fn split_config(
+        &self,
+        working_dir: Option<String>,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+    ) -> ContextManagerConfig {
         let mut cloned_config = self.config.clone();
         if working_dir.is_some() {
             cloned_config.working_dir = working_dir;
         }
+        if let Some(shell) = shell {
+            cloned_config.shell = shell;
+        }
+        if env.is_some() {
+            cloned_config.env = env;
+        }
+        cloned_config
+    }
 
+    /// Build the context a split opens beside the focused pane.
+    ///
+    /// `host_id` is the sidebar row the new pane belongs to; a host pane also
+    /// inherits the focused pane's OS glyph and endpoint label, so the title
+    /// bar reads the same for both halves.
+    fn split_context(
+        &self,
+        rich_text_id: usize,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+        host_id: Option<String>,
+    ) -> Result<Context<T>, Box<dyn Error>> {
+        let config = self.split_config(self.split_working_dir(), shell, env);
         let current = self.current();
         let cursor = current.cursor_from_ref();
 
-        match ContextManager::create_context(
+        let mut new_context = ContextManager::create_context(
             (&cursor, current.renderable_content.has_blinking_enabled),
             self.event_proxy.clone(),
             self.window_id,
             rich_text_id,
-            self.current().dimension,
-            &cloned_config,
-        ) {
+            current.dimension,
+            &config,
+        )?;
+        if host_id.is_some() {
+            new_context.os_id = current.os_id.clone();
+            new_context.host_label = current.host_label.clone();
+        }
+        new_context.host_id = host_id;
+        Ok(new_context)
+    }
+
+    /// Split the focused pane, running `shell` in the new one instead of the
+    /// app's own when given. Returns why it could not start rather than only
+    /// logging, because a host pane that silently does nothing is worse than
+    /// one that says why.
+    pub fn split_with_shell(
+        &mut self,
+        rich_text_id: usize,
+        split_down: bool,
+        sugarloaf: &mut Sugarloaf,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+        host_id: Option<String>,
+    ) -> Result<(), String> {
+        match self.split_context(rich_text_id, shell, env, host_id) {
             Ok(new_context) => {
                 let new_route_id = new_context.route_id;
                 if split_down {
@@ -1164,9 +1305,11 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                 }
 
                 self.current_route = new_route_id;
+                Ok(())
             }
-            Err(..) => {
-                tracing::error!("not able to create a new context");
+            Err(err) => {
+                tracing::error!("not able to create a new context: {err}");
+                Err(format!("Could not start the session: {err}"))
             }
         }
     }
@@ -1236,8 +1379,10 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn add_context(&mut self, redirect: bool, rich_text_id: usize) {
-        let _ = self.add_context_with_shell(redirect, rich_text_id, None, None, None);
+        let _ =
+            self.add_context_with_shell(redirect, rich_text_id, None, None, None, None);
     }
 
     /// Add a context, optionally running a different shell than the app's own.
@@ -1256,9 +1401,12 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         shell: Option<Shell>,
         env: Option<Vec<(String, String)>>,
         host_id: Option<String>,
+        start_dir: Option<String>,
     ) -> Result<(), String> {
         let mut working_dir = self.config.working_dir.clone();
-        if self.config.cwd {
+        if start_dir.is_some() {
+            working_dir = start_dir;
+        } else if self.config.cwd {
             #[cfg(not(target_os = "windows"))]
             {
                 let current_context = self.current();
@@ -1339,6 +1487,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
                     if redirect {
                         self.current_index = last_index;
                         self.current_route = self.current().route_id;
+                        self.mark_current_focused();
                     }
                     Ok(())
                 }
@@ -1512,6 +1661,122 @@ pub mod test {
 
         context_manager.set_current(8);
         assert_eq!(context_manager.current_index, 3);
+    }
+
+    fn set_tab_host(cm: &mut ContextManager<VoidListener>, index: usize, host: &str) {
+        cm.contexts[index].current_mut().host_id = Some(host.to_string());
+    }
+
+    fn ssh_launch() -> (Shell, Vec<(String, String)>) {
+        (
+            Shell {
+                program: Some("ssh".into()),
+                args: vec!["-p".into(), "22".into(), "alice@box".into()],
+            },
+            vec![("TERM".into(), "xterm-256color".into())],
+        )
+    }
+
+    /// The split of a host pane must spawn that host's ssh, not the app's
+    /// own shell it used to clone.
+    #[test]
+    fn split_config_runs_the_host_shell_and_env() {
+        let window_id = WindowId::from(0);
+        let cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        let (shell, env) = ssh_launch();
+        let config = cm.split_config(None, Some(shell.clone()), Some(env.clone()));
+        assert_eq!(config.shell.program, shell.program);
+        assert_eq!(config.shell.args, shell.args);
+        assert_eq!(config.env, Some(env));
+    }
+
+    /// A local split keeps cloning the app's config untouched.
+    #[test]
+    fn split_config_without_a_shell_keeps_the_app_shell() {
+        let window_id = WindowId::from(0);
+        let cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        let config = cm.split_config(Some("/tmp".into()), None, None);
+        assert_eq!(config.shell.program, cm.config.shell.program);
+        assert_eq!(config.shell.args, cm.config.shell.args);
+        assert_eq!(config.env, cm.config.env);
+        assert_eq!(config.working_dir.as_deref(), Some("/tmp"));
+    }
+
+    /// The new pane carries the host it runs, so the lost-session card and
+    /// the sidebar can tell it belongs to that host.
+    #[test]
+    fn split_context_of_a_host_pane_carries_its_host() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        cm.current_mut().host_id = Some("a".into());
+        cm.current_mut().os_id = Some("nixos".into());
+        cm.current_mut().host_label = Some("alice@box:22".into());
+        let (shell, env) = ssh_launch();
+        let pane = cm
+            .split_context(7, Some(shell), Some(env), Some("a".into()))
+            .expect("split context");
+        assert_eq!(pane.host_id.as_deref(), Some("a"));
+        assert_eq!(pane.os_id.as_deref(), Some("nixos"));
+        assert_eq!(pane.host_label.as_deref(), Some("alice@box:22"));
+        assert!(!pane.pinned);
+    }
+
+    #[test]
+    fn split_context_of_a_local_pane_has_no_host() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(4, VoidListener {}, window_id).unwrap();
+        cm.current_mut().host_id = Some(crate::hosts::LOCAL_ID.into());
+        cm.current_mut().os_id = Some("nixos".into());
+        let pane = cm
+            .split_context(7, None, None, None)
+            .expect("split context");
+        assert_eq!(pane.host_id, None);
+        assert_eq!(pane.os_id, None);
+        assert_eq!(pane.host_label, None);
+    }
+
+    /// Going to another host and back must land on the tab the user was
+    /// last on for that host, not on whichever of its tabs sits last.
+    #[test]
+    fn host_tab_to_restore_is_the_last_focused_one() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(6, VoidListener {}, window_id).unwrap();
+        for _ in 0..3 {
+            cm.add_context(false, 0);
+        }
+        // 0: local, 1: a, 2: a, 3: b
+        set_tab_host(&mut cm, 1, "a");
+        set_tab_host(&mut cm, 2, "a");
+        set_tab_host(&mut cm, 3, "b");
+
+        // Nothing focused yet on "a": fall back on its last tab.
+        assert_eq!(cm.host_tab_to_restore("a"), Some(2));
+
+        // Work in a's first tab, then go to b.
+        cm.set_current(2);
+        cm.set_current(1);
+        cm.set_current(3);
+        assert_eq!(cm.host_tab_to_restore("a"), Some(1));
+
+        // Cycling through tabs counts too.
+        cm.switch_to_prev(); // 2
+        cm.switch_to_next(); // 3
+        assert_eq!(cm.host_tab_to_restore("a"), Some(2));
+
+        // The memory follows the tab when tabs move around.
+        cm.set_current(2);
+        cm.move_current_tab_to(0);
+        cm.set_current(3);
+        assert_eq!(cm.host_tab_to_restore("a"), Some(0));
+
+        // A tab without a host id belongs to the local machine.
+        assert_eq!(cm.host_tab_to_restore(crate::hosts::LOCAL_ID), Some(1));
+        assert_eq!(cm.host_tab_to_restore("missing"), None);
     }
 
     fn set_tab_title(cm: &mut ContextManager<VoidListener>, index: usize, content: &str) {
@@ -1823,6 +2088,49 @@ pub mod test {
         cm.contexts[3].current_mut().host_id = Some("c".to_string());
         assert_eq!(cm.index_after_close(3), 2);
         assert_eq!(cm.index_after_close(1), 0);
+    }
+
+    /// A user-initiated close drops the `Context` (SIGHUP to its ssh), and
+    /// the resulting late `ChildExited` is looked up by route id. That
+    /// lookup must find nothing: the route left the grid with the context,
+    /// and ids are never handed out twice, so it cannot hit a newer tab.
+    #[test]
+    fn a_closed_tabs_route_is_gone_and_never_reused() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(8, VoidListener {}, window_id).unwrap();
+        cm.add_context(false, 0);
+        cm.add_context(false, 0);
+        let closed = cm.contexts[1].current().route_id;
+        assert!(cm.get_by_route_id(closed).is_some());
+
+        cm.contexts.remove(1);
+        assert!(cm.get_by_route_id(closed).is_none());
+
+        cm.add_context(false, 0);
+        cm.add_context(false, 0);
+        let routes: Vec<usize> =
+            cm.contexts.iter().map(|g| g.current().route_id).collect();
+        assert!(!routes.contains(&closed));
+        let mut unique = routes.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), routes.len());
+    }
+
+    #[test]
+    fn a_grid_reports_the_pane_behind_its_card() {
+        let window_id = WindowId::from(0);
+        let mut cm =
+            ContextManager::start_with_capacity(2, VoidListener {}, window_id).unwrap();
+        assert_eq!(cm.contexts[0].lost_pane(), None);
+
+        let route_id = cm.contexts[0].current().route_id;
+        cm.contexts[0].current_mut().connection_lost =
+            Some(terminus_ui::LostSession::new(route_id, "h", "host", &[]));
+        let lost = cm.contexts[0].lost_pane().expect("card on the only pane");
+        assert_eq!(lost.route_id, route_id);
+        assert!(lost.focused);
     }
 
     #[test]

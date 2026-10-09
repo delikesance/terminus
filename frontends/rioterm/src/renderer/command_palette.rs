@@ -3,8 +3,10 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use crate::renderer::scrollbar;
-use rio_backend::sugarloaf::text::DrawOpts;
+// Most of this upstream Rio module is superseded by the Terminus chrome;
+// what is left unused is kept to ease upstream merges.
+#![allow(dead_code)]
+
 use rio_backend::sugarloaf::Sugarloaf;
 use std::time::Instant;
 
@@ -137,6 +139,9 @@ pub enum PaletteAction {
     ShowView(terminus_ui::shell::WorkspaceView),
     /// Shell: show the sidebar's server filter field.
     FilterServers,
+    /// Fill the query with this text and keep the palette open (the
+    /// `>forward start ` entry points). Handled in the confirm path.
+    Prefill(&'static str),
 }
 
 struct Command {
@@ -339,6 +344,14 @@ const COMMANDS: &[Command] = &[
         title: "Filter Servers",
         action: PaletteAction::FilterServers,
     },
+    Command {
+        title: "Start Tunnel…",
+        action: PaletteAction::Prefill(">forward start "),
+    },
+    Command {
+        title: "Stop Tunnel…",
+        action: PaletteAction::Prefill(">forward stop "),
+    },
 ];
 
 /// What the palette is currently browsing and filtering over.
@@ -380,6 +393,28 @@ pub struct HostPaletteItem {
     pub subtitle: String,
 }
 
+/// What confirming a tunnel row in the palette does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelOp {
+    /// `>forward start <name>`.
+    Start,
+    /// `>forward stop <name>`.
+    Stop,
+    /// `>forward list`: jump to the Tunnels view.
+    Show,
+}
+
+/// One tunnel of the machine on screen as the palette needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunnelPaletteItem {
+    pub id: String,
+    pub name: String,
+    /// Right-hand hint: route and state.
+    pub hint: String,
+    /// A process exists (Stop applies, Start does not).
+    pub active: bool,
+}
+
 /// One row in the filtered result list. Variants carry exactly the
 /// data the render pass needs — no `&'static Command` vs `&str`
 /// lifetime mixing.
@@ -397,6 +432,17 @@ enum PaletteRow<'a> {
         title: &'a str,
         subtitle: &'a str,
     },
+    Tunnel {
+        id: &'a str,
+        title: &'a str,
+        hint: &'a str,
+        op: TunnelOp,
+    },
+    /// Completion of an unfinished `>` query.
+    OpHint {
+        title: &'static str,
+        complete: &'static str,
+    },
 }
 
 impl<'a> PaletteRow<'a> {
@@ -405,20 +451,28 @@ impl<'a> PaletteRow<'a> {
             PaletteRow::Command { title, .. } => title,
             PaletteRow::Font { family } => family,
             PaletteRow::Host { title, .. } => title,
+            PaletteRow::Tunnel { title, .. } => title,
+            PaletteRow::OpHint { title, .. } => title,
         }
     }
 
     fn shortcut(&self) -> &'a str {
         match *self {
             PaletteRow::Command { shortcut, .. } => shortcut,
-            PaletteRow::Font { .. } | PaletteRow::Host { .. } => "",
+            PaletteRow::Font { .. }
+            | PaletteRow::Host { .. }
+            | PaletteRow::Tunnel { .. }
+            | PaletteRow::OpHint { .. } => "",
         }
     }
 
     fn action(&self) -> Option<PaletteAction> {
         match *self {
             PaletteRow::Command { action, .. } => Some(action),
-            PaletteRow::Font { .. } | PaletteRow::Host { .. } => None,
+            PaletteRow::Font { .. }
+            | PaletteRow::Host { .. }
+            | PaletteRow::Tunnel { .. }
+            | PaletteRow::OpHint { .. } => None,
         }
     }
 }
@@ -580,6 +634,8 @@ pub struct CommandPalette {
     hosts_cache: Vec<HostPaletteItem>,
     /// What confirming a host in the hosts list does.
     host_pick: HostPick,
+    /// Snapshot of the on-screen machine's tunnels for `>forward`.
+    tunnels_cache: Vec<TunnelPaletteItem>,
     /// Timestamp for caret blinking
     caret_blink_start: Instant,
     /// Timestamp of the last event that actually changed `scroll_offset`.
@@ -605,6 +661,7 @@ impl Default for CommandPalette {
             mode: PaletteMode::Commands,
             hosts_cache: Vec::new(),
             host_pick: HostPick::Session,
+            tunnels_cache: Vec::new(),
             caret_blink_start: Instant::now(),
             last_scroll_time: None,
             shortcuts: Vec::new(),
@@ -644,6 +701,20 @@ impl CommandPalette {
         self.hosts_cache = hosts;
     }
 
+    /// Refresh the tunnel snapshot used by `>forward`.
+    pub fn set_tunnels(&mut self, tunnels: Vec<TunnelPaletteItem>) {
+        self.tunnels_cache = tunnels;
+    }
+
+    /// How the query reads. `>` is a literal character in the fonts and
+    /// hosts lists, so only the commands list has operations.
+    fn op_query(&self) -> terminus_ui::palette_query::Query {
+        match self.mode {
+            PaletteMode::Commands => terminus_ui::palette_query::parse(&self.query.value),
+            _ => terminus_ui::palette_query::Query::Plain,
+        }
+    }
+
     /// Swap the palette into font-browsing mode with the given family
     /// list. Clears the query so the full list is visible, keeps the
     /// palette open. Called by the router after the user picks the
@@ -670,7 +741,11 @@ impl CommandPalette {
 
     /// What confirming a host does in the current hosts list.
     pub fn host_pick(&self) -> HostPick {
-        self.host_pick
+        use terminus_ui::palette_query::{PaletteOp, Query};
+        match self.op_query() {
+            Query::Op(PaletteOp::Sftp { .. }) => HostPick::Sftp,
+            _ => self.host_pick,
+        }
     }
 
     fn enter_hosts_list(&mut self, hosts: Vec<HostPaletteItem>) {
@@ -757,7 +832,10 @@ impl CommandPalette {
             .get(self.selected_index)
             .and_then(|(_, row)| match row {
                 PaletteRow::Font { family } => Some((*family).to_owned()),
-                PaletteRow::Command { .. } | PaletteRow::Host { .. } => None,
+                PaletteRow::Command { .. }
+                | PaletteRow::Host { .. }
+                | PaletteRow::Tunnel { .. }
+                | PaletteRow::OpHint { .. } => None,
             })
     }
 
@@ -767,8 +845,40 @@ impl CommandPalette {
             .get(self.selected_index)
             .and_then(|(_, row)| match row {
                 PaletteRow::Host { id, .. } => Some((*id).to_owned()),
-                PaletteRow::Command { .. } | PaletteRow::Font { .. } => None,
+                PaletteRow::Command { .. }
+                | PaletteRow::Font { .. }
+                | PaletteRow::Tunnel { .. }
+                | PaletteRow::OpHint { .. } => None,
             })
+    }
+
+    /// Selected tunnel id and what to do with it (`>forward ...` rows).
+    pub fn get_selected_tunnel(&self) -> Option<(String, TunnelOp)> {
+        self.filtered_rows()
+            .get(self.selected_index)
+            .and_then(|(_, row)| match row {
+                PaletteRow::Tunnel { id, op, .. } => Some(((*id).to_owned(), *op)),
+                _ => None,
+            })
+    }
+
+    /// Confirm a completion row (`>`, `>sf`): the query becomes the
+    /// operation's prefix and the palette stays open. False when the
+    /// selection is not a completion.
+    pub fn complete_selected_op(&mut self) -> bool {
+        let complete = self.filtered_rows().get(self.selected_index).and_then(
+            |(_, row)| match row {
+                PaletteRow::OpHint { complete, .. } => Some(*complete),
+                _ => None,
+            },
+        );
+        match complete {
+            Some(text) => {
+                self.set_query(text.to_string());
+                true
+            }
+            None => false,
+        }
     }
 
     /// Shortcut labels to show, from the window's live key bindings.
@@ -788,6 +898,10 @@ impl CommandPalette {
     fn filtered_rows(&self) -> Vec<(i32, PaletteRow<'_>)> {
         let mut results: Vec<(i32, PaletteRow<'_>)> = match &self.mode {
             PaletteMode::Commands => {
+                let op_query = self.op_query();
+                if op_query != terminus_ui::palette_query::Query::Plain {
+                    return self.op_rows(op_query);
+                }
                 let has_adaptive = self.has_adaptive_theme;
                 let mut rows: Vec<(i32, PaletteRow<'_>)> = COMMANDS
                     .iter()
@@ -860,12 +974,82 @@ impl CommandPalette {
         results
     }
 
+    /// Rows of a `>` query. Scores are all equal: the order is the
+    /// operation table's / the host and tunnel lists' own.
+    fn op_rows(
+        &self,
+        query: terminus_ui::palette_query::Query,
+    ) -> Vec<(i32, PaletteRow<'_>)> {
+        use terminus_ui::palette_query::{hints_for, ForwardOp, PaletteOp, Query};
+        let tunnel_rows = |name: &str, want_active: Option<bool>, op: TunnelOp| {
+            self.tunnels_cache
+                .iter()
+                .filter(|t| want_active.is_none_or(|a| t.active == a))
+                .filter(|t| fuzzy_score(name, &t.name).is_some())
+                .map(|t| {
+                    (
+                        0,
+                        PaletteRow::Tunnel {
+                            id: t.id.as_str(),
+                            title: t.name.as_str(),
+                            hint: t.hint.as_str(),
+                            op,
+                        },
+                    )
+                })
+                .collect()
+        };
+        match query {
+            Query::Plain | Query::Unknown => Vec::new(),
+            Query::Hints(typed) => hints_for(&typed)
+                .into_iter()
+                .map(|h| {
+                    (
+                        0,
+                        PaletteRow::OpHint {
+                            title: h.label,
+                            complete: h.complete,
+                        },
+                    )
+                })
+                .collect(),
+            Query::Op(PaletteOp::Sftp { host }) => {
+                let filter = host.unwrap_or_default();
+                self.hosts_cache
+                    .iter()
+                    .filter(|h| host_fuzzy_score(&filter, h).is_some())
+                    .map(|h| {
+                        (
+                            0,
+                            PaletteRow::Host {
+                                id: h.id.as_str(),
+                                title: h.title.as_str(),
+                                subtitle: h.subtitle.as_str(),
+                            },
+                        )
+                    })
+                    .collect()
+            }
+            Query::Op(PaletteOp::Forward(ForwardOp::List)) => {
+                tunnel_rows("", None, TunnelOp::Show)
+            }
+            Query::Op(PaletteOp::Forward(ForwardOp::Start(name))) => {
+                tunnel_rows(&name, Some(false), TunnelOp::Start)
+            }
+            Query::Op(PaletteOp::Forward(ForwardOp::Stop(name))) => {
+                tunnel_rows(&name, Some(true), TunnelOp::Stop)
+            }
+        }
+    }
+
     /// Group header a row belongs under.
     fn group_of(row: &PaletteRow<'_>) -> &'static str {
         match row {
             PaletteRow::Command { .. } => "Commands",
             PaletteRow::Font { .. } => "Fonts",
             PaletteRow::Host { .. } => "Servers",
+            PaletteRow::Tunnel { .. } => "Tunnels",
+            PaletteRow::OpHint { .. } => "Commands",
         }
     }
 
@@ -890,6 +1074,8 @@ impl CommandPalette {
                     PaletteRow::Command { shortcut, .. } => (*shortcut).to_string(),
                     PaletteRow::Host { subtitle, .. } => (*subtitle).to_string(),
                     PaletteRow::Font { .. } => "Copy".to_string(),
+                    PaletteRow::Tunnel { hint, .. } => (*hint).to_string(),
+                    PaletteRow::OpHint { .. } => String::new(),
                 };
                 RowSpec::new(Self::group_of(row), row.title(), hint)
             })
@@ -911,6 +1097,10 @@ impl CommandPalette {
     /// Query to offer "Add server" for: nothing matched but something was typed.
     pub fn add_server_query(&self) -> Option<String> {
         let q = self.query.value.trim();
+        // A `>` query is an operation, never a server name to add.
+        if self.op_query() != terminus_ui::palette_query::Query::Plain {
+            return None;
+        }
         (!q.is_empty() && self.filtered_rows().is_empty()).then(|| q.to_string())
     }
 
@@ -1568,6 +1758,178 @@ mod tests {
         assert_eq!(palette.add_server_query().as_deref(), Some("zzzqqq"));
         palette.set_query("quit".to_string());
         assert_eq!(palette.add_server_query(), None, "there are matches");
+    }
+
+    fn tunnel(id: &str, name: &str, active: bool) -> TunnelPaletteItem {
+        TunnelPaletteItem {
+            id: id.into(),
+            name: name.into(),
+            hint: format!("route-{name}"),
+            active,
+        }
+    }
+
+    fn with_tunnels(query: &str) -> CommandPalette {
+        let mut palette = CommandPalette::new();
+        palette.set_hosts(vec![host("h1", "prod"), host("h2", "staging")]);
+        palette.set_tunnels(vec![
+            tunnel("t1", "db", true),
+            tunnel("t2", "web", false),
+            tunnel("t3", "docs", false),
+        ]);
+        palette.set_query(query.to_string());
+        palette
+    }
+
+    fn titles(palette: &CommandPalette) -> Vec<String> {
+        palette
+            .filtered_rows()
+            .iter()
+            .map(|(_, r)| r.title().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn sftp_op_lists_only_hosts_and_confirms_as_sftp() {
+        let palette = with_tunnels(">sftp");
+        assert_eq!(titles(&palette), ["prod", "staging"]);
+        assert_eq!(palette.host_pick(), HostPick::Sftp);
+        assert_eq!(palette.get_selected_host_id().as_deref(), Some("h1"));
+        assert_eq!(palette.get_selected_action(), None);
+    }
+
+    #[test]
+    fn sftp_op_filters_hosts_by_its_argument() {
+        let palette = with_tunnels(">sftp stag");
+        assert_eq!(titles(&palette), ["staging"]);
+        assert_eq!(palette.get_selected_host_id().as_deref(), Some("h2"));
+    }
+
+    #[test]
+    fn plain_query_still_confirms_hosts_as_sessions() {
+        let palette = with_tunnels("prod");
+        assert_eq!(palette.host_pick(), HostPick::Session);
+    }
+
+    #[test]
+    fn forward_list_shows_every_tunnel_and_jumps_to_the_view() {
+        let palette = with_tunnels(">forward");
+        assert_eq!(titles(&palette), ["db", "web", "docs"]);
+        assert_eq!(
+            palette.get_selected_tunnel(),
+            Some(("t1".to_string(), TunnelOp::Show))
+        );
+        assert_eq!(palette.row_specs()[0].hint, "route-db");
+        assert_eq!(palette.row_specs()[0].group, "Tunnels");
+    }
+
+    #[test]
+    fn forward_start_offers_only_stopped_tunnels() {
+        let mut palette = with_tunnels(">forward start");
+        assert_eq!(titles(&palette), ["web", "docs"]);
+        assert_eq!(
+            palette.get_selected_tunnel(),
+            Some(("t2".to_string(), TunnelOp::Start))
+        );
+        palette.set_query(">forward start do".to_string());
+        assert_eq!(titles(&palette), ["docs"]);
+        assert_eq!(
+            palette.get_selected_tunnel(),
+            Some(("t3".to_string(), TunnelOp::Start))
+        );
+    }
+
+    #[test]
+    fn forward_stop_offers_only_running_tunnels() {
+        let palette = with_tunnels(">forward stop");
+        assert_eq!(titles(&palette), ["db"]);
+        assert_eq!(
+            palette.get_selected_tunnel(),
+            Some(("t1".to_string(), TunnelOp::Stop))
+        );
+        let none = with_tunnels(">forward stop web");
+        assert!(none.filtered_rows().is_empty(), "web is not running");
+        assert_eq!(none.get_selected_tunnel(), None);
+    }
+
+    #[test]
+    fn op_queries_never_offer_add_server() {
+        for query in [">forward start nope", ">sftp nope", ">foo", ">forward star"] {
+            let palette = with_tunnels(query);
+            assert_eq!(palette.add_server_query(), None, "{query}");
+        }
+        assert_eq!(
+            with_tunnels("zzzqqq").add_server_query().as_deref(),
+            Some("zzzqqq")
+        );
+    }
+
+    #[test]
+    fn op_queries_do_not_mix_in_commands_or_inline_hosts() {
+        let palette = with_tunnels(">forward");
+        assert!(!palette.filtered_rows().is_empty());
+        assert!(palette
+            .filtered_rows()
+            .iter()
+            .all(|(_, r)| matches!(r, PaletteRow::Tunnel { .. })));
+        let hints = with_tunnels(">");
+        assert!(!hints.filtered_rows().is_empty());
+        assert!(hints
+            .filtered_rows()
+            .iter()
+            .all(|(_, r)| matches!(r, PaletteRow::OpHint { .. })));
+        assert!(with_tunnels(">foo").filtered_rows().is_empty());
+    }
+
+    #[test]
+    fn a_partial_op_offers_completions_that_fill_the_query() {
+        let mut palette = with_tunnels(">");
+        assert_eq!(palette.filtered_rows().len(), 4);
+        assert_eq!(palette.get_selected_action(), None);
+        palette.set_query(">sf".to_string());
+        assert!(palette.complete_selected_op());
+        assert_eq!(palette.query.value, ">sftp ");
+        assert!(!palette.complete_selected_op(), "now a real op, not a hint");
+        palette.set_query(">forward st".to_string());
+        palette.selected_index = 1;
+        assert!(palette.complete_selected_op());
+        assert_eq!(palette.query.value, ">forward stop ");
+    }
+
+    #[test]
+    fn chevron_is_literal_in_the_fonts_and_hosts_lists() {
+        let mut palette = CommandPalette::new();
+        palette.enter_fonts_mode(vec!["A>B".into(), "Other".into()]);
+        palette.set_query(">".to_string());
+        assert_eq!(titles(&palette), ["A>B"]);
+
+        let mut palette = CommandPalette::new();
+        palette.enter_hosts_mode(vec![host("h", "prod")]);
+        palette.set_query(">sftp".to_string());
+        assert_eq!(palette.host_pick(), HostPick::Session);
+        assert!(palette.filtered_rows().is_empty());
+    }
+
+    #[test]
+    fn start_and_stop_tunnel_entries_prefill_the_query() {
+        let mut palette = CommandPalette::new();
+        palette.set_query("tunnel".to_string());
+        let prefills: Vec<&str> = palette
+            .filtered_rows()
+            .iter()
+            .filter_map(|(_, r)| match r.action() {
+                Some(PaletteAction::Prefill(text)) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(prefills.contains(&">forward start "));
+        assert!(prefills.contains(&">forward stop "));
+        for text in prefills {
+            assert!(matches!(
+                terminus_ui::palette_query::parse(text),
+                terminus_ui::palette_query::Query::Op(_)
+            ));
+        }
     }
 
     #[test]

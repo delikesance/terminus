@@ -12,6 +12,7 @@ use crate::components::overlay::DialogKey;
 use crate::confirm::{ConfirmAction, ConfirmOutcome, ConfirmPrompt};
 use crate::connection::{ConnectionHit, ConnectionSequence};
 use crate::context_menu::{ContextAction, ContextMenu, ContextMenuHit};
+use crate::lost_session::{LostOutcome, LostSession};
 use crate::settings::{SettingsHit, SettingsModal, SettingsTab};
 use crate::sidebar::{HostItem, HostPanel, PanelHit, Row};
 use crate::snippets::{SnippetHit, SnippetsPanel};
@@ -163,6 +164,11 @@ pub enum ChromeAction {
     },
     /// Close the connection-progress modal.
     DismissConnection,
+    /// Lost-connection card: reopen the host of this terminal (route id)
+    /// in place of the dead tab.
+    ReconnectSession(usize),
+    /// Lost-connection card: close the dead tab of this terminal (route id).
+    CloseLostSession(usize),
     /// Run a snippet command in the active terminal.
     RunSnippet(String),
     /// Settings modal was dismissed.
@@ -198,6 +204,17 @@ pub struct Chrome {
     pub vault_configured: bool,
     /// Live SSH/WSL connecting modal, when a session is starting.
     pub connection: Option<ConnectionSequence>,
+    /// "Connection lost" card for the session in front, when its link
+    /// dropped. The frontend keeps one per dead tab and mirrors the front
+    /// tab's here.
+    pub lost: Option<LostSession>,
+    /// Where `lost`'s card sits when its session is one pane of a split
+    /// tab: that pane's rect. `None` for a whole-tab session, whose card
+    /// covers the Terminal content.
+    pub lost_pane: Option<crate::geom::Rect>,
+    /// The dead pane is not the focused one: its card is clickable but the
+    /// keys belong to the live pane in focus.
+    pub lost_pane_unfocused: bool,
     /// Right-click context menu, when open.
     pub context_menu: Option<ContextMenu>,
     /// Unscaled height reserved above the chrome by the tab strip, so
@@ -227,6 +244,9 @@ impl Default for Chrome {
             confirm: None,
             vault_configured: true,
             connection: None,
+            lost: None,
+            lost_pane: None,
+            lost_pane_unfocused: false,
             context_menu: None,
             top_inset: 0.0,
             panel_visible: true,
@@ -442,6 +462,48 @@ impl Chrome {
         self.shell.content_rect()
     }
 
+    /// Where the lost-connection card is shown: the Terminal view's content,
+    /// unless connection progress already covers it. `None` when there is
+    /// no card, another view is in front, or a dialog sits over it (that
+    /// dialog owns the pointer and the keys).
+    pub fn lost_area(&self) -> Option<crate::geom::Rect> {
+        (self.lost.is_some()
+            && self.connection.is_none()
+            && self.shell.view().shows_terminal()
+            && self.modal_paint_stack().is_empty())
+        .then(|| self.lost_pane.unwrap_or_else(|| self.connection_area()))
+    }
+
+    fn lost_action(route_id: usize, outcome: LostOutcome) -> ChromeAction {
+        match outcome {
+            LostOutcome::Reconnect => ChromeAction::ReconnectSession(route_id),
+            LostOutcome::Close => ChromeAction::CloseLostSession(route_id),
+            LostOutcome::Idle | LostOutcome::Changed => ChromeAction::Consumed,
+        }
+    }
+
+    /// Whether keys go to the lost-connection card (shown, and its pane is
+    /// the focused one).
+    pub fn lost_takes_keys(&self) -> bool {
+        self.lost_area().is_some() && !self.lost_pane_unfocused
+    }
+
+    /// Keyboard on the lost-connection card: `Some` while it is shown (the
+    /// session behind it is gone, so every key stops here), `None` otherwise.
+    pub fn handle_lost_key(&mut self, key: DialogKey) -> Option<ChromeAction> {
+        if !self.lost_takes_keys() {
+            return None;
+        }
+        let lost = self.lost.as_mut()?;
+        let outcome = lost.key(key);
+        Some(Self::lost_action(lost.route_id, outcome))
+    }
+
+    /// Whether `(x, y)` falls on the lost-connection card's area.
+    fn lost_hit(&self, x: f32, y: f32) -> Option<crate::geom::Rect> {
+        self.lost_area().filter(|area| area.contains(x, y))
+    }
+
     /// What a pointer at `(x, y)` hits on the connection progress, or
     /// `None` when there is none or the pointer is outside its area.
     fn connection_hit(&self, x: f32, y: f32) -> Option<ConnectionHit> {
@@ -507,7 +569,8 @@ impl Chrome {
     /// Drop every hover highlight — used when the pointer leaves the
     /// window, where no move event will arrive to clear it.
     pub fn clear_hover(&mut self) -> bool {
-        self.panel.set_hover(None)
+        let lost = self.lost.as_mut().is_some_and(|l| l.hover.take().is_some());
+        self.panel.set_hover(None) || lost
     }
 
     // ---- input -----------------------------------------------------
@@ -551,6 +614,7 @@ impl Chrome {
         // Modals / overlays own the pointer; don't open under them.
         if self.settings.open
             || self.connection_hit(x, y).is_some()
+            || self.lost_hit(x, y).is_some()
             || self.form.is_open()
             || self.snippet_form.is_open()
             || self.vault_unlock.is_open()
@@ -653,9 +717,7 @@ impl Chrome {
     }
 
     fn route_context_menu_press(&mut self, x: f32, y: f32) -> Option<ChromeAction> {
-        let Some(menu) = self.context_menu.as_mut() else {
-            return None;
-        };
+        let menu = self.context_menu.as_mut()?;
         match menu.hit_test(x, y) {
             ContextMenuHit::Dismiss => {
                 self.close_context_menu();
@@ -894,6 +956,14 @@ impl Chrome {
                 ConnectionHit::Close => ChromeAction::DismissConnection,
                 ConnectionHit::Consume => ChromeAction::Consumed,
             };
+        }
+
+        // The lost-connection card owns the dead terminal the same way.
+        if let Some(area) = self.lost_hit(x, y) {
+            if let Some(lost) = self.lost.as_mut() {
+                let outcome = lost.press(area, x, y);
+                return Self::lost_action(lost.route_id, outcome);
+            }
         }
 
         if self.snippet_form.is_open() {
@@ -1200,6 +1270,18 @@ impl Chrome {
         if self.connection_hit(x, y).is_some() {
             return false;
         }
+        if let Some(area) = self.lost_area() {
+            if let Some(lost) = self.lost.as_mut() {
+                // Leaving the card clears its hover too.
+                let changed = lost.hover_at(area, x, y);
+                if area.contains(x, y) {
+                    return changed;
+                }
+                if changed {
+                    return true;
+                }
+            }
+        }
 
         if self.snippet_form.is_open() {
             let layout = crate::dialog_form::DialogFormLayout::compute(
@@ -1305,6 +1387,12 @@ impl Chrome {
             return match hit {
                 ConnectionHit::Close | ConnectionHit::ToggleLogs => ChromeCursor::Pointer,
                 ConnectionHit::Consume => ChromeCursor::Default,
+            };
+        }
+        if let (Some(area), Some(lost)) = (self.lost_hit(x, y), self.lost.as_ref()) {
+            return match lost.button_at(area, x, y) {
+                Some(_) => ChromeCursor::Pointer,
+                None => ChromeCursor::Default,
             };
         }
 
@@ -1533,9 +1621,7 @@ impl Chrome {
     /// bottom edge of the machine list, scroll the list and retarget the
     /// drop under the (still) pointer. Never produces an action.
     pub fn tick_host_drag(&mut self, dt: f32) -> Option<ChromeAction> {
-        let Some(drag) = self.panel.host_drag.as_ref() else {
-            return None;
-        };
+        let drag = self.panel.host_drag.as_ref()?;
         if !matches!(drag.phase, crate::sidebar::HostDragPhase::Dragging) {
             return None;
         }
@@ -1645,10 +1731,7 @@ impl Chrome {
         Some(outcome)
     }
 
-    /// Route keyboard input to the vault unlock prompt.
-    ///
-    /// Returns `Some(true)` when Unlock should be submitted.
-
+    /// Route a keyboard input to the snippet editor. `None` when it is closed.
     pub fn handle_snippet_form_input(
         &mut self,
         input: crate::add_snippet::FormInput,
@@ -2159,6 +2242,154 @@ mod tests {
         let without = chrome.handle_press(1200.0, 800.0, hx, hy);
         chrome.connection = conn;
         assert_eq!(chrome.handle_press(1200.0, 800.0, hx, hy), without);
+    }
+
+    #[test]
+    fn lost_connection_card_reconnects_or_closes_its_tab() {
+        let mut chrome = chrome_with_hosts(3);
+        chrome.set_window_size(1200.0, 800.0);
+        chrome.lost = Some(LostSession::new(9, "id-0", "host-0", &[]));
+        // Painted in the Terminal content like the connection progress.
+        assert!(chrome.modal_paint_stack().is_empty());
+        let area = chrome.lost_area().expect("card shown on the Terminal view");
+        assert_eq!(area, chrome.shell.content_rect());
+        let layout = chrome.lost.as_ref().unwrap().layout_in(area).dialog;
+
+        let (rx, ry) = centre(&layout.confirm);
+        assert_eq!(
+            chrome.cursor_at(1200.0, 800.0, rx, ry),
+            ChromeCursor::Pointer
+        );
+        assert!(chrome.handle_hover(800.0, rx, ry));
+        assert_eq!(
+            chrome.lost.as_ref().unwrap().hover,
+            Some(crate::components::overlay::DialogFocus::Confirm)
+        );
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, rx, ry),
+            ChromeAction::ReconnectSession(9)
+        );
+        let (cx, cy) = centre(&layout.cancel);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, cx, cy),
+            ChromeAction::CloseLostSession(9)
+        );
+        // The dead terminal around the card swallows the press.
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, area.x + 4.0, area.bottom() - 4.0),
+            ChromeAction::Consumed
+        );
+        assert_eq!(
+            chrome.handle_context_press(1200.0, 800.0, area.x + 4.0, area.y + 4.0, false),
+            ChromeAction::Ignored
+        );
+        assert!(chrome.context_menu.is_none());
+
+        // The sidebar stays live.
+        let row = chrome.panel.item_rect(0.0, 2);
+        chrome.handle_press(1200.0, 800.0, row.x + 20.0, row.y + 20.0);
+        assert_eq!(
+            chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0),
+            ChromeAction::OpenHost("id-1".to_string())
+        );
+    }
+
+    #[test]
+    fn lost_connection_card_keys_reconnect_and_tab_to_close() {
+        let mut chrome = Chrome::default();
+        assert_eq!(chrome.handle_lost_key(DialogKey::Enter), None);
+        chrome.lost = Some(LostSession::new(4, "h", "h", &[]));
+        assert_eq!(
+            chrome.handle_lost_key(DialogKey::Escape),
+            Some(ChromeAction::Consumed)
+        );
+        assert_eq!(
+            chrome.handle_lost_key(DialogKey::Enter),
+            Some(ChromeAction::ReconnectSession(4))
+        );
+        assert_eq!(
+            chrome.handle_lost_key(DialogKey::Tab),
+            Some(ChromeAction::Consumed)
+        );
+        assert_eq!(
+            chrome.handle_lost_key(DialogKey::Enter),
+            Some(ChromeAction::CloseLostSession(4))
+        );
+    }
+
+    #[test]
+    fn split_pane_card_covers_only_its_pane() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.set_window_size(1200.0, 800.0);
+        let content = chrome.shell.content_rect();
+        let pane = crate::geom::Rect {
+            x: content.x,
+            y: content.y,
+            width: content.width / 2.0,
+            height: content.height,
+        };
+        chrome.lost = Some(LostSession::new(5, "id-0", "host-0", &[]));
+        let whole_tab_area = chrome.lost_area().unwrap();
+        assert_eq!(whole_tab_area, content);
+
+        chrome.lost_pane = Some(pane);
+        assert_eq!(chrome.lost_area(), Some(pane));
+
+        // A click in the live half is not swallowed by the card.
+        let (lx, ly) = (content.x + content.width * 0.75, content.y + 40.0);
+        let with_card = chrome.handle_press(1200.0, 800.0, lx, ly);
+        chrome.lost = None;
+        let without_card = chrome.handle_press(1200.0, 800.0, lx, ly);
+        assert_eq!(with_card, without_card);
+        chrome.lost = Some(LostSession::new(5, "id-0", "host-0", &[]));
+
+        // The card's buttons are laid out inside the pane.
+        let layout = chrome.lost.as_ref().unwrap().layout_in(pane).dialog;
+        assert!(layout.dialog.right() <= pane.right());
+        let (rx, ry) = centre(&layout.confirm);
+        assert_eq!(
+            chrome.handle_press(1200.0, 800.0, rx, ry),
+            ChromeAction::ReconnectSession(5)
+        );
+    }
+
+    #[test]
+    fn keys_skip_the_card_of_an_unfocused_dead_pane() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.set_window_size(1200.0, 800.0);
+        chrome.lost = Some(LostSession::new(5, "id-0", "host-0", &[]));
+        chrome.lost_pane = Some(chrome.shell.content_rect());
+        chrome.lost_pane_unfocused = true;
+        assert_eq!(chrome.handle_lost_key(DialogKey::Enter), None);
+        assert!(!chrome.lost_takes_keys());
+        chrome.lost_pane_unfocused = false;
+        assert!(chrome.lost_takes_keys());
+        assert_eq!(
+            chrome.handle_lost_key(DialogKey::Enter),
+            Some(ChromeAction::ReconnectSession(5))
+        );
+    }
+
+    #[test]
+    fn lost_connection_card_hides_behind_other_views_and_connecting() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.lost = Some(LostSession::new(1, "id-0", "host-0", &[]));
+        assert!(chrome.lost_area().is_some());
+        chrome.connection = Some(ConnectionSequence::start_ssh("id-0", "host-0", "SSH"));
+        assert!(chrome.lost_area().is_none());
+        chrome.connection = None;
+        // A dialog over the terminal (add snippet, add host) owns the
+        // pointer and keys, not the card under it.
+        chrome.snippet_form.inner.closing = false;
+        assert!(chrome.lost_area().is_none());
+        chrome.snippet_form.inner.closing = true;
+        chrome.open_add_host();
+        assert!(chrome.lost_area().is_none());
+        chrome.form.close();
+        assert!(chrome.lost_area().is_some());
+        chrome.show_view(crate::shell::WorkspaceView::Home);
+        assert!(chrome.lost_area().is_none());
+        assert_eq!(chrome.handle_lost_key(DialogKey::Enter), None);
     }
 
     #[test]

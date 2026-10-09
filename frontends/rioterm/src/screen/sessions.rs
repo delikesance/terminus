@@ -3,17 +3,32 @@
 use super::Screen;
 use crate::context;
 use crate::context::next_rich_text_id;
-use crate::crosswords::pos::Column;
 use crate::hosts;
-use crate::layout::ContextDimension;
-use crate::renderer::island;
 use crate::renderer::utils::padding_top_from_config;
 use rio_backend::clipboard::Clipboard;
 use rio_backend::config::layout::Margin;
 use rio_backend::config::Shell;
-use rio_backend::crosswords::pos::Line;
 use rio_backend::event::EventProxy;
 use terminus_ui::sidebar::Badge;
+
+/// What the pane a split opens should run.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SplitTarget {
+    /// The app's own shell, as a split always did.
+    Local,
+    /// The session of this sidebar row (an ssh host or a WSL distro): the
+    /// same launch as opening that row again.
+    Row(String),
+}
+
+/// Which session a split of a pane opened from `host_id` should start.
+pub(super) fn split_target(host_id: Option<&str>) -> SplitTarget {
+    match host_id {
+        None => SplitTarget::Local,
+        Some(id) if id == hosts::LOCAL_ID => SplitTarget::Local,
+        Some(id) => SplitTarget::Row(id.to_string()),
+    }
+}
 
 impl Screen<'_> {
     pub fn split_right_with_config(&mut self, config: rio_backend::config::Config) {
@@ -34,17 +49,53 @@ impl Screen<'_> {
     }
 
     pub fn split_right(&mut self) {
-        let rich_text_id = next_rich_text_id();
-        self.context_manager
-            .split(rich_text_id, false, &mut self.sugarloaf);
-
-        self.mark_dirty();
+        self.split_focused(false);
     }
 
     pub fn split_down(&mut self) {
+        self.split_focused(true);
+    }
+
+    /// Split the focused pane. A pane that runs a sidebar row's session
+    /// (ssh host, WSL distro) opens the new half on the same row, through
+    /// the same launch as opening it again; anything else is a local shell.
+    fn split_focused(&mut self, split_down: bool) {
         let rich_text_id = next_rich_text_id();
-        self.context_manager
-            .split(rich_text_id, true, &mut self.sugarloaf);
+        let target = split_target(self.context_manager.current().host_id.as_deref());
+        let SplitTarget::Row(id) = target else {
+            self.context_manager
+                .split(rich_text_id, split_down, &mut self.sugarloaf);
+            self.mark_dirty();
+            return;
+        };
+
+        // Never fall back to a local shell for a host pane: a locked vault
+        // or a missing credential is reported instead.
+        let (shell, env) = match self.shell_for_row(&id) {
+            Ok(launch) => launch,
+            Err(err) => {
+                self.chrome.panel.error = Some(err);
+                self.mark_dirty();
+                return;
+            }
+        };
+
+        let label = self.host_row_label(&id);
+        self.begin_session_connecting(&id);
+        match self.context_manager.split_with_shell(
+            rich_text_id,
+            split_down,
+            &mut self.sugarloaf,
+            shell,
+            env,
+            Some(id.clone()),
+        ) {
+            Ok(()) => self.host_store.detect_os(&id),
+            Err(err) => {
+                self.end_session_connecting();
+                self.chrome.panel.error = Some(format!("{label}: {err}"));
+            }
+        }
 
         self.mark_dirty();
     }
@@ -127,6 +178,19 @@ impl Screen<'_> {
         env: Option<Vec<(String, String)>>,
         host_id: Option<String>,
     ) -> Result<(), String> {
+        self.create_tab_in(clipboard, shell, env, host_id, None)
+    }
+
+    /// `create_tab_with_shell`, starting the shell in `start_dir` rather
+    /// than wherever a new tab would start.
+    pub(super) fn create_tab_in(
+        &mut self,
+        clipboard: &mut Clipboard,
+        shell: Option<Shell>,
+        env: Option<Vec<(String, String)>>,
+        host_id: Option<String>,
+        start_dir: Option<String>,
+    ) -> Result<(), String> {
         let redirect = true;
 
         // We resize the current tab ahead to prepare the
@@ -155,6 +219,7 @@ impl Screen<'_> {
             shell,
             env,
             host_id,
+            start_dir,
         );
         if opened.is_err() {
             self.resize_top_or_bottom_line(num_tabs);
@@ -192,40 +257,22 @@ impl Screen<'_> {
         // Picking a machine brings its terminal forward (design: a sidebar
         // row always lands on Terminal).
         self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
-        // If this host already has open sessions, focus the last one (else first).
-        {
-            let len = self.context_manager.len();
-            let mut last: Option<usize> = None;
-            let mut first: Option<usize> = None;
-            for i in 0..len {
-                let host = self
-                    .context_manager
-                    .contexts_mut()
-                    .get(i)
-                    .and_then(|g| g.current().host_id.clone())
-                    .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
-                if host == id {
-                    if first.is_none() {
-                        first = Some(i);
-                    }
-                    last = Some(i);
-                }
+        // If this host already has open sessions, go back to the one the
+        // user was last on rather than whichever sits last in the strip.
+        if let Some(idx) = self.context_manager.host_tab_to_restore(id) {
+            if idx != self.context_manager.current_index() {
+                self.stop_hint_mode_if_active();
+                self.cancel_search(clipboard);
+                self.clear_selection();
+                let old = self.context_manager.current_index();
+                self.context_manager.set_current(idx);
+                self.switch_visible_context(old, idx);
+                self.mark_dirty();
             }
-            if let Some(idx) = last.or(first) {
-                if idx != self.context_manager.current_index() {
-                    self.stop_hint_mode_if_active();
-                    self.cancel_search(clipboard);
-                    self.clear_selection();
-                    let old = self.context_manager.current_index();
-                    self.context_manager.set_current(idx);
-                    self.switch_visible_context(old, idx);
-                    self.mark_dirty();
-                }
-                self.sync_sidebar_selection();
-                // Refresh OS/distro icon even when reusing an open session.
-                self.host_store.detect_os(id);
-                return Ok(());
-            }
+            self.sync_sidebar_selection();
+            // Refresh OS/distro icon even when reusing an open session.
+            self.host_store.detect_os(id);
+            return Ok(());
         }
 
         // Reuse the pinned home tab instead of opening a duplicate local.
@@ -256,15 +303,7 @@ impl Screen<'_> {
             Err(err) => return Err(err),
         };
 
-        let label = self
-            .chrome
-            .panel
-            .rows
-            .iter()
-            .filter_map(terminus_ui::sidebar::Row::host)
-            .find(|item| item.id == id)
-            .map(|item| item.name.clone())
-            .unwrap_or_else(|| id.to_string());
+        let label = self.host_row_label(id);
 
         // Local shells come up instantly; WSL distros and SSH hosts can
         // sit on a blank PTY for a while, so they get the connecting
@@ -277,21 +316,7 @@ impl Screen<'_> {
         match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
-                let row = self
-                    .chrome
-                    .panel
-                    .rows
-                    .iter()
-                    .filter_map(terminus_ui::sidebar::Row::host)
-                    .find(|item| item.id == id);
-                let os_id = row.and_then(|item| item.os_id.clone());
-                let endpoint = row
-                    .map(|item| item.endpoint.clone())
-                    .filter(|e| !e.is_empty());
-                self.context_manager
-                    .set_custom_title(tab_index, Some(label));
-                self.context_manager.set_tab_os_id(tab_index, os_id);
-                self.context_manager.set_tab_host_label(tab_index, endpoint);
+                self.dress_host_tab(tab_index, id, label);
                 // Background: classify remote OS and update sidebar / tab glyphs.
                 self.host_store.detect_os(id);
                 Ok(())
@@ -303,6 +328,38 @@ impl Screen<'_> {
                 Err(format!("{label}: {err}"))
             }
         }
+    }
+
+    /// The sidebar's name for a row id, or the id itself.
+    pub(super) fn host_row_label(&self, id: &str) -> String {
+        self.chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|item| item.id == id)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Give a tab just opened for host row `id` its label, OS glyph and
+    /// endpoint.
+    pub(super) fn dress_host_tab(&mut self, tab_index: usize, id: &str, label: String) {
+        let row = self
+            .chrome
+            .panel
+            .rows
+            .iter()
+            .filter_map(terminus_ui::sidebar::Row::host)
+            .find(|item| item.id == id);
+        let os_id = row.and_then(|item| item.os_id.clone());
+        let endpoint = row
+            .map(|item| item.endpoint.clone())
+            .filter(|e| !e.is_empty());
+        self.context_manager
+            .set_custom_title(tab_index, Some(label));
+        self.context_manager.set_tab_os_id(tab_index, os_id);
+        self.context_manager.set_tab_host_label(tab_index, endpoint);
     }
 
     pub(super) fn begin_session_connecting(&mut self, id: &str) {
@@ -394,6 +451,217 @@ impl Screen<'_> {
         };
         self.end_session_connecting();
         self.chrome.panel.error = Some(message);
+    }
+
+    /// A session's process exited with `status` (`RioEvent::ChildExited`,
+    /// which arrives just before its `CloseTerminal`).
+    ///
+    /// When an SSH host session's `ssh` gave up on its link (exit 255) or
+    /// the local `ssh` was killed by a signal, it is kept behind a card that
+    /// says so and offers Reconnect, instead of vanishing. In a split tab
+    /// only that pane is kept: the card covers the dead pane and its
+    /// siblings stay live. Every other end closes as before: exit 0, no
+    /// reported status, and any other exit code, which is the remote
+    /// shell's last command status after the user left (`exit`, Ctrl-D).
+    ///
+    /// A user-initiated close never reaches the card: dropping a `Context`
+    /// SIGHUPs its ssh, but the context is already out of the grid by then
+    /// and route ids are never reused, so the late `ChildExited` finds no
+    /// route (`tab_of_route`). Returns whether the session was kept.
+    pub fn note_child_exit(&mut self, route_id: usize, status: Option<i32>) -> bool {
+        let end = session_end(status);
+        if !end.keeps_tab() {
+            return false;
+        }
+        let Some(tab) = self.tab_of_route(route_id) else {
+            return false;
+        };
+        let whole_tab = self.context_manager.contexts_mut()[tab].len() == 1;
+        let Some(host_id) = self.context_manager.contexts_mut()[tab]
+            .get_by_route_id(route_id)
+            .and_then(|item| item.context().host_id.clone())
+        else {
+            return false;
+        };
+        // Only stored SSH hosts: the local shell and WSL distros are not
+        // links that can drop.
+        if !self
+            .host_store
+            .hosts()
+            .iter()
+            .any(|host| host.id == host_id)
+        {
+            return false;
+        }
+        // Still coming up: the connection progress reports that failure.
+        if self
+            .chrome
+            .connection
+            .as_ref()
+            .is_some_and(|conn| conn.host_id == host_id)
+        {
+            return false;
+        }
+        let name = self.host_row_label(&host_id);
+        let Some(item) =
+            self.context_manager.contexts_mut()[tab].get_by_route_id(route_id)
+        else {
+            return false;
+        };
+        let output = lines_up_to_cursor(item.context(), 8);
+        let Some(card) = terminus_ui::LostSession::ended(
+            route_id, &host_id, &name, &output, end, whole_tab,
+        ) else {
+            return false;
+        };
+        item.context_mut().connection_lost = Some(card);
+        tracing::info!("ssh session for {host_id} ended: {}", end.status_text());
+        self.mark_dirty();
+        true
+    }
+
+    /// Whether `route_id` is a tab kept open after its connection dropped.
+    pub fn is_connection_lost(&mut self, route_id: usize) -> bool {
+        self.context_manager
+            .get_by_route_id(route_id)
+            .is_some_and(|item| item.context().connection_lost.is_some())
+    }
+
+    /// Index of the tab holding terminal `route_id`.
+    fn tab_of_route(&mut self, route_id: usize) -> Option<usize> {
+        self.context_manager
+            .contexts_mut()
+            .iter_mut()
+            .position(|grid| grid.get_by_route_id(route_id).is_some())
+    }
+
+    /// Mirror the front tab's lost-connection card into the chrome, keeping
+    /// its hover/focus while the same session stays shown. Runs every frame,
+    /// so a tab switch (from any of the places that switch) shows the right
+    /// card or none, and a split tab's card follows its pane through
+    /// resizes and divider drags.
+    pub(super) fn sync_lost_session(&mut self) {
+        let scale = self.sugarloaf.scale_factor();
+        let grid = self.context_manager.current_grid_mut();
+        let margin = grid.get_scaled_margin();
+        let split = grid.len() > 1;
+        let pane = grid.lost_pane();
+        let front = pane.and_then(|pane| {
+            let lost = grid
+                .get_by_route_id(pane.route_id)?
+                .context_mut()
+                .connection_lost
+                .as_mut()?;
+            // The close button says what it closes now, split or not.
+            lost.set_whole_tab(!split);
+            Some(lost.clone())
+        });
+        let same = match (front.as_ref(), self.chrome.lost.as_ref()) {
+            (Some(want), Some(shown)) => want.route_id == shown.route_id,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.chrome.lost = front;
+        } else if let Some(shown) = self.chrome.lost.as_mut() {
+            shown.set_whole_tab(!split);
+        }
+        // A whole-tab card covers the content; a split pane's covers the pane.
+        self.chrome.lost_pane = pane.filter(|_| split).map(|pane| {
+            pane_chrome_rect(pane.layout_rect, margin.left, margin.top, scale)
+        });
+        self.chrome.lost_pane_unfocused = pane.is_some_and(|pane| !pane.focused);
+    }
+
+    /// Run the lost-connection card's Reconnect / Close tab.
+    pub fn run_lost_session_action(
+        &mut self,
+        action: terminus_ui::ChromeAction,
+        clipboard: &mut Clipboard,
+    ) {
+        match action {
+            terminus_ui::ChromeAction::ReconnectSession(route_id) => {
+                if let Err(err) = self.reconnect_lost_session(route_id, clipboard) {
+                    self.chrome.panel.error = Some(err);
+                }
+            }
+            terminus_ui::ChromeAction::CloseLostSession(route_id) => {
+                if let Some(tab) = self.tab_of_route(route_id) {
+                    if self.context_manager.contexts_mut()[tab].len() > 1 {
+                        self.close_lost_pane(route_id);
+                    } else {
+                        self.close_tab_at(tab, clipboard);
+                    }
+                }
+            }
+            _ => return,
+        }
+        self.sync_lost_session();
+    }
+
+    /// Reopen the host of dead tab `route_id` in its place: a fresh session
+    /// (with the connection progress) lands beside it, takes over its name,
+    /// and the dead tab closes, so the new one sits where the old one was.
+    pub fn reconnect_lost_session(
+        &mut self,
+        route_id: usize,
+        clipboard: &mut Clipboard,
+    ) -> Result<(), String> {
+        let Some(tab) = self.tab_of_route(route_id) else {
+            return Ok(());
+        };
+        let Some(host_id) = self.context_manager.contexts_mut()[tab]
+            .get_by_route_id(route_id)
+            .and_then(|item| item.context().connection_lost.as_ref())
+            .map(|lost| lost.host_id.clone())
+        else {
+            return Ok(());
+        };
+        // One pane of a split tab: its siblings stay, the fresh session
+        // opens as a tab of its own and only the dead pane goes.
+        let split = self.context_manager.contexts_mut()[tab].len() > 1;
+        let title = self.context_manager.custom_title(tab).map(str::to_string);
+        if tab != self.context_manager.current_index() {
+            self.focus_session(tab, clipboard);
+        }
+        let before = self.context_manager.len();
+        self.add_host_session(&host_id, clipboard)?;
+        // No new tab: the vault prompt took over and opens one on unlock;
+        // the dead tab stays until then.
+        if self.context_manager.len() == before {
+            return Ok(());
+        }
+        if split {
+            self.close_lost_pane(route_id);
+            return Ok(());
+        }
+        // A name the user gave the tab survives the reconnect.
+        let fresh = self.context_manager.current_index();
+        if title.is_some() {
+            self.context_manager.set_custom_title(fresh, title);
+        }
+        // New tabs open last: close the dead one, then move the new one
+        // (still last) into its slot.
+        self.close_tab_at(tab, clipboard);
+        let last = self.context_manager.len() - 1;
+        self.focus_session(last, clipboard);
+        if tab < last {
+            self.context_manager.move_current_tab_to(tab);
+            let now = self.context_manager.current_index();
+            self.switch_visible_context(last, now);
+        }
+        self.mark_dirty();
+        Ok(())
+    }
+
+    /// Remove just the dead pane `route_id` from its split tab; the other
+    /// panes (and the tab) stay.
+    fn close_lost_pane(&mut self, route_id: usize) {
+        self.clear_selection();
+        let _ = self
+            .context_manager
+            .should_close_context_manager(route_id, &mut self.sugarloaf);
+        self.mark_dirty();
     }
 
     /// Public dismiss from the connection modal's Close button.
@@ -494,9 +762,7 @@ impl Screen<'_> {
     /// Looping `0..1` phase for the active-node pulse.
     pub(super) fn connecting_phase(&self) -> Option<f32> {
         let started = self.connecting_started?;
-        if self.chrome.connection.is_none() {
-            return None;
-        }
+        self.chrome.connection.as_ref()?;
         Some(terminus_ui::loading_phase(started.elapsed().as_secs_f32()))
     }
 
@@ -607,15 +873,7 @@ impl Screen<'_> {
             }
             Err(err) => return Err(err),
         };
-        let label = self
-            .chrome
-            .panel
-            .rows
-            .iter()
-            .filter_map(terminus_ui::sidebar::Row::host)
-            .find(|item| item.id == id)
-            .map(|item| item.name.clone())
-            .unwrap_or_else(|| id.to_string());
+        let label = self.host_row_label(id);
 
         let animate = id != hosts::LOCAL_ID;
         if animate {
@@ -625,21 +883,7 @@ impl Screen<'_> {
         match self.create_tab_with_shell(clipboard, shell, env, Some(id.to_string())) {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
-                let row = self
-                    .chrome
-                    .panel
-                    .rows
-                    .iter()
-                    .filter_map(terminus_ui::sidebar::Row::host)
-                    .find(|item| item.id == id);
-                let os_id = row.and_then(|item| item.os_id.clone());
-                let endpoint = row
-                    .map(|item| item.endpoint.clone())
-                    .filter(|e| !e.is_empty());
-                self.context_manager
-                    .set_custom_title(tab_index, Some(label));
-                self.context_manager.set_tab_os_id(tab_index, os_id);
-                self.context_manager.set_tab_host_label(tab_index, endpoint);
+                self.dress_host_tab(tab_index, id, label);
                 self.host_store.detect_os(id);
                 Ok(())
             }
@@ -809,6 +1053,80 @@ fn printable_lines(ctx: &context::Context<EventProxy>) -> Vec<String> {
         .collect()
 }
 
+/// The last `count` screen lines down to the cursor, top to bottom: where
+/// a long-running session's final words (ssh's disconnect message) are,
+/// unlike [`printable_lines`], which reads a fresh session from the top.
+fn lines_up_to_cursor(ctx: &context::Context<EventProxy>, count: usize) -> Vec<String> {
+    use crate::crosswords::pos::{Column, Line};
+    let terminal = ctx.terminal.lock();
+    let cursor = terminal.grid.cursor.pos.row.0.max(0);
+    let first = (cursor + 1 - count as i32).max(0);
+    let cols = terminal.columns().min(200);
+    (first..=cursor)
+        .map(|row| {
+            let line = Line(row);
+            let text: String = (0..cols)
+                .map(|col| match terminal.grid[line][Column(col)].c() {
+                    '\0' => ' ',
+                    c => c,
+                })
+                .collect();
+            text.trim_end().to_string()
+        })
+        .collect()
+}
+
+/// The exit code in a `ChildExited` status: Unix reports the raw wait
+/// status, Windows the code itself.
+pub(super) fn exit_code(status: Option<i32>) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.and_then(|raw| std::process::ExitStatus::from_raw(raw).code())
+    }
+    #[cfg(not(unix))]
+    {
+        status
+    }
+}
+
+/// The signal that killed the process in a `ChildExited` status, if one did.
+pub(super) fn exit_signal(status: Option<i32>) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.and_then(|raw| std::process::ExitStatus::from_raw(raw).signal())
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows reports an exit code only.
+        let _ = status;
+        None
+    }
+}
+
+/// How the session's process ended, from its `ChildExited` status.
+pub(super) fn session_end(status: Option<i32>) -> terminus_ui::lost_session::SessionEnd {
+    terminus_ui::lost_session::classify_exit(exit_code(status), exit_signal(status))
+}
+
+/// A pane's `layout_rect` (physical pixels, relative to the grid root) as
+/// the chrome's logical rect: offset by the grid margin, then unscaled the
+/// way `apply_taffy_layout` positions the pane.
+pub(super) fn pane_chrome_rect(
+    layout_rect: [f32; 4],
+    margin_left: f32,
+    margin_top: f32,
+    scale: f32,
+) -> terminus_ui::geom::Rect {
+    terminus_ui::geom::Rect {
+        x: (layout_rect[0] + margin_left) / scale,
+        y: (layout_rect[1] + margin_top) / scale,
+        width: layout_rect[2] / scale,
+        height: layout_rect[3] / scale,
+    }
+}
+
 /// True when the session's grid already shows something other than blank
 /// cells — the cue that the connecting overlay can retire.
 pub(super) fn terminal_has_printable_output(ctx: &context::Context<EventProxy>) -> bool {
@@ -826,4 +1144,52 @@ pub(super) fn terminal_has_printable_output(ctx: &context::Context<EventProxy>) 
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{exit_code, exit_signal, pane_chrome_rect, session_end};
+    use terminus_ui::lost_session::SessionEnd;
+
+    #[test]
+    #[cfg(unix)]
+    fn exit_code_decodes_the_raw_wait_status() {
+        // waitpid's status: the code sits in the second byte.
+        assert_eq!(exit_code(Some(255 << 8)), Some(255));
+        assert_eq!(exit_code(Some(0)), Some(0));
+        // Killed by SIGHUP: no exit code, so never "connection lost".
+        assert_eq!(exit_code(Some(libc::SIGHUP)), None);
+        assert_eq!(exit_code(None), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exit_signal_decodes_the_raw_wait_status() {
+        assert_eq!(exit_signal(Some(libc::SIGKILL)), Some(9));
+        assert_eq!(exit_signal(Some(libc::SIGHUP)), Some(1));
+        // A normal exit has a code, not a signal.
+        assert_eq!(exit_signal(Some(1 << 8)), None);
+        assert_eq!(exit_signal(Some(0)), None);
+        assert_eq!(exit_signal(None), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn session_end_classifies_raw_wait_statuses() {
+        assert_eq!(session_end(Some(0)), SessionEnd::Clean);
+        assert_eq!(session_end(Some(255 << 8)), SessionEnd::ConnectionLost);
+        assert_eq!(session_end(Some(1 << 8)), SessionEnd::Exited(1));
+        assert_eq!(session_end(Some(libc::SIGKILL)), SessionEnd::Signaled(9));
+        assert_eq!(session_end(None), SessionEnd::Unknown);
+    }
+
+    #[test]
+    fn pane_rect_is_the_layout_rect_offset_by_the_margin_and_unscaled() {
+        // Physical layout rect [x, y, w, h] with a 20x10 physical margin at 2x.
+        let rect = pane_chrome_rect([100.0, 40.0, 600.0, 300.0], 20.0, 10.0, 2.0);
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (60.0, 25.0, 300.0, 150.0)
+        );
+    }
 }

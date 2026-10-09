@@ -5,15 +5,12 @@ use crate::bindings::kitty_keyboard::build_key_sequence;
 use crate::bindings::{
     Action as Act, BindingKey, BindingMode, FontSizeAction, SearchAction, ViAction,
 };
-use crate::context;
 use crate::crosswords::grid::Dimensions;
 use crate::crosswords::grid::Scroll;
 use crate::crosswords::pos::Side;
 use crate::crosswords::vi_mode::ViMotion;
 use crate::crosswords::Mode;
-use crate::hosts;
-use crate::renderer::island;
-use crate::selection::{Selection, SelectionType};
+use crate::selection::SelectionType;
 use rio_backend::clipboard::{Clipboard, ClipboardType};
 use rio_backend::crosswords::pos::Direction;
 use rio_window::event::{ElementState, Modifiers, MouseButton};
@@ -160,8 +157,10 @@ impl Screen<'_> {
                             || self.modifiers.state().super_key() =>
                     {
                         if c.eq_ignore_ascii_case("a") {
-                            if let Some(edit) =
-                                self.sftp.as_mut().and_then(|s| s.state.name_edit.as_mut())
+                            if let Some(edit) = self
+                                .sftp
+                                .as_mut()
+                                .and_then(|s| s.state.name_edit.as_mut())
                             {
                                 edit.draft.select_all();
                                 self.mark_dirty();
@@ -508,8 +507,7 @@ impl Screen<'_> {
                         self.paste(s, false);
                     }
                     Act::Paste => {
-                        let content = clipboard.get(ClipboardType::Clipboard);
-                        self.paste_from_clipboard(&content);
+                        self.paste_clipboard_or_image(clipboard);
                     }
                     Act::ClearSelection => {
                         self.clear_selection();
@@ -890,6 +888,8 @@ impl Screen<'_> {
                         if !self.renderer.command_palette.is_enabled() {
                             let hosts = self.palette_host_items();
                             self.renderer.command_palette.set_hosts(hosts);
+                            let tunnels = self.palette_tunnel_items();
+                            self.renderer.command_palette.set_tunnels(tunnels);
                             let shortcuts = self.palette_shortcuts();
                             self.renderer.command_palette.set_shortcuts(shortcuts);
                             self.renderer.command_palette.set_enabled(true);

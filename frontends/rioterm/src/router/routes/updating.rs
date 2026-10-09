@@ -1,8 +1,8 @@
 //! Full-window screen shown while an update found at launch installs.
 
 use crate::layout::ContextDimension;
-use terminus_ui::theme::ChromeTheme;
 use rio_backend::sugarloaf::Sugarloaf;
+use terminus_ui::theme::ChromeTheme;
 
 /// "4.2 of 19.4 MB" (or just the received size while the total is unknown).
 pub fn progress_label(done: u64, total: u64) -> String {
@@ -49,18 +49,43 @@ pub fn screen(
     let x = ((width - card_w) / 2.0).round();
     let y = ((height - card_h) / 2.0).round();
     sugarloaf.rounded_rect(
-        None, x - 1.0, y - 1.0, card_w + 2.0, card_h + 2.0, theme.dialog_line, 0.05,
-        radius::DIALOG + 1.0, 1,
+        None,
+        x - 1.0,
+        y - 1.0,
+        card_w + 2.0,
+        card_h + 2.0,
+        theme.dialog_line,
+        0.05,
+        radius::DIALOG + 1.0,
+        1,
     );
     sugarloaf.rounded_rect(
-        None, x, y, card_w, card_h, theme.dialog, 0.06, radius::DIALOG, 1,
+        None,
+        x,
+        y,
+        card_w,
+        card_h,
+        theme.dialog,
+        0.06,
+        radius::DIALOG,
+        1,
     );
     let (ix, iw) = (x + pad, card_w - 2.0 * pad);
     let bar_y = y + pad + 26.0 + 18.0;
     sugarloaf.rounded_rect(None, ix, bar_y, iw, 6.0, theme.raised, 0.1, 3.0, 2);
     let fill = (iw * fraction(done, total)).max(if done > 0 { 6.0 } else { 0.0 });
     if fill > 0.0 {
-        sugarloaf.rounded_rect(None, ix, bar_y, fill.min(iw), 6.0, theme.accent, 0.2, 3.0, 3);
+        sugarloaf.rounded_rect(
+            None,
+            ix,
+            bar_y,
+            fill.min(iw),
+            6.0,
+            theme.accent,
+            0.2,
+            3.0,
+            3,
+        );
     }
 
     draw_ui_text(
