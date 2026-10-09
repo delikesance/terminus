@@ -463,7 +463,7 @@ impl ActiveSftp {
         blank_pane: Option<SftpFocus>,
         x: f32,
         y: f32,
-    ) -> Option<terminus_ui::ContextMenu> {
+    ) -> Option<terminus_ui::ActionMenu> {
         match hit {
             SftpHit::LeftRow(i) => {
                 self.state.focus = SftpFocus::Left;
@@ -471,7 +471,7 @@ impl ActiveSftp {
                 let row = self.state.left.entries.get(i)?;
                 let transfer = Some(self.transfer_label(SftpFocus::Left));
                 let can_edit = !row.is_dir;
-                terminus_ui::ContextMenu::for_sftp_entry(
+                terminus_ui::ActionMenu::for_sftp_entry(
                     x, y, row.is_dir, transfer, can_edit,
                 )
             }
@@ -481,22 +481,22 @@ impl ActiveSftp {
                 let row = self.state.right.entries.get(i)?;
                 let transfer = Some(self.transfer_label(SftpFocus::Right));
                 let can_edit = !row.is_dir;
-                terminus_ui::ContextMenu::for_sftp_entry(
+                terminus_ui::ActionMenu::for_sftp_entry(
                     x, y, row.is_dir, transfer, can_edit,
                 )
             }
             SftpHit::LeftParent | SftpHit::LeftCrumb => {
                 self.state.focus = SftpFocus::Left;
-                terminus_ui::ContextMenu::for_sftp_empty(x, y)
+                terminus_ui::ActionMenu::for_sftp_empty(x, y)
             }
             SftpHit::RightParent | SftpHit::RightCrumb => {
                 self.state.focus = SftpFocus::Right;
-                terminus_ui::ContextMenu::for_sftp_empty(x, y)
+                terminus_ui::ActionMenu::for_sftp_empty(x, y)
             }
             SftpHit::Consume => {
                 let pane = blank_pane?;
                 self.state.focus = pane;
-                terminus_ui::ContextMenu::for_sftp_empty(x, y)
+                terminus_ui::ActionMenu::for_sftp_empty(x, y)
             }
             SftpHit::Footer
             | SftpHit::Close
@@ -1137,9 +1137,10 @@ mod tests {
             .context_menu_for(SftpHit::LeftRow(file_idx), None, 40.0, 120.0)
             .expect("menu for local file");
         assert!(
-            menu.items
-                .iter()
-                .any(|i| matches!(i.action, terminus_ui::ContextAction::SftpEdit)),
+            (0..menu.entries.len()).any(|i| matches!(
+                menu.take_action(i),
+                Some(terminus_ui::ContextAction::SftpEdit)
+            )),
             "local file right-click should include Edit"
         );
         s.close();
