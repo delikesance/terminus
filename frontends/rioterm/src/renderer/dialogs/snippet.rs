@@ -1,6 +1,6 @@
 //! New-snippet dialog (Overlay + Input look).
 
-use crate::renderer::components::button::paint_button_in_rect;
+use crate::renderer::components::button::{button_state, paint_button_in_rect};
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::input as ui;
@@ -11,7 +11,7 @@ use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::Chrome;
 
-use super::{button_state, dialog_layer, paint_shadow, paint_text_field, DEPTH, ORDER};
+use super::{dialog_layer, paint_shadow, paint_text_field, DEPTH, ORDER};
 use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 

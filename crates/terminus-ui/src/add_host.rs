@@ -1642,10 +1642,6 @@ impl AddHostLayout {
         self.y + dialog_height - FOOTER_BOTTOM - BUTTON_HEIGHT
     }
 
-    fn button_width(label: f32) -> f32 {
-        2.0 * ov::ACTION_PAD_X + label
-    }
-
     /// Continue / Save server, right aligned.
     pub fn primary_button_rect(&self, form: &AddHostForm) -> Rect {
         let label = if form.step() == AddHostStep::Details {
@@ -1653,7 +1649,7 @@ impl AddHostLayout {
         } else {
             LABEL_CONTINUE
         };
-        let w = Self::button_width(label);
+        let w = ov::action_width(label);
         Rect::new(
             self.x + WIDTH - PAD_X - w,
             self.button_y(form.height()),
@@ -1669,7 +1665,7 @@ impl AddHostLayout {
         } else {
             LABEL_BACK
         };
-        let w = Self::button_width(label);
+        let w = ov::action_width(label);
         let primary = self.primary_button_rect(form);
         Rect::new(primary.x - BUTTON_GAP - w, primary.y, w, BUTTON_HEIGHT)
     }
@@ -1678,7 +1674,7 @@ impl AddHostLayout {
     pub fn copy_error_rect(&self, form: &AddHostForm) -> Option<Rect> {
         form.error()?;
         let secondary = self.secondary_button_rect(form);
-        let w = Self::button_width(LABEL_COPY);
+        let w = ov::action_width(LABEL_COPY);
         Some(Rect::new(
             secondary.x - BUTTON_GAP - w,
             secondary.y,

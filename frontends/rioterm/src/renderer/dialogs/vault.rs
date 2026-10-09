@@ -1,9 +1,11 @@
 //! Vault unlock / create dialog.
 
-use crate::renderer::components::button::paint_button_in_rect;
+use crate::renderer::components::button::{button_state, paint_button_in_rect};
+use crate::renderer::components::selection::paint_checkbox_on;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::overlay as ov;
+use terminus_ui::components::selection::ControlState;
 use terminus_ui::confirm::{estimate_text_width, BODY_FONT};
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::ChromeTheme;
@@ -11,10 +13,7 @@ use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::vault_unlock::{self as vu, VaultUnlockLayout};
 use terminus_ui::Chrome;
 
-use super::{
-    button_state, dialog_layer, paint_checkbox_row, paint_shadow, paint_text_field,
-    DEPTH, ORDER,
-};
+use super::{dialog_layer, paint_shadow, paint_text_field, DEPTH, ORDER};
 use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
@@ -156,13 +155,15 @@ pub fn paint_vault_unlock(
         );
     }
 
-    paint_checkbox_row(
+    let remember = layout.remember_row_rect();
+    paint_checkbox_on(
         sugarloaf,
         theme,
-        &layout.remember_row_rect(),
+        (remember.x, remember.y),
         vu::REMEMBER_LABEL,
         prompt.remember(),
-        DEPTH + 0.05,
+        ControlState::Default,
+        dialog_layer(theme),
     );
 
     let hint = layout.hint_rect();

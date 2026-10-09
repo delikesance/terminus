@@ -5,7 +5,7 @@
 //! (where the connecting session's terminal will appear), through
 //! [`paint_connection_in`], which centres the card in any area.
 
-use crate::renderer::components::button::paint_button_in_rect;
+use crate::renderer::components::button::{button_state, paint_button_in_rect};
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::feedback::{
@@ -17,7 +17,7 @@ use terminus_ui::theme::ChromeTheme;
 use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::{Chrome, ConnectKind, ConnectionSequence, STEP_COUNT};
 
-use super::{button_state, dialog_layer, paint_shadow, text_y, DEPTH, ORDER};
+use super::{dialog_layer, paint_shadow, DEPTH, ORDER};
 use crate::renderer::chrome::{draw_icon, paint_surface_stroke};
 use crate::renderer::ui_text::{draw_mono_text, draw_ui_text, measure_ui_text, UiWeight};
 
@@ -311,5 +311,4 @@ pub fn paint_connection_in(
         if conn.succeeded { "Close" } else { "Cancel" },
         dialog_layer(theme),
     );
-    let _ = text_y;
 }

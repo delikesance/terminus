@@ -6,8 +6,9 @@ use terminus_ui::context_menu::{ContextMenu, MENU_RADIUS};
 use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
 
-use super::{paint_shadow, text_y, DEPTH, ORDER};
+use super::{paint_shadow, DEPTH, ORDER};
 use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
+use crate::renderer::components::overlay::text_y;
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
 /// Paint `menu` above everything (overlay layer: quads, then text).
