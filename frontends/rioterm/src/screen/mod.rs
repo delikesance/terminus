@@ -635,7 +635,7 @@ impl Screen<'_> {
 #[cfg(test)]
 mod tests {
     use super::hint_actions::post_process_hyperlink_uri;
-    use super::shell::{ssh_shell, GSSAPI_SSH_OPTIONS};
+    use super::shell::{interactive_truecolor_login, ssh_shell, GSSAPI_SSH_OPTIONS};
     use super::*;
     use crate::hosts;
     use chrono::Utc;
@@ -705,7 +705,9 @@ mod tests {
             shell.args.last().map(String::as_str),
             Some("alice@box.example")
         );
-        assert!(env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM")));
+        assert!(
+            env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM" || k == "COLORTERM"))
+        );
     }
 
     /// `ssh` forwards the local `$TERM` in its pty request. Ours is
@@ -738,6 +740,87 @@ mod tests {
             {
                 let _ = std::fs::remove_file(secret);
             }
+        }
+    }
+
+    /// A remote program only knows the terminal does truecolor if
+    /// `COLORTERM` reaches it; `ssh` sends nothing unless asked. Without it
+    /// the same program that shows exact colors in a local tab drops to the
+    /// 256-color palette over SSH (flat greys, washed-out reds).
+    #[test]
+    fn ssh_shell_forwards_colorterm_so_remotes_keep_truecolor() {
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n";
+        for (auth, password, identity) in [
+            ("gssapi", None, None),
+            ("key", None, Some(pem)),
+            ("password", Some("secret"), None),
+        ] {
+            let host = host_row(auth);
+            let (shell, env) =
+                ssh_shell(&host, password, identity, None).expect("ssh shell");
+            let env = env.expect("ssh env");
+            assert!(
+                shell
+                    .args
+                    .windows(2)
+                    .any(|w| w[0] == "-o" && w[1] == "SendEnv=COLORTERM"),
+                "{auth}: ssh must be told to send COLORTERM"
+            );
+            let colorterm = env
+                .iter()
+                .find(|(k, _)| k == "COLORTERM")
+                .map(|(_, v)| v.as_str());
+            assert_eq!(colorterm, Some("truecolor"), "{auth}");
+            if let Some(path) =
+                shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1])
+            {
+                let _ = std::fs::remove_file(path);
+            }
+            if let Some((_, secret)) =
+                env.iter().find(|(k, _)| k == "TERMINUS_SSH_ASKPASS_FILE")
+            {
+                let _ = std::fs::remove_file(secret);
+            }
+        }
+    }
+
+    /// Most sshd configs (Debian/Ubuntu: `AcceptEnv LANG LC_*`) drop a
+    /// forwarded `COLORTERM`, so the interactive tab also starts the login
+    /// shell itself with the variable set. Paste and tunnels reuse the plain
+    /// args and expect the destination to stay last, so this is a separate
+    /// step. No quotes and no `;`: Windows hands ssh the args joined by plain
+    /// spaces, and ssh then re-joins them for the remote shell.
+    #[test]
+    fn interactive_tab_starts_the_remote_login_shell_with_truecolor() {
+        let host = host_row("gssapi");
+        let (mut shell, _) = ssh_shell(&host, None, None, None).expect("shell");
+        let plain = shell.args.clone();
+        interactive_truecolor_login(&mut shell);
+
+        let dash_dash = shell.args.iter().position(|a| a == "--").expect("--");
+        assert!(
+            shell.args[..dash_dash].iter().any(|a| a == "-t"),
+            "a remote command needs a forced pty, got {:?}",
+            shell.args
+        );
+        assert_eq!(
+            &shell.args[dash_dash..],
+            [
+                "--",
+                "alice@box.example",
+                "exec",
+                "env",
+                "COLORTERM=truecolor",
+                "$SHELL",
+                "-l"
+            ]
+        );
+        // Everything else is untouched.
+        let mut without_t = shell.args.clone();
+        without_t.retain(|a| a != "-t");
+        assert_eq!(&without_t[..plain.len()], &plain[..]);
+        for arg in &shell.args {
+            assert!(!arg.contains('"') && !arg.contains(';'), "{arg}");
         }
     }
 
@@ -784,7 +867,9 @@ mod tests {
             .args
             .iter()
             .any(|a| a == "PreferredAuthentications=publickey"));
-        assert!(env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM")));
+        assert!(
+            env.is_some_and(|e| e.iter().all(|(k, _)| k == "TERM" || k == "COLORTERM"))
+        );
         // Cleanup the temp identity we just wrote.
         if let Some(path) = shell.args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1]) {
             let _ = std::fs::remove_file(path);
