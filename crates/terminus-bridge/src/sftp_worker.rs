@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use terminus_core::local_fs::{self, LocalEntry};
 use terminus_core::sftp::SftpEntry;
@@ -24,6 +24,7 @@ use tracing::{debug, warn};
 use crate::folder_diff::{
     plan_differential, ConflictAction, ConflictPolicy, DiffAction, FileNode,
 };
+use crate::progress_throttle::ProgressThrottle;
 
 pub use crate::folder_diff::ConflictAction as SftpConflictAction;
 
@@ -2119,7 +2120,11 @@ async fn transfer_upload(
     );
     // Streamed in timed chunks into a temp sibling: a slow link is fine as
     // long as it keeps moving, and a failure never truncates the target.
+    let mut throttle = ProgressThrottle::default();
     conn.upload_file(local, remote, |done, total| {
+        if !throttle.should_emit(Instant::now(), done, total) {
+            return;
+        }
         emit(
             events,
             wake,
@@ -2149,7 +2154,11 @@ async fn transfer_download(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| remote.to_string())
     );
+    let mut throttle = ProgressThrottle::default();
     conn.download_file(remote, local, |done, total| {
+        if !throttle.should_emit(Instant::now(), done, total) {
+            return;
+        }
         emit(
             events,
             wake,

@@ -12,8 +12,12 @@
 //! * Windows installer: offered; "Install Update" downloads the verified
 //!   installer, starts it and quits so it can replace the executable;
 //! * `.deb` / `.rpm`: offered; "Install Update" downloads the verified package
-//!   and shows the one command that installs it;
-//! * Nix, development builds, unknown layouts: the user is told how to update.
+//!   and installs it through polkit (`pkexec`). If that is dismissed or
+//!   unavailable, the one command that installs it is offered instead;
+//! * Nix profile installs: offered; "Install Update" runs `nix profile
+//!   upgrade` (a source build: it can take minutes);
+//! * other Nix setups, development builds, unknown layouts: the user is told
+//!   how to update.
 //!
 //! The UI thread only [`Updater::pump`]s state and acts on it; nothing here
 //! blocks rendering.
@@ -24,7 +28,7 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use terminus_update::{Installer, Release, UpdatePlan};
+use terminus_update::{Installer, PackageManager, Release, UpdatePlan};
 
 /// First automatic check, after start-up settles.
 const STARTUP_DELAY: Duration = Duration::from_secs(20);
@@ -50,6 +54,10 @@ pub enum UpdateState {
         can_install: bool,
     },
     Downloading {
+        version: String,
+    },
+    /// A package manager or Nix is installing the new version.
+    Installing {
         version: String,
     },
     /// The binary on disk is the new version; restart to use it.
@@ -82,7 +90,7 @@ pub(crate) enum NextStep {
 }
 
 /// Only in-place binary swaps happen unattended: an installer needs UAC and
-/// closes the app, a package needs root.
+/// closes the app, a package needs root, a Nix upgrade is a long build.
 pub(crate) fn next_step(
     plan: &UpdatePlan,
     can_install: bool,
@@ -120,6 +128,9 @@ pub(crate) fn notice_for(state: &UpdateState, manual: bool) -> Option<String> {
             _ => format!("Terminus {version} is available. Run “Install Update”"),
         }),
         UpdateState::Downloading { version } => Some(format!("Downloading Terminus {version}…")),
+        UpdateState::Installing { version } => {
+            Some(format!("Installing Terminus {version}…"))
+        }
         UpdateState::ReadyToRestart { version } => Some(format!(
             "Terminus {version} is installed. Run “Restart to Update”"
         )),
@@ -326,6 +337,56 @@ pub(crate) fn exit_action_for(
     }
 }
 
+/// The path to start again after an update: a Nix profile launcher follows
+/// the upgrade, the store path it points to does not.
+fn relaunch_path(exe: &Path) -> PathBuf {
+    terminus_update::nix_profile_launcher(exe).unwrap_or_else(|| exe.to_path_buf())
+}
+
+/// The state once the package manager is done: restart on success, the
+/// manual command when the elevated install could not run.
+fn package_outcome(
+    version: &str,
+    manager: PackageManager,
+    package: &Path,
+    result: terminus_update::Result<()>,
+) -> UpdateState {
+    match result {
+        Ok(()) => UpdateState::ReadyToRestart {
+            version: version.into(),
+        },
+        Err(err) => {
+            tracing::info!(%err, "elevated package install did not run");
+            UpdateState::PackageReady {
+                version: version.into(),
+                command: manager.manual_command(package),
+            }
+        }
+    }
+}
+
+const NIX_PINNED: &str =
+    "the Nix profile pins a fixed revision; reinstall from the unpinned flake";
+
+/// `nix profile upgrade` exits 0 without changing anything when the entry
+/// is pinned: only a launcher that moved to another build is an install.
+fn nix_outcome(
+    version: &str,
+    result: terminus_update::Result<()>,
+    running: &Path,
+    launcher_target: Option<PathBuf>,
+) -> UpdateState {
+    match result {
+        Err(err) => UpdateState::Failed(err.to_string()),
+        Ok(()) if launcher_target.is_some_and(|target| target != running) => {
+            UpdateState::ReadyToRestart {
+                version: version.into(),
+            }
+        }
+        Ok(()) => UpdateState::Failed(NIX_PINNED.into()),
+    }
+}
+
 impl Updater {
     pub fn spawn(
         settings: UpdateSettings,
@@ -333,8 +394,8 @@ impl Updater {
     ) -> Self {
         let (command_tx, command_rx) = channel();
         let (event_tx, event_rx) = channel();
-        let exe = std::env::current_exe().ok();
-        let worker_exe = exe.clone();
+        let worker_exe = std::env::current_exe().ok();
+        let exe = worker_exe.as_deref().map(relaunch_path);
         let launch = LAUNCH_UPDATE.lock().ok().and_then(|mut slot| slot.take());
         let startup_version = launch.as_ref().map(|l| l.release.version.to_string());
         let progress: Arc<[AtomicU64; 2]> =
@@ -352,6 +413,7 @@ impl Updater {
                     found: launch.map(|l| (l.release, l.plan, true)),
                     install_first,
                     progress: worker_progress,
+                    installed: false,
                 };
                 worker.run(command_rx);
             });
@@ -485,6 +547,8 @@ struct Worker {
     install_first: bool,
     /// Bytes received / expected by the running download.
     progress: Arc<[AtomicU64; 2]>,
+    /// A newer version is already on disk: automatic checks stay quiet.
+    installed: bool,
 }
 
 impl Worker {
@@ -567,10 +631,12 @@ impl Worker {
 
     fn check(&mut self, manual: bool) {
         // Never re-check over an update that is already staged or running.
-        if matches!(
-            self.found.as_ref().map(|f| &f.1),
-            Some(UpdatePlan::ReplaceBinary { .. })
-        ) && !manual
+        if (self.installed
+            || matches!(
+                self.found.as_ref().map(|f| &f.1),
+                Some(UpdatePlan::ReplaceBinary { .. })
+            ))
+            && !manual
         {
             return;
         }
@@ -692,7 +758,7 @@ impl Worker {
                     Err(err) => self.emit(UpdateState::Failed(err), true),
                 }
             }
-            UpdatePlan::PackageFile { asset, command } => {
+            UpdatePlan::PackageFile { asset, manager } => {
                 self.emit(
                     UpdateState::Downloading {
                         version: version.clone(),
@@ -700,16 +766,41 @@ impl Worker {
                     true,
                 );
                 let dir = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
-                match client.download_verified(&release, &asset, &dir) {
-                    Ok(path) => self.emit(
-                        UpdateState::PackageReady {
-                            version,
-                            command: command.replace("{}", &path.display().to_string()),
-                        },
-                        true,
-                    ),
-                    Err(err) => self.emit(UpdateState::Failed(err.to_string()), true),
-                }
+                let path = match client.download_verified(&release, &asset, &dir) {
+                    Ok(path) => path,
+                    Err(err) => {
+                        return self.emit(UpdateState::Failed(err.to_string()), true)
+                    }
+                };
+                self.emit(
+                    UpdateState::Installing {
+                        version: version.clone(),
+                    },
+                    true,
+                );
+                let result = terminus_update::run_install(&manager.install_argv(&path));
+                let outcome = package_outcome(&version, manager, &path, result);
+                self.installed = matches!(outcome, UpdateState::ReadyToRestart { .. });
+                self.emit(outcome, true);
+            }
+            UpdatePlan::NixUpgrade => {
+                let Some(running) = self.exe.clone() else {
+                    return self
+                        .emit(UpdateState::Failed("no executable path".into()), true);
+                };
+                self.emit(
+                    UpdateState::Installing {
+                        version: version.clone(),
+                    },
+                    true,
+                );
+                let launcher = terminus_update::nix_profile_launcher(&running);
+                let result =
+                    terminus_update::run_install(&terminus_update::nix_upgrade_argv());
+                let target = launcher.and_then(|l| std::fs::canonicalize(l).ok());
+                let outcome = nix_outcome(&version, result, &running, target);
+                self.installed = matches!(outcome, UpdateState::ReadyToRestart { .. });
+                self.emit(outcome, true);
             }
             UpdatePlan::Manual { .. } => self.emit(
                 UpdateState::Available {
@@ -809,6 +900,7 @@ mod tests {
             found: None,
             install_first: false,
             progress: Arc::new([AtomicU64::new(0), AtomicU64::new(0)]),
+            installed: false,
         };
         let now = Instant::now();
         let mut next = Some(now);
@@ -846,9 +938,14 @@ mod tests {
         assert_eq!(next_step(&installer, true, true), NextStep::Offer);
         let package = UpdatePlan::PackageFile {
             asset: terminus_update::DEB_ASSET.into(),
-            command: "sudo apt install {}".into(),
+            manager: PackageManager::Apt,
         };
         assert_eq!(next_step(&package, true, true), NextStep::Offer);
+        assert_eq!(
+            next_step(&UpdatePlan::NixUpgrade, true, true),
+            NextStep::Offer,
+            "a Nix rebuild is never a surprise"
+        );
     }
 
     #[test]
@@ -938,6 +1035,68 @@ mod tests {
             let notice = notice_for(&state, false).unwrap();
             assert!(notice.chars().count() <= cap, "{notice}");
         }
+    }
+
+    #[test]
+    fn a_package_install_restarts_or_falls_back_to_the_command() {
+        let path = Path::new("/tmp/terminus.rpm");
+        assert_eq!(
+            package_outcome("0.7.12", PackageManager::Dnf, path, Ok(())),
+            UpdateState::ReadyToRestart {
+                version: "0.7.12".into()
+            }
+        );
+        let denied = Err(terminus_update::UpdateError::Io("dismissed".into()));
+        assert_eq!(
+            package_outcome("0.7.12", PackageManager::Dnf, path, denied),
+            UpdateState::PackageReady {
+                version: "0.7.12".into(),
+                command: "sudo dnf install /tmp/terminus.rpm".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_nix_upgrade_that_changed_nothing_is_not_an_install() {
+        let old = Path::new("/nix/store/abc-terminus/bin/terminus");
+        let new = PathBuf::from("/nix/store/def-terminus/bin/terminus");
+        let ok = || Ok(());
+        assert_eq!(
+            nix_outcome("0.7.12", ok(), old, Some(new)),
+            UpdateState::ReadyToRestart {
+                version: "0.7.12".into()
+            }
+        );
+        let pinned = nix_outcome("0.7.12", ok(), old, Some(old.to_path_buf()));
+        assert!(matches!(pinned, UpdateState::Failed(m) if m.contains("pinned")));
+        let failed = Err(terminus_update::UpdateError::Io("no nix".into()));
+        assert!(matches!(
+            nix_outcome("0.7.12", failed, old, None),
+            UpdateState::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn installing_is_announced_and_fits_the_card() {
+        let installing = UpdateState::Installing {
+            version: "10.20.30".into(),
+        };
+        let notice = notice_for(&installing, false).unwrap();
+        assert!(notice.contains("Installing"), "{notice}");
+        let cap = terminus_ui::sidebar::NOTICE_LINE_CHARS
+            * terminus_ui::sidebar::NOTICE_MAX_LINES;
+        assert!(notice.chars().count() <= cap);
+    }
+
+    #[test]
+    fn nix_profile_updates_are_installed_from_the_app() {
+        let nix = UpdateState::Available {
+            version: "0.6.0".into(),
+            page_url: "https://example/r".into(),
+            plan: UpdatePlan::NixUpgrade,
+            can_install: true,
+        };
+        assert_eq!(install_action(&nix), InstallAction::Install);
     }
 
     #[test]

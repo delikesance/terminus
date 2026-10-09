@@ -209,11 +209,18 @@ pub fn parse_port(s: &str) -> Result<u16, String> {
 }
 
 fn valid_host(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 253
-        && s.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']')
-        })
+    let name = match s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        Some(literal) => {
+            return !literal.is_empty() && literal.parse::<std::net::Ipv6Addr>().is_ok()
+        }
+        None => s,
+    };
+    !name.is_empty()
+        && name.len() <= 253
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 // ---------------------------------------------------------------- form
@@ -980,6 +987,24 @@ mod tests {
 
     fn free(_: u16) -> bool {
         true
+    }
+
+    #[test]
+    fn valid_host_rejects_option_like_and_malformed_addresses() {
+        for ok in ["db.internal", "localhost", "10.0.0.1", "[::1]", "[fe80::1]"] {
+            assert!(valid_host(ok), "{ok}");
+        }
+        for bad in [
+            "-oProxyCommand=x",
+            "-h",
+            "a:b",
+            "[::1",
+            "::1]",
+            "[]",
+            "a[b]",
+        ] {
+            assert!(!valid_host(bad), "{bad}");
+        }
     }
 
     #[test]

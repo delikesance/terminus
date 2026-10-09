@@ -2212,6 +2212,18 @@ impl ApplicationHandler<EventPayload> for Application<'_> {
                                         return;
                                     }
                                     ChromeAction::SftpDelete => {
+                                        let screen = &mut route.window.screen;
+                                        let prompt = screen.sftp.as_ref().and_then(
+                                            crate::sftp_ui::ActiveSftp::delete_prompt,
+                                        );
+                                        if let Some(prompt) = prompt {
+                                            screen.chrome.open_confirm(prompt);
+                                            screen.mark_dirty();
+                                            route.request_redraw();
+                                        }
+                                        return;
+                                    }
+                                    ChromeAction::SftpDeleteConfirmed => {
                                         if let Some(s) = route.window.screen.sftp.as_mut()
                                         {
                                             s.remove_focused();

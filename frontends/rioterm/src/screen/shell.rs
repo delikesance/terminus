@@ -203,7 +203,7 @@ pub(super) fn ssh_shell(
         ]);
     }
 
-    args.push(destination);
+    args.extend(["--".into(), destination]);
 
     Ok((
         Shell {

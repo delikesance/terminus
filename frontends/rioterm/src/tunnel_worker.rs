@@ -423,7 +423,15 @@ impl TunnelRegistry {
                         events.push(TunnelEvent::Running(id.clone()));
                     }
                 }
-                Err(_) => gone.push(id.clone()),
+                Err(err) => {
+                    let _ = p.child.kill();
+                    let _ = p.child.wait();
+                    events.push(TunnelEvent::Exited {
+                        id: id.clone(),
+                        message: format!("Lost track of the ssh process: {err}"),
+                    });
+                    gone.push(id.clone());
+                }
             }
         }
         for id in gone {
@@ -1117,6 +1125,7 @@ mod tests {
             "/k",
             "-o",
             "IdentitiesOnly=yes",
+            "--",
             "me@example.com",
         ]
         .map(String::from)
@@ -1164,6 +1173,7 @@ mod tests {
             "me@example.com",
             "destination stays last"
         );
+        assert_eq!(args[args.len() - 2], "--", "options end before the host");
         assert!(args.contains(&"-N".to_string()));
         let joined = args.join(" ");
         assert!(joined.contains("ExitOnForwardFailure=yes"));

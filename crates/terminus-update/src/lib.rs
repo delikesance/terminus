@@ -9,9 +9,10 @@
 //!   binary in place;
 //! * Windows NSIS / MSI → [`Client::download_verified`] the matching installer
 //!   and [`launch_installer`] it (it upgrades in place, elevated via UAC);
-//! * `.deb` / `.rpm` → download the verified package and hand the user the one
-//!   command that installs it (system packages need root);
-//! * Nix, development builds, unknown layouts → notify only.
+//! * `.deb` / `.rpm` → download the verified package and install it through
+//!   polkit (`pkexec`), falling back to the one command the user can run;
+//! * Nix profile installs → `nix profile upgrade`;
+//! * other Nix setups, development builds, unknown layouts → notify only.
 //!
 //! Every download is checked against `checksums.txt`, whose minisign signature
 //! must verify with the key compiled into this binary ([`PUBLIC_KEY`]). A build
@@ -25,6 +26,10 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use sha2::Digest;
+
+mod system;
+
+pub use system::{nix_profile_launcher, nix_upgrade_argv, run_install, PackageManager};
 
 /// GitHub Releases "latest" endpoint for Terminus.
 pub const DEFAULT_ENDPOINT: &str =
@@ -145,6 +150,8 @@ impl Os {
 pub trait Probe {
     fn exists(&self, path: &Path) -> bool;
     fn dir_writable(&self, dir: &Path) -> bool;
+    /// Whether `exe` (in the Nix store) is what the user's Nix profile runs.
+    fn is_nix_profile_install(&self, exe: &Path) -> bool;
 }
 
 /// The real filesystem.
@@ -169,6 +176,10 @@ impl Probe for FsProbe {
             Err(_) => false,
         }
     }
+
+    fn is_nix_profile_install(&self, exe: &Path) -> bool {
+        nix_profile_launcher(exe).is_some()
+    }
 }
 
 /// How this copy of Terminus was installed (see `scripts/release.sh`).
@@ -183,7 +194,9 @@ pub enum InstallKind {
     Deb,
     /// `.rpm` (rpm owns the binary).
     Rpm,
-    /// Nix store (flake / `terminus.nix`).
+    /// Nix store, reached through the user's `nix profile`.
+    NixProfile,
+    /// Nix store otherwise (NixOS module, home-manager, flake run).
     Nix,
     /// NSIS setup wizard (`Uninstall.exe` next to the binary).
     WindowsNsis,
@@ -213,9 +226,14 @@ pub enum UpdatePlan {
     },
     /// Download the verified installer `asset` and run it.
     RunInstaller { asset: String, installer: Installer },
-    /// Download the verified package `asset` (a `{version}` pattern);
-    /// `command` installs it, `{}` standing for the downloaded path.
-    PackageFile { asset: String, command: String },
+    /// Download the verified package `asset` (a `{version}` pattern) and
+    /// install it with `manager`.
+    PackageFile {
+        asset: String,
+        manager: PackageManager,
+    },
+    /// Upgrade the user's Nix profile entry; nothing to download.
+    NixUpgrade,
     /// Nothing to download; `hint` says how to update.
     Manual { hint: String },
 }
@@ -235,7 +253,11 @@ pub fn detect_install(exe: &Path, os: Os, probe: &dyn Probe) -> InstallKind {
         return InstallKind::Dev;
     }
     if text.starts_with("/nix/store/") {
-        return InstallKind::Nix;
+        return if probe.is_nix_profile_install(exe) {
+            InstallKind::NixProfile
+        } else {
+            InstallKind::Nix
+        };
     }
     let dir = exe.parent().unwrap_or(Path::new("/"));
     match os {
@@ -307,12 +329,13 @@ pub fn plan(kind: InstallKind) -> UpdatePlan {
         },
         InstallKind::Deb => UpdatePlan::PackageFile {
             asset: DEB_ASSET.into(),
-            command: "sudo apt install {}".into(),
+            manager: PackageManager::Apt,
         },
         InstallKind::Rpm => UpdatePlan::PackageFile {
             asset: RPM_ASSET.into(),
-            command: "sudo dnf install {}".into(),
+            manager: PackageManager::Dnf,
         },
+        InstallKind::NixProfile => UpdatePlan::NixUpgrade,
         InstallKind::Nix => UpdatePlan::Manual {
             hint: "Installed with Nix: update your flake input (or terminus.nix) and rebuild"
                 .into(),

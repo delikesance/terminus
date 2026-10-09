@@ -674,6 +674,16 @@ mod tests {
     }
 
     #[test]
+    fn ssh_shell_ends_options_before_the_destination() {
+        let mut host = host_row("gssapi");
+        host.hostname = "-oProxyCommand=x".into();
+        host.username = String::new();
+        let (shell, _) = ssh_shell(&host, None, None, None).expect("shell");
+        let n = shell.args.len();
+        assert_eq!(&shell.args[n - 2..], ["--", "-oProxyCommand=x"]);
+    }
+
+    #[test]
     fn gssapi_ssh_shell_sets_gssapi_options_without_identity_file() {
         let host = host_row("gssapi");
         let (shell, env) = ssh_shell(&host, None, None, None).expect("gssapi shell");

@@ -213,6 +213,11 @@ impl Route<'_> {
             ChromeAction::DeleteGroup(id) => {
                 self.window.screen.host_store.delete_group(&id)
             }
+            ChromeAction::SftpDeleteConfirmed => {
+                if let Some(sftp) = self.window.screen.sftp.as_mut() {
+                    sftp.remove_focused();
+                }
+            }
             _ => {}
         }
         self.request_overlay_redraw();

@@ -129,6 +129,8 @@ pub enum ChromeAction {
     SftpRename,
     /// SFTP context: delete selection.
     SftpDelete,
+    /// The SFTP delete confirmation was accepted.
+    SftpDeleteConfirmed,
     /// SFTP context: transfer selection to the other pane.
     SftpTransfer,
     /// SFTP context: edit remote file via temp + default app.
@@ -413,6 +415,7 @@ impl Chrome {
         match action {
             ConfirmAction::DeleteHost(id) => ChromeAction::DeleteHost(id),
             ConfirmAction::DeleteGroup(id) => ChromeAction::DeleteGroup(id),
+            ConfirmAction::SftpDelete => ChromeAction::SftpDeleteConfirmed,
             ConfirmAction::Quit => ChromeAction::Consumed,
         }
     }
@@ -2137,6 +2140,36 @@ mod tests {
             chrome.handle_confirm_key(DialogKey::Enter),
             Some(ChromeAction::DeleteGroup("g".to_string()))
         );
+    }
+
+    #[test]
+    fn sftp_delete_runs_once_on_confirm_and_never_on_cancel() {
+        let mut chrome = chrome_with_hosts(1);
+        chrome.open_confirm(ConfirmPrompt::sftp_delete("logs", true));
+        let prompt = chrome.confirm.as_ref().unwrap();
+        assert_eq!(prompt.spec.title, "Delete logs?");
+        assert!(prompt.spec.body.contains("everything inside"));
+        assert_eq!(
+            chrome.handle_confirm_key(DialogKey::Enter),
+            Some(ChromeAction::Consumed),
+            "the default focus is Cancel"
+        );
+        assert!(chrome.confirm.is_none());
+
+        chrome.open_confirm(ConfirmPrompt::sftp_delete("a.txt", false));
+        assert_eq!(
+            chrome.handle_confirm_key(DialogKey::Escape),
+            Some(ChromeAction::Consumed)
+        );
+        assert!(chrome.confirm.is_none());
+
+        chrome.open_confirm(ConfirmPrompt::sftp_delete("a.txt", false));
+        chrome.handle_confirm_key(DialogKey::Tab);
+        assert_eq!(
+            chrome.handle_confirm_key(DialogKey::Enter),
+            Some(ChromeAction::SftpDeleteConfirmed)
+        );
+        assert_eq!(chrome.handle_confirm_key(DialogKey::Enter), None);
     }
 
     #[test]

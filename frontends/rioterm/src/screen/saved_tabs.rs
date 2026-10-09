@@ -34,6 +34,9 @@ pub(super) struct SavedTabsState {
     owner: bool,
     checked_at: Option<Instant>,
     written: Option<SavedTabs>,
+    /// Saved tabs that still need the vault: kept in every write so a
+    /// cancelled unlock does not erase them.
+    unrestored: Vec<SavedTab>,
 }
 
 impl SavedTabsState {
@@ -88,6 +91,7 @@ impl Screen<'_> {
             })
             .collect();
         SavedTabs::new(tabs, manager.current_index())
+            .with_unrestored(&self.saved_tabs.unrestored)
     }
 
     /// Write the tabs if they changed since the last write. Called from
@@ -222,6 +226,7 @@ impl Screen<'_> {
             }
             opened.push(Some(index));
         }
+        self.saved_tabs.unrestored = locked.clone();
         if !locked.is_empty() {
             self.open_vault_unlock_for(terminus_ui::PendingVaultAction::RestoreTabs(
                 locked,

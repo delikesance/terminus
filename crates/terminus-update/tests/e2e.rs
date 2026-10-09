@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use terminus_update::{
     cleanup_after_update, detect_install, install, install_renaming_aside, plan, Client,
-    InstallKind, Installer, Os, Probe, UpdateError, UpdatePlan, WINDOWS_BINARY,
-    WINDOWS_ZIP,
+    InstallKind, Installer, Os, PackageManager, Probe, UpdateError, UpdatePlan,
+    WINDOWS_BINARY, WINDOWS_ZIP,
 };
 
 type Routes = Arc<Mutex<HashMap<String, Vec<u8>>>>;
@@ -373,6 +373,7 @@ fn unsigned_release_is_rejected() {
 struct FakeProbe {
     files: Vec<&'static str>,
     writable: Vec<&'static str>,
+    nix_profile: bool,
 }
 
 impl Probe for FakeProbe {
@@ -384,6 +385,9 @@ impl Probe for FakeProbe {
         let p = dir.to_string_lossy().replace('\\', "/");
         self.writable.iter().any(|f| *f == p)
     }
+    fn is_nix_profile_install(&self, _exe: &Path) -> bool {
+        self.nix_profile
+    }
 }
 
 #[test]
@@ -391,6 +395,7 @@ fn install_kind_follows_how_terminus_was_installed() {
     let none = FakeProbe {
         files: vec![],
         writable: vec![],
+        nix_profile: false,
     };
     let p = |s: &str| Path::new(s).to_path_buf();
 
@@ -406,9 +411,23 @@ fn install_kind_follows_how_terminus_was_installed() {
         detect_install(&p("/nix/store/abc-terminus/bin/terminus"), Os::Linux, &none),
         InstallKind::Nix
     );
+    let profile = FakeProbe {
+        files: vec![],
+        writable: vec![],
+        nix_profile: true,
+    };
+    assert_eq!(
+        detect_install(
+            &p("/nix/store/abc-terminus/bin/terminus"),
+            Os::Linux,
+            &profile
+        ),
+        InstallKind::NixProfile
+    );
     let dpkg = FakeProbe {
         files: vec!["/var/lib/dpkg/info/terminus.list"],
         writable: vec![],
+        nix_profile: false,
     };
     assert_eq!(
         detect_install(&p("/usr/bin/terminus"), Os::Linux, &dpkg),
@@ -417,6 +436,7 @@ fn install_kind_follows_how_terminus_was_installed() {
     let rpmdb = FakeProbe {
         files: vec!["/var/lib/rpm"],
         writable: vec![],
+        nix_profile: false,
     };
     assert_eq!(
         detect_install(&p("/usr/bin/terminus"), Os::Linux, &rpmdb),
@@ -425,6 +445,7 @@ fn install_kind_follows_how_terminus_was_installed() {
     let home = FakeProbe {
         files: vec![],
         writable: vec!["/home/me/.local/opt/terminus"],
+        nix_profile: false,
     };
     assert_eq!(
         detect_install(
@@ -443,6 +464,7 @@ fn install_kind_follows_how_terminus_was_installed() {
     let nsis = FakeProbe {
         files: vec!["C:/Program Files/Terminus/Uninstall.exe"],
         writable: vec![],
+        nix_profile: false,
     };
     assert_eq!(
         detect_install(
@@ -469,6 +491,7 @@ fn install_kind_follows_how_terminus_was_installed() {
     let per_user = FakeProbe {
         files: vec!["C:/Users/me/AppData/Local/Programs/Terminus/Uninstall.exe"],
         writable: vec!["C:/Users/me/AppData/Local/Programs/Terminus"],
+        nix_profile: false,
     };
     let exe = p("C:/Users/me/AppData/Local/Programs/Terminus/terminus.exe");
     assert_eq!(
@@ -478,6 +501,7 @@ fn install_kind_follows_how_terminus_was_installed() {
     let portable = FakeProbe {
         files: vec![],
         writable: vec!["D:/tools"],
+        nix_profile: false,
     };
     assert!(matches!(
         detect_install(&p("D:/tools/terminus.exe"), Os::Windows, &portable),
@@ -615,15 +639,25 @@ fn each_install_kind_gets_a_matching_plan() {
             ..
         }
     ));
-    let UpdatePlan::PackageFile { command, .. } = plan(InstallKind::Deb) else {
-        panic!()
-    };
-    assert!(command.contains("apt install"));
-    let UpdatePlan::PackageFile { command, .. } = plan(InstallKind::Rpm) else {
-        panic!()
-    };
-    assert!(command.contains("dnf install"));
+    assert!(matches!(
+        plan(InstallKind::Deb),
+        UpdatePlan::PackageFile {
+            manager: PackageManager::Apt,
+            ..
+        }
+    ));
+    assert!(matches!(
+        plan(InstallKind::Rpm),
+        UpdatePlan::PackageFile {
+            manager: PackageManager::Dnf,
+            ..
+        }
+    ));
     assert!(matches!(plan(InstallKind::Nix), UpdatePlan::Manual { .. }));
+    assert!(matches!(
+        plan(InstallKind::NixProfile),
+        UpdatePlan::NixUpgrade
+    ));
     assert!(matches!(plan(InstallKind::Dev), UpdatePlan::Manual { .. }));
 }
 
