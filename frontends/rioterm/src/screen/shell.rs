@@ -133,7 +133,16 @@ pub(super) fn ssh_shell(
     // usually `xterm-rio`, which remote hosts have no terminfo for: readline
     // then can't move the cursor and history recall piles lines on top of
     // each other. Advertise the entry every remote ships instead.
-    let mut env = vec![("TERM".to_string(), REMOTE_TERM.to_string())];
+    //
+    // `COLORTERM` is how a remote program learns this terminal does
+    // truecolor. `ssh` only sends it when asked (the server must also list it
+    // in `AcceptEnv`); without it, programs such as chalk/rich fall back to the
+    // 256-color palette and the same UI looks flat compared with a local tab.
+    push_o_options(&mut args, COLORTERM_SSH_OPTIONS);
+    let mut env = vec![
+        ("TERM".to_string(), REMOTE_TERM.to_string()),
+        ("COLORTERM".to_string(), "truecolor".to_string()),
+    ];
     let mut secrets: Vec<std::path::PathBuf> = Vec::new();
 
     if let Some(password) = password {
@@ -223,6 +232,9 @@ pub(super) fn ssh_shell(
 /// Reconnect button (`Screen::note_child_exit`).
 pub(super) const KEEPALIVE_SSH_OPTIONS: &[&str] =
     &["ServerAliveInterval=15", "ServerAliveCountMax=3"];
+
+/// OpenSSH `-o` value that asks ssh to send `COLORTERM` to the remote.
+pub(super) const COLORTERM_SSH_OPTIONS: &[&str] = &["SendEnv=COLORTERM"];
 
 /// OpenSSH `-o` values that force Kerberos `gssapi-with-mic` for a session.
 pub(super) const GSSAPI_SSH_OPTIONS: &[&str] = &[
