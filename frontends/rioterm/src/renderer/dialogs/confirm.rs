@@ -8,10 +8,9 @@ use terminus_ui::components::overlay::{self as ov, DialogFocus, DialogKind};
 use terminus_ui::components::selection::ControlState;
 use terminus_ui::confirm::{ConfirmLayout, ConfirmSpec};
 use terminus_ui::theme::ChromeTheme;
-use terminus_ui::tokens::{font_size, radius};
+use terminus_ui::tokens::font_size;
 
-use super::{dialog_layer, paint_shadow, DEPTH, ORDER};
-use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
+use super::{dialog_layer, paint_dialog_frame};
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
 /// Pointer / keyboard state of one open dialog.
@@ -33,19 +32,7 @@ pub fn paint_confirm(
     glyphs: bool,
 ) {
     let l = &layout.dialog;
-    paint_flat(sugarloaf, &l.scrim, ov::SCRIM, DEPTH - 0.02, ORDER);
-    paint_shadow(sugarloaf, &l.dialog, radius::DIALOG, DEPTH);
-    paint_surface_stroke(
-        sugarloaf,
-        &l.dialog,
-        theme.dialog,
-        Some(theme.dialog_line),
-        radius::DIALOG,
-        1.0,
-        DEPTH + 0.02,
-        ORDER,
-        false,
-    );
+    paint_dialog_frame(sugarloaf, theme, Some(&l.scrim), &l.dialog);
     if !glyphs {
         return;
     }

@@ -5,7 +5,7 @@
 //! geometry (`field_input_in_card` + eye slot).
 
 use crate::components::input::{FieldPaint, TextDraft, TextEdit};
-use crate::components::overlay::{action_width, wrap_text};
+use crate::components::overlay::{action_row, action_width, wrap_text};
 use crate::confirm::{estimate_text_width, BODY_FONT, BUTTON_ADVANCE, BUTTON_FONT};
 use crate::geom::Rect;
 
@@ -566,13 +566,14 @@ impl VaultUnlockLayout {
 
     /// `(cancel, confirm)` rects for the given labels.
     pub fn button_rects(&self, cancel: &str, confirm: &str) -> (Rect, Rect) {
-        let d = self.rect();
-        let y = d.bottom() - PAD - BUTTON_HEIGHT;
-        let cw = button_width(confirm);
-        let kw = button_width(cancel);
-        let confirm_r = Rect::new(d.right() - PAD - cw, y, cw, BUTTON_HEIGHT);
-        let cancel_r = Rect::new(confirm_r.x - BUTTON_GAP - kw, y, kw, BUTTON_HEIGHT);
-        (cancel_r, confirm_r)
+        action_row(
+            &self.rect(),
+            PAD,
+            BUTTON_HEIGHT,
+            BUTTON_GAP,
+            button_width(cancel),
+            button_width(confirm),
+        )
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> VaultUnlockHit {

@@ -185,18 +185,13 @@ pub fn dialog_layout_at(
     let option = kind
         .has_option()
         .then(|| Rect::new(inner_x, body.bottom() + DIALOG_GAP, inner_w, OPTION_HEIGHT));
-    let btn_y = dialog.bottom() - DIALOG_PAD - ACTION_HEIGHT;
-    let confirm = Rect::new(
-        dialog.right() - DIALOG_PAD - confirm_w,
-        btn_y,
-        confirm_w,
+    let (cancel, confirm) = action_row(
+        &dialog,
+        DIALOG_PAD,
         ACTION_HEIGHT,
-    );
-    let cancel = Rect::new(
-        confirm.x - ACTION_GAP - cancel_w,
-        btn_y,
+        ACTION_GAP,
         cancel_w,
-        ACTION_HEIGHT,
+        confirm_w,
     );
     DialogLayout {
         scrim: Rect::new(0.0, 0.0, window.0, window.1),
@@ -207,6 +202,21 @@ pub fn dialog_layout_at(
         cancel,
         confirm,
     }
+}
+
+/// `(cancel, confirm)` buttons right-aligned on the bottom edge of `dialog`.
+pub fn action_row(
+    dialog: &Rect,
+    pad: f32,
+    height: f32,
+    gap: f32,
+    cancel_w: f32,
+    confirm_w: f32,
+) -> (Rect, Rect) {
+    let y = dialog.bottom() - pad - height;
+    let confirm = Rect::new(dialog.right() - pad - confirm_w, y, confirm_w, height);
+    let cancel = Rect::new(confirm.x - gap - cancel_w, y, cancel_w, height);
+    (cancel, confirm)
 }
 
 /// Greedy word wrap using a caller supplied width measure. A word wider
@@ -743,6 +753,13 @@ impl Palette {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn action_row_right_aligns_confirm_and_gaps_cancel() {
+        let dialog = Rect::new(100.0, 50.0, 400.0, 300.0);
+        let (cancel, confirm) = action_row(&dialog, 30.0, 44.0, 10.0, 70.0, 90.0);
+        assert_eq!(confirm, Rect::new(380.0, 276.0, 90.0, 44.0));
+        assert_eq!(cancel, Rect::new(300.0, 276.0, 70.0, 44.0));
+    }
     use super::*;
 
     fn fake_measure(s: &str) -> f32 {
