@@ -2,8 +2,8 @@
 //! Supports dynamic text fields while strictly retaining the exact visual layout
 //! (paddings, corner radii, and button placements) of the original Host modal.
 
+use crate::components::input::{TextDraft, TextMoveKind};
 use crate::geom::Rect;
-use crate::text_field::{TextDraft, TextMoveKind};
 
 pub const WIDTH: f32 = 520.0;
 pub const PAD: f32 = 28.0;

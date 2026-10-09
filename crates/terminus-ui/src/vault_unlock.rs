@@ -4,10 +4,10 @@
 //! vault is still locked. The passphrase row reuses the Settings field-card
 //! geometry (`field_input_in_card` + eye slot).
 
+use crate::components::input::{FieldPaint, TextDraft, TextEdit};
 use crate::components::overlay::{action_width, wrap_text};
 use crate::confirm::{estimate_text_width, BODY_FONT, BUTTON_ADVANCE, BUTTON_FONT};
 use crate::geom::Rect;
-use crate::text_field::{FieldPaint, TextDraft, TextEdit};
 
 pub const WIDTH: f32 = 400.0;
 pub const PAD: f32 = 32.0;

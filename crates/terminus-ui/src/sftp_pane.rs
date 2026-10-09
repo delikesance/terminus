@@ -5,11 +5,11 @@
 //!
 //! Either side may be local FS or a remote host (`SftpBackend`).
 
+use crate::components::input::{FieldPaint, TextDraft};
 use crate::components::overlay::{DialogFocus, DialogKey, DialogKind};
 use crate::confirm::{ConfirmLayout, ConfirmSpec};
 use crate::geom::Rect;
 use crate::settings::{field_input_in_card, FIELD_CARD_HEIGHT};
-use crate::text_field::{FieldPaint, TextDraft};
 
 /// Row height for file entries.
 pub const ROW_HEIGHT: f32 = 30.0;

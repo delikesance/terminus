@@ -1,7 +1,7 @@
 //! The add-snippet editor, using the generic DialogForm component.
 
+use crate::components::input::TextMoveKind;
 use crate::dialog_form::{DialogFormLayout, DynamicFormHit, DynamicFormState};
-use crate::text_field::TextMoveKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormInput {

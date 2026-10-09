@@ -38,7 +38,6 @@ pub mod sftp_pane;
 pub mod shell;
 pub mod sidebar;
 pub mod snippets;
-pub mod text_field;
 pub mod theme;
 pub mod tokens;
 pub mod vault_unlock;
@@ -51,6 +50,7 @@ pub use add_host::{
 };
 pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
 pub use chrome::{Chrome, ChromeAction, ChromeCursor, ModalPaintLayer};
+pub use components::input::{FieldPaint, TextDraft, TextEdit, TextMoveKind};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
 };
@@ -84,7 +84,6 @@ pub use sidebar::{
     PanelHit, RenameDraft, Row, HOST_DRAG_THRESHOLD,
 };
 pub use snippets::{SnippetHit, SnippetItem, SnippetsPanel};
-pub use text_field::{FieldPaint, TextDraft, TextEdit, TextMoveKind};
 pub use theme::ChromeTheme;
 pub use vault_unlock::{
     PendingVaultAction, VaultUnlockHit, VaultUnlockLayout, VaultUnlockPrompt,

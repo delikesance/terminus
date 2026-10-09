@@ -1,7 +1,7 @@
 //! Settings modal: SSH Keys + Remote SQL Sync.
 
+use crate::components::input::{FieldPaint, TextDraft};
 use crate::geom::Rect;
-use crate::text_field::{FieldPaint, TextDraft};
 
 pub const MAX_WIDTH: f32 = 768.0;
 pub const SIDEBAR_WIDTH: f32 = 224.0;
