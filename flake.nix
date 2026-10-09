@@ -101,7 +101,6 @@
               pkgs.docker-client
               pkgs.python3
               pkgs.binutils
-              pkgs.minisign
               pkgs.nsis
               pkgs.msitools
               pkgs.p7zip

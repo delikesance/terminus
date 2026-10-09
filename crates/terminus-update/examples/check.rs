@@ -23,7 +23,6 @@ fn main() {
             for asset in &release.assets {
                 println!("  {} ({} bytes)", asset.name, asset.size);
             }
-            println!("signed installs enabled: {}", client.can_install());
         }
         Ok(None) => println!("{current} is up to date"),
         Err(err) => {

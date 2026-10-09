@@ -358,7 +358,7 @@ for requirements and regression checks.
 | Fedora / RHEL | `terminus-*.rpm` |
 | NixOS (binary) | `terminus.nix` — `pkgs.callPackage` of the Linux tarball |
 | Windows | `terminus-setup-x86_64.exe` (NSIS), `terminus-x86_64.msi` (both per-user, no admin), `terminus-windows-x86_64.zip` (portable; what the app updates itself from) |
-| All | `checksums.txt` and its minisign signature `checksums.txt.minisig` |
+| All | `checksums.txt` |
 
 The tag comes from the `Cargo.toml` version of the checkout you run it in,
 so bump it (and merge the bump) before releasing: if that tag already has a
@@ -369,7 +369,7 @@ The release tag must equal `v` + the `Cargo.toml` version (`release.sh` refuses
 otherwise): the in-app updater compares the two, so a mismatch would make every
 install download the release again.
 
-### Signed updates
+### Updates
 
 Terminus checks the latest GitHub Release when it starts, before its window
 opens (two seconds at most: offline or slow networks just open the app), and
@@ -377,24 +377,9 @@ then daily (`crates/terminus-update`, `frontends/rioterm/src/updater.rs`).
 When a copy can replace its own binary, a newer release found at launch is
 installed right away: the window shows "Updating Terminus to X" with a
 progress bar, then the new version starts. It installs
-nothing unless `checksums.txt.minisig` verifies against the public key compiled
-into the binary and the downloaded file matches its SHA-256 in `checksums.txt`.
-
-One-time key setup (the secret key never leaves the release machine):
-
-```bash
-minisign -G -p terminus.pub -s ~/.minisign/terminus.key   # pick a password
-cp terminus.pub crates/terminus-update/update-public-key.txt
-git add crates/terminus-update/update-public-key.txt       # commit, then release
-```
-
-`release.sh` then signs every release with
-[`scripts/sign-release.sh`](scripts/sign-release.sh) (key path:
-`TERMINUS_SIGNING_KEY`, default `~/.minisign/terminus.key`) and checks the
-signature against the committed key, so a wrong key cannot ship. While
-`update-public-key.txt` is empty, releases are published unsigned and the app
-only announces new versions. Keep the secret key backed up: builds that trust a
-key can only be updated by releases signed with it.
+nothing unless the downloaded file matches its SHA-256 in `checksums.txt`.
+Releases are not signed: integrity rests on that checksum and on the GitHub
+release channel.
 
 What an installed copy does with a new version:
 
