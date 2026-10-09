@@ -19,6 +19,7 @@ use rio_backend::sugarloaf::text::{CoverageMask, DrawOpts};
 use rio_backend::sugarloaf::Sugarloaf;
 
 use terminus_ui::chrome::Chrome;
+use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonState};
 use terminus_ui::context_menu::ContextMenu;
 use terminus_ui::geom::Rect;
 use terminus_ui::icons::{Cmd, Icon, IconPlacement, LUCIDE_STROKE};
@@ -26,6 +27,9 @@ use terminus_ui::loading::{breath_ring, orbit_dots};
 use terminus_ui::os_icons::OsGlyph;
 use terminus_ui::sidebar;
 use terminus_ui::theme::ChromeTheme;
+
+use super::components::button::paint_button_in_rect;
+use super::components::Layer;
 
 /// Chrome paint orders. The grid is 3 and the overlays are 20.
 const ORDER_CONTENT: u8 = 7;
@@ -890,28 +894,38 @@ fn render_settings_modal(
                     } else {
                         "Generate"
                     };
-                    paint_chrome_button(
+                    paint_button_in_rect(
                         sugarloaf,
                         theme,
-                        terminus_ui::ButtonSpec::primary(gen),
+                        &gen,
+                        ButtonKind::Primary,
+                        ButtonSize::Small,
+                        ButtonState::Default,
                         gen_label,
-                        ROW_SUB_SIZE,
-                        DEPTH_DIALOG + 0.04,
-                        ORDER_DIALOG,
+                        Layer {
+                            order: ORDER_DIALOG,
+                            depth: DEPTH_DIALOG + 0.04,
+                            backdrop: theme.dialog,
+                        },
                     );
                 }
                 if let Some(cancel) = chrome
                     .settings
                     .key_draft_cancel_rect(window_width, window_height)
                 {
-                    paint_chrome_button(
+                    paint_button_in_rect(
                         sugarloaf,
                         theme,
-                        terminus_ui::ButtonSpec::secondary(cancel),
+                        &cancel,
+                        ButtonKind::Secondary,
+                        ButtonSize::Small,
+                        ButtonState::Default,
                         "Cancel",
-                        ROW_SUB_SIZE,
-                        DEPTH_DIALOG + 0.04,
-                        ORDER_DIALOG,
+                        Layer {
+                            order: ORDER_DIALOG,
+                            depth: DEPTH_DIALOG + 0.04,
+                            backdrop: theme.dialog,
+                        },
                     );
                 }
                 if let Some(banner) = chrome
@@ -1300,36 +1314,51 @@ fn render_settings_modal(
                 .settings
                 .test_sync_button_rect(window_width, window_height);
 
-            paint_chrome_button(
+            paint_button_in_rect(
                 sugarloaf,
                 theme,
-                terminus_ui::ButtonSpec::secondary(unlock),
+                &unlock,
+                ButtonKind::Secondary,
+                ButtonSize::Small,
+                ButtonState::Default,
                 "Unlock Vault",
-                ROW_SUB_SIZE,
-                DEPTH_DIALOG + 0.04,
-                ORDER_DIALOG,
+                Layer {
+                    order: ORDER_DIALOG,
+                    depth: DEPTH_DIALOG + 0.04,
+                    backdrop: theme.dialog,
+                },
             );
-            paint_chrome_button(
+            paint_button_in_rect(
                 sugarloaf,
                 theme,
-                terminus_ui::ButtonSpec::primary(test),
+                &test,
+                ButtonKind::Primary,
+                ButtonSize::Small,
+                ButtonState::Default,
                 "Test Sync",
-                ROW_SUB_SIZE,
-                DEPTH_DIALOG + 0.04,
-                ORDER_DIALOG,
+                Layer {
+                    order: ORDER_DIALOG,
+                    depth: DEPTH_DIALOG + 0.04,
+                    backdrop: theme.dialog,
+                },
             );
             if let Some(forget) = chrome
                 .settings
                 .forget_passphrase_button_rect(window_width, window_height)
             {
-                paint_chrome_button(
+                paint_button_in_rect(
                     sugarloaf,
                     theme,
-                    terminus_ui::ButtonSpec::secondary(forget),
+                    &forget,
+                    ButtonKind::Secondary,
+                    ButtonSize::Small,
+                    ButtonState::Default,
                     "Forget passphrase",
-                    ROW_SUB_SIZE,
-                    DEPTH_DIALOG + 0.04,
-                    ORDER_DIALOG,
+                    Layer {
+                        order: ORDER_DIALOG,
+                        depth: DEPTH_DIALOG + 0.04,
+                        backdrop: theme.dialog,
+                    },
                 );
             }
 
@@ -1462,14 +1491,19 @@ fn render_settings_modal(
         ORDER_DIALOG,
     );
     let done = chrome.settings.done_rect(window_width, window_height);
-    paint_chrome_button(
+    paint_button_in_rect(
         sugarloaf,
         theme,
-        terminus_ui::ButtonSpec::secondary(done),
+        &done,
+        ButtonKind::Secondary,
+        ButtonSize::Small,
+        ButtonState::Default,
         "Done",
-        ROW_SUB_SIZE,
-        DEPTH_DIALOG + 0.04,
-        ORDER_DIALOG,
+        Layer {
+            order: ORDER_DIALOG,
+            depth: DEPTH_DIALOG + 0.04,
+            backdrop: theme.dialog,
+        },
     );
 }
 
@@ -2279,8 +2313,11 @@ fn paint_dashed_cta(
         depth + 0.01,
         order,
     );
-    let badge =
-        terminus_ui::dashed_cta_badge(*cta, sidebar::BADGE_TILE, sidebar::CARD_PAD);
+    let badge = terminus_ui::components::button::dashed_cta_badge(
+        *cta,
+        sidebar::BADGE_TILE,
+        sidebar::CARD_PAD,
+    );
     paint_bordered_badge(
         sugarloaf,
         &badge,
@@ -2397,14 +2434,19 @@ pub(crate) fn paint_new_group_form(
         );
     }
 
-    paint_chrome_button(
+    paint_button_in_rect(
         sugarloaf,
         theme,
-        terminus_ui::ButtonSpec::primary(create),
+        &create,
+        ButtonKind::Primary,
+        ButtonSize::Small,
+        ButtonState::Default,
         if labels { "Create" } else { "" },
-        11.0,
-        DEPTH_CONTENT + 0.03,
-        ORDER_CONTENT,
+        Layer {
+            order: ORDER_CONTENT,
+            depth: DEPTH_CONTENT + 0.03,
+            backdrop: theme.dialog,
+        },
     );
 
     if !labels {
@@ -2602,52 +2644,6 @@ fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia
     b.cubic_to(x, y, x, y, x + r, y);
     b.close();
     b.finish()
-}
-
-/// Paint a chrome button using [`terminus_ui::ButtonSpec`] centering math.
-fn paint_chrome_button(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    spec: terminus_ui::ButtonSpec,
-    label: &str,
-    font_size: f32,
-    depth: f32,
-    order: u8,
-) {
-    let rect = spec.rect;
-    if spec.has_border() {
-        paint_surface(
-            sugarloaf,
-            &rect,
-            spec.fill(theme.accent, theme.button_bg),
-            Some(theme.panel_border),
-            spec.radius,
-            depth,
-            order,
-            false,
-        );
-    } else {
-        paint_surface(
-            sugarloaf,
-            &rect,
-            spec.fill(theme.accent, theme.button_bg),
-            None,
-            spec.radius,
-            depth,
-            order,
-            false,
-        );
-    }
-    if label.is_empty() {
-        return;
-    }
-    let color = spec.label_color([255, 255, 255, 255], theme.text, theme.text_muted);
-    let bold = matches!(spec.kind, terminus_ui::ButtonKind::Primary);
-    let text_w = sugarloaf
-        .text_mut()
-        .measure(label, &opts(font_size, color, bold));
-    let (x, y) = terminus_ui::centered_label_origin(rect, text_w, font_size);
-    draw_text(sugarloaf, x, y, label, font_size, color, bold);
 }
 
 /// Draw a Lucide icon.

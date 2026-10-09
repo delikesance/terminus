@@ -18,7 +18,6 @@
 pub mod add_host;
 pub mod add_snippet;
 pub mod anim;
-pub mod button;
 pub mod chrome;
 pub mod components;
 pub mod confirm;
@@ -51,7 +50,6 @@ pub use add_host::{
     FormInput, FormOutcome, HostFormValues, AUTH_METHODS, BASE_FIELDS, STEPS,
 };
 pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
-pub use button::{centered_label_origin, dashed_cta_badge, ButtonKind, ButtonSpec};
 pub use chrome::{Chrome, ChromeAction, ChromeCursor, ModalPaintLayer};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
