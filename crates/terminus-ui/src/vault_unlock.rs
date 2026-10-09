@@ -40,6 +40,10 @@ pub const MIN_PASSPHRASE_CHARS: usize = 8;
 pub enum PendingVaultAction {
     OpenHost(String),
     AddHostSession(String),
+    /// Open every host of a group (group id).
+    OpenGroup(String),
+    /// Replace a dead pane in place (route id).
+    ReconnectSession(usize),
     SubmitHostForm,
     /// Retry saving the Settings "New SSH Key" draft (keys are sealed).
     SaveSshKey,
@@ -59,7 +63,11 @@ pub enum PendingVaultAction {
 impl PendingVaultAction {
     pub fn subtitle(&self) -> &'static str {
         match self {
-            Self::OpenHost(_) | Self::AddHostSession(_) | Self::OpenSftp { .. } => {
+            Self::OpenHost(_)
+            | Self::AddHostSession(_)
+            | Self::OpenGroup(_)
+            | Self::ReconnectSession(_)
+            | Self::OpenSftp { .. } => {
                 "Enter your vault passphrase to use the saved SSH password."
             }
             Self::SubmitHostForm => {
@@ -700,6 +708,19 @@ mod tests {
             prompt.take_pending_on_success(),
             Some(PendingVaultAction::RestoreTabs(tabs))
         );
+    }
+
+    #[test]
+    fn group_and_reconnect_actions_round_trip_through_the_prompt() {
+        for action in [
+            PendingVaultAction::OpenGroup("g1".into()),
+            PendingVaultAction::ReconnectSession(7),
+        ] {
+            let mut prompt = VaultUnlockPrompt::default();
+            prompt.open(action.clone());
+            assert!(prompt.subtitle().contains("saved SSH password"));
+            assert_eq!(prompt.take_pending_on_success(), Some(action));
+        }
     }
 
     #[test]

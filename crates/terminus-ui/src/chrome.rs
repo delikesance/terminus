@@ -113,6 +113,10 @@ pub enum ChromeAction {
     RenameHost(String),
     /// Begin renaming a host group (context menu).
     RenameGroup(String),
+    /// Open a session on every host of a group (context menu).
+    OpenGroup(String),
+    /// Close the sessions of every host of a group (context menu).
+    CloseGroup(String),
     /// Commit an inline rename with the draft name.
     CommitRename {
         id: String,
@@ -755,6 +759,8 @@ impl Chrome {
                     }
                     Some(ContextAction::RenameHost(id)) => ChromeAction::RenameHost(id),
                     Some(ContextAction::RenameGroup(id)) => ChromeAction::RenameGroup(id),
+                    Some(ContextAction::OpenGroup(id)) => ChromeAction::OpenGroup(id),
+                    Some(ContextAction::CloseGroup(id)) => ChromeAction::CloseGroup(id),
                     Some(ContextAction::RenameSession(tab)) => {
                         self.shell.begin_rename(tab);
                         ChromeAction::Consumed
@@ -2436,6 +2442,40 @@ mod tests {
         let release = chrome.handle_release(800.0, row.x + 20.0, row.y + 20.0);
         assert_eq!(release, ChromeAction::OpenHost("id-1".to_string()));
         assert!(chrome.panel.host_drag.is_none());
+    }
+
+    #[test]
+    fn group_menu_open_and_close_all_reach_the_app() {
+        let group_row = Row::Group {
+            id: "g1".to_string(),
+            name: "jeremy".to_string(),
+            host_count: 2,
+            session_count: 0,
+            collapsed: false,
+        };
+        for (item, expected) in [
+            (0, ChromeAction::OpenGroup("g1".to_string())),
+            (1, ChromeAction::CloseGroup("g1".to_string())),
+        ] {
+            let mut chrome = Chrome::default();
+            chrome.set_rows(vec![Row::Section("Hosts".to_string()), group_row.clone()]);
+            let card = chrome.panel.card_rect(0.0, 1);
+            chrome.handle_context_press(
+                1200.0,
+                800.0,
+                card.x + 20.0,
+                card.y + card.height / 2.0,
+                false,
+            );
+            let rect = chrome
+                .context_menu
+                .as_ref()
+                .expect("group menu open")
+                .item_rect(item)
+                .unwrap();
+            let action = chrome.handle_press(1200.0, 800.0, rect.x + 4.0, rect.y + 4.0);
+            assert_eq!(action, expected);
+        }
     }
 
     #[test]

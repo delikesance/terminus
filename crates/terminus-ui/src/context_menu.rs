@@ -40,6 +40,10 @@ pub enum ContextAction {
     RenameHost(String),
     /// Begin renaming a host group.
     RenameGroup(String),
+    /// Open a session on every host of a group.
+    OpenGroup(String),
+    /// Close every session opened from the hosts of a group.
+    CloseGroup(String),
     /// Begin renaming the session pill of this tab index.
     RenameSession(usize),
     /// Close the session of this tab index.
@@ -221,14 +225,16 @@ impl ContextMenu {
         Self::open(x, y, items)
     }
 
-    /// Group header context: rename or delete the group.
+    /// Group header context: open or close its sessions, rename or delete it.
     pub fn for_group(x: f32, y: f32, group_id: impl Into<String>) -> Option<Self> {
         let id = group_id.into();
         Self::open(
             x,
             y,
             vec![
-                ContextItem::new("Rename", ContextAction::RenameGroup(id.clone())),
+                ContextItem::new("Open all", ContextAction::OpenGroup(id.clone())),
+                ContextItem::new("Close all", ContextAction::CloseGroup(id.clone())),
+                ContextItem::new("Rename", ContextAction::RenameGroup(id.clone())).sep(),
                 ContextItem::new("Delete group", ContextAction::DeleteGroup(id))
                     .sep()
                     .danger(),
@@ -409,11 +415,11 @@ mod tests {
         );
         let group = ContextMenu::for_group(10.0, 10.0, "g1").unwrap();
         let host = ContextMenu::for_host(10.0, 10.0, "h1").unwrap();
-        assert_eq!(group.items.len(), 2);
+        assert_eq!(group.items.len(), 4);
         assert_eq!(host.items.len(), 6);
         let seps =
             |m: &ContextMenu| m.items.iter().filter(|i| i.separator_before).count();
-        assert!(seps(&host) >= 1 && seps(&group) == 1);
+        assert!(seps(&host) >= 1 && seps(&group) == 2);
         assert_eq!(
             host.height(),
             ContextMenu::height_for(6) + seps(&host) as f32 * SEPARATOR_HEIGHT
@@ -426,18 +432,33 @@ mod tests {
     }
 
     #[test]
+    fn group_menu_offers_open_close_rename_delete_in_order() {
+        let menu = ContextMenu::for_group(0.0, 0.0, "g").unwrap();
+        let actions: Vec<_> = (0..4).filter_map(|i| menu.take_action(i)).collect();
+        assert_eq!(
+            actions,
+            [
+                ContextAction::OpenGroup("g".into()),
+                ContextAction::CloseGroup("g".into()),
+                ContextAction::RenameGroup("g".into()),
+                ContextAction::DeleteGroup("g".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn a_separator_pushes_later_rows_down_and_is_not_clickable() {
         let menu = ContextMenu::for_group(0.0, 0.0, "g").unwrap();
-        let rename = menu.item_rect(0).unwrap();
-        let delete = menu.item_rect(1).unwrap();
+        let rename = menu.item_rect(2).unwrap();
+        let delete = menu.item_rect(3).unwrap();
         assert_eq!(delete.y - rename.bottom(), SEPARATOR_HEIGHT);
         let mid = rename.bottom() + SEPARATOR_HEIGHT / 2.0;
         assert_eq!(menu.hit_test(rename.x + 4.0, mid), ContextMenuHit::Consume);
         assert_eq!(
-            menu.separator_rect(1).map(|r| r.height),
+            menu.separator_rect(3).map(|r| r.height),
             Some(SEPARATOR_HEIGHT)
         );
-        assert_eq!(menu.separator_rect(0), None);
+        assert_eq!(menu.separator_rect(1), None);
     }
 
     #[test]

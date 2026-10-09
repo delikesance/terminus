@@ -199,7 +199,7 @@ impl Screen<'_> {
         // freezing the trail mid-flight until unrelated damage arrives.
         let has_animation = self.renderer.needs_redraw()
             || self.chrome.connection.is_some()
-            || self.chrome.panel.connecting_id.is_some()
+            || self.chrome.panel.any_connecting()
             || self.chrome.needs_animation_frames();
         let should_present = any_panel_dirty || has_animation;
 

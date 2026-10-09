@@ -1,6 +1,5 @@
 pub mod auth_method;
 pub mod error;
-pub mod forward_runtime;
 pub mod gssapi;
 pub mod history;
 pub mod local_fs;
@@ -22,7 +21,6 @@ pub use auth_method::{
     ParseHostAuthOk,
 };
 pub use error::{Error, Result};
-pub use forward_runtime::ForwardRuntime;
 pub use managed_key::{
     fingerprint_from_public_openssh, generate_ed25519_identity, import_openssh_identity,
 };

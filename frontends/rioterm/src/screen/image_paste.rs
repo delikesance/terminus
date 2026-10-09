@@ -13,7 +13,10 @@ use crate::event::Msg;
 use crate::hosts;
 use crate::ssh_secrets::{private_temp_dir, write_private_file};
 use rio_backend::clipboard::{Clipboard, ClipboardType};
+use rio_window::keyboard::{Key, ModifiersState};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Local pasted images older than this are deleted on the next paste.
@@ -45,13 +48,31 @@ impl Screen<'_> {
     /// path pasted instead.
     pub fn paste_clipboard_or_image(&mut self, clipboard: &mut Clipboard) {
         let content = clipboard.get(ClipboardType::Clipboard);
-        if content.is_empty() && !self.view_takes_keys() && !self.search_active() {
-            if let Some(image) = read_clipboard_image() {
-                self.paste_image(image);
-                return;
-            }
+        if !self.paste_image_unless_text(&content) {
+            self.paste_from_clipboard(&content);
         }
-        self.paste_from_clipboard(&content);
+    }
+
+    /// Bare Ctrl+V: the key CLI tools (Claude Code…) listen to for an image
+    /// paste, but they read the clipboard of the machine they run on, which
+    /// over SSH is not ours. Returns whether the key was consumed.
+    pub fn paste_clipboard_image(&mut self, clipboard: &mut Clipboard) -> bool {
+        let content = clipboard.get(ClipboardType::Clipboard);
+        self.paste_image_unless_text(&content)
+    }
+
+    fn paste_image_unless_text(&mut self, clipboard_text: &str) -> bool {
+        if !is_empty_or_image_markup(clipboard_text)
+            || self.view_takes_keys()
+            || self.search_active()
+        {
+            return false;
+        }
+        let Some(image) = read_clipboard_image() else {
+            return false;
+        };
+        self.paste_image(image);
+        true
     }
 
     fn paste_target(&self) -> PasteTarget {
@@ -73,7 +94,7 @@ impl Screen<'_> {
         let png = match encode_png(&image) {
             Ok(png) => png,
             Err(err) => {
-                tracing::warn!("image paste: {err}");
+                self.report_paste_failure(&format!("Image paste failed: {err}"));
                 return;
             }
         };
@@ -81,7 +102,7 @@ impl Screen<'_> {
         match self.paste_target() {
             PasteTarget::Ssh(id) => {
                 if let Err(err) = self.upload_pasted_image(&id, &name, png) {
-                    tracing::warn!("image paste to {id}: {err}");
+                    self.report_paste_failure(&format!("Image paste failed: {err}"));
                 }
             }
             target => match save_local_paste(&png, &name) {
@@ -89,9 +110,16 @@ impl Screen<'_> {
                     let text = local_path_text(&path, target == PasteTarget::Wsl);
                     self.paste(&text, true);
                 }
-                Err(err) => tracing::warn!("image paste: {err}"),
+                Err(err) => {
+                    self.report_paste_failure(&format!("Image paste failed: {err}"))
+                }
             },
         }
+    }
+
+    fn report_paste_failure(&mut self, message: &str) {
+        tracing::warn!("{message}");
+        self.chrome.panel.error = Some(message.to_string());
     }
 
     /// Copy `png` to `/tmp/<name>` on the tab's host, then paste that path
@@ -111,6 +139,7 @@ impl Screen<'_> {
         let env = env.unwrap_or_default();
         let bracketed = self.get_mode().contains(Mode::BRACKETED_PASTE);
         let input = self.context_manager.current().messenger.channel.clone();
+        let report = self.paste_errors.reporter();
 
         std::thread::Builder::new()
             .name("image-paste-upload".into())
@@ -120,7 +149,7 @@ impl Screen<'_> {
                         super::clipboard::paste_bytes(&remote_path, true, bracketed);
                     let _ = input.send(Msg::Input(bytes.into()));
                 }
-                Err(err) => tracing::warn!("image paste upload: {err}"),
+                Err(err) => report(format!("Image upload failed: {err}")),
             })
             .map(|_| ())
             .map_err(|err| format!("could not start the upload: {err}"))
@@ -207,6 +236,53 @@ fn local_path_text(path: &Path, wsl: bool) -> String {
         return quote_for_shell(&path, true);
     }
     quote_for_shell(&path, false)
+}
+
+/// Where the upload thread reports a failure: the UI drains it into the
+/// panel's error line, since a silent failure looks like "nothing pasted".
+pub struct PasteErrors {
+    sender: Sender<String>,
+    receiver: Receiver<String>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl PasteErrors {
+    pub fn new(wake: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+        let (sender, receiver) = channel();
+        Self {
+            sender,
+            receiver,
+            wake,
+        }
+    }
+
+    fn reporter(&self) -> impl Fn(String) + Send + 'static {
+        let sender = self.sender.clone();
+        let wake = self.wake.clone();
+        move |message| {
+            let _ = sender.send(message);
+            if let Some(wake) = &wake {
+                wake();
+            }
+        }
+    }
+
+    pub fn take(&self) -> Option<String> {
+        self.receiver.try_iter().last()
+    }
+}
+
+/// "Copy image" in a browser or chat app puts the image's `<img>` markup on
+/// the text clipboard next to the bitmap; that text is no real text.
+fn is_empty_or_image_markup(text: &str) -> bool {
+    let text = text.trim();
+    text.is_empty() || (text.starts_with('<') && text.contains("<img"))
+}
+
+/// Bare Ctrl+V, the chord CLI tools listen to for an image paste.
+pub(super) fn is_image_paste_chord(key: &Key, mods: ModifiersState) -> bool {
+    mods == ModifiersState::CONTROL
+        && matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("v"))
 }
 
 /// Quote `path` for the tab's shell only when it needs it (a temp dir under
@@ -306,6 +382,50 @@ fn run_upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_failure_reaches_the_ui_and_wakes_it() {
+        let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = woken.clone();
+        let errors = PasteErrors::new(Some(Arc::new(move || {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst)
+        })));
+        assert_eq!(errors.take(), None);
+        let report = errors.reporter();
+        std::thread::spawn(move || report("boom".into()))
+            .join()
+            .unwrap();
+        assert_eq!(errors.take().as_deref(), Some("boom"));
+        assert!(woken.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn browser_image_copies_count_as_no_text() {
+        let copied = r#"<meta http-equiv="content-type" content="text/html"><img src="https://x/y.png">"#;
+        assert!(is_empty_or_image_markup(copied));
+        assert!(is_empty_or_image_markup("  \n"));
+        assert!(!is_empty_or_image_markup("hello <img> world"));
+        assert!(!is_empty_or_image_markup("<div>real html</div>"));
+    }
+
+    #[test]
+    fn only_bare_ctrl_v_is_the_image_paste_chord() {
+        let v = Key::Character("v".into());
+        assert!(is_image_paste_chord(&v, ModifiersState::CONTROL));
+        assert!(is_image_paste_chord(
+            &Key::Character("V".into()),
+            ModifiersState::CONTROL
+        ));
+        assert!(!is_image_paste_chord(&v, ModifiersState::empty()));
+        assert!(!is_image_paste_chord(
+            &v,
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ));
+        assert!(!is_image_paste_chord(
+            &Key::Character("c".into()),
+            ModifiersState::CONTROL
+        ));
+    }
 
     #[test]
     fn encodes_clipboard_rgba_as_png() {
