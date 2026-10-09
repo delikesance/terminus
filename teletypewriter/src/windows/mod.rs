@@ -268,3 +268,54 @@ where
         .spawn()
         .map(|_| ())
 }
+
+#[cfg(test)]
+mod conpty_color_env_tests {
+    use super::create_pty;
+    use crate::ProcessReadWrite;
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    /// Spawns `wsl.exe -e printenv COLORTERM` through ConPTY with a Windows
+    /// environment that has `COLORTERM` but no `WSLENV`, the same shape as the
+    /// terminal's own process, and returns what the Linux side printed.
+    fn colorterm_seen_by_wsl() -> String {
+        std::env::set_var("COLORTERM", "truecolor");
+        std::env::remove_var("WSLENV");
+
+        let mut pty = create_pty(
+            Some("wsl.exe"),
+            vec!["-e".into(), "printenv".into(), "COLORTERM".into()],
+            &None,
+            None,
+            80,
+            24,
+        )
+        .expect("spawn wsl.exe through ConPTY");
+
+        let mut output = String::new();
+        let mut buf = [0u8; 1024];
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && !output.contains("truecolor") {
+            // The reader never blocks: an empty queue reads as `Ok(0)`, and an
+            // error means the pipe closed after the child exited.
+            match pty.reader().read(&mut buf) {
+                Ok(0) => std::thread::sleep(Duration::from_millis(50)),
+                Ok(n) => output.push_str(&String::from_utf8_lossy(&buf[..n])),
+                Err(_) => break,
+            }
+        }
+        output
+    }
+
+    /// Needs WSL installed, so it only runs on request.
+    #[test]
+    #[ignore = "requires wsl.exe on the host"]
+    fn wsl_child_sees_truecolor() {
+        let output = colorterm_seen_by_wsl();
+        assert!(
+            output.contains("truecolor"),
+            "COLORTERM did not reach the Linux side, got {output:?}"
+        );
+    }
+}
