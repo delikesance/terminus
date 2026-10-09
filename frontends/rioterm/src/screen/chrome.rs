@@ -18,6 +18,7 @@ impl Screen<'_> {
     /// from the open tabs. Returns whether the chrome changed.
     pub fn pump_chrome(&mut self) -> bool {
         let update_changed = self.pump_updater();
+        let update_changed = self.pump_paste_errors() || update_changed;
         let store_changed = self.host_store.drain() || update_changed;
         let store_changed = self.settle_sftp_auth() || store_changed;
         // Apply the initial collapsed-groups seed from the DB exactly once.
@@ -45,6 +46,12 @@ impl Screen<'_> {
             .filter_map(|tab| tab.current().host_id.clone())
             .collect();
         let store_changed = self.retire_sftp_browsers(&open_host_ids) || store_changed;
+        let live_host_ids: Vec<String> = self
+            .context_manager
+            .contexts_mut()
+            .iter()
+            .flat_map(|tab| tab.live_host_ids())
+            .collect();
         let current = self.context_manager.current_index();
         let len = self.context_manager.len();
         let sessions: Vec<hosts::OpenSession> = (0..len)
@@ -76,7 +83,7 @@ impl Screen<'_> {
             self.host_store.groups(),
             &self.chrome.panel.collapsed_groups,
             &self.chrome.panel.collapsed_hosts,
-            &open_host_ids,
+            &live_host_ids,
             &sessions,
         );
         let mut rows_changed = rows != self.chrome.panel.rows;
@@ -263,6 +270,14 @@ impl Screen<'_> {
         &mut self,
     ) -> Option<terminus_ui::PendingVaultAction> {
         self.pending_vault_continue.take()
+    }
+
+    fn pump_paste_errors(&mut self) -> bool {
+        let Some(error) = self.paste_errors.take() else {
+            return false;
+        };
+        self.chrome.panel.error = Some(error);
+        true
     }
 
     /// Surface update progress on the sidebar notice band, and start a

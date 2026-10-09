@@ -761,3 +761,22 @@ fn lost_card_goes_to_the_focused_dead_pane_else_the_first_dead_one() {
     let unfocused = [(4, false, true), (5, true, false), (6, true, false)];
     assert_eq!(pick_lost_route(&unfocused), Some(5));
 }
+
+#[test]
+fn live_hosts_skip_dead_panes_and_cover_every_pane() {
+    let panes = [
+        (Some("a"), false),
+        (Some("b"), true),
+        (None, false),
+        (Some("c"), false),
+    ];
+    assert_eq!(live_host_ids(panes), vec!["a".to_string(), "c".to_string()]);
+    assert!(live_host_ids([]).is_empty());
+}
+
+#[test]
+fn pane_of_route_finds_the_pane_running_that_terminal() {
+    let panes = [("left", 4), ("right", 9)];
+    assert_eq!(pane_of_route(panes, 9), Some("right"));
+    assert_eq!(pane_of_route(panes, 5), None);
+}

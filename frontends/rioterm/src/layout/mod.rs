@@ -166,6 +166,27 @@ fn pick_lost_route(panes: &[(usize, bool, bool)]) -> Option<usize> {
         .map(|(route_id, _, _)| *route_id)
 }
 
+/// Host ids of the panes still alive among `panes` (host id, has a card).
+fn live_host_ids<'a>(
+    panes: impl IntoIterator<Item = (Option<&'a str>, bool)>,
+) -> Vec<String> {
+    panes
+        .into_iter()
+        .filter(|(_, lost)| !lost)
+        .filter_map(|(host_id, _)| host_id.map(str::to_string))
+        .collect()
+}
+
+/// The pane key running terminal `route_id` among `panes` (key, route id).
+fn pane_of_route<K>(
+    panes: impl IntoIterator<Item = (K, usize)>,
+    route_id: usize,
+) -> Option<K> {
+    panes
+        .into_iter()
+        .find_map(|(key, route)| (route == route_id).then_some(key))
+}
+
 pub struct ContextGrid<T: EventListener> {
     pub width: f32,
     pub height: f32,
@@ -347,9 +368,33 @@ impl<T: rio_backend::event::EventListener> ContextGrid<T> {
             .find(|item| item.val.route_id == route_id)
     }
 
+    /// Focus the pane running terminal `route_id`; false when it is not here.
+    pub fn select_route_id(&mut self, route_id: usize) -> bool {
+        let Some(key) = pane_of_route(
+            self.inner
+                .iter()
+                .map(|(&key, item)| (key, item.val.route_id)),
+            route_id,
+        ) else {
+            return false;
+        };
+        self.current = key;
+        true
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Host ids of every pane of this tab whose session is still alive.
+    pub fn live_host_ids(&self) -> Vec<String> {
+        live_host_ids(self.inner.values().map(|item| {
+            (
+                item.val.host_id.as_deref(),
+                item.val.connection_lost.is_some(),
+            )
+        }))
     }
 
     /// The pane whose "Connection lost" / "Session ended" card shows for

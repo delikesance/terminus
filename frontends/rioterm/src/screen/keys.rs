@@ -1,5 +1,6 @@
 //! `Screen` keys surface, split out of `screen/mod.rs`.
 
+use super::image_paste::is_image_paste_chord;
 use super::Screen;
 use crate::bindings::kitty_keyboard::build_key_sequence;
 use crate::bindings::{
@@ -317,6 +318,12 @@ impl Screen<'_> {
             }
             self.update_hint_state();
             self.mark_dirty();
+            return;
+        }
+
+        if is_image_paste_chord(&key.logical_key, mods)
+            && self.paste_clipboard_image(clipboard)
+        {
             return;
         }
 
