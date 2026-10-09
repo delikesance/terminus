@@ -14,10 +14,10 @@
 //! * Nix profile installs → `nix profile upgrade`;
 //! * other Nix setups, development builds, unknown layouts → notify only.
 //!
-//! Every download is checked against `checksums.txt`, whose minisign signature
-//! must verify with the key compiled into this binary ([`PUBLIC_KEY`]). A build
-//! without a trusted key can still *check* and tell the user a release exists,
-//! but never downloads anything to install.
+//! Every download is checked against the SHA-256 recorded in the release's
+//! `checksums.txt`. The minisign signature is optional: it is verified only
+//! when a client is built with a public key ([`Client::new`]); the official
+//! client has none, so integrity rests on the checksum and the release channel.
 
 use std::fmt;
 use std::io::{Read, Write};
@@ -35,13 +35,9 @@ pub use system::{nix_profile_launcher, nix_upgrade_argv, run_install, PackageMan
 pub const DEFAULT_ENDPOINT: &str =
     "https://api.github.com/repos/delikesance/terminus/releases/latest";
 
-/// minisign public key trusted for release signatures (the `.pub` file's
-/// contents or just its base64 line). Empty: updates are notify-only.
-pub const PUBLIC_KEY: &str = include_str!("../update-public-key.txt");
-
-/// Signed list of release artifact hashes (`sha256sum` format).
+/// List of release artifact hashes (`sha256sum` format).
 pub const CHECKSUMS_ASSET: &str = "checksums.txt";
-/// minisign signature of [`CHECKSUMS_ASSET`].
+/// Optional minisign signature of [`CHECKSUMS_ASSET`].
 pub const SIGNATURE_ASSET: &str = "checksums.txt.minisig";
 
 /// Linux tarball published by `scripts/release.sh`.
@@ -82,9 +78,7 @@ pub enum UpdateError {
     BadRelease(String),
     /// A required release asset is missing.
     MissingAsset(String),
-    /// No trusted public key is compiled in: updates are notify-only.
-    NoTrustedKey,
-    /// `checksums.txt` is not signed by the trusted key.
+    /// A public key was supplied and `checksums.txt` is not signed by it.
     BadSignature(String),
     /// The downloaded file does not match the signed hash.
     ChecksumMismatch { expected: String, actual: String },
@@ -99,10 +93,6 @@ impl fmt::Display for UpdateError {
             Self::Http(msg) => write!(f, "update download failed: {msg}"),
             Self::BadRelease(msg) => write!(f, "unexpected release data: {msg}"),
             Self::MissingAsset(name) => write!(f, "release has no {name}"),
-            Self::NoTrustedKey => write!(
-                f,
-                "this build has no update signing key; install updates manually"
-            ),
             Self::BadSignature(msg) => write!(f, "release signature is not valid: {msg}"),
             Self::ChecksumMismatch { expected, actual } => write!(
                 f,
@@ -400,10 +390,10 @@ pub fn parse_version(raw: &str) -> Option<semver::Version> {
     semver::Version::parse(raw.trim().trim_start_matches('v')).ok()
 }
 
-/// Update client: endpoint + trusted key + HTTP agent.
 /// Called with (bytes received, expected size) while a download runs.
 pub type Progress = std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>;
 
+/// Update client: endpoint + optional trusted key + HTTP agent.
 pub struct Client {
     endpoint: String,
     public_key: Option<minisign_verify::PublicKey>,
@@ -412,8 +402,9 @@ pub struct Client {
 }
 
 impl Client {
-    /// Client for `endpoint` trusting `public_key` (minisign `.pub` contents
-    /// or bare base64). `None` or blank: check-only.
+    /// Client for `endpoint`. With `public_key` (minisign `.pub` contents or
+    /// bare base64) the checksums signature must verify; `None` or blank:
+    /// only the checksum is verified.
     pub fn new(endpoint: &str, public_key: Option<&str>) -> Result<Self> {
         require_secure(endpoint)?;
         let public_key = match public_key.map(str::trim).filter(|k| !k.is_empty()) {
@@ -421,8 +412,8 @@ impl Client {
             Some(key) => Some(parse_public_key(key)?),
         };
         // OS trust store (works behind TLS-inspecting corporate proxies).
-        // TLS is not what makes an update trustworthy: the minisign signature
-        // over the checksums is, so a proxy can at worst block an update.
+        // Without a signing key, a TLS-inspecting proxy that can alter both
+        // the checksums and the file is trusted like the distribution channel.
         let agent = build_agent(None);
         Ok(Self {
             endpoint: endpoint.to_string(),
@@ -445,20 +436,19 @@ impl Client {
         self
     }
 
-    /// Client for the official releases and the compiled-in key.
-    /// `TERMINUS_UPDATE_URL` overrides the endpoint (testing, mirrors); the
-    /// signature check still applies, so a mirror cannot change what installs.
+    /// Client for the official releases, verified by checksum only.
+    /// `TERMINUS_UPDATE_URL` overrides the endpoint (testing, mirrors).
     pub fn official() -> Result<Self> {
         let endpoint = std::env::var("TERMINUS_UPDATE_URL")
             .ok()
             .filter(|u| !u.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
-        Self::new(&endpoint, Some(&trusted_key()))
+        Self::new(&endpoint, None)
     }
 
-    /// Whether downloads can be verified (a trusted key is configured).
+    /// Whether downloads can be verified: the checksum always can.
     pub fn can_install(&self) -> bool {
-        self.public_key.is_some()
+        true
     }
 
     /// Latest published release when it is newer than `current_version`.
@@ -547,22 +537,33 @@ impl Client {
         result
     }
 
-    /// The SHA-256 the signed `checksums.txt` records for `name`.
+    /// The SHA-256 `checksums.txt` records for `name`, after verifying its
+    /// signature when this client has a public key.
     fn signed_hash(&self, release: &Release, name: &str) -> Result<String> {
-        let public_key = self.public_key.as_ref().ok_or(UpdateError::NoTrustedKey)?;
         let checksums = release.asset(CHECKSUMS_ASSET)?;
-        let signature = release.asset(SIGNATURE_ASSET)?;
         let sums = self.get_small(&checksums.url, "application/octet-stream")?;
+        if let Some(public_key) = &self.public_key {
+            self.verify_signature(public_key, release, &sums)?;
+        }
+        expected_hash(&String::from_utf8_lossy(&sums), name)
+            .ok_or_else(|| UpdateError::MissingAsset(format!("checksum of {name}")))
+    }
+
+    fn verify_signature(
+        &self,
+        public_key: &minisign_verify::PublicKey,
+        release: &Release,
+        sums: &[u8],
+    ) -> Result<()> {
+        let signature = release.asset(SIGNATURE_ASSET)?;
         let sig = self.get_small(&signature.url, "application/octet-stream")?;
         let sig = String::from_utf8(sig)
             .map_err(|e| UpdateError::BadSignature(e.to_string()))?;
         let sig = minisign_verify::Signature::decode(&sig)
             .map_err(|e| UpdateError::BadSignature(e.to_string()))?;
         public_key
-            .verify(&sums, &sig, false)
-            .map_err(|e| UpdateError::BadSignature(e.to_string()))?;
-        expected_hash(&String::from_utf8_lossy(&sums), name)
-            .ok_or_else(|| UpdateError::MissingAsset(format!("checksum of {name}")))
+            .verify(sums, &sig, false)
+            .map_err(|e| UpdateError::BadSignature(e.to_string()))
     }
 
     fn get(&self, url: &str, accept: &str) -> Result<ureq::Body> {
@@ -631,20 +632,6 @@ impl Client {
         file.sync_all()?;
         Ok(hex::encode(hasher.finalize()))
     }
-}
-
-/// The trusted signing key: [`PUBLIC_KEY`]. Debug builds (never shipped)
-/// also accept `TERMINUS_UPDATE_PUBKEY`, so the update flow can be exercised
-/// end to end against a locally signed test release.
-fn trusted_key() -> String {
-    #[cfg(debug_assertions)]
-    if let Some(key) = std::env::var("TERMINUS_UPDATE_PUBKEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty())
-    {
-        return key;
-    }
-    PUBLIC_KEY.to_string()
 }
 
 fn parse_public_key(key: &str) -> Result<minisign_verify::PublicKey> {
@@ -876,6 +863,12 @@ mod tests {
         );
         assert_eq!(expected_hash(&sums, LINUX_TARBALL), Some("a".repeat(64)));
         assert_eq!(expected_hash(&sums, WINDOWS_MSI), None);
+    }
+
+    #[test]
+    fn a_client_without_a_key_can_install() {
+        let client = Client::new("https://example.com/latest", None).unwrap();
+        assert!(client.can_install());
     }
 
     #[test]
