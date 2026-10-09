@@ -241,9 +241,12 @@ pub fn new(
 
     let cmdline = win32_string(&cmdline(shell));
     let cwd = working_directory.as_ref().map(win32_string);
-    // With no overrides, leave the environment pointer null so the child
-    // inherits ours, exactly as before.
-    let mut env_block = env.map(environment_block);
+    // Truecolor defaults go first so a configured env still overrides them.
+    // The block is always built: `wsl.exe` only forwards `COLORTERM` to Linux
+    // when `WSLENV` lists it.
+    let mut overrides = crate::windows_color_env(std::env::var("WSLENV").ok().as_deref());
+    overrides.extend(env.unwrap_or_default());
+    let mut env_block = Some(environment_block(overrides));
 
     let mut proc_info: PROCESS_INFORMATION = unsafe { mem::zeroed() };
     unsafe {
