@@ -205,11 +205,10 @@ test:
 bump-version:
 	bash scripts/bump-version.sh
 
-# release and release-linux bump the patch version first; release-linux-build does not.
-release: bump-version
+release:
 	bash scripts/release.sh $(ARGS)
 
-release-linux: bump-version
+release-linux:
 	bash scripts/release.sh --linux-only $(ARGS)
 
 release-linux-build:
