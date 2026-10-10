@@ -487,14 +487,15 @@ impl Sugarloaf<'_> {
     /// Mark the window's render surface opaque (`true`, default — fast
     /// macOS compositor path) or non-opaque (`false`, required for
     /// `window.opacity < 1` and macOS-glass background blur). Safe to
-    /// call every config reload; underlying call is a single Cocoa
-    /// property write on macOS, no-op on other backends until they
-    /// grow their own transparency story.
+    /// call every config reload; a single Cocoa property write on macOS,
+    /// a surface reconfigure on wgpu when the alpha mode changes.
     #[inline]
-    pub fn set_window_opaque(&self, opaque: bool) {
-        match &self.ctx.inner {
+    pub fn set_window_opaque(&mut self, opaque: bool) {
+        match &mut self.ctx.inner {
             #[cfg(target_os = "macos")]
             crate::context::ContextType::Metal(ctx) => ctx.set_layer_opaque(opaque),
+            #[cfg(feature = "wgpu")]
+            crate::context::ContextType::Wgpu(ctx) => ctx.set_translucent(!opaque),
             _ => {
                 let _ = opaque;
             }

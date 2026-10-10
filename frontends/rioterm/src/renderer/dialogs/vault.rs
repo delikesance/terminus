@@ -1,8 +1,11 @@
 //! Vault unlock / create dialog.
 
+use crate::renderer::components::button::{button_state, paint_button_in_rect};
+use crate::renderer::components::selection::paint_checkbox_on;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::overlay as ov;
+use terminus_ui::components::selection::ControlState;
 use terminus_ui::confirm::{estimate_text_width, BODY_FONT};
 use terminus_ui::icons::{Icon, IconPlacement};
 use terminus_ui::theme::ChromeTheme;
@@ -10,11 +13,8 @@ use terminus_ui::tokens::{font_size, radius};
 use terminus_ui::vault_unlock::{self as vu, VaultUnlockLayout};
 use terminus_ui::Chrome;
 
-use super::{
-    button_state, paint_button_rect, paint_checkbox_row, paint_shadow, paint_text_field,
-    DEPTH, ORDER,
-};
-use crate::renderer::chrome::{draw_icon, paint_flat, paint_surface_stroke};
+use super::{dialog_layer, paint_dialog_frame, paint_text_field, DEPTH, ORDER};
+use crate::renderer::chrome::draw_icon;
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
 pub fn paint_vault_unlock(
@@ -27,25 +27,8 @@ pub fn paint_vault_unlock(
     let prompt = &chrome.vault_unlock;
     let layout = VaultUnlockLayout::for_prompt(window.0, window.1, prompt);
     let d = layout.rect();
-    paint_flat(
-        sugarloaf,
-        &terminus_ui::Rect::new(0.0, 0.0, window.0, window.1),
-        ov::SCRIM,
-        DEPTH - 0.02,
-        ORDER,
-    );
-    paint_shadow(sugarloaf, &d, radius::DIALOG, DEPTH);
-    paint_surface_stroke(
-        sugarloaf,
-        &d,
-        theme.dialog,
-        Some(theme.dialog_line),
-        radius::DIALOG,
-        1.0,
-        DEPTH + 0.02,
-        ORDER,
-        false,
-    );
+    let scrim = terminus_ui::Rect::new(0.0, 0.0, window.0, window.1);
+    paint_dialog_frame(sugarloaf, theme, Some(&scrim), &d);
     if !glyphs {
         return;
     }
@@ -155,13 +138,15 @@ pub fn paint_vault_unlock(
         );
     }
 
-    paint_checkbox_row(
+    let remember = layout.remember_row_rect();
+    paint_checkbox_on(
         sugarloaf,
         theme,
-        &layout.remember_row_rect(),
+        (remember.x, remember.y),
         vu::REMEMBER_LABEL,
         prompt.remember(),
-        DEPTH + 0.05,
+        ControlState::Default,
+        dialog_layer(theme),
     );
 
     let hint = layout.hint_rect();
@@ -191,7 +176,7 @@ pub fn paint_vault_unlock(
     }
 
     let (cancel, ok) = layout.button_rects("Cancel", prompt.action_label());
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &cancel,
@@ -199,10 +184,9 @@ pub fn paint_vault_unlock(
         ButtonSize::Large,
         button_state(false, false),
         "Cancel",
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &ok,
@@ -210,7 +194,6 @@ pub fn paint_vault_unlock(
         ButtonSize::Large,
         button_state(false, false),
         prompt.action_label(),
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
 }

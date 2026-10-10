@@ -1,16 +1,16 @@
 //! Confirmation dialog painter (Confirm / Destructive / With-option).
 
+use crate::renderer::components::button::{button_state, paint_button_in_rect};
+use crate::renderer::components::selection::paint_checkbox_on;
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::overlay::{self as ov, DialogFocus, DialogKind};
+use terminus_ui::components::selection::ControlState;
 use terminus_ui::confirm::{ConfirmLayout, ConfirmSpec};
 use terminus_ui::theme::ChromeTheme;
-use terminus_ui::tokens::{font_size, radius};
+use terminus_ui::tokens::font_size;
 
-use super::{
-    button_state, paint_button_rect, paint_checkbox_row, paint_shadow, DEPTH, ORDER,
-};
-use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
+use super::{dialog_layer, paint_dialog_frame};
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
 /// Pointer / keyboard state of one open dialog.
@@ -32,19 +32,7 @@ pub fn paint_confirm(
     glyphs: bool,
 ) {
     let l = &layout.dialog;
-    paint_flat(sugarloaf, &l.scrim, ov::SCRIM, DEPTH - 0.02, ORDER);
-    paint_shadow(sugarloaf, &l.dialog, radius::DIALOG, DEPTH);
-    paint_surface_stroke(
-        sugarloaf,
-        &l.dialog,
-        theme.dialog,
-        Some(theme.dialog_line),
-        radius::DIALOG,
-        1.0,
-        DEPTH + 0.02,
-        ORDER,
-        false,
-    );
+    paint_dialog_frame(sugarloaf, theme, Some(&l.scrim), &l.dialog);
     if !glyphs {
         return;
     }
@@ -69,13 +57,14 @@ pub fn paint_confirm(
         );
     }
     if let (Some(row), Some(label)) = (l.option.as_ref(), spec.option.as_deref()) {
-        paint_checkbox_row(
+        paint_checkbox_on(
             sugarloaf,
             theme,
-            row,
+            (row.x, row.y),
             label,
             view.option_checked,
-            DEPTH + 0.05,
+            ControlState::Default,
+            dialog_layer(theme),
         );
     }
     let confirm_kind = if spec.kind == DialogKind::Destructive {
@@ -85,7 +74,7 @@ pub fn paint_confirm(
     };
     let hov = |f| view.hover == Some(f);
     let foc = |f| view.focus == Some(f);
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &l.cancel,
@@ -93,10 +82,9 @@ pub fn paint_confirm(
         ButtonSize::Large,
         button_state(foc(DialogFocus::Cancel), hov(DialogFocus::Cancel)),
         &spec.cancel,
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &l.confirm,
@@ -104,8 +92,7 @@ pub fn paint_confirm(
         ButtonSize::Large,
         button_state(foc(DialogFocus::Confirm), hov(DialogFocus::Confirm)),
         &spec.confirm,
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
 }
 

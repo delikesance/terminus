@@ -3,8 +3,10 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use crate::renderer::components::scroll::paint_thumb;
 use rio_backend::sugarloaf::Sugarloaf;
 use std::time::Instant;
+use terminus_ui::components::scroll::{ScrollHit, VScroll};
 
 // Layout. Kept `pub` so other UI elements (command palette, future
 // overlays) can render a scrollbar that matches the terminal's exactly
@@ -58,37 +60,6 @@ pub fn opacity_from_last_scroll(last_scroll: Option<Instant>, dragging: bool) ->
     }
 }
 
-/// Thumb geometry (y offset, height) inside a vertical track of
-/// `track_height` anchored at `track_top`. Returns `None` when the
-/// list fits entirely (`visible >= total`) — caller skips drawing.
-///
-/// `normalized_offset` is the scroll position in `[0.0, 1.0]` where
-/// 0.0 = top (unscrolled) and 1.0 = maximum scroll. Callers that
-/// think in "scroll from the top" (command palette) and callers that
-/// think in "scroll back from live edge" (terminal history) both
-/// plug into the same geometry by normalizing on their side.
-///
-/// Thumb height is clamped at `SCROLLBAR_MIN_THUMB_HEIGHT` so very
-/// long lists don't shrink the thumb to a sub-pixel sliver.
-#[allow(dead_code)]
-pub fn compute_thumb(
-    visible: usize,
-    total: usize,
-    track_top: f32,
-    track_height: f32,
-    normalized_offset: f32,
-) -> Option<(f32, f32)> {
-    if total <= visible || track_height <= 0.0 {
-        return None;
-    }
-    let ratio = visible as f32 / total as f32;
-    let thumb_height = (track_height * ratio)
-        .clamp(SCROLLBAR_MIN_THUMB_HEIGHT.min(track_height), track_height);
-    let scrollable = (track_height - thumb_height).max(0.0);
-    let progress = normalized_offset.clamp(0.0, 1.0);
-    Some((track_top + scrollable * progress, thumb_height))
-}
-
 /// Paint a single scrollbar thumb — the one and only way rio renders a
 /// scrollbar. Uses `SCROLLBAR_COLOR` (or `SCROLLBAR_DRAG_COLOR` if
 /// `dragging`) modulated by `opacity`. `opacity <= 0.0` is a no-op so
@@ -99,12 +70,9 @@ pub fn compute_thumb(
 /// `TERMINAL_ORDER` so the bar lives on top of the cell content, the
 /// command palette uses a higher order so the bar isn't swallowed by
 /// the palette's backdrop/bg rects.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_thumb(
     sugarloaf: &mut Sugarloaf,
-    x: f32,
-    y: f32,
-    height: f32,
+    thumb: &terminus_ui::Rect,
     opacity: f32,
     dragging: bool,
     depth: f32,
@@ -119,22 +87,7 @@ pub fn draw_thumb(
         SCROLLBAR_COLOR
     };
     let color = [base[0], base[1], base[2], base[3] * opacity];
-    crate::renderer::chrome::paint_flat(
-        sugarloaf,
-        &terminus_ui::Rect::new(x, y, SCROLLBAR_WIDTH, height),
-        color,
-        depth,
-        order,
-    );
-}
-
-/// Computed geometry of a scrollbar track and thumb in logical pixels.
-pub struct ThumbGeometry {
-    bar_x: f32,
-    bar_y: f32,
-    track_height: f32,
-    thumb_y: f32,
-    thumb_height: f32,
+    paint_thumb(sugarloaf, thumb, color, 0.0, depth, order);
 }
 
 /// State for an active scrollbar drag operation.
@@ -144,12 +97,7 @@ pub struct ScrollbarDragState {
     pub rich_text_id: usize,
     /// Y offset within the thumb where the drag started (logical pixels)
     grab_offset_y: f32,
-    /// Cached track geometry
-    bar_y: f32,
-    track_height: f32,
-    thumb_height: f32,
-    /// The history_size at drag start
-    history_size: usize,
+    scroll: VScroll,
 }
 
 /// Cached scroll state for a panel, updated each frame.
@@ -239,50 +187,34 @@ impl Scrollbar {
         opacity_from_last_scroll(last_scroll, dragging)
     }
 
-    /// Compute thumb geometry in logical pixels.
-    fn compute_thumb(
+    /// Scrollbar over a panel's right edge, in logical pixels. Offsets
+    /// count lines from the oldest history line.
+    fn geometry(
         panel_rect: [f32; 4],
         scale_factor: f32,
-        display_offset: usize,
         history_size: usize,
         screen_lines: usize,
         grid_margin: (f32, f32),
-    ) -> ThumbGeometry {
-        let total_lines = history_size + screen_lines;
-
+    ) -> VScroll {
         let panel_x = (panel_rect[0] + grid_margin.0) / scale_factor;
         let panel_y = (panel_rect[1] + grid_margin.1) / scale_factor;
         let panel_width = panel_rect[2] / scale_factor;
         let panel_height = panel_rect[3] / scale_factor;
-
-        let bar_x = panel_x + panel_width - SCROLLBAR_WIDTH - SCROLLBAR_MARGIN;
-        let bar_y = panel_y + SCROLLBAR_MARGIN;
-        let track_height = panel_height - SCROLLBAR_MARGIN * 2.0;
-
-        let thumb_ratio = screen_lines as f32 / total_lines as f32;
-        let thumb_height = (track_height * thumb_ratio).max(SCROLLBAR_MIN_THUMB_HEIGHT);
-
-        let scroll_ratio = if history_size > 0 {
-            display_offset as f32 / history_size as f32
-        } else {
-            0.0
-        };
-        let thumb_y = bar_y + (1.0 - scroll_ratio) * (track_height - thumb_height);
-
-        ThumbGeometry {
-            bar_x,
-            bar_y,
-            track_height,
-            thumb_y,
-            thumb_height,
+        VScroll {
+            track: terminus_ui::Rect::new(
+                panel_x + panel_width - SCROLLBAR_WIDTH - SCROLLBAR_MARGIN,
+                panel_y + SCROLLBAR_MARGIN,
+                SCROLLBAR_WIDTH,
+                panel_height - SCROLLBAR_MARGIN * 2.0,
+            ),
+            content: (history_size + screen_lines) as f32,
+            viewport: screen_lines as f32,
+            min_thumb: SCROLLBAR_MIN_THUMB_HEIGHT,
         }
     }
 
-    /// Test if a click at (mouse_x, mouse_y) in logical pixels hits the scrollbar
-    /// track area for a given panel. If it hits the thumb, returns the grab offset.
-    /// If it hits the track (but not thumb), returns None for offset (jump-scroll).
-    ///
-    /// Returns `Some((grab_offset_y, geometry))` if hit, `None` if miss.
+    /// Test if a click at (mouse_x, mouse_y) in logical pixels hits the
+    /// scrollbar of a given panel; the wider hit area eases grabbing.
     #[allow(clippy::too_many_arguments)]
     pub fn hit_test(
         &self,
@@ -294,58 +226,32 @@ impl Scrollbar {
         history_size: usize,
         screen_lines: usize,
         grid_margin: (f32, f32),
-    ) -> Option<(Option<f32>, ThumbGeometry)> {
+    ) -> Option<(ScrollHit, VScroll)> {
         if !self.enabled || history_size == 0 {
             return None;
         }
-
-        let geom = Self::compute_thumb(
+        let scroll = Self::geometry(
             panel_rect,
             scale_factor,
-            display_offset,
             history_size,
             screen_lines,
             grid_margin,
         );
-
-        // Use wider hit area for easier grabbing
-        let hit_x = geom.bar_x - (SCROLLBAR_HIT_WIDTH - SCROLLBAR_WIDTH) / 2.0;
-        let hit_width = SCROLLBAR_HIT_WIDTH;
-
-        if mouse_x < hit_x || mouse_x > hit_x + hit_width {
-            return None;
-        }
-        if mouse_y < geom.bar_y || mouse_y > geom.bar_y + geom.track_height {
-            return None;
-        }
-
-        // Check if clicking on the thumb itself
-        if mouse_y >= geom.thumb_y && mouse_y <= geom.thumb_y + geom.thumb_height {
-            let grab_offset = mouse_y - geom.thumb_y;
-            Some((Some(grab_offset), geom))
-        } else {
-            // Clicked on track but not thumb - jump scroll
-            Some((None, geom))
-        }
+        let offset = (history_size - display_offset) as f32;
+        let hit = scroll.hit(mouse_x, mouse_y, offset, SCROLLBAR_HIT_WIDTH)?;
+        Some((hit, scroll))
     }
 
-    /// Start a drag operation. `grab_offset_y` is the offset within the thumb,
-    /// or None to center the thumb on the click position.
-    pub fn start_drag(
-        &mut self,
-        rich_text_id: usize,
-        grab_offset_y: Option<f32>,
-        geom: &ThumbGeometry,
-        history_size: usize,
-    ) {
-        let grab_offset = grab_offset_y.unwrap_or(geom.thumb_height / 2.0);
+    /// Start a drag; a track press centres the thumb on the pointer.
+    pub fn start_drag(&mut self, rich_text_id: usize, hit: ScrollHit, scroll: VScroll) {
+        let grab_offset_y = match hit {
+            ScrollHit::Thumb { grab } => grab,
+            ScrollHit::Track => scroll.thumb_len() / 2.0,
+        };
         self.drag_state = Some(ScrollbarDragState {
             rich_text_id,
-            grab_offset_y: grab_offset,
-            bar_y: geom.bar_y,
-            track_height: geom.track_height,
-            thumb_height: geom.thumb_height,
-            history_size,
+            grab_offset_y,
+            scroll,
         });
         self.notify_scroll(rich_text_id);
     }
@@ -353,18 +259,8 @@ impl Scrollbar {
     /// Update scroll position during drag. Returns the new display_offset.
     pub fn drag_update(&mut self, mouse_y: f32) -> Option<usize> {
         let state = self.drag_state?;
-        let thumb_top = mouse_y - state.grab_offset_y;
-        let available = state.track_height - state.thumb_height;
-        if available <= 0.0 {
-            return Some(0);
-        }
-        // Clamp thumb position
-        let clamped = (thumb_top - state.bar_y).clamp(0.0, available);
-        // Convert position to scroll ratio (top=0 → scroll_ratio=1, bottom=available → scroll_ratio=0)
-        let scroll_ratio = 1.0 - (clamped / available);
-        let display_offset = (scroll_ratio * state.history_size as f32).round() as usize;
-        let display_offset = display_offset.min(state.history_size);
-
+        let from_top = state.scroll.offset_at(mouse_y, state.grab_offset_y);
+        let display_offset = (state.scroll.max_offset() - from_top).round() as usize;
         self.notify_scroll(state.rich_text_id);
         Some(display_offset)
     }
@@ -398,14 +294,16 @@ impl Scrollbar {
             return;
         }
 
-        let geom = Self::compute_thumb(
+        let Some(thumb) = Self::geometry(
             panel_rect,
             scale_factor,
-            display_offset,
             history_size,
             screen_lines,
             grid_margin,
-        );
+        )
+        .thumb((history_size - display_offset) as f32) else {
+            return;
+        };
 
         let is_dragging = self
             .drag_state
@@ -413,9 +311,7 @@ impl Scrollbar {
 
         draw_thumb(
             sugarloaf,
-            geom.bar_x,
-            geom.thumb_y,
-            geom.thumb_height,
+            &thumb,
             opacity,
             is_dragging,
             TERMINAL_DEPTH,
@@ -507,50 +403,6 @@ mod tests {
                 (FADE_OUT_DELAY_MS + FADE_OUT_DURATION_MS + 50) as u64,
             );
         assert_eq!(opacity_from_last_scroll(Some(deep_past), false), 0.0);
-    }
-
-    #[test]
-    fn compute_thumb_hidden_when_list_fits() {
-        assert!(compute_thumb(8, 8, 0.0, 256.0, 0.0).is_none());
-        assert!(compute_thumb(8, 7, 0.0, 256.0, 0.0).is_none());
-    }
-
-    #[test]
-    fn compute_thumb_hidden_on_zero_track() {
-        assert!(compute_thumb(8, 100, 0.0, 0.0, 0.0).is_none());
-    }
-
-    #[test]
-    fn compute_thumb_top_at_zero_offset() {
-        let track_top = 42.0;
-        let (thumb_y, thumb_h) = compute_thumb(8, 100, track_top, 200.0, 0.0).unwrap();
-        assert_eq!(thumb_y, track_top);
-        assert!(thumb_h >= SCROLLBAR_MIN_THUMB_HEIGHT);
-        assert!(thumb_h <= 200.0);
-    }
-
-    #[test]
-    fn compute_thumb_bottom_at_full_offset() {
-        let (thumb_y, thumb_h) = compute_thumb(8, 100, 0.0, 200.0, 1.0).unwrap();
-        assert!((thumb_y + thumb_h - 200.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn compute_thumb_clamps_excess_offset() {
-        // Normalized offsets outside [0, 1] are clamped (defensive
-        // against future resize / filter-shrink races).
-        let (thumb_y, thumb_h) = compute_thumb(8, 20, 0.0, 200.0, 3.5).unwrap();
-        assert!((thumb_y + thumb_h - 200.0).abs() < 0.001);
-        let (thumb_y, _) = compute_thumb(8, 20, 0.0, 200.0, -0.7).unwrap();
-        assert_eq!(thumb_y, 0.0);
-    }
-
-    #[test]
-    fn compute_thumb_respects_minimum_height() {
-        // Huge lists would give a sub-pixel thumb by proportion alone;
-        // the min-height clamp keeps it visible.
-        let (_, thumb_h) = compute_thumb(8, 10_000, 0.0, 200.0, 0.0).unwrap();
-        assert!(thumb_h >= SCROLLBAR_MIN_THUMB_HEIGHT);
     }
 
     #[test]

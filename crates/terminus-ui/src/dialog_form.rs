@@ -2,8 +2,9 @@
 //! Supports dynamic text fields while strictly retaining the exact visual layout
 //! (paddings, corner radii, and button placements) of the original Host modal.
 
+use crate::components::input::{TextDraft, TextMoveKind};
+use crate::components::overlay::action_row;
 use crate::geom::Rect;
-use crate::text_field::{TextDraft, TextMoveKind};
 
 pub const WIDTH: f32 = 520.0;
 pub const PAD: f32 = 28.0;
@@ -240,35 +241,28 @@ impl DialogFormLayout {
             cy += FIELD_HEIGHT + FIELD_GAP;
         }
         // `cy` overshoots by one field gap after the last field.
-        let mut bottom_y = if fields.is_empty() {
+        let error_y = if fields.is_empty() {
             title.bottom() + BLOCK_GAP
         } else {
             cy - FIELD_GAP + BLOCK_GAP
         };
 
-        let mut error_line = None;
-        if form.error.is_some() {
-            error_line = Some(Rect::new(
-                x + PAD,
-                bottom_y,
-                WIDTH - 2.0 * PAD,
-                ERROR_HEIGHT,
-            ));
-            bottom_y += ERROR_HEIGHT + BLOCK_GAP;
-        }
-        bottom_y += BUTTONS_TOP;
+        let error_line = form
+            .error
+            .is_some()
+            .then(|| Rect::new(x + PAD, error_y, WIDTH - 2.0 * PAD, ERROR_HEIGHT));
 
         let save_w = crate::vault_unlock::button_width(&form.save_label);
         let cancel_w = crate::vault_unlock::button_width("Cancel");
-        let save_x = x + WIDTH - PAD - save_w;
-        let cancel_x = save_x - BUTTON_GAP - cancel_w;
+        let (cancel_btn, save_btn) =
+            action_row(&dialog, PAD, BUTTON_HEIGHT, BUTTON_GAP, cancel_w, save_w);
         Self {
             dialog,
             title,
             fields,
             error_line,
-            cancel_btn: Rect::new(cancel_x, bottom_y, cancel_w, BUTTON_HEIGHT),
-            save_btn: Rect::new(save_x, bottom_y, save_w, BUTTON_HEIGHT),
+            cancel_btn,
+            save_btn,
         }
     }
 

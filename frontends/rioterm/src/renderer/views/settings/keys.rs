@@ -1,7 +1,7 @@
 //! SSH keys tab painter.
 
 use rio_backend::sugarloaf::Sugarloaf;
-use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonState};
+use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::input::{self as ui, FieldKind, FieldState};
 use terminus_ui::components::list::{CardState, CARD_RADIUS};
 use terminus_ui::components::overlay::{self as ov, DialogFocus, DialogKind};
@@ -14,7 +14,7 @@ use terminus_ui::views::settings::keys::{
 
 use super::with_measure;
 use crate::renderer::chrome::paint_flat;
-use crate::renderer::components::button::{label_spec, paint_button};
+use crate::renderer::components::button::{button_state, label_spec, paint_button};
 use crate::renderer::components::input::{paint_field, FieldContent};
 use crate::renderer::components::list::{paint_card, Action, CardContent};
 use crate::renderer::components::overlay::{paint_dialog, DialogSpec};
@@ -47,10 +47,6 @@ pub(super) fn fit_tail(
         start += 1;
     }
     String::new()
-}
-
-fn button_state(state: &KeysState, t: KeysTarget) -> ButtonState {
-    ButtonState::resolve(state.hover == Some(t), false, false, false)
 }
 
 pub fn paint(
@@ -101,7 +97,7 @@ fn paint_layout(
         sugarloaf,
         theme,
         &import,
-        button_state(state, KeysTarget::Import),
+        button_state(false, state.hover == Some(KeysTarget::Import)),
         "Import",
         None,
     );
@@ -117,7 +113,7 @@ fn paint_layout(
         sugarloaf,
         theme,
         &gen,
-        button_state(state, KeysTarget::Generate),
+        button_state(false, state.hover == Some(KeysTarget::Generate)),
         "Generate key",
         None,
     );
@@ -318,7 +314,7 @@ fn paint_draft(
         sugarloaf,
         theme,
         &cancel,
-        button_state(state, KeysTarget::Cancel),
+        button_state(false, state.hover == Some(KeysTarget::Cancel)),
         "Cancel",
         None,
     );
@@ -334,7 +330,7 @@ fn paint_draft(
         sugarloaf,
         theme,
         &submit,
-        button_state(state, KeysTarget::Submit),
+        button_state(false, state.hover == Some(KeysTarget::Submit)),
         d.submit_label(),
         None,
     );
