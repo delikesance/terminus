@@ -23,7 +23,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check source file size
-        run: scripts/check-file-size.sh
+        run: |
+          git fetch --depth=1 origin main:refs/remotes/origin/main || true
+          scripts/check-file-size.sh
 
       - name: Install Rust toolchain
         run: rustup toolchain install && rustc --version
