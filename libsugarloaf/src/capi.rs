@@ -510,7 +510,7 @@ pub unsafe extern "C" fn sl_set_grid_padding(
 
 #[no_mangle]
 pub unsafe extern "C" fn sl_set_window_opaque(sl: *mut Sl, opaque: bool) {
-    if let Some(sl) = sl.as_ref() {
+    if let Some(sl) = sl.as_mut() {
         sl.set_window_opaque(opaque);
     }
 }
