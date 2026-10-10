@@ -183,24 +183,10 @@ impl<'a> WgpuContext<'a> {
             renderer_config.colorspace,
         );
 
-        // Every sugarloaf pipeline emits premultiplied alpha, so a surface
-        // that can composite premultiplied directly is the correct match;
-        // PostMultiplied stays as the fallback for surfaces that offer
-        // nothing else (wgpu's Metal backend), where only the fully-opaque
-        // and fully-transparent pixels compose identically either way.
-        let alpha_mode = if surface_caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-        {
-            wgpu::CompositeAlphaMode::PreMultiplied
-        } else if surface_caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
-        {
-            wgpu::CompositeAlphaMode::PostMultiplied
-        } else {
-            wgpu::CompositeAlphaMode::Auto
-        };
+        let alpha_mode = pick_alpha_mode(
+            &surface_caps.alpha_modes,
+            renderer_config.prefer_alpha_capable_adapter,
+        );
 
         // Configure view formats for wide color gamut support
         let view_formats = match renderer_config.colorspace {
@@ -280,7 +266,19 @@ impl<'a> WgpuContext<'a> {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.size.width = width as f32;
         self.size.height = height as f32;
+        self.configure_surface();
+    }
 
+    pub fn set_translucent(&mut self, translucent: bool) {
+        let alpha_mode = pick_alpha_mode(&self.surface_caps.alpha_modes, translucent);
+        if alpha_mode == self.alpha_mode {
+            return;
+        }
+        self.alpha_mode = alpha_mode;
+        self.configure_surface();
+    }
+
+    fn configure_surface(&self) {
         // Configure view formats for wide color gamut support
         let view_formats = match self.colorspace {
             Colorspace::DisplayP3 | Colorspace::Rec2020 => {
@@ -296,8 +294,8 @@ impl<'a> WgpuContext<'a> {
             &wgpu::SurfaceConfiguration {
                 usage: Self::get_texture_usage(&self.surface_caps),
                 format: self.format,
-                width,
-                height,
+                width: self.size.width as u32,
+                height: self.size.height as u32,
                 view_formats,
                 alpha_mode: self.alpha_mode,
                 color_space: wgpu::SurfaceColorSpace::Auto,
@@ -420,5 +418,60 @@ fn get_macos_texture_format(colorspace: Colorspace) -> wgpu::TextureFormat {
     match colorspace {
         Colorspace::Srgb => wgpu::TextureFormat::Bgra8UnormSrgb,
         Colorspace::DisplayP3 | Colorspace::Rec2020 => wgpu::TextureFormat::Bgra8Unorm,
+    }
+}
+
+/// An opaque window must not hand the compositor an alpha channel: DWM
+/// (Vulkan swapchains offer `PreMultiplied` even then) would blend the
+/// desktop through the window and wash every colour toward white. Every
+/// sugarloaf pipeline emits premultiplied alpha, so a translucent window
+/// takes `PreMultiplied`; `PostMultiplied` stays as the fallback for
+/// surfaces that offer nothing else (wgpu's Metal backend), where only
+/// fully opaque and fully transparent pixels compose identically.
+fn pick_alpha_mode(
+    supported: &[wgpu::CompositeAlphaMode],
+    translucent: bool,
+) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
+    let preference: &[_] = if translucent {
+        &[PreMultiplied, PostMultiplied]
+    } else {
+        &[Opaque]
+    };
+    preference
+        .iter()
+        .copied()
+        .find(|mode| supported.contains(mode))
+        .unwrap_or(Auto)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
+
+    #[test]
+    fn opaque_window_gets_opaque_surface_even_when_premultiplied_is_offered() {
+        assert_eq!(pick_alpha_mode(&[Opaque, PreMultiplied], false), Opaque);
+    }
+
+    #[test]
+    fn translucent_window_prefers_premultiplied() {
+        let supported = [Opaque, PostMultiplied, PreMultiplied];
+        assert_eq!(pick_alpha_mode(&supported, true), PreMultiplied);
+    }
+
+    #[test]
+    fn translucent_window_falls_back_to_postmultiplied_then_auto() {
+        assert_eq!(
+            pick_alpha_mode(&[Opaque, PostMultiplied], true),
+            PostMultiplied
+        );
+        assert_eq!(pick_alpha_mode(&[Opaque], true), Auto);
+    }
+
+    #[test]
+    fn opaque_window_without_opaque_mode_uses_auto() {
+        assert_eq!(pick_alpha_mode(&[PreMultiplied], false), Auto);
     }
 }
