@@ -82,6 +82,14 @@ pub(crate) fn paint_flat(
 ### 2.3 Vector Icons and SVG Assets
 Icons are defined as raw SVG paths in `crates/terminus-ui/src/icons.rs`. Instead of using quad strings to emulate strokes, they are rasterized into coverage masks using `tiny-skia` (handled inside `frontends/rioterm/src/renderer/chrome.rs` `rasterize_icon`) and cached into the Sugarloaf glyph atlas. This handles correct antialiasing at the pixel level.
 
+## File size
+
+- Terminus source files have a soft limit of 300 lines and a hard limit of 500, enforced by `scripts/check-file-size.sh` in CI.
+- `scripts/file-size-allowlist.txt` may only shrink: remove an entry once its file is split.
+- Split a growing file into `name/mod.rs` plus submodules organized by responsibility, with `pub use` re-exports.
+- Tests go in sibling `*_tests.rs` files.
+- One widget = one `terminus-ui` component (state, layout, hit-test, no GPU) plus one painter in `frontends/rioterm/src/renderer/components/`.
+
 ## References
 
 - Terminus UI integration: `crates/terminus-ui/src/lib.rs`
