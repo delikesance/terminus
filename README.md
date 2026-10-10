@@ -12,18 +12,16 @@
   <a href="milestone.md">Roadmap</a>
 </p>
 
-Terminus is a terminal with a built-in SSH / SFTP / WSL host manager. It is a fork of
-[Rio](https://github.com/raphamorim/rio) (GPU-rendered, cross-platform) with its own
-interface on top.
+Terminus is the terminal that knows your servers: SSH, SFTP and WSL hosts, an encrypted vault and a command palette, built into a fast GPU-rendered terminal. It is a fork of [Rio](https://github.com/raphamorim/rio) with its own interface on top.
 
 ## Features
 
 - **Host manager**: save servers, organise them in groups and open a tab in one click.
 - **SFTP file browser**: dual-pane transfers between your machine and a host, or between two hosts.
-- **WSL aware**: distros are discovered automatically and listed next to your local shell.
-- **Encrypted vault**: credentials stay locked behind an Argon2id-derived key.
-- **Command palette**: fuzzy-search hosts and commands from the keyboard; tabs and splits included.
-- **Self-updating**: releases are verified against their SHA-256 before they are applied.
+- **WSL aware**: distros are discovered automatically and show up next to your local shell.
+- **Encrypted vault**: credentials stay locked behind an Argon2id-derived key until you unlock them.
+- **Command palette**: fuzzy-search hosts and commands from the keyboard, tabs and splits included.
+- **Verified updates**: releases are verified against their SHA-256 checksum before they are applied.
 
 <p align="center">
   <img src="docs/assets/features.png" alt="Terminus features" width="100%">
@@ -31,9 +29,9 @@ interface on top.
 
 ## Screenshots
 
-| Command palette | Add a server | Settings |
-| :---: | :---: | :---: |
-| <img src="docs/assets/screenshot-palette.png" alt="Command palette"> | <img src="docs/assets/screenshot-addserver.png" alt="Add a server wizard"> | <img src="docs/assets/screenshot-settings.png" alt="Settings"> |
+<p align="center">
+  <img src="docs/assets/screens.png" alt="Terminus screens: the command palette, the add-server dialog and the settings window" width="100%">
+</p>
 
 ## Install
 
