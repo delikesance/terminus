@@ -53,6 +53,10 @@ dev-hot-win:
 dev-hot-win-once:
 	scripts/dev-win.sh --once
 
+# Fast debug-profile build (no LTO, incremental) for testing; binary in target/debug.
+build-dev:
+	cargo build -p rioterm --features wgpu
+
 install:
 	cargo fetch
 
@@ -197,11 +201,15 @@ test:
 # Release without Nix: needs docker, gh, openssl and python3.
 # release-linux builds and publishes the Linux artifacts; release also builds
 # Windows (cargo-xwin). ARGS is forwarded, e.g. make release-linux ARGS="--draft".
-.PHONY: release release-linux release-linux-build
-release:
+.PHONY: release release-linux release-linux-build bump-version
+bump-version:
+	bash scripts/bump-version.sh
+
+# release and release-linux bump the patch version first; release-linux-build does not.
+release: bump-version
 	bash scripts/release.sh $(ARGS)
 
-release-linux:
+release-linux: bump-version
 	bash scripts/release.sh --linux-only $(ARGS)
 
 release-linux-build:
