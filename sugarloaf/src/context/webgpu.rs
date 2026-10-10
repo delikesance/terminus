@@ -266,7 +266,19 @@ impl<'a> WgpuContext<'a> {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.size.width = width as f32;
         self.size.height = height as f32;
+        self.configure_surface();
+    }
 
+    pub fn set_translucent(&mut self, translucent: bool) {
+        let alpha_mode = pick_alpha_mode(&self.surface_caps.alpha_modes, translucent);
+        if alpha_mode == self.alpha_mode {
+            return;
+        }
+        self.alpha_mode = alpha_mode;
+        self.configure_surface();
+    }
+
+    fn configure_surface(&self) {
         // Configure view formats for wide color gamut support
         let view_formats = match self.colorspace {
             Colorspace::DisplayP3 | Colorspace::Rec2020 => {
@@ -282,8 +294,8 @@ impl<'a> WgpuContext<'a> {
             &wgpu::SurfaceConfiguration {
                 usage: Self::get_texture_usage(&self.surface_caps),
                 format: self.format,
-                width,
-                height,
+                width: self.size.width as u32,
+                height: self.size.height as u32,
                 view_formats,
                 alpha_mode: self.alpha_mode,
                 color_space: wgpu::SurfaceColorSpace::Auto,
@@ -421,13 +433,14 @@ fn pick_alpha_mode(
     translucent: bool,
 ) -> wgpu::CompositeAlphaMode {
     use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
-    let preference = if translucent {
-        [PreMultiplied, PostMultiplied]
+    let preference: &[_] = if translucent {
+        &[PreMultiplied, PostMultiplied]
     } else {
-        [Opaque, Opaque]
+        &[Opaque]
     };
     preference
-        .into_iter()
+        .iter()
+        .copied()
         .find(|mode| supported.contains(mode))
         .unwrap_or(Auto)
 }
