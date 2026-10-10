@@ -8,18 +8,13 @@
 //! are pinned to the gallery's own order).
 
 use rio_backend::sugarloaf::Sugarloaf;
-use terminus_ui::components::button::{ButtonKind, ButtonSize, ButtonSpec, ButtonState};
-use terminus_ui::components::selection::ControlState;
 use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
 
-use crate::renderer::components::button::paint_button_on;
-use crate::renderer::components::selection::paint_checkbox_on;
 use crate::renderer::components::Layer;
 
 pub mod confirm;
 pub mod connection;
-pub mod context_menu;
 pub mod snippet;
 pub mod vault;
 
@@ -27,11 +22,6 @@ pub mod vault;
 pub const ORDER: u8 = 30;
 /// Base depth of a modal panel; children add small offsets.
 pub const DEPTH: f32 = 0.1;
-
-/// Y that vertically centres a text line of `size` in `rect`.
-pub fn text_y(rect: &Rect, size: f32) -> f32 {
-    rect.y + (rect.height - size * 1.25) / 2.0
-}
 
 /// Soft drop shadow under a rounded panel (layered translucent rects).
 pub fn paint_shadow(sugarloaf: &mut Sugarloaf, r: &Rect, rad: f32, depth: f32) {
@@ -50,71 +40,44 @@ pub fn paint_shadow(sugarloaf: &mut Sugarloaf, r: &Rect, rad: f32, depth: f32) {
     }
 }
 
-/// Paint a button whose width came from `terminus_ui::confirm` (an
-/// estimate, shared with hit-testing) through the shared Button painter.
-///
-/// `backdrop` is the colour behind the button, used for the focus ring gap.
-#[allow(clippy::too_many_arguments)]
-pub fn paint_button_rect(
+/// Shell of a re-skinned modal: optional scrim, shadow, bordered surface.
+pub fn paint_dialog_frame(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
-    rect: &Rect,
-    kind: ButtonKind,
-    size: ButtonSize,
-    state: ButtonState,
-    label: &str,
-    backdrop: [f32; 4],
-    depth: f32,
+    scrim: Option<&Rect>,
+    dialog: &Rect,
 ) {
-    // Same width the layout used, so the spec rect equals the hit rect.
-    let label_w = rect.width - 2.0 * size.padding_x();
-    let spec = ButtonSpec::label((rect.x, rect.y), kind, size, label_w, false);
-    paint_button_on(
+    use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
+    use terminus_ui::components::overlay::SCRIM;
+    use terminus_ui::tokens::radius;
+
+    if let Some(scrim) = scrim {
+        paint_flat(sugarloaf, scrim, SCRIM, DEPTH - 0.02, ORDER);
+    }
+    paint_shadow(sugarloaf, dialog, radius::DIALOG, DEPTH);
+    paint_surface_stroke(
         sugarloaf,
-        theme,
-        &spec,
-        state,
-        label,
-        None,
-        Layer {
-            order: ORDER,
-            depth,
-            backdrop,
-        },
+        dialog,
+        theme.dialog,
+        Some(theme.dialog_line),
+        radius::DIALOG,
+        1.0,
+        DEPTH + 0.02,
+        ORDER,
+        false,
     );
 }
 
-/// Button state from the flags a dialog tracks.
-pub fn button_state(focused: bool, hovered: bool) -> ButtonState {
-    ButtonState::resolve(hovered, false, focused, false)
+/// Layer of the buttons inside a re-skinned modal.
+pub fn dialog_layer(theme: &ChromeTheme) -> Layer {
+    Layer {
+        order: ORDER,
+        depth: DEPTH + 0.05,
+        backdrop: theme.dialog,
+    }
 }
 
-/// Checkbox + label at the top-left of `row`.
-pub fn paint_checkbox_row(
-    sugarloaf: &mut Sugarloaf,
-    theme: &ChromeTheme,
-    row: &Rect,
-    label: &str,
-    checked: bool,
-    depth: f32,
-) {
-    paint_checkbox_on(
-        sugarloaf,
-        theme,
-        (row.x, row.y),
-        label,
-        checked,
-        ControlState::Default,
-        Layer {
-            order: ORDER,
-            depth,
-            backdrop: theme.dialog,
-        },
-    );
-}
-
-/// Input box in the Input component's look (46px field: fill, border,
-/// focus ring, 15px value, caret), at the dialog order.
+/// Dialog input box: the Input component's text field at the dialog order.
 ///
 /// `caret_prefix` is the text before the caret (already masked); `None`
 /// hides the caret. `trailing` reserves room on the right (eye button).
@@ -130,73 +93,40 @@ pub fn paint_text_field(
     trailing: f32,
     depth: f32,
 ) {
-    use terminus_ui::components::input as ui;
-    use terminus_ui::tokens::radius;
-
-    use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
-    use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
-
-    if focused {
-        let g = ui::FOCUS_RING;
-        let c = theme.accent;
-        let ring = [
-            c[0] * ui::FOCUS_RING_ALPHA + theme.dialog[0] * (1.0 - ui::FOCUS_RING_ALPHA),
-            c[1] * ui::FOCUS_RING_ALPHA + theme.dialog[1] * (1.0 - ui::FOCUS_RING_ALPHA),
-            c[2] * ui::FOCUS_RING_ALPHA + theme.dialog[2] * (1.0 - ui::FOCUS_RING_ALPHA),
-            1.0,
-        ];
-        paint_surface_stroke(
-            sugarloaf,
-            &Rect::new(
-                rect.x - g,
-                rect.y - g,
-                rect.width + 2.0 * g,
-                rect.height + 2.0 * g,
-            ),
-            ring,
-            None,
-            radius::CONTROL + g,
-            0.0,
-            depth,
-            ORDER,
-            false,
-        );
-    }
-    paint_surface_stroke(
-        sugarloaf,
-        rect,
-        theme.field,
-        Some(if focused { theme.accent } else { theme.line }),
-        radius::CONTROL,
-        1.0,
-        depth + 0.01,
-        ORDER,
-        false,
-    );
-    let font = ui::SANS_VALUE_FONT;
-    let tx = rect.x + ui::PAD_LEFT;
-    let ty = rect.y + (rect.height - font * 1.25) / 2.0;
-    let color = if placeholder {
-        theme.text_faint
-    } else {
-        theme.text
+    use crate::renderer::components::input::{paint_field_at, FieldContent};
+    use crate::renderer::ui_text::{measure_ui_text, UiWeight};
+    use terminus_ui::components::input::{
+        bare_field_layout, FieldKind, FieldState, SANS_VALUE_FONT,
     };
-    draw_ui_text(sugarloaf, tx, ty, value, font, color, UiWeight::Regular);
-    let _ = trailing;
-    if let Some(prefix) = caret_prefix {
-        let w = measure_ui_text(sugarloaf, prefix, font, UiWeight::Regular);
-        let max_x = rect.right() - trailing - ui::PAD_RIGHT;
-        paint_flat(
-            sugarloaf,
-            &Rect::new(
-                (tx + w).min(max_x),
-                ty,
-                ui::CARET_WIDTH,
-                (font * 1.25).round(),
-            ),
-            theme.accent,
-            depth + 0.03,
-            ORDER,
-        );
-    }
+
+    let layout = bare_field_layout(rect, trailing);
+    let caret_prefix_width = caret_prefix.map(|prefix| {
+        measure_ui_text(sugarloaf, prefix, SANS_VALUE_FONT, UiWeight::Regular)
+    });
+    let (value, placeholder) = if placeholder {
+        ("", value)
+    } else {
+        (value, "")
+    };
+    let state = if focused {
+        FieldState::Focus
+    } else {
+        FieldState::Default
+    };
+    let content = FieldContent {
+        kind: FieldKind::Text,
+        state,
+        label: None,
+        value,
+        placeholder,
+        helper: None,
+        revealed: false,
+        caret_prefix_width,
+    };
+    let layer = Layer {
+        order: ORDER,
+        depth,
+        backdrop: theme.dialog,
+    };
+    paint_field_at(sugarloaf, theme, &layout, &content, layer, 1.0);
 }

@@ -4,7 +4,7 @@ use rio_window::window::{
     CursorIcon, Fullscreen, Icon, ImePurpose, Window, WindowAttributes,
 };
 
-pub const LOGO_ICON: &[u8; 410598] = include_bytes!("./resources/images/rio-logo.ico");
+pub const LOGO_ICON: &[u8] = include_bytes!("./resources/images/rio-logo.ico");
 // Terminal W/H constraints: the chrome plus a usable grid. Anything
 // narrower than the sidebar leaves the terminal one or two cells wide.
 pub const DEFAULT_MINIMUM_WINDOW_HEIGHT: i32 =

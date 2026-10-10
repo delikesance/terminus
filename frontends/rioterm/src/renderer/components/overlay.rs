@@ -35,7 +35,7 @@ fn rgba8(c: [u8; 4]) -> [f32; 4] {
 }
 
 /// Y that vertically centres a text line of `size` in `rect`.
-fn text_y(rect: &Rect, size: f32) -> f32 {
+pub fn text_y(rect: &Rect, size: f32) -> f32 {
     rect.y + (rect.height - size * 1.25) / 2.0
 }
 

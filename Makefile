@@ -197,7 +197,10 @@ test:
 # Release without Nix: needs docker, gh, openssl and python3.
 # release-linux builds and publishes the Linux artifacts; release also builds
 # Windows (cargo-xwin). ARGS is forwarded, e.g. make release-linux ARGS="--draft".
-.PHONY: release release-linux release-linux-build
+.PHONY: release release-linux release-linux-build bump-version
+bump-version:
+	bash scripts/bump-version.sh
+
 release:
 	bash scripts/release.sh $(ARGS)
 

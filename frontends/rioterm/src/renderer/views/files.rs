@@ -64,7 +64,7 @@ pub enum FilesAction {
     /// UI state changed: call `Route::request_overlay_redraw`.
     Redraw,
     /// Open this context menu (the app owns menu painting/hit-testing).
-    ContextMenu(terminus_ui::ContextMenu),
+    ContextMenu(terminus_ui::ActionMenu),
 }
 
 impl FilesAction {

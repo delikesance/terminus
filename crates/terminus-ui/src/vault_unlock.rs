@@ -4,10 +4,10 @@
 //! vault is still locked. The passphrase row reuses the Settings field-card
 //! geometry (`field_input_in_card` + eye slot).
 
-use crate::components::overlay::wrap_text;
+use crate::components::input::{FieldPaint, TextDraft, TextEdit};
+use crate::components::overlay::{action_row, action_width, wrap_text};
 use crate::confirm::{estimate_text_width, BODY_FONT, BUTTON_ADVANCE, BUTTON_FONT};
 use crate::geom::Rect;
-use crate::text_field::{FieldPaint, TextDraft, TextEdit};
 
 pub const WIDTH: f32 = 400.0;
 pub const PAD: f32 = 32.0;
@@ -382,7 +382,7 @@ pub struct VaultUnlockLayout {
 
 /// Width of a button for `label` (shared estimate, see `confirm`).
 pub fn button_width(label: &str) -> f32 {
-    label.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE + 40.0
+    action_width(label.chars().count() as f32 * BUTTON_FONT * BUTTON_ADVANCE)
 }
 
 impl VaultUnlockLayout {
@@ -566,13 +566,14 @@ impl VaultUnlockLayout {
 
     /// `(cancel, confirm)` rects for the given labels.
     pub fn button_rects(&self, cancel: &str, confirm: &str) -> (Rect, Rect) {
-        let d = self.rect();
-        let y = d.bottom() - PAD - BUTTON_HEIGHT;
-        let cw = button_width(confirm);
-        let kw = button_width(cancel);
-        let confirm_r = Rect::new(d.right() - PAD - cw, y, cw, BUTTON_HEIGHT);
-        let cancel_r = Rect::new(confirm_r.x - BUTTON_GAP - kw, y, kw, BUTTON_HEIGHT);
-        (cancel_r, confirm_r)
+        action_row(
+            &self.rect(),
+            PAD,
+            BUTTON_HEIGHT,
+            BUTTON_GAP,
+            button_width(cancel),
+            button_width(confirm),
+        )
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> VaultUnlockHit {
@@ -610,6 +611,15 @@ impl VaultUnlockLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn button_width_is_estimated_text_plus_action_padding() {
+        assert_eq!(button_width(""), action_width(0.0));
+        assert_eq!(
+            button_width("Cancel"),
+            action_width(6.0 * BUTTON_FONT * BUTTON_ADVANCE)
+        );
+    }
 
     #[test]
     fn settings_unlock_vault_unlocks_an_existing_vault_and_creates_a_missing_one() {

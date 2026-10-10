@@ -35,6 +35,11 @@ fn weight(kind: ButtonKind) -> UiWeight {
     }
 }
 
+/// Button state from the flags a dialog tracks.
+pub fn button_state(focused: bool, hovered: bool) -> ButtonState {
+    ButtonState::resolve(hovered, false, focused, false)
+}
+
 /// Measure `label` for `kind`/`size` and build the spec at `origin`.
 pub fn label_spec(
     sugarloaf: &mut Sugarloaf,
@@ -141,6 +146,23 @@ pub fn paint_button_on(
             weight(spec.kind),
         );
     }
+}
+
+/// Paint a `kind`/`size` button that fills the layout `rect` (width shared
+/// with hit-testing, centred vertically) on an explicit [`Layer`].
+#[allow(clippy::too_many_arguments)]
+pub fn paint_button_in_rect(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    rect: &Rect,
+    kind: ButtonKind,
+    size: ButtonSize,
+    state: ButtonState,
+    label: &str,
+    layer: Layer,
+) {
+    let spec = ButtonSpec::in_rect(*rect, kind, size);
+    paint_button_on(sugarloaf, theme, &spec, state, label, None, layer);
 }
 
 /// Resolve and paint with the pointer / keyboard flags a screen tracks.

@@ -14,6 +14,7 @@ pub mod input;
 pub mod list;
 pub mod navigation;
 pub mod overlay;
+pub mod scroll;
 pub mod selection;
 
 /// Where a component paints when it is embedded in another surface (a

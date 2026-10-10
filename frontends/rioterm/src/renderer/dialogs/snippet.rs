@@ -1,19 +1,17 @@
 //! New-snippet dialog (Overlay + Input look).
 
+use crate::renderer::components::button::{button_state, paint_button_in_rect};
 use rio_backend::sugarloaf::Sugarloaf;
 use terminus_ui::components::button::{ButtonKind, ButtonSize};
 use terminus_ui::components::input as ui;
-use terminus_ui::components::overlay as ov;
 use terminus_ui::dialog_form::{DialogFormLayout, DynamicFormHit};
 use terminus_ui::geom::Rect;
 use terminus_ui::theme::ChromeTheme;
-use terminus_ui::tokens::{font_size, radius};
+use terminus_ui::tokens::font_size;
 use terminus_ui::Chrome;
 
-use super::{
-    button_state, paint_button_rect, paint_shadow, paint_text_field, DEPTH, ORDER,
-};
-use crate::renderer::chrome::{paint_flat, paint_surface_stroke};
+use super::{dialog_layer, paint_dialog_frame, paint_text_field, DEPTH, ORDER};
+use crate::renderer::chrome::paint_flat;
 use crate::renderer::ui_text::{draw_ui_text, measure_ui_text, UiWeight};
 
 pub fn paint_add_snippet(
@@ -25,25 +23,8 @@ pub fn paint_add_snippet(
 ) {
     let form = &chrome.snippet_form.inner;
     let layout = DialogFormLayout::compute(form, window.0, window.1);
-    paint_flat(
-        sugarloaf,
-        &Rect::new(0.0, 0.0, window.0, window.1),
-        ov::SCRIM,
-        DEPTH - 0.02,
-        ORDER,
-    );
-    paint_shadow(sugarloaf, &layout.dialog, radius::DIALOG, DEPTH);
-    paint_surface_stroke(
-        sugarloaf,
-        &layout.dialog,
-        theme.dialog,
-        Some(theme.dialog_line),
-        radius::DIALOG,
-        1.0,
-        DEPTH + 0.02,
-        ORDER,
-        false,
-    );
+    let scrim = Rect::new(0.0, 0.0, window.0, window.1);
+    paint_dialog_frame(sugarloaf, theme, Some(&scrim), &layout.dialog);
     if !glyphs {
         return;
     }
@@ -121,7 +102,7 @@ pub fn paint_add_snippet(
         );
     }
     let hov = |h| form.btn_hover == Some(h);
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &layout.cancel_btn,
@@ -129,10 +110,9 @@ pub fn paint_add_snippet(
         ButtonSize::Large,
         button_state(false, hov(DynamicFormHit::Cancel)),
         "Cancel",
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
-    paint_button_rect(
+    paint_button_in_rect(
         sugarloaf,
         theme,
         &layout.save_btn,
@@ -140,7 +120,6 @@ pub fn paint_add_snippet(
         ButtonSize::Large,
         button_state(false, hov(DynamicFormHit::Save)),
         &form.save_label,
-        theme.dialog,
-        DEPTH + 0.05,
+        dialog_layer(theme),
     );
 }

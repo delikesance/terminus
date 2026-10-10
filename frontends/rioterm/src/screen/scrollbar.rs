@@ -4,6 +4,7 @@ use super::Screen;
 use crate::crosswords::grid::Scroll;
 use crate::crosswords::Mode;
 use rio_window::event::ElementState;
+use terminus_ui::components::scroll::ScrollHit;
 
 impl Screen<'_> {
     pub fn handle_scrollbar_click(&mut self) -> bool {
@@ -28,7 +29,7 @@ impl Screen<'_> {
         let screen_lines = terminal.screen_lines();
         drop(terminal);
 
-        if let Some((grab_offset, geom)) = self.renderer.scrollbar.hit_test(
+        if let Some((hit, scroll)) = self.renderer.scrollbar.hit_test(
             mouse_x,
             mouse_y,
             panel_rect,
@@ -38,15 +39,12 @@ impl Screen<'_> {
             screen_lines,
             grid_margin,
         ) {
-            self.renderer.scrollbar.start_drag(
-                rich_text_id,
-                grab_offset,
-                &geom,
-                history_size,
-            );
+            self.renderer
+                .scrollbar
+                .start_drag(rich_text_id, hit, scroll);
 
             // If clicked on track (not on thumb), jump-scroll to that position
-            if grab_offset.is_none() {
+            if hit == ScrollHit::Track {
                 if let Some(new_offset) = self.renderer.scrollbar.drag_update(mouse_y) {
                     let mut terminal = self.context_manager.current_mut().terminal.lock();
                     let current = terminal.display_offset();

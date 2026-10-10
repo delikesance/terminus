@@ -7,12 +7,12 @@
 
 use crate::components::button::{ButtonKind, ButtonSize, ButtonSpec};
 use crate::components::input::{search_layout, SearchKind, SearchLayout, SEARCH_HEIGHT};
+use crate::components::input::{TextDraft, TextEdit};
 use crate::components::list::{
     card_hit, CardHit, CardSpec, CARD_ACTION_GAP, CARD_HEIGHT,
 };
 use crate::geom::Rect;
 use crate::snippets::SnippetItem;
-use crate::text_field::{TextDraft, TextEdit};
 
 /// Padding around the view (design: 28 px).
 pub const PAD: f32 = 28.0;

@@ -7,6 +7,7 @@ use super::{
     Confirm, ConfirmHit, ConfirmLayout, Key, Measure, SettingsAction, ROW_GAP,
 };
 use crate::components::button::{ButtonKind, ButtonSize};
+use crate::components::input::TextDraft;
 use crate::components::input::{
     field_layout, FieldKind, FieldLayout, HELPER_HEIGHT, LABEL_GAP,
 };
@@ -16,7 +17,6 @@ use crate::components::list::{
 use crate::components::overlay::{dialog_key, DialogFocus, DialogKey, DialogOutcome};
 use crate::geom::Rect;
 use crate::settings::{SshKeyItem, KEY_LABEL_MAX_BYTES, KEY_PEM_MAX_BYTES};
-use crate::text_field::TextDraft;
 
 pub const INTRO: &str =
     "Keys Terminus manages for you. Copy a public key into a server's authorized_keys.";

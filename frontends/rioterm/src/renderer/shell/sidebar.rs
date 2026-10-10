@@ -19,6 +19,7 @@ use crate::renderer::chrome::{draw_icon, draw_orbit_indicator};
 use crate::renderer::components::navigation::{
     paint_drop_target, paint_section_header, paint_server_row, TileKind,
 };
+use crate::renderer::components::scroll::paint_thumb;
 use crate::renderer::ui_text::{
     draw_mono_text, draw_ui_text, measure_mono_text, measure_ui_text, UiWeight,
 };
@@ -382,7 +383,14 @@ fn paint_list(
         } else {
             theme.line
         };
-        fill(sugarloaf, &thumb, color, thumb.width * 0.5);
+        paint_thumb(
+            sugarloaf,
+            &thumb,
+            color,
+            thumb.width * 0.5,
+            super::DEPTH,
+            super::ORDER,
+        );
     }
 
     crate::renderer::chrome::render_empty_hint(

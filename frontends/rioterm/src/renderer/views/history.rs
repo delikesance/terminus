@@ -312,7 +312,7 @@ pub fn paint_preview(s: &mut Sugarloaf, theme: &ChromeTheme) {
             let items = if real.is_empty() { seeded(now) } else { real };
             let mut st = HistoryState::new(items, true);
             if let Ok(f) = std::env::var("TERMINUS_VIEW_PREVIEW_FILTER") {
-                st.filter = terminus_ui::text_field::TextDraft::new(f);
+                st.filter = terminus_ui::components::input::TextDraft::new(f);
                 st.filter_focused = true;
             }
             st

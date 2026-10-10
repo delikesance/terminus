@@ -18,9 +18,9 @@ pub mod files;
 pub mod home;
 pub mod snippets;
 
+use crate::components::input::{TextEdit, TextMoveKind};
 use crate::geom::Rect;
 use crate::shell::WorkspaceView;
-use crate::text_field::{TextEdit, TextMoveKind};
 
 /// Content padding of a view (the mock's 28px).
 pub const PAD: f32 = 28.0;
