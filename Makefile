@@ -53,10 +53,6 @@ dev-hot-win:
 dev-hot-win-once:
 	scripts/dev-win.sh --once
 
-# Fast debug-profile build (no LTO, incremental) for testing; binary in target/debug.
-build-dev:
-	cargo build -p rioterm --features wgpu
-
 install:
 	cargo fetch
 
