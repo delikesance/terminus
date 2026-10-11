@@ -140,6 +140,7 @@ impl Store {
         // DBs already have `updated_at TEXT NOT NULL` from a prior schema —
         // `set_setting` must write it (see below).
         Self::ensure_settings_updated_at(pool).await?;
+        Self::ensure_column(pool, "snippets", "host_id", "TEXT").await?;
         Self::ensure_sort_order(pool, "hosts").await?;
         Self::ensure_sort_order(pool, "groups").await?;
         // Same story for the columns `upsert_host` writes: a `hosts` table made
