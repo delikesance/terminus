@@ -13,9 +13,11 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 1
 fi
 mkdir -p "$BUILD_DIR" "$CACHE_DIR"
+source "$ROOT/scripts/docker-user.sh"
+CONTAINER_USER="$(docker_user)"
 docker build --platform linux/amd64 --build-arg "RUST_VERSION=$RUST_VERSION" \
     -t "$IMAGE" -f "$ROOT/misc/linux-release.Dockerfile" "$ROOT/misc"
-docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" \
+docker run --rm --platform linux/amd64 --user "$CONTAINER_USER" \
     --mount "type=bind,src=$ROOT,dst=/work,readonly" \
     --mount "type=bind,src=$BUILD_DIR,dst=/build" \
     --mount "type=bind,src=$CACHE_DIR,dst=/cargo" \
