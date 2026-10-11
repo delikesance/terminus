@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "corcovado"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "criterion",
  "libc",
@@ -3558,7 +3558,7 @@ dependencies = [
 
 [[package]]
 name = "librio"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "bitflags 2.13.2",
  "corcovado",
@@ -3572,7 +3572,7 @@ dependencies = [
 
 [[package]]
 name = "librio-wasm"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "js-sys",
  "librio",
@@ -3592,7 +3592,7 @@ dependencies = [
 
 [[package]]
 name = "libsugarloaf"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "librio",
  "raw-window-handle",
@@ -5401,7 +5401,7 @@ dependencies = [
 
 [[package]]
 name = "rio-backend"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "base64 0.23.1",
  "dirs 6.0.0",
@@ -5420,11 +5420,11 @@ dependencies = [
 
 [[package]]
 name = "rio-fonts"
-version = "0.7.22"
+version = "0.7.23"
 
 [[package]]
 name = "rio-grapheme-width"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "phf",
  "ucd-trie",
@@ -5432,7 +5432,7 @@ dependencies = [
 
 [[package]]
 name = "rio-graphics"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "image",
  "parking_lot",
@@ -5445,7 +5445,7 @@ dependencies = [
 
 [[package]]
 name = "rio-grid"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "rapidhash",
  "rio-backend",
@@ -5456,7 +5456,7 @@ dependencies = [
 
 [[package]]
 name = "rio-notifier"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "block2 0.5.1",
  "objc-rs 0.3.2",
@@ -5469,7 +5469,7 @@ dependencies = [
 
 [[package]]
 name = "rio-unicode"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "unicode-segmentation",
  "unicode-width-16",
@@ -5477,7 +5477,7 @@ dependencies = [
 
 [[package]]
 name = "rio-vt"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "base64 0.23.1",
  "bitflags 2.13.2",
@@ -5510,7 +5510,7 @@ dependencies = [
 
 [[package]]
 name = "rio-window"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "ahash",
  "atomic-waker",
@@ -5564,7 +5564,7 @@ dependencies = [
 
 [[package]]
 name = "rioterm"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "ahash",
  "arboard",
@@ -6911,7 +6911,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sugarloaf"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "approx",
  "ash",
@@ -7066,7 +7066,7 @@ dependencies = [
 
 [[package]]
 name = "teletypewriter"
-version = "0.7.22"
+version = "0.7.23"
 dependencies = [
  "corcovado",
  "dirs 6.0.0",
