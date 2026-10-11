@@ -63,6 +63,33 @@ fn a_new_listing_resets_the_filter() {
 }
 
 #[test]
+fn refreshing_the_same_directory_keeps_the_filter() {
+    let mut side = side();
+    side.filter_focused = true;
+    side.type_filter("no");
+    side.set_listed(
+        "/".into(),
+        vec![row("notes.txt"), row("nope.md"), row("main.rs")],
+    );
+    assert_eq!(names(&side), ["notes.txt", "nope.md"]);
+    assert_eq!(side.filter.value, "no");
+    assert!(side.filter_focused);
+}
+
+#[test]
+fn escape_clears_the_filter_only_while_it_owns_keys() {
+    let mut st = SftpPaneState::new_local_local("/a", "/b");
+    st.focus_filter(SftpFocus::Left);
+    st.left.type_filter("x");
+    st.blur_filters();
+    assert!(!st.escape_filter());
+    assert_eq!(st.left.filter.value, "x");
+    st.focus_filter(SftpFocus::Left);
+    assert!(st.escape_filter());
+    assert!(st.left.filter.value.is_empty());
+}
+
+#[test]
 fn filtering_resets_selection_and_scroll() {
     let mut side = side();
     side.selected = Some(2);

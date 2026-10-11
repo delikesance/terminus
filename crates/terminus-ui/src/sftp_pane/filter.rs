@@ -34,7 +34,7 @@ impl SftpSideState {
         self.filter_focused = false;
     }
 
-    fn refilter(&mut self) {
+    pub(super) fn refilter(&mut self) {
         let needle = self.filter.value.to_lowercase();
         self.entries = self
             .listing
@@ -62,5 +62,14 @@ impl SftpPaneState {
     /// The focused pane's quick-find box is capturing typing.
     pub fn filter_owns_keys(&self) -> bool {
         self.side(self.focus).filter_focused
+    }
+
+    /// Esc belongs to the quick-find box only while it holds focus.
+    pub fn escape_filter(&mut self) -> bool {
+        if !self.filter_owns_keys() {
+            return false;
+        }
+        let focus = self.focus;
+        self.side_mut(focus).clear_filter()
     }
 }
