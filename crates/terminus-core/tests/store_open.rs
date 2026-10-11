@@ -407,3 +407,21 @@ async fn open_uses_write_ahead_logging() {
 
     assert_eq!(mode, "wal");
 }
+
+#[tokio::test]
+async fn concurrent_first_open_of_empty_dir_all_succeed() {
+    let dir = temp_dir("concurrent-first-open");
+    let (a, b, c, d) = tokio::join!(
+        Store::open(dir.clone()),
+        Store::open(dir.clone()),
+        Store::open(dir.clone()),
+        Store::open(dir.clone()),
+    );
+    for (idx, result) in [a, b, c, d].iter().enumerate() {
+        assert!(
+            result.is_ok(),
+            "open #{idx} failed: {:?}",
+            result.as_ref().err()
+        );
+    }
+}
