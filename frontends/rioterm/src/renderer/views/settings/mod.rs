@@ -16,6 +16,7 @@ use terminus_ui::views::settings::{
 use crate::renderer::ui_text::{measure_ui_text, UiWeight};
 
 pub mod appearance;
+pub mod general;
 pub mod keys;
 pub mod preview;
 pub mod sync;
@@ -52,6 +53,7 @@ pub fn paint(
         Page::Appearance => {
             appearance::paint(sugarloaf, theme, content, &view.appearance)
         }
+        Page::General => general::paint(sugarloaf, theme, content, &view.general),
         Page::Updates => updates::paint(sugarloaf, theme, content, &view.updates),
         Page::Uploads => uploads::paint(sugarloaf, theme, content, &view.uploads),
     }
@@ -142,6 +144,7 @@ pub fn load_config(view: &mut SettingsView, config: &rio_backend::config::Config
         CursorStyle::from_config(&format!("{:?}", config.cursor.shape));
     view.appearance.theme =
         ThemeChoice::from_config(config.theme_preference().config_value());
+    view.general.restore_tabs = config.startup.restore_tabs;
     view.updates.check = config.updates.check;
     view.updates.auto_install = config.updates.auto_install;
     view.uploads
@@ -235,6 +238,19 @@ mod tests {
         assert_eq!(view.appearance.size, 13.0);
         assert_eq!(view.appearance.cursor, CursorStyle::Beam);
         assert!(!view.updates.check && !view.updates.auto_install);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn restore_tabs_loads_back_through_the_real_config_parser() {
+        let path = tmp("restore");
+        persist_at(&path, &SettingsAction::SetRestoreTabs(true)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[startup]\nrestore-tabs = true\n"), "{text}");
+        let config: rio_backend::config::Config = toml::from_str(&text).unwrap();
+        let mut view = SettingsView::new("0.0.0");
+        load_config(&mut view, &config);
+        assert!(view.general.restore_tabs);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

@@ -4,7 +4,7 @@
 //! The header has three faces (`App.dc.html`):
 //! * machine — name + address, tabs Terminal · Files · Tunnels · Snippets ·
 //!   History (Tunnels carries the running-tunnel badge);
-//! * settings — "Settings", tabs SSH keys · Sync · Appearance · Updates;
+//! * settings — "Settings", tabs General · SSH keys · Sync · Appearance · Updates;
 //! * home — "Where to?", no tabs.
 
 use super::workspace::{SettingsPage, WorkspaceView};
@@ -114,7 +114,14 @@ mod tests {
         let labels: Vec<_> = tabs.iter().map(|t| t.label).collect();
         assert_eq!(
             labels,
-            ["SSH keys", "Sync", "Appearance", "Updates", "Uploads"]
+            [
+                "General",
+                "SSH keys",
+                "Sync",
+                "Appearance",
+                "Updates",
+                "Uploads"
+            ]
         );
         assert!(tabs.iter().all(|t| t.badge.is_empty()));
         assert!(tabs_for(WorkspaceView::Home, 1).is_empty());
