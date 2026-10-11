@@ -57,6 +57,7 @@ impl Screen<'_> {
         // Settings > Updates switches write `[updates]`: the worker
         // follows them without a restart.
         self.updater.apply_settings(config.updates.into());
+        self.saved_tabs.enabled = config.startup.restore_tabs;
 
         // Preserve existing Island (tab state) and update its colors
         let old_island = self.renderer.island.take();

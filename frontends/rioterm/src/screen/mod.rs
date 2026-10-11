@@ -489,7 +489,7 @@ impl Screen<'_> {
             pending_host_select: None,
             pending_host_connect: false,
             pending_vault_continue: None,
-            saved_tabs: saved_tabs::SavedTabsState::default(),
+            saved_tabs: saved_tabs::SavedTabsState::new(config.startup.restore_tabs),
             connecting_started: None,
             background_connecting: Vec::new(),
             connecting_step_at: None,

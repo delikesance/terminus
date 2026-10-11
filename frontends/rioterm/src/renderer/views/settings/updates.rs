@@ -15,7 +15,12 @@ use crate::renderer::components::button::{label_spec, paint_button};
 use crate::renderer::components::selection::paint_toggle;
 use crate::renderer::ui_text::{draw_ui_text, UiWeight};
 
-fn card(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, r: &Rect, hover: bool) {
+pub(super) fn card(
+    sugarloaf: &mut Sugarloaf,
+    theme: &ChromeTheme,
+    r: &Rect,
+    hover: bool,
+) {
     let bg = if hover {
         CardState::Hover
     } else {
@@ -25,7 +30,7 @@ fn card(sugarloaf: &mut Sugarloaf, theme: &ChromeTheme, r: &Rect, hover: bool) {
     sugarloaf.rounded_rect(None, r.x, r.y, r.width, r.height, bg, 0.1, CARD_RADIUS, 0);
 }
 
-fn two_lines(
+pub(super) fn two_lines(
     sugarloaf: &mut Sugarloaf,
     theme: &ChromeTheme,
     text: &Rect,

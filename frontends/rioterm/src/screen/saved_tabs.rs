@@ -28,6 +28,8 @@ static CLAIMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 pub(super) struct SavedTabsState {
+    /// `[startup] restore-tabs`: when off, nothing is restored or saved.
+    pub(super) enabled: bool,
     /// The host worker's first refresh has landed; restore on next frame.
     restore_due: bool,
     /// This window restored the tabs and keeps the file up to date.
@@ -40,6 +42,13 @@ pub(super) struct SavedTabsState {
 }
 
 impl SavedTabsState {
+    pub(super) fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn hosts_known(&mut self) {
         if !self.owner {
             self.restore_due = true;
@@ -130,7 +139,7 @@ impl Screen<'_> {
     /// Once the hosts are known, reopen the tabs saved by the last launch.
     /// Returns whether any tab changed.
     pub fn restore_saved_tabs_if_due(&mut self, clipboard: &mut Clipboard) -> bool {
-        if !std::mem::take(&mut self.saved_tabs.restore_due) {
+        if !std::mem::take(&mut self.saved_tabs.restore_due) || !self.saved_tabs.enabled {
             return false;
         }
         if CLAIMED.swap(true, Ordering::SeqCst) {

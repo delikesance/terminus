@@ -11,6 +11,7 @@
 /// A section of the Settings page (header tabs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingsPage {
+    General,
     Keys,
     Sync,
     Appearance,
@@ -19,7 +20,8 @@ pub enum SettingsPage {
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 5] = [
+    pub const ALL: [SettingsPage; 6] = [
+        SettingsPage::General,
         SettingsPage::Keys,
         SettingsPage::Sync,
         SettingsPage::Appearance,
@@ -29,6 +31,7 @@ impl SettingsPage {
 
     pub fn label(self) -> &'static str {
         match self {
+            SettingsPage::General => "General",
             SettingsPage::Keys => "SSH keys",
             SettingsPage::Sync => "Sync",
             SettingsPage::Appearance => "Appearance",
@@ -42,6 +45,7 @@ impl From<SettingsPage> for crate::views::settings::Page {
     fn from(page: SettingsPage) -> Self {
         use crate::views::settings::Page;
         match page {
+            SettingsPage::General => Page::General,
             SettingsPage::Keys => Page::Keys,
             SettingsPage::Sync => Page::Sync,
             SettingsPage::Appearance => Page::Appearance,
@@ -212,6 +216,7 @@ mod tests {
     #[test]
     fn settings_pages_map_to_the_settings_view_pages() {
         use crate::views::settings::Page;
+        assert_eq!(Page::from(SettingsPage::General), Page::General);
         assert_eq!(Page::from(SettingsPage::Keys), Page::Keys);
         assert_eq!(Page::from(SettingsPage::Sync), Page::Sync);
         assert_eq!(Page::from(SettingsPage::Appearance), Page::Appearance);
@@ -224,7 +229,14 @@ mod tests {
         let labels: Vec<_> = SettingsPage::ALL.iter().map(|p| p.label()).collect();
         assert_eq!(
             labels,
-            ["SSH keys", "Sync", "Appearance", "Updates", "Uploads"]
+            [
+                "General",
+                "SSH keys",
+                "Sync",
+                "Appearance",
+                "Updates",
+                "Uploads"
+            ]
         );
     }
 

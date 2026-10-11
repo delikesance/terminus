@@ -200,6 +200,7 @@ impl Screen<'_> {
             | SettingsAction::SetCursor(_)
             | SettingsAction::SetTheme(_)
             | SettingsAction::SetCheckUpdates(_)
+            | SettingsAction::SetRestoreTabs(_)
             | SettingsAction::SetAutoInstall(_)
             | SettingsAction::SetUploadDir { .. } => self.persist_setting(&action),
             SettingsAction::Batch(actions) => {
