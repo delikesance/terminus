@@ -1,4 +1,5 @@
 use super::*;
+use crate::components::overlay::DialogFocus;
 
 #[test]
 fn config_edits_map_to_the_keys_the_app_reads() {

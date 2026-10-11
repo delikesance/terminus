@@ -13,6 +13,8 @@
 
 pub mod appearance;
 pub mod config_edit;
+pub mod confirm;
+pub mod general;
 pub mod keys;
 pub mod sync;
 pub mod updates;
@@ -20,13 +22,12 @@ pub mod uploads;
 
 use crate::components::button::{ButtonKind, ButtonSize, ButtonSpec};
 use crate::components::input::{TextDraft, TextEdit, TextMoveKind};
-use crate::components::overlay::{
-    self as ov, dialog_layout_at, wrap_text, DialogFocus, DialogHit, DialogKind,
-    DialogLayout,
-};
+use crate::components::overlay::DialogHit;
 use crate::geom::Rect;
 
 pub use appearance::{AppearanceState, CursorStyle, ThemeChoice};
+pub use confirm::{confirm_hit, confirm_layout, Confirm, ConfirmHit, ConfirmLayout};
+pub use general::GeneralState;
 pub use keys::{DraftField, DraftMode, KeyDraft, KeysState};
 pub use sync::SyncState;
 pub use updates::{UpdateStatus, UpdatesState};
@@ -43,6 +44,7 @@ pub type Measure<'a> = &'a mut dyn FnMut(&str, f32, bool) -> f32;
 /// The five Settings tabs (the shell draws the tab strip).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
+    General,
     #[default]
     Keys,
     Sync,
@@ -52,7 +54,8 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
+        Page::General,
         Page::Keys,
         Page::Sync,
         Page::Appearance,
@@ -63,6 +66,7 @@ impl Page {
     /// Tab label, as in the mock.
     pub fn label(self) -> &'static str {
         match self {
+            Page::General => "General",
             Page::Keys => "SSH keys",
             Page::Sync => "Sync",
             Page::Appearance => "Appearance",
@@ -74,6 +78,7 @@ impl Page {
     /// `TERMINUS_VIEW_PREVIEW=settings-<name>`.
     pub fn from_preview(name: &str) -> Option<Page> {
         Some(match name {
+            "settings-general" => Page::General,
             "settings-keys" => Page::Keys,
             "settings-sync" => Page::Sync,
             "settings-appearance" => Page::Appearance,
@@ -118,6 +123,8 @@ pub enum SettingsAction {
     SetFontSize(f32),
     SetCursor(CursorStyle),
     SetTheme(ThemeChoice),
+    // ---- General
+    SetRestoreTabs(bool),
     // ---- Updates
     CheckUpdates,
     InstallUpdate,
@@ -144,6 +151,9 @@ impl SettingsAction {
             }
             SettingsAction::SetTheme(t) => {
                 ("appearance", "theme", config_edit::quote(t.config_value()))
+            }
+            SettingsAction::SetRestoreTabs(on) => {
+                ("startup", "restore-tabs", on.to_string())
             }
             SettingsAction::SetCheckUpdates(on) => ("updates", "check", on.to_string()),
             SettingsAction::SetAutoInstall(on) => {
@@ -237,92 +247,6 @@ pub fn edit_draft(draft: &mut TextDraft, key: Key) -> bool {
     draft.apply(edit)
 }
 
-// ---------------------------------------------------------------- confirm
-
-/// A destructive confirm dialog shown over the content rect.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Confirm {
-    pub title: String,
-    pub body: String,
-    pub confirm: String,
-    pub cancel: String,
-    pub focus: DialogFocus,
-}
-
-impl Confirm {
-    pub fn destructive(
-        title: impl Into<String>,
-        body: impl Into<String>,
-        confirm: impl Into<String>,
-    ) -> Self {
-        Self {
-            title: title.into(),
-            body: body.into(),
-            confirm: confirm.into(),
-            cancel: "Cancel".into(),
-            focus: DialogKind::Destructive.default_focus(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConfirmLayout {
-    pub dialog: DialogLayout,
-    pub lines: Vec<String>,
-}
-
-/// Dialog centred in `content`; the scrim covers only `content`.
-pub fn confirm_layout(content: Rect, m: Measure, c: &Confirm) -> ConfirmLayout {
-    let inner = ov::DIALOG_WIDTH - 2.0 * ov::DIALOG_PAD;
-    let lines = wrap_text(&c.body, inner, |s| m(s, 14.0, false));
-    let cancel_w = confirm_button_width(m, ButtonKind::Secondary, &c.cancel);
-    let confirm_w = confirm_button_width(m, ButtonKind::Danger, &c.confirm);
-    // Height does not depend on x/y: build once to read it, then centre.
-    let probe = dialog_layout_at(
-        0.0,
-        0.0,
-        DialogKind::Destructive,
-        lines.len(),
-        cancel_w,
-        confirm_w,
-        (content.width, content.height),
-    );
-    let x = (content.x + (content.width - ov::DIALOG_WIDTH) / 2.0).round();
-    let y = (content.y + (content.height - probe.dialog.height) / 2.0).round();
-    let mut dialog = dialog_layout_at(
-        x,
-        y,
-        DialogKind::Destructive,
-        lines.len(),
-        cancel_w,
-        confirm_w,
-        (content.width, content.height),
-    );
-    dialog.scrim = content;
-    ConfirmLayout { dialog, lines }
-}
-
-fn confirm_button_width(m: Measure, kind: ButtonKind, label: &str) -> f32 {
-    button_spec(m, (0.0, 0.0), kind, ButtonSize::Large, label).width()
-}
-
-/// Outcome of a press while a confirm dialog is open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfirmHit {
-    Confirm,
-    Cancel,
-    /// Inside the dialog, on nothing: swallow.
-    Inside,
-}
-
-pub fn confirm_hit(layout: &ConfirmLayout, x: f32, y: f32) -> ConfirmHit {
-    match layout.dialog.hit_test(x, y) {
-        DialogHit::Confirm => ConfirmHit::Confirm,
-        DialogHit::Cancel | DialogHit::Scrim => ConfirmHit::Cancel,
-        _ => ConfirmHit::Inside,
-    }
-}
-
 // ------------------------------------------------------------------ view
 
 /// All Settings page state. The shell holds one of these.
@@ -332,6 +256,7 @@ pub struct SettingsView {
     pub keys: KeysState,
     pub sync: SyncState,
     pub appearance: AppearanceState,
+    pub general: GeneralState,
     pub updates: UpdatesState,
     pub uploads: UploadsState,
 }
@@ -343,6 +268,7 @@ impl SettingsView {
             keys: KeysState::default(),
             sync: SyncState::default(),
             appearance: AppearanceState::default(),
+            general: GeneralState::default(),
             updates: UpdatesState::new(version),
             uploads: UploadsState::default(),
         }
@@ -369,6 +295,7 @@ impl SettingsView {
         y: f32,
     ) -> Option<SettingsAction> {
         match self.page {
+            Page::General => self.general.press(content, m, x, y),
             Page::Keys => self.keys.press(content, m, x, y),
             Page::Sync => self.sync.press(content, m, x, y),
             Page::Appearance => self.appearance.press(content, m, x, y),
@@ -380,6 +307,7 @@ impl SettingsView {
     /// Pointer move; true when the hover changed (repaint).
     pub fn hover(&mut self, content: Rect, m: Measure, x: f32, y: f32) -> bool {
         match self.page {
+            Page::General => self.general.hover(content, m, x, y),
             Page::Keys => self.keys.hover(content, m, x, y),
             Page::Sync => self.sync.hover(content, m, x, y),
             Page::Appearance => self.appearance.hover(content, m, x, y),
@@ -430,6 +358,10 @@ impl SettingsView {
                 let l = self.appearance.layout(content, m);
                 hand(self.appearance.hit(&l, x, y).is_some())
             }
+            Page::General => {
+                let l = self.general.layout(content);
+                hand(self.general.hit(&l, x, y))
+            }
             Page::Updates => {
                 let l = self.updates.layout(content, m);
                 hand(self.updates.hit(&l, x, y).is_some())
@@ -454,6 +386,7 @@ impl SettingsView {
 
     pub fn key(&mut self, key: Key) -> Option<SettingsAction> {
         match self.page {
+            Page::General => None,
             Page::Keys => self.keys.key(key),
             Page::Sync => self.sync.key(key),
             Page::Appearance => {
@@ -479,6 +412,7 @@ impl SettingsView {
     /// forward keys to the terminal).
     pub fn captures_keyboard(&self) -> bool {
         match self.page {
+            Page::General => false,
             Page::Keys => self.keys.captures_keyboard(),
             Page::Sync => self.sync.focused,
             Page::Appearance => self.appearance.font_menu_open,

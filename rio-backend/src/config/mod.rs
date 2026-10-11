@@ -12,6 +12,7 @@ pub mod layout;
 pub mod navigation;
 pub mod platform;
 pub mod renderer;
+pub mod startup;
 pub mod theme;
 pub mod title;
 pub mod updates;
@@ -28,6 +29,7 @@ use crate::config::layout::{Margin, Panel};
 use crate::config::navigation::Navigation;
 use crate::config::platform::{Platform, PlatformConfig};
 use crate::config::renderer::Renderer;
+use crate::config::startup::Startup;
 use crate::config::title::Title;
 use crate::config::updates::Updates;
 use crate::config::uploads::Uploads;
@@ -164,6 +166,8 @@ pub struct Config {
     pub developer: Developer,
     #[serde(default = "Updates::default")]
     pub updates: Updates,
+    #[serde(default = "Startup::default")]
+    pub startup: Startup,
     #[serde(default = "Uploads::default")]
     pub uploads: Uploads,
     #[serde(default = "Bindings::default")]
@@ -686,6 +690,7 @@ impl Default for Config {
             title: Title::default(),
             developer: Developer::default(),
             updates: Updates::default(),
+            startup: Startup::default(),
             uploads: Uploads::default(),
             env_vars: vec![],
             #[cfg(feature = "renderer")]
@@ -769,6 +774,14 @@ mod tests {
         let config = create_temporary_config("updates-off", "[updates]\ncheck = false\n");
         assert!(!config.updates.check);
         assert!(config.updates.auto_install, "unset keys keep their default");
+    }
+
+    #[test]
+    fn tabs_are_not_restored_on_launch_by_default() {
+        assert!(!Config::default().startup.restore_tabs);
+        let config =
+            create_temporary_config("startup", "[startup]\nrestore-tabs = true\n");
+        assert!(config.startup.restore_tabs);
     }
 
     #[test]

@@ -96,6 +96,26 @@ pub struct ToggleRow {
     pub toggle: Rect,
 }
 
+/// A full-width card at `(x, y)` with its label on the left and a switch on
+/// the right; the whole card is the hit area.
+pub fn toggle_row(x: f32, y: f32, w: f32) -> ToggleRow {
+    let card = Rect::new(x, y, w, TOGGLE_CARD_HEIGHT);
+    let tr = toggle_rect(0.0, 0.0);
+    let toggle = Rect::new(
+        card.right() - CARD_PAD_X - TOGGLE_WIDTH,
+        card.y + (card.height - TOGGLE_HEIGHT) / 2.0,
+        tr.width,
+        tr.height,
+    );
+    let text = Rect::new(
+        card.x + CARD_PAD_X,
+        card.y,
+        (toggle.x - 16.0 - card.x - CARD_PAD_X).max(0.0),
+        card.height,
+    );
+    ToggleRow { card, text, toggle }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpdatesLayout {
     pub card: Rect,
@@ -156,27 +176,9 @@ impl UpdatesState {
             (button.x - 16.0 - card.x - CARD_PAD_X).max(0.0),
             card.height,
         );
-        let mut y = card.bottom() + 14.0;
-        let row = |y: f32| {
-            let card = Rect::new(col.x, y, w, TOGGLE_CARD_HEIGHT);
-            let tr = toggle_rect(0.0, 0.0);
-            let toggle = Rect::new(
-                card.right() - CARD_PAD_X - TOGGLE_WIDTH,
-                card.y + (card.height - TOGGLE_HEIGHT) / 2.0,
-                tr.width,
-                tr.height,
-            );
-            let text = Rect::new(
-                card.x + CARD_PAD_X,
-                card.y,
-                (toggle.x - 16.0 - card.x - CARD_PAD_X).max(0.0),
-                card.height,
-            );
-            ToggleRow { card, text, toggle }
-        };
-        let check = row(y);
-        y = check.card.bottom() + ROW_GAP + 2.0;
-        let auto = row(y);
+        let y = card.bottom() + 14.0;
+        let check = toggle_row(col.x, y, w);
+        let auto = toggle_row(col.x, check.card.bottom() + ROW_GAP + 2.0, w);
         UpdatesLayout {
             card,
             text,
