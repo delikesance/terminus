@@ -47,6 +47,8 @@ mod probe_tests;
 #[cfg(test)]
 mod rows_tests;
 #[cfg(test)]
+mod snippet_scope_tests;
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod worker_auth_tests;
@@ -90,6 +92,12 @@ pub const HOSTS_SECTION: &str = terminus_ui::sidebar::SERVERS_SECTION;
 pub const LOCAL_ID: &str = "local";
 /// Prefix marking a row as a WSL distro; the rest is the distro's name.
 pub const WSL_PREFIX: &str = "wsl:";
+
+/// Host a snippet is scoped to. Local snippets are global: `LOCAL_ID` is not a
+/// stored host id, so it must not reach the store as one.
+pub fn snippet_scope(machine_id: Option<&str>) -> Option<String> {
+    machine_id.filter(|id| *id != LOCAL_ID).map(str::to_string)
+}
 
 /// Errors the sidebar shows when a server cannot be opened. They name the
 /// J5 Settings tabs and stay within the two lines of the error band, in

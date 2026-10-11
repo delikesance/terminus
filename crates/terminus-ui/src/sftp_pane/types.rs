@@ -91,12 +91,12 @@ impl SftpSideState {
 
     pub fn set_listed(&mut self, path: String, entries: Vec<SftpRow>) {
         self.connect_error = None;
+        if self.cwd != path {
+            self.reset_filter();
+        }
         self.cwd = path;
-        self.entries = entries.clone();
         self.listing = entries;
-        self.reset_filter();
-        self.selected = None;
-        self.scroll = 0.0;
+        self.refilter();
     }
 }
 
