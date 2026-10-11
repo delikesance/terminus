@@ -360,7 +360,7 @@ impl Screen<'_> {
                 state.focus_filter(side);
                 true
             }
-            Key::Named(NamedKey::Escape) => state.side_mut(side).clear_filter(),
+            Key::Named(NamedKey::Escape) => state.escape_filter(),
             _ if !state.filter_owns_keys() => false,
             Key::Named(NamedKey::Backspace) => {
                 state.side_mut(side).filter_backspace();
