@@ -117,8 +117,12 @@ impl Screen<'_> {
         let s = &mut self.chrome.screens;
         s.files.set_machine(&machine.id, &machine.name, can_browse);
         s.files.session_open = self.sftp.is_some();
-        if s.snippets.items != self.host_store.snippet_items {
-            s.snippets.items = self.host_store.snippet_items.clone();
+        let scoped = terminus_ui::snippets::visible_for(
+            &self.host_store.snippet_items,
+            &machine.id,
+        );
+        if s.snippets.items != scoped {
+            s.snippets.items = scoped;
             s.snippets.hover = None;
             let content = self.chrome.shell.content_rect();
             s.snippets.scroll = s.snippets.scroll.min(s.snippets.max_scroll(content));

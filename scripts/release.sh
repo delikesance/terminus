@@ -32,13 +32,14 @@ GITHUB_REMOTE_URL="${GITHUB_REMOTE_URL:-$(git remote get-url github 2>/dev/null 
 
 VERSION="$(grep -m 1 '^version = ' Cargo.toml | awk -F '"' '{print $2}')"
 TAG="v${VERSION}"
-TITLE="Terminus ${TAG}"
+TITLE=""
 BUILD_ONLY=0
 LINUX_ONLY=0
 WINDOWS_ONLY=0
 DRAFT=0
 PRERELEASE=0
 REPLACE=0
+BUMP=1
 NOTES=""
 
 usage() {
@@ -52,6 +53,7 @@ Options:
   --draft          Mark the GitHub release as draft
   --prerelease     Mark the GitHub release as pre-release
   --replace        Replace the files of an already-published release
+  --no-bump        Do not bump the version past the latest git tag
   --title <title>  Release title (default: Terminus $TAG)
   --notes <text>   Release body; omit to auto-generate notes
   -h, --help       Show this help
@@ -63,17 +65,38 @@ while [[ $# -gt 0 ]]; do
         --build-only|--no-deploy) BUILD_ONLY=1 ;;
         --linux-only) LINUX_ONLY=1 ;;
         --windows-only) WINDOWS_ONLY=1 ;;
-        --tag) TAG="${2:?--tag needs a value}"; shift ;;
+        --tag) TAG="${2:?--tag needs a value}"; BUMP=0; shift ;;
         --title) TITLE="${2:?--title needs a value}"; shift ;;
         --notes) NOTES="${2:?--notes needs a value}"; shift ;;
         --draft) DRAFT=1 ;;
         --prerelease) PRERELEASE=1 ;;
         --replace) REPLACE=1 ;;
+        --no-bump) BUMP=0 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "release.sh: unknown option '$1' (see --help)" >&2; exit 2 ;;
     esac
     shift
 done
+
+# Publishing from a Cargo version that is not past the latest tag would rebuild
+# an existing release: bump the patch version past that tag first.
+auto_bump_version() {
+    git fetch --tags --quiet 2>/dev/null || true
+    local latest next
+    latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -V | tail -n 1)"
+    [[ -z "$latest" ]] && return
+    [[ "$VERSION" != "$latest" && "$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -n 1)" == "$VERSION" ]] && return
+    next="${latest%.*}.$(( ${latest##*.} + 1 ))"
+    echo "release.sh: Cargo is at $VERSION, latest tag is v$latest: bumping to $next"
+    sh misc/prepare-release.sh "$next"
+    VERSION="$next"
+    TAG="v$VERSION"
+}
+
+if [[ "$BUMP" == "1" && "$BUILD_ONLY" == "0" && "$REPLACE" == "0" ]]; then
+    auto_bump_version
+fi
+TITLE="${TITLE:-Terminus ${TAG}}"
 
 # The in-app updater compares the release tag with the version compiled into
 # the binary; a mismatch would make every install re-download this release.
@@ -102,12 +125,13 @@ export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
 
 # nfpm from PATH (Nix release shell), else its official container image.
 NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:v2.43.0}"
+source "$ROOT/scripts/docker-user.sh"
 run_nfpm() {
     if command -v nfpm >/dev/null 2>&1; then
         VERSION="$VERSION" nfpm "$@"
         return
     fi
-    docker run --rm --user "$(id -u):$(id -g)" -e VERSION="$VERSION" \
+    docker run --rm --user "$(docker_user)" -e VERSION="$VERSION" \
         -v "$ROOT:$ROOT" -w "$ROOT" "$NFPM_IMAGE" "$@"
 }
 

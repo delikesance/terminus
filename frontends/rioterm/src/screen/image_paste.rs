@@ -7,9 +7,9 @@
 //! `/mnt/<drive>` for a WSL distro started from Windows, and `/tmp` on the
 //! remote for an SSH host (uploaded with the tab's own `ssh` command line).
 
+use super::remote_upload::{paste_upload_result, quote_for_shell, upload_file};
 use super::Screen;
 use crate::crosswords::Mode;
-use crate::event::Msg;
 use crate::hosts;
 use crate::ssh_secrets::{private_temp_dir, write_private_file};
 use rio_backend::clipboard::{Clipboard, ClipboardType};
@@ -75,7 +75,7 @@ impl Screen<'_> {
         true
     }
 
-    fn paste_target(&self) -> PasteTarget {
+    pub(super) fn paste_target(&self) -> PasteTarget {
         let Some(id) = self.context_manager.current().host_id.as_deref() else {
             return PasteTarget::Local;
         };
@@ -117,42 +117,27 @@ impl Screen<'_> {
         }
     }
 
-    fn report_paste_failure(&mut self, message: &str) {
+    pub(super) fn report_paste_failure(&mut self, message: &str) {
         tracing::warn!("{message}");
         self.chrome.panel.error = Some(message.to_string());
     }
 
     /// Copy `png` to `/tmp/<name>` on the tab's host, then paste that path
-    /// into the tab. Runs on its own thread: the UI must not wait on the
-    /// network, and the tab's input channel is all it needs afterwards.
+    /// into the tab.
     fn upload_pasted_image(
         &mut self,
         id: &str,
         name: &str,
         png: Vec<u8>,
     ) -> Result<(), String> {
-        let (shell, env) = self.plain_shell_for_row(id)?;
-        let shell = shell.ok_or("not an SSH host")?;
-        let program = shell.program.unwrap_or_else(|| "ssh".to_string());
-        let remote_path = remote_paste_path(name);
-        let args = upload_args(shell.args, &remote_path);
-        let env = env.unwrap_or_default();
+        let ssh = self.ssh_upload_for(id)?;
+        let name = name.to_string();
         let bracketed = self.get_mode().contains(Mode::BRACKETED_PASTE);
         let input = self.context_manager.current().messenger.channel.clone();
         let report = self.paste_errors.reporter();
-
-        std::thread::Builder::new()
-            .name("image-paste-upload".into())
-            .spawn(move || match run_upload(&program, &args, &env, &png) {
-                Ok(()) => {
-                    let bytes =
-                        super::clipboard::paste_bytes(&remote_path, true, bracketed);
-                    let _ = input.send(Msg::Input(bytes.into()));
-                }
-                Err(err) => report(format!("Image upload failed: {err}")),
-            })
-            .map(|_| ())
-            .map_err(|err| format!("could not start the upload: {err}"))
+        paste_upload_result("Image upload failed", input, bracketed, report, move || {
+            upload_file(&ssh, &name, std::io::Cursor::new(png))
+        })
     }
 }
 
@@ -256,7 +241,7 @@ impl PasteErrors {
         }
     }
 
-    fn reporter(&self) -> impl Fn(String) + Send + 'static {
+    pub(super) fn reporter(&self) -> impl Fn(String) + Send + 'static {
         let sender = self.sender.clone();
         let wake = self.wake.clone();
         move |message| {
@@ -285,21 +270,6 @@ pub(super) fn is_image_paste_chord(key: &Key, mods: ModifiersState) -> bool {
         && matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("v"))
 }
 
-/// Quote `path` for the tab's shell only when it needs it (a temp dir under
-/// a user name with a space). POSIX shells get single quotes, Windows ones
-/// double quotes, which `cmd`, PowerShell and Claude Code all strip.
-pub(super) fn quote_for_shell(path: &str, windows: bool) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "/\\:._-+~,@%".contains(c);
-    if path.chars().all(plain) {
-        return path.to_string();
-    }
-    if windows {
-        format!("\"{path}\"")
-    } else {
-        format!("'{}'", path.replace('\'', r"'\''"))
-    }
-}
-
 /// `C:\Users\me\x.png` → `/mnt/c/Users/me/x.png`: the same file as a WSL
 /// distro sees it through its default automount.
 pub(super) fn wsl_mount_path(windows_path: &str) -> Option<String> {
@@ -313,70 +283,6 @@ pub(super) fn wsl_mount_path(windows_path: &str) -> Option<String> {
         return None;
     }
     Some(format!("/mnt/{}{rest}", drive.to_ascii_lowercase()))
-}
-
-pub(super) fn remote_paste_path(name: &str) -> String {
-    format!("/tmp/{name}")
-}
-
-/// The tab's own `ssh` arguments turned into a one-shot upload: no pty
-/// (stdin is the file), a bounded connect, and a remote command writing
-/// stdin to `remote_path` readable by the user only. The host is the last
-/// tab argument, so the command goes right after it.
-pub(super) fn upload_args(tab_args: Vec<String>, remote_path: &str) -> Vec<String> {
-    let mut args = vec![
-        "-T".to_string(),
-        "-o".to_string(),
-        "ConnectTimeout=10".to_string(),
-    ];
-    args.extend(tab_args);
-    args.push(format!(
-        "umask 077 && cat > {}",
-        quote_for_shell(remote_path, false)
-    ));
-    args
-}
-
-fn run_upload(
-    program: &str,
-    args: &[String],
-    env: &[(String, String)],
-    png: &[u8],
-) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    // Same cleanup as a tab: the askpass / key files go once ssh is done.
-    let _secrets =
-        crate::ssh_secrets::SecretFiles::new(crate::ssh_secrets::launch_secrets(
-            args.iter().map(String::as_str),
-            env.iter().map(|(k, v)| (k.as_str(), v.as_str())),
-        ));
-    let mut cmd = Command::new(program);
-    cmd.args(args)
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let mut child = cmd.spawn().map_err(|err| format!("{program}: {err}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(png)
-            .map_err(|err| format!("sending the image: {err}"))?;
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|err| format!("{program}: {err}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
 }
 
 #[cfg(test)]
@@ -466,30 +372,6 @@ mod tests {
     }
 
     #[test]
-    fn quotes_only_paths_that_need_it() {
-        assert_eq!(
-            quote_for_shell("/run/user/1000/terminus-paste-1000/a.png", false),
-            "/run/user/1000/terminus-paste-1000/a.png"
-        );
-        assert_eq!(
-            quote_for_shell(r"C:\Users\Jo\AppData\Local\Temp\a.png", true),
-            r"C:\Users\Jo\AppData\Local\Temp\a.png"
-        );
-        assert_eq!(
-            quote_for_shell("/tmp/my dir/a.png", false),
-            "'/tmp/my dir/a.png'"
-        );
-        assert_eq!(
-            quote_for_shell("/tmp/it's/a.png", false),
-            r"'/tmp/it'\''s/a.png'"
-        );
-        assert_eq!(
-            quote_for_shell(r"C:\Users\Jo Doe\a.png", true),
-            r#""C:\Users\Jo Doe\a.png""#
-        );
-    }
-
-    #[test]
     fn maps_windows_paths_into_wsl_mounts() {
         assert_eq!(
             wsl_mount_path(r"C:\Users\Jo\AppData\Local\Temp\terminus-paste\a.png"),
@@ -499,25 +381,6 @@ mod tests {
         assert_eq!(wsl_mount_path(r"\\server\share\x.png"), None);
         assert_eq!(wsl_mount_path("/tmp/x.png"), None);
         assert_eq!(wsl_mount_path("C:x.png"), None);
-    }
-
-    #[test]
-    fn upload_reuses_tab_args_and_writes_stdin_to_tmp() {
-        let tab = vec!["-p".to_string(), "2222".to_string(), "me@box".to_string()];
-        let path = remote_paste_path("terminus-paste-1.png");
-        assert_eq!(path, "/tmp/terminus-paste-1.png");
-        assert_eq!(
-            upload_args(tab, &path),
-            vec![
-                "-T",
-                "-o",
-                "ConnectTimeout=10",
-                "-p",
-                "2222",
-                "me@box",
-                "umask 077 && cat > /tmp/terminus-paste-1.png",
-            ]
-        );
     }
 
     #[test]

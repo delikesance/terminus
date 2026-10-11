@@ -29,7 +29,12 @@ impl SftpBackend {
 pub struct SftpSideState {
     pub backend: SftpBackend,
     pub cwd: String,
+    /// Rows shown: `listing` narrowed by `filter`.
     pub entries: Vec<SftpRow>,
+    /// Everything the folder holds.
+    pub listing: Vec<SftpRow>,
+    pub filter: TextDraft,
+    pub filter_focused: bool,
     pub selected: Option<usize>,
     pub scroll: f32,
     /// Why this pane's host could not be reached; cleared once it lists.
@@ -42,6 +47,9 @@ impl SftpSideState {
             backend: SftpBackend::Local,
             cwd: cwd.into(),
             entries: Vec::new(),
+            listing: Vec::new(),
+            filter: TextDraft::default(),
+            filter_focused: false,
             selected: None,
             scroll: 0.0,
             connect_error: None,
@@ -56,6 +64,9 @@ impl SftpSideState {
             },
             cwd: "/".into(),
             entries: Vec::new(),
+            listing: Vec::new(),
+            filter: TextDraft::default(),
+            filter_focused: false,
             selected: None,
             scroll: 0.0,
             connect_error: None,
@@ -80,10 +91,12 @@ impl SftpSideState {
 
     pub fn set_listed(&mut self, path: String, entries: Vec<SftpRow>) {
         self.connect_error = None;
+        if self.cwd != path {
+            self.reset_filter();
+        }
         self.cwd = path;
-        self.entries = entries;
-        self.selected = None;
-        self.scroll = 0.0;
+        self.listing = entries;
+        self.refilter();
     }
 }
 

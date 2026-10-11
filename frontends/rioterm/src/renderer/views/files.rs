@@ -57,6 +57,9 @@ pub struct FilesView {
     pub dialog_focus: Option<DialogFocus>,
 }
 
+mod search;
+use search::paint_search;
+
 /// What the app should do after a Files input.
 pub enum FilesAction {
     /// Nothing changed.
@@ -316,6 +319,8 @@ fn paint_pane(
         hov(FilesHit::NewFolder(focus)),
         false,
     );
+
+    paint_search(s, theme, p, side, frame_fill);
 
     // Column captions, aligned with the row columns.
     let cap_row = Rect::new(
@@ -792,8 +797,12 @@ pub fn pointer_press(
     }
     let layout = FilesLayout::for_state(content, &sftp.state);
     let hit = layout.hit_test(&sftp.state, x, y);
+    if !matches!(hit, FilesHit::Search(_)) {
+        sftp.state.blur_filters();
+    }
     match hit {
         FilesHit::Miss | FilesHit::Bar => return FilesAction::None,
+        FilesHit::Search(f) => sftp.state.focus_filter(f),
         FilesHit::CancelTransfer => sftp.cancel_transfer(),
         FilesHit::NewFolder(f) => {
             sftp.state.focus = f;

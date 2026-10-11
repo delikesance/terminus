@@ -380,6 +380,9 @@ impl Screen<'_> {
                 name: values.name,
                 cmd: values.command,
                 desc: values.description,
+                host_id: crate::hosts::snippet_scope(
+                    self.chrome.shell.machine.as_ref().map(|m| m.id.as_str()),
+                ),
             });
         self.chrome.snippet_form.inner.closing = true;
     }

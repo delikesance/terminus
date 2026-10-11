@@ -55,6 +55,7 @@ pub struct Snippet {
     pub content: String,
     pub tags: Vec<String>,
     pub shortcut: Option<String>,
+    pub host_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
