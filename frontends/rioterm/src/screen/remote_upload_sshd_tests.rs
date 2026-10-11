@@ -128,6 +128,7 @@ impl Sshd {
             ],
             env: vec![],
             os: RemoteOs::Posix,
+            dir: None,
         }
     }
 }
@@ -152,6 +153,33 @@ fn upload_file_streams_bytes_through_a_real_sshd() {
     .expect("upload through sshd");
 
     assert_eq!(path, format!("/tmp/{name}"));
+    assert_eq!(fs::read(&path).expect("read remote file"), payload);
+    let mode = fs::metadata(&path)
+        .expect("stat remote file")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+#[test]
+fn upload_into_a_configured_nested_dir_creates_it_privately() {
+    let (Some(sshd), Some(ssh_keygen)) = (find_binary("sshd"), find_binary("ssh-keygen"))
+    else {
+        eprintln!("skipping: sshd or ssh-keygen not found");
+        return;
+    };
+    let name = format!("terminus-drop-dir-{}.txt", std::process::id());
+    let server = start_sshd(&sshd, &ssh_keygen, "customdir", &name);
+    let client_key = server.dir.join("client_key");
+    let custom_dir = server.dir.join("nested").join("drop box");
+    let mut upload = server.upload(&client_key);
+    upload.dir = Some(custom_dir.display().to_string());
+    let payload = b"custom dir payload".to_vec();
+
+    let path = upload_file(&upload, &name, Cursor::new(payload.clone()))
+        .expect("upload into the configured dir");
+
+    assert_eq!(path, format!("{}/{name}", custom_dir.display()));
     assert_eq!(fs::read(&path).expect("read remote file"), payload);
     let mode = fs::metadata(&path)
         .expect("stat remote file")

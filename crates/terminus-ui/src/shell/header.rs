@@ -112,7 +112,10 @@ mod tests {
     fn settings_has_its_own_tabs_and_home_none() {
         let tabs = tabs_for(WorkspaceView::Settings(SettingsPage::Sync), 3);
         let labels: Vec<_> = tabs.iter().map(|t| t.label).collect();
-        assert_eq!(labels, ["SSH keys", "Sync", "Appearance", "Updates"]);
+        assert_eq!(
+            labels,
+            ["SSH keys", "Sync", "Appearance", "Updates", "Uploads"]
+        );
         assert!(tabs.iter().all(|t| t.badge.is_empty()));
         assert!(tabs_for(WorkspaceView::Home, 1).is_empty());
     }

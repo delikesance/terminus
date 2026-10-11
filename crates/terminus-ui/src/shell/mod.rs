@@ -559,7 +559,7 @@ mod tests {
         s.workspace
             .show(WorkspaceView::Settings(SettingsPage::Keys));
         assert_eq!(s.title(), ("Settings".to_string(), None));
-        assert_eq!(s.header_tabs().len(), 4);
+        assert_eq!(s.header_tabs().len(), 5);
         s.workspace.show(WorkspaceView::Home);
         assert_eq!(s.title(), ("Where to?".to_string(), None));
         assert!(s.header_tabs().is_empty());
