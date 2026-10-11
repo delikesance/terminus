@@ -3,6 +3,12 @@ use sqlx::{Row, SqlitePool};
 use super::Store;
 use crate::error::{Error, Result};
 
+/// Serializes opening and migrating pools in this process. Connecting with WAL
+/// needs an exclusive lock that `busy_timeout` does not wait on, and each
+/// `ensure_*` helper checks `PRAGMA table_info` before `ALTER TABLE`, so
+/// concurrent openers fail with "database is locked" or "duplicate column".
+pub(super) static OPEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 impl Store {
     pub(super) async fn migrate(pool: &SqlitePool) -> Result<()> {
         sqlx::query(

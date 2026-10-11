@@ -115,6 +115,7 @@ impl Store {
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal);
 
+        let opening = migrate::OPEN_LOCK.lock().await;
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
             .connect_with(options)
@@ -122,6 +123,7 @@ impl Store {
             .map_err(|e| Error::DatabaseError(e.to_string()))?;
 
         Self::migrate(&pool).await?;
+        drop(opening);
         let store = Self { pool };
         store.ensure_default_root_order().await?;
         Ok(store)
