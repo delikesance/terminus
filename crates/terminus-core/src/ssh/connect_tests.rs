@@ -123,3 +123,30 @@ async fn accept_all_accepts_unknown_and_matching_hosts() {
     .await;
     assert!(unknown && matching);
 }
+
+#[tokio::test]
+async fn add_host_probe_refuses_unknown_host_keys_before_auth() {
+    let host = Host {
+        id: uuid::Uuid::nil(),
+        name: "demo".into(),
+        hostname: "h.test".into(),
+        port: 22,
+        username: "alice".into(),
+        auth_method: "password".into(),
+        password: Some("secret".into()),
+        identity_id: None,
+        group_id: None,
+        tags: Vec::new(),
+        notes: String::new(),
+        os_id: None,
+        sort_order: 0,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        deleted_at: None,
+    };
+    let opts = probe_options_from_host(&host, None);
+    let (accepted, decision) =
+        check_with_policy(opts.policy.clone(), None, OTHER_KEY, "probe-unknown").await;
+    assert!(!accepted);
+    assert!(matches!(decision, Some(HostKeyOutcome::Refused { .. })));
+}

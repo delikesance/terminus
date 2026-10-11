@@ -103,7 +103,8 @@ pub(super) fn classify_ssh_message(msg: &str) -> ProbeError {
     ProbeError::Other(msg.to_string())
 }
 
-/// Build connect options for an add-host probe (accept any host key).
+/// Build connect options for an add-host probe. Strict: the key must already be
+/// in known_hosts, so credentials never reach an unverified server.
 pub fn probe_options_from_host(
     host: &Host,
     identity: Option<&Identity>,
@@ -135,7 +136,7 @@ pub fn probe_options_from_host(
         hostname: host.hostname.clone(),
         port: host.port,
         auth,
-        policy: HostKeyPolicy::AcceptAll,
+        policy: HostKeyPolicy::Strict,
         known_hosts: KnownHosts::default(),
         connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         keepalive_interval: Some(DEFAULT_KEEPALIVE_INTERVAL),
