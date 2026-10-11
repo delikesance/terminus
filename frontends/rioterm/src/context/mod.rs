@@ -846,6 +846,16 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             .and_then(|grid| grid.current().host_id.as_deref())
     }
 
+    /// Directory the tab's shell reported (OSC 7), for a remote tab.
+    pub fn tab_reported_dir(&self, index: usize) -> Option<String> {
+        let context = self.contexts.get(index)?.current();
+        let terminal = context.terminal.lock();
+        terminal
+            .current_directory
+            .as_ref()
+            .and_then(|dir| dir.to_str().map(str::to_owned))
+    }
+
     /// Directory the tab's foreground process is in, where the platform
     /// can tell (not on Windows).
     pub fn tab_working_dir(&self, index: usize) -> Option<String> {

@@ -33,6 +33,14 @@ pub struct ActiveSftp {
     last_click: Option<(SftpHit, std::time::Instant)>,
     /// Press origin for DnD threshold (`hit`, `x`, `y`).
     drag_armed: Option<(SftpHit, f32, f32)>,
+    /// Remote directory listed once the connection is ready.
+    remote_start: String,
+}
+
+/// Remote directory the browser opens in: the tab's working directory,
+/// or the login directory when the tab's is unknown.
+pub fn remote_start_path(tab_dir: Option<String>) -> String {
+    tab_dir.unwrap_or_else(|| terminus_bridge::REMOTE_HOME.into())
 }
 
 impl ActiveSftp {
@@ -53,6 +61,7 @@ impl ActiveSftp {
         password: Option<String>,
         identity_pem: Option<(String, Option<String>)>,
         wake: Option<Arc<dyn Fn() + Send + Sync>>,
+        tab_dir: Option<String>,
     ) -> Result<Self, String> {
         let opts = connect_options_for_host(host, password, identity_pem)?;
         let local_root = local_fs::default_local_root();
@@ -82,6 +91,7 @@ impl ActiveSftp {
             worker,
             last_click: None,
             drag_armed: None,
+            remote_start: remote_start_path(tab_dir),
         })
     }
 
@@ -114,6 +124,7 @@ impl ActiveSftp {
             worker,
             last_click: None,
             drag_armed: None,
+            remote_start: terminus_bridge::REMOTE_HOME.into(),
         }
     }
 
