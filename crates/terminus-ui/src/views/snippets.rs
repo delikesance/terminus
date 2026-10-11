@@ -327,6 +327,7 @@ pub fn seed() -> Vec<SnippetItem> {
         name: name.into(),
         cmd: cmd.into(),
         desc: tag.into(),
+        host_id: None,
     };
     vec![
         mk(
@@ -465,6 +466,7 @@ mod tests {
                     name: format!("s{i}"),
                     cmd: "x".into(),
                     desc: String::new(),
+                    host_id: None,
                 })
                 .collect(),
         );
