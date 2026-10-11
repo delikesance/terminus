@@ -20,6 +20,7 @@ pub mod keys;
 pub mod preview;
 pub mod sync;
 pub mod updates;
+pub mod uploads;
 
 /// Run `f` with a text measure backed by the UI fonts.
 pub fn with_measure<R>(
@@ -52,6 +53,7 @@ pub fn paint(
             appearance::paint(sugarloaf, theme, content, &view.appearance)
         }
         Page::Updates => updates::paint(sugarloaf, theme, content, &view.updates),
+        Page::Uploads => uploads::paint(sugarloaf, theme, content, &view.uploads),
     }
 }
 
@@ -102,7 +104,7 @@ pub fn wheel(
 }
 
 /// Write the config line a settings action changes (`fonts`, `cursor`,
-/// `updates`) into the file the app hot-reloads. No-op for other actions.
+/// `updates`, `uploads`) into the file the app hot-reloads. No-op for other actions.
 pub fn persist(action: &SettingsAction) -> std::io::Result<()> {
     persist_at(&rio_backend::config::config_file_path(), action)
 }
@@ -129,7 +131,7 @@ pub fn persist_at(
     Ok(())
 }
 
-/// Seed the appearance and updates controls from the loaded config.
+/// Seed the appearance, updates and uploads controls from the loaded config.
 pub fn load_config(view: &mut SettingsView, config: &rio_backend::config::Config) {
     view.appearance.font = config.fonts.family.clone().unwrap_or_default();
     view.appearance.size = config.fonts.size.clamp(
@@ -142,6 +144,8 @@ pub fn load_config(view: &mut SettingsView, config: &rio_backend::config::Config
         ThemeChoice::from_config(config.theme_preference().config_value());
     view.updates.check = config.updates.check;
     view.updates.auto_install = config.updates.auto_install;
+    view.uploads
+        .load(&config.uploads.dir, &config.uploads.windows_dir);
 }
 
 /// Map the updater state to the words the Updates tab shows.
@@ -231,6 +235,27 @@ mod tests {
         assert_eq!(view.appearance.size, 13.0);
         assert_eq!(view.appearance.cursor, CursorStyle::Beam);
         assert!(!view.updates.check && !view.updates.auto_install);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn upload_directories_load_back_through_the_real_config_parser() {
+        use terminus_ui::views::settings::UploadsField;
+        let path = tmp("uploads");
+        for (field, value) in [
+            (UploadsField::Linux, "/srv/drop"),
+            (UploadsField::Windows, "D:\\drop"),
+        ] {
+            let value = value.to_string();
+            persist_at(&path, &SettingsAction::SetUploadDir { field, value }).unwrap();
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[uploads]\ndir = \"/srv/drop\"\n"), "{text}");
+        let config: rio_backend::config::Config = toml::from_str(&text).unwrap();
+        let mut view = SettingsView::new("0.0.0");
+        load_config(&mut view, &config);
+        assert_eq!(view.uploads.draft(UploadsField::Linux).value, "/srv/drop");
+        assert_eq!(view.uploads.draft(UploadsField::Windows).value, "D:\\drop");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
