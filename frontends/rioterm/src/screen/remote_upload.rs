@@ -189,6 +189,10 @@ pub(super) fn upload_args(tab_args: Vec<String>, remote_command: &str) -> Vec<St
     args
 }
 
+#[cfg(all(test, unix))]
+#[path = "remote_upload_sshd_tests.rs"]
+mod sshd_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
