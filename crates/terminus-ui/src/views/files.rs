@@ -24,6 +24,8 @@ pub const ICON_BTN: f32 = 32.0;
 pub const ICON_BTN_RADIUS: f32 = 8.0;
 pub const ICON_BTN_ICON: f32 = 15.0;
 /// Column captions row (Name / Size / Modified).
+pub const SEARCH_H: f32 = 36.0;
+pub const SEARCH_PAD_X: f32 = 12.0;
 pub const CAPTION_H: f32 = 28.0;
 /// Horizontal inset of rows inside a pane (so row text lands at the 16px pad).
 pub const ROW_INSET: f32 = 6.0;
@@ -51,6 +53,8 @@ pub enum FilesHit {
     NewFolder(SftpFocus),
     /// Header title/path area (focuses the pane).
     Header(SftpFocus),
+    /// Quick-find box.
+    Search(SftpFocus),
     /// Captions strip or the empty part of a listing.
     Pane(SftpFocus),
     /// Transfer bar "Cancel".
@@ -68,7 +72,10 @@ impl FilesHit {
             FilesHit::Row(SftpFocus::Right, i) => SftpHit::RightRow(i),
             FilesHit::Up(SftpFocus::Left) => SftpHit::LeftParent,
             FilesHit::Up(SftpFocus::Right) => SftpHit::RightParent,
-            FilesHit::Header(_) | FilesHit::Pane(_) | FilesHit::Bar => SftpHit::Consume,
+            FilesHit::Header(_)
+            | FilesHit::Search(_)
+            | FilesHit::Pane(_)
+            | FilesHit::Bar => SftpHit::Consume,
             FilesHit::NewFolder(_) | FilesHit::CancelTransfer => SftpHit::Consume,
             FilesHit::Miss => SftpHit::Miss,
         }
@@ -81,6 +88,7 @@ impl FilesHit {
             | FilesHit::Up(f)
             | FilesHit::NewFolder(f)
             | FilesHit::Header(f)
+            | FilesHit::Search(f)
             | FilesHit::Pane(f) => Some(f),
             _ => None,
         }
@@ -101,6 +109,8 @@ pub struct PaneRects {
     pub title_area: Rect,
     pub up: Rect,
     pub new_folder: Rect,
+    /// Quick-find box strip under the header.
+    pub search: Rect,
     /// Name / Size / Modified captions.
     pub captions: Rect,
     /// Scrollable listing.
@@ -218,6 +228,9 @@ impl FilesLayout {
             if p.header.contains(x, y) {
                 return FilesHit::Header(focus);
             }
+            if p.search.contains(x, y) {
+                return FilesHit::Search(focus);
+            }
             if p.list.contains(x, y) {
                 let side = state.side(focus);
                 let offset = row_offset(state, focus);
@@ -302,7 +315,8 @@ fn pane_rects(frame: Rect) -> PaneRects {
         (up.x - HEADER_GAP - header.x - HEADER_PAD_L).max(0.0),
         HEADER_H,
     );
-    let captions = Rect::new(frame.x, header.bottom(), frame.width, CAPTION_H);
+    let search = Rect::new(frame.x, header.bottom(), frame.width, SEARCH_H);
+    let captions = Rect::new(frame.x, search.bottom(), frame.width, CAPTION_H);
     let list_top = captions.bottom();
     let list = Rect::new(
         frame.x,
@@ -316,6 +330,7 @@ fn pane_rects(frame: Rect) -> PaneRects {
         title_area,
         up,
         new_folder,
+        search,
         captions,
         list,
     }
@@ -514,8 +529,22 @@ mod tests {
         assert!(p.title_area.right() <= p.up.x);
         assert_eq!(p.up.width, ICON_BTN);
         assert_eq!(p.header.height, HEADER_H);
-        assert_eq!(p.captions.y, p.header.bottom());
+        assert_eq!(p.search.y, p.header.bottom());
+        assert_eq!(p.search.height, SEARCH_H);
+        assert_eq!(p.captions.y, p.search.bottom());
         assert_eq!(p.list.y, p.captions.bottom());
+    }
+
+    #[test]
+    fn hit_test_search_strip_per_pane() {
+        let st = state(5);
+        let l = FilesLayout::new(content(), false);
+        let s = l.right.search;
+        assert_eq!(
+            l.hit_test(&st, s.x + 4.0, s.y + 4.0),
+            FilesHit::Search(SftpFocus::Right)
+        );
+        assert!(FilesHit::Search(SftpFocus::Right).is_clickable());
     }
 
     #[test]
