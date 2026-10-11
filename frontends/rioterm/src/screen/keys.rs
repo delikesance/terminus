@@ -182,6 +182,10 @@ impl Screen<'_> {
                 }
             }
 
+            if self.sftp_filter_key(key) {
+                return;
+            }
+
             let action = match key.logical_key.as_ref() {
                 WKey::Named(NamedKey::Tab) => Some(SftpKey::Tab),
                 WKey::Named(NamedKey::ArrowUp) => Some(SftpKey::Up),
