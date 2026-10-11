@@ -11,7 +11,6 @@ crates/terminus-ui/src/vault_unlock.rs
 crates/terminus-ui/src/views/files.rs
 crates/terminus-ui/src/views/settings/appearance.rs
 crates/terminus-ui/src/views/settings/keys.rs
-crates/terminus-ui/src/views/settings/mod.rs
 crates/terminus-update/src/lib.rs
 crates/terminus-update/tests/e2e.rs
 frontends/rioterm/src/bindings/mod.rs

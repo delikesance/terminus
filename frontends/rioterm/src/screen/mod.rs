@@ -342,6 +342,7 @@ impl Screen<'_> {
             panel: config.panel,
             title: config.title.clone(),
             keyboard: config.keyboard.clone(),
+            uploads: config.uploads.clone(),
             scrollback_history_limit: config.scrollback_history_limit,
             grapheme_clustering: config.grapheme_clustering,
         };

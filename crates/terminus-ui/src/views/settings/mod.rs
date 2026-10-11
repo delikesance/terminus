@@ -1,4 +1,4 @@
-//! Settings page contents: SSH keys, Sync, Appearance and Updates.
+//! Settings page contents: SSH keys, Sync, Appearance, Updates and Uploads.
 //!
 //! The shell owns the Settings header and its tab strip; this module owns
 //! what each tab shows inside the content rect. Everything is pure: state,
@@ -16,6 +16,7 @@ pub mod config_edit;
 pub mod keys;
 pub mod sync;
 pub mod updates;
+pub mod uploads;
 
 use crate::components::button::{ButtonKind, ButtonSize, ButtonSpec};
 use crate::components::input::{TextDraft, TextEdit, TextMoveKind};
@@ -29,6 +30,7 @@ pub use appearance::{AppearanceState, CursorStyle, ThemeChoice};
 pub use keys::{DraftField, DraftMode, KeyDraft, KeysState};
 pub use sync::SyncState;
 pub use updates::{UpdateStatus, UpdatesState};
+pub use uploads::{UploadsField, UploadsState};
 
 /// Outer padding of every Settings page.
 pub const PAD: f32 = 28.0;
@@ -38,7 +40,7 @@ pub const ROW_GAP: f32 = 12.0;
 /// Text measure supplied by the painter: `(text, font_size, semibold) -> width`.
 pub type Measure<'a> = &'a mut dyn FnMut(&str, f32, bool) -> f32;
 
-/// The four Settings tabs (the shell draws the tab strip).
+/// The five Settings tabs (the shell draws the tab strip).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
     #[default]
@@ -46,10 +48,17 @@ pub enum Page {
     Sync,
     Appearance,
     Updates,
+    Uploads,
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Keys, Page::Sync, Page::Appearance, Page::Updates];
+    pub const ALL: [Page; 5] = [
+        Page::Keys,
+        Page::Sync,
+        Page::Appearance,
+        Page::Updates,
+        Page::Uploads,
+    ];
 
     /// Tab label, as in the mock.
     pub fn label(self) -> &'static str {
@@ -58,6 +67,7 @@ impl Page {
             Page::Sync => "Sync",
             Page::Appearance => "Appearance",
             Page::Updates => "Updates",
+            Page::Uploads => "Uploads",
         }
     }
 
@@ -68,6 +78,7 @@ impl Page {
             "settings-sync" => Page::Sync,
             "settings-appearance" => Page::Appearance,
             "settings-updates" => Page::Updates,
+            "settings-uploads" => Page::Uploads,
             _ => return None,
         })
     }
@@ -112,6 +123,13 @@ pub enum SettingsAction {
     InstallUpdate,
     SetCheckUpdates(bool),
     SetAutoInstall(bool),
+    // ---- Uploads
+    SetUploadDir {
+        field: UploadsField,
+        value: String,
+    },
+    /// Several actions from one press, applied in order.
+    Batch(Vec<SettingsAction>),
 }
 
 impl SettingsAction {
@@ -130,6 +148,9 @@ impl SettingsAction {
             SettingsAction::SetCheckUpdates(on) => ("updates", "check", on.to_string()),
             SettingsAction::SetAutoInstall(on) => {
                 ("updates", "auto-install", on.to_string())
+            }
+            SettingsAction::SetUploadDir { field, value } => {
+                ("uploads", field.config_key(), config_edit::quote(value))
             }
             _ => return None,
         })
@@ -312,6 +333,7 @@ pub struct SettingsView {
     pub sync: SyncState,
     pub appearance: AppearanceState,
     pub updates: UpdatesState,
+    pub uploads: UploadsState,
 }
 
 impl SettingsView {
@@ -322,16 +344,20 @@ impl SettingsView {
             sync: SyncState::default(),
             appearance: AppearanceState::default(),
             updates: UpdatesState::new(version),
+            uploads: UploadsState::default(),
         }
     }
 
-    pub fn set_page(&mut self, page: Page) {
-        if self.page != page {
-            self.page = page;
-            self.keys.blur();
-            self.sync.focused = false;
-            self.appearance.font_menu_open = false;
+    /// Switch tab; returns the edit a text field was still holding.
+    pub fn set_page(&mut self, page: Page) -> Option<SettingsAction> {
+        if self.page == page {
+            return None;
         }
+        self.page = page;
+        self.keys.blur();
+        self.sync.focused = false;
+        self.appearance.font_menu_open = false;
+        self.uploads.blur()
     }
 
     /// Pointer press at `(x, y)`.
@@ -347,6 +373,7 @@ impl SettingsView {
             Page::Sync => self.sync.press(content, m, x, y),
             Page::Appearance => self.appearance.press(content, m, x, y),
             Page::Updates => self.updates.press(content, m, x, y),
+            Page::Uploads => self.uploads.press(content, m, x, y),
         }
     }
 
@@ -357,6 +384,7 @@ impl SettingsView {
             Page::Sync => self.sync.hover(content, m, x, y),
             Page::Appearance => self.appearance.hover(content, m, x, y),
             Page::Updates => self.updates.hover(content, m, x, y),
+            Page::Uploads => self.uploads.hover(content, m, x, y),
         }
     }
 
@@ -406,6 +434,13 @@ impl SettingsView {
                 let l = self.updates.layout(content, m);
                 hand(self.updates.hit(&l, x, y).is_some())
             }
+            Page::Uploads => {
+                let l = self.uploads.layout(content, m);
+                match self.uploads.hit(&l, x, y) {
+                    Some(uploads::UploadsTarget::Field(_)) => ChromeCursor::Text,
+                    t => hand(t.is_some()),
+                }
+            }
         }
     }
 
@@ -426,6 +461,7 @@ impl SettingsView {
                 None
             }
             Page::Updates => None,
+            Page::Uploads => self.uploads.key(key),
         }
     }
 
@@ -434,6 +470,7 @@ impl SettingsView {
         match self.page {
             Page::Keys => self.keys.insert_text(text),
             Page::Sync => self.sync.insert_text(text),
+            Page::Uploads => self.uploads.insert_text(text),
             _ => false,
         }
     }
@@ -446,6 +483,7 @@ impl SettingsView {
             Page::Sync => self.sync.focused,
             Page::Appearance => self.appearance.font_menu_open,
             Page::Updates => false,
+            Page::Uploads => self.uploads.captures_keyboard(),
         }
     }
 }
@@ -456,187 +494,4 @@ pub(crate) fn test_measure(text: &str, size: f32, _semibold: bool) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn config_edits_map_to_the_keys_the_app_reads() {
-        assert_eq!(
-            SettingsAction::SetFontSize(14.0).config_edit(),
-            Some(("fonts", "size", "14".to_string()))
-        );
-        assert_eq!(
-            SettingsAction::SetFontSize(14.5).config_edit(),
-            Some(("fonts", "size", "14.5".to_string()))
-        );
-        assert_eq!(
-            SettingsAction::SetFont("Fira Code".into()).config_edit(),
-            Some(("fonts", "family", "\"Fira Code\"".to_string()))
-        );
-        assert_eq!(
-            SettingsAction::SetCursor(CursorStyle::Beam).config_edit(),
-            Some(("cursor", "shape", "\"beam\"".to_string()))
-        );
-        assert_eq!(
-            SettingsAction::SetCheckUpdates(false).config_edit(),
-            Some(("updates", "check", "false".to_string()))
-        );
-        assert_eq!(
-            SettingsAction::SetAutoInstall(true).config_edit(),
-            Some(("updates", "auto-install", "true".to_string()))
-        );
-        assert_eq!(
-            SettingsAction::SetTheme(ThemeChoice::System).config_edit(),
-            Some(("appearance", "theme", "\"system\"".to_string()))
-        );
-        assert_eq!(SettingsAction::CheckUpdates.config_edit(), None);
-    }
-
-    #[test]
-    fn preview_names_map_to_pages() {
-        assert_eq!(Page::from_preview("settings-sync"), Some(Page::Sync));
-        assert_eq!(Page::from_preview("files"), None);
-    }
-
-    #[test]
-    fn confirm_dialog_is_centred_in_content_and_cancel_wins_scrim() {
-        let content = Rect::new(260.0, 96.0, 1180.0, 804.0);
-        let c = Confirm::destructive(
-            "Delete id_ed25519?",
-            "Servers using it will ask for a password.",
-            "Delete",
-        );
-        let l = confirm_layout(content, &mut test_measure, &c);
-        let d = l.dialog.dialog;
-        assert!((d.x + d.width / 2.0 - (content.x + content.width / 2.0)).abs() <= 1.0);
-        assert_eq!(
-            confirm_hit(&l, content.x + 2.0, content.y + 2.0),
-            ConfirmHit::Cancel
-        );
-        let cf = l.dialog.confirm;
-        assert_eq!(confirm_hit(&l, cf.x + 2.0, cf.y + 2.0), ConfirmHit::Confirm);
-        assert_eq!(c.focus, DialogFocus::Cancel);
-    }
-
-    #[test]
-    fn the_pointer_is_a_hand_over_what_a_press_acts_on() {
-        use crate::chrome::ChromeCursor;
-        let content = Rect::new(260.0, 96.0, 1180.0, 804.0);
-        let mut v = SettingsView::new("1.0.0");
-        v.keys.set_keys(vec![crate::settings::SshKeyItem {
-            id: "k1".into(),
-            name: "id_ed25519".into(),
-            fingerprint: "SHA256:k1".into(),
-            created: "2026-01-02".into(),
-            public_key: "ssh-ed25519 AAAA".into(),
-        }]);
-        let mid = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
-
-        // Keys: header buttons are hands, the empty corner is not.
-        let l = v.keys.layout(content, &mut test_measure);
-        let (x, y) = mid(l.generate);
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, x, y),
-            ChromeCursor::Pointer
-        );
-        let (x, y) = mid(l.import);
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, x, y),
-            ChromeCursor::Pointer
-        );
-        assert_eq!(
-            v.cursor_at(
-                content,
-                &mut test_measure,
-                content.x + 2.0,
-                content.bottom() - 2.0
-            ),
-            ChromeCursor::Default
-        );
-        // A draft's text fields show the I-beam.
-        let _ = v.press(
-            content,
-            &mut test_measure,
-            mid(l.generate).0,
-            mid(l.generate).1,
-        );
-        let l = v.keys.layout(content, &mut test_measure);
-        let (_, field) = &l.draft.as_ref().unwrap().fields[0];
-        let (x, y) = mid(field.box_rect);
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, x, y),
-            ChromeCursor::Text
-        );
-
-        // Sync: engine segments and Save are hands, the URI field is text.
-        v.set_page(Page::Sync);
-        let l = v.sync.layout(content, &mut test_measure);
-        let (x, y) = mid(l.save);
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, x, y),
-            ChromeCursor::Pointer
-        );
-        let (x, y) = mid(l.field.box_rect);
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, x, y),
-            ChromeCursor::Text
-        );
-
-        // Updates: the whole toggle row is a hand.
-        v.set_page(Page::Updates);
-        let l = v.updates.layout(content, &mut test_measure);
-        let (x, y) = mid(l.check.card);
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, x, y),
-            ChromeCursor::Pointer
-        );
-
-        // Appearance: the size steppers are hands.
-        v.set_page(Page::Appearance);
-        let l = v.appearance.layout(content, &mut test_measure);
-        let (x, y) = mid(l.size_plus);
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, x, y),
-            ChromeCursor::Pointer
-        );
-    }
-
-    #[test]
-    fn the_delete_confirm_buttons_are_hands() {
-        use crate::chrome::ChromeCursor;
-        let content = Rect::new(260.0, 96.0, 1180.0, 804.0);
-        let mut v = SettingsView::new("1.0.0");
-        v.keys.set_keys(vec![crate::settings::SshKeyItem {
-            id: "k1".into(),
-            name: "id_ed25519".into(),
-            fingerprint: "SHA256:k1".into(),
-            created: "2026-01-02".into(),
-            public_key: "ssh-ed25519 AAAA".into(),
-        }]);
-        let l = v.keys.layout(content, &mut test_measure);
-        let row = &l.rows[0];
-        // Trash is the last action on the card.
-        let trash = crate::components::list::card_layout(
-            row.card.rect,
-            &crate::components::list::CardSpec {
-                has_dot: false,
-                meta_width: row.meta_width,
-                action_widths: &[row.copy_width, row.trash_width],
-            },
-        )
-        .actions[1]
-            .expect("trash slot");
-        let _ = v.press(
-            content,
-            &mut test_measure,
-            trash.x + trash.width / 2.0,
-            trash.y + trash.height / 2.0,
-        );
-        let l = v.keys.layout(content, &mut test_measure);
-        let cf = l.confirm.as_ref().expect("confirm open").dialog.confirm;
-        assert_eq!(
-            v.cursor_at(content, &mut test_measure, cf.x + 2.0, cf.y + 2.0),
-            ChromeCursor::Pointer
-        );
-    }
-}
+mod tests;

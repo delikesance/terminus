@@ -66,6 +66,7 @@ pub fn quote(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
             c => out.push(c),
         }
     }
@@ -186,6 +187,11 @@ mod tests {
     #[test]
     fn quote_escapes() {
         assert_eq!(quote("A \"B\" \\"), "\"A \\\"B\\\" \\\\\"");
+    }
+
+    #[test]
+    fn quote_escapes_control_characters() {
+        assert_eq!(quote("a\rb"), "\"a\\u000Db\"");
     }
 
     #[test]

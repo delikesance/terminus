@@ -156,6 +156,7 @@ pub struct ContextManagerConfig {
     pub panel: rio_backend::config::layout::Panel,
     pub title: rio_backend::config::title::Title,
     pub keyboard: rio_backend::config::keyboard::Keyboard,
+    pub uploads: rio_backend::config::uploads::Uploads,
     pub scrollback_history_limit: usize,
     pub grapheme_clustering: bool,
 }
@@ -1357,6 +1358,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             panel: config.panel,
             title: config.title,
             keyboard: config.keyboard,
+            uploads: config.uploads,
             scrollback_history_limit: config.scrollback_history_limit,
             grapheme_clustering: config.grapheme_clustering,
         };
