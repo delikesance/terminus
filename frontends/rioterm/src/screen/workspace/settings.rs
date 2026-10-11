@@ -15,10 +15,15 @@ impl Screen<'_> {
     /// Cheap; runs every frame.
     pub(super) fn sync_settings_view(&mut self) {
         let WorkspaceView::Settings(page) = self.chrome.shell.view() else {
+            if let Some(action) = self.settings_view.uploads.blur() {
+                self.persist_setting(&action);
+            }
             return;
         };
+        if let Some(action) = self.settings_view.set_page(Page::from(page)) {
+            self.persist_setting(&action);
+        }
         let view = &mut self.settings_view;
-        view.set_page(Page::from(page));
 
         let keys: Vec<terminus_ui::settings::SshKeyItem> = self
             .host_store
@@ -139,6 +144,15 @@ impl Screen<'_> {
         }
     }
 
+    /// Write a setting to the config file; the watcher hot-reloads it, so
+    /// the change shows live.
+    fn persist_setting(&mut self, action: &SettingsAction) {
+        if let Err(err) = painter::persist(action) {
+            self.chrome.panel.error =
+                Some(format!("Could not save the config file: {err}"));
+        }
+    }
+
     /// Carry out one Settings action.
     pub(crate) fn execute_settings_action(
         &mut self,
@@ -186,13 +200,8 @@ impl Screen<'_> {
             | SettingsAction::SetCursor(_)
             | SettingsAction::SetTheme(_)
             | SettingsAction::SetCheckUpdates(_)
-            | SettingsAction::SetAutoInstall(_) => {
-                // The config watcher hot-reloads the file: live preview.
-                if let Err(err) = painter::persist(&action) {
-                    self.chrome.panel.error =
-                        Some(format!("Could not save the config file: {err}"));
-                }
-            }
+            | SettingsAction::SetAutoInstall(_)
+            | SettingsAction::SetUploadDir { .. } => self.persist_setting(&action),
             SettingsAction::CheckUpdates => self.updater.check_now(),
             SettingsAction::InstallUpdate => self.updater.install(),
         }

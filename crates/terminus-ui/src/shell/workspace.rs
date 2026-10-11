@@ -15,14 +15,16 @@ pub enum SettingsPage {
     Sync,
     Appearance,
     Updates,
+    Uploads,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 4] = [
+    pub const ALL: [SettingsPage; 5] = [
         SettingsPage::Keys,
         SettingsPage::Sync,
         SettingsPage::Appearance,
         SettingsPage::Updates,
+        SettingsPage::Uploads,
     ];
 
     pub fn label(self) -> &'static str {
@@ -31,6 +33,7 @@ impl SettingsPage {
             SettingsPage::Sync => "Sync",
             SettingsPage::Appearance => "Appearance",
             SettingsPage::Updates => "Updates",
+            SettingsPage::Uploads => "Uploads",
         }
     }
 }
@@ -43,6 +46,7 @@ impl From<SettingsPage> for crate::views::settings::Page {
             SettingsPage::Sync => Page::Sync,
             SettingsPage::Appearance => Page::Appearance,
             SettingsPage::Updates => Page::Updates,
+            SettingsPage::Uploads => Page::Uploads,
         }
     }
 }
@@ -212,12 +216,16 @@ mod tests {
         assert_eq!(Page::from(SettingsPage::Sync), Page::Sync);
         assert_eq!(Page::from(SettingsPage::Appearance), Page::Appearance);
         assert_eq!(Page::from(SettingsPage::Updates), Page::Updates);
+        assert_eq!(Page::from(SettingsPage::Uploads), Page::Uploads);
     }
 
     #[test]
     fn settings_page_labels_follow_the_mock() {
         let labels: Vec<_> = SettingsPage::ALL.iter().map(|p| p.label()).collect();
-        assert_eq!(labels, ["SSH keys", "Sync", "Appearance", "Updates"]);
+        assert_eq!(
+            labels,
+            ["SSH keys", "Sync", "Appearance", "Updates", "Uploads"]
+        );
     }
 
     #[test]
