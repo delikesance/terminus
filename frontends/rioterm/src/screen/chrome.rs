@@ -119,7 +119,16 @@ impl Screen<'_> {
             }
         }
 
-        let snips = self.host_store.snippet_items.clone();
+        let machine_id = self
+            .chrome
+            .shell
+            .machine
+            .as_ref()
+            .map_or("", |m| m.id.as_str());
+        let snips = terminus_ui::snippets::visible_for(
+            &self.host_store.snippet_items,
+            machine_id,
+        );
         if snips != self.chrome.snippets.items {
             self.chrome.snippets.items = snips;
             self.chrome.snippet_form.inner.closing = true;

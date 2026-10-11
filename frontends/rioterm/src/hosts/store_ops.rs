@@ -356,6 +356,7 @@ pub(super) fn list_snippets(
                 name: s.title,
                 cmd: s.content,
                 desc: s.shortcut.unwrap_or_default(),
+                host_id: s.host_id.map(|h| h.to_string()),
             });
         }
     }

@@ -160,6 +160,9 @@ pub(super) fn worker(
                         content: item.cmd,
                         tags: Vec::new(),
                         shortcut: Some(item.desc),
+                        host_id: item
+                            .host_id
+                            .and_then(|h| uuid::Uuid::parse_str(&h).ok()),
                         created_at: chrono::Utc::now(),
                         updated_at: chrono::Utc::now(),
                         deleted_at: None,
