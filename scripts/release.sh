@@ -125,12 +125,13 @@ export CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG:-0}"
 
 # nfpm from PATH (Nix release shell), else its official container image.
 NFPM_IMAGE="${NFPM_IMAGE:-ghcr.io/goreleaser/nfpm:v2.43.0}"
+source "$ROOT/scripts/docker-user.sh"
 run_nfpm() {
     if command -v nfpm >/dev/null 2>&1; then
         VERSION="$VERSION" nfpm "$@"
         return
     fi
-    docker run --rm --user "$(id -u):$(id -g)" -e VERSION="$VERSION" \
+    docker run --rm --user "$(docker_user)" -e VERSION="$VERSION" \
         -v "$ROOT:$ROOT" -w "$ROOT" "$NFPM_IMAGE" "$@"
 }
 
