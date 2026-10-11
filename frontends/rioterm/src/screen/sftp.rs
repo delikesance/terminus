@@ -333,6 +333,41 @@ impl Screen<'_> {
         self.files_redraw(&action)
     }
 
+    /// Quick-find box keys: Ctrl+F focuses it, Esc clears it, typing and
+    /// Backspace edit it while focused. Returns whether the key was consumed.
+    pub(super) fn sftp_filter_key(&mut self, key: &rio_window::event::KeyEvent) -> bool {
+        use rio_window::keyboard::{Key, NamedKey};
+        let ctrl = self.modifiers.state().control_key();
+        let Some(session) = self.sftp.as_mut() else {
+            return false;
+        };
+        let state = &mut session.state;
+        let side = state.focus;
+        let consumed = match key.logical_key.as_ref() {
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("f") => {
+                state.focus_filter(side);
+                true
+            }
+            Key::Named(NamedKey::Escape) => state.side_mut(side).clear_filter(),
+            _ if !state.filter_owns_keys() => false,
+            Key::Named(NamedKey::Backspace) => {
+                state.side_mut(side).filter_backspace();
+                true
+            }
+            _ => match key.text.as_deref() {
+                Some(text) if !ctrl && !text.chars().any(char::is_control) => {
+                    state.side_mut(side).type_filter(text);
+                    true
+                }
+                _ => false,
+            },
+        };
+        if consumed {
+            self.mark_dirty();
+        }
+        consumed
+    }
+
     /// Key for the conflict dialog, when one is pending. Returns whether
     /// it was consumed.
     pub(super) fn sftp_conflict_key(
