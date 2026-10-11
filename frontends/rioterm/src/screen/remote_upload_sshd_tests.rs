@@ -189,6 +189,39 @@ fn upload_into_a_configured_nested_dir_creates_it_privately() {
 }
 
 #[test]
+fn upload_into_a_home_relative_dir_with_a_space_returns_the_absolute_path() {
+    let (Some(sshd), Some(ssh_keygen)) = (find_binary("sshd"), find_binary("ssh-keygen"))
+    else {
+        eprintln!("skipping: sshd or ssh-keygen not found");
+        return;
+    };
+    let name = format!("terminus-drop-home-{}.txt", std::process::id());
+    let server = start_sshd(&sshd, &ssh_keygen, "homedir", &name);
+    let client_key = server.dir.join("client_key");
+    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
+    let rel_dir = format!("terminus-sshd-drop-{}", std::process::id());
+    let _cleanup = RemoveOnDrop(home.join(&rel_dir));
+    let mut upload = server.upload(&client_key);
+    upload.dir = Some(format!("~/{rel_dir}/my drop"));
+    let payload = b"home dir payload".to_vec();
+
+    let path = upload_file(&upload, &name, Cursor::new(payload.clone()))
+        .expect("upload into the home-relative dir");
+
+    let expected = home.join(&rel_dir).join("my drop").join(&name);
+    assert_eq!(path, expected.display().to_string());
+    assert_eq!(fs::read(&path).expect("read remote file"), payload);
+}
+
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
 fn upload_with_a_wrong_key_reports_ssh_stderr() {
     let (Some(sshd), Some(ssh_keygen)) = (find_binary("sshd"), find_binary("ssh-keygen"))
     else {

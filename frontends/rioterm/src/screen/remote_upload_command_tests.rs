@@ -20,19 +20,19 @@ fn posix_dir_refuses_control_characters() {
 fn posix_command_creates_the_dir_then_writes_private_to_the_path() {
     assert_eq!(
         posix_upload_command("/var/tmp/new dir", "/var/tmp/new dir/a.png"),
-        r"sh -c 'umask 077 && mkdir -p '\''/var/tmp/new dir'\'' && cat > '\''/var/tmp/new dir/a.png'\'''"
+        r"sh -c 'umask 077 && mkdir -p '\''/var/tmp/new dir'\'' && cat > '\''/var/tmp/new dir/a.png'\'' && printf '\''%s\n'\'' '\''/var/tmp/new dir/a.png'\'''"
     );
     assert_eq!(
         posix_upload_command("/srv", "/srv/a.png"),
-        "sh -c 'umask 077 && mkdir -p /srv && cat > /srv/a.png'"
+        r"sh -c 'umask 077 && mkdir -p /srv && cat > /srv/a.png && printf '\''%s\n'\'' /srv/a.png'"
     );
 }
 
 #[test]
-fn posix_tilde_dir_is_expanded_by_the_remote_shell_not_quoted() {
+fn posix_tilde_dir_is_expanded_by_the_remote_shell_and_printed_back() {
     assert_eq!(
         posix_upload_command("~/drop", "~/drop/a.png"),
-        r#"sh -c 'umask 077 && mkdir -p "$HOME"/drop && cat > "$HOME"/drop/a.png'"#
+        r#"sh -c 'umask 077 && mkdir -p "$HOME"/drop && cat > "$HOME"/drop/a.png && printf '\''%s\n'\'' "$HOME"/drop/a.png'"#
     );
     assert_eq!(posix_shell_word("~/my dir"), r#""$HOME"/'my dir'"#);
 }
@@ -76,7 +76,7 @@ fn upload_reuses_tab_args_and_writes_into_the_dir() {
             "-p",
             "2222",
             "me@box",
-            "sh -c 'umask 077 && mkdir -p /tmp && cat > /tmp/terminus-paste-1.png'",
+            r"sh -c 'umask 077 && mkdir -p /tmp && cat > /tmp/terminus-paste-1.png && printf '\''%s\n'\'' /tmp/terminus-paste-1.png'",
         ]
     );
 }
