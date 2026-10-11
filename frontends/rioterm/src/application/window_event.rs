@@ -253,6 +253,7 @@ impl Application<'_> {
                 }
 
                 route.window.screen.drop_file(&path);
+                route.request_overlay_redraw();
             }
 
             WindowEvent::Resized(new_size) => {
