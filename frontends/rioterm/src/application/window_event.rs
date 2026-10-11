@@ -252,8 +252,7 @@ impl Application<'_> {
                     return;
                 }
 
-                let path = crate::platform::shell_escape(&path.to_string_lossy());
-                route.window.screen.paste(&(path + " "), true);
+                route.window.screen.drop_file(&path);
             }
 
             WindowEvent::Resized(new_size) => {

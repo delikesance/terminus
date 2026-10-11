@@ -36,7 +36,6 @@ frontends/rioterm/src/router/mod.rs
 frontends/rioterm/src/screen/chrome_input.rs
 frontends/rioterm/src/screen/chrome.rs
 frontends/rioterm/src/screen/hint_actions.rs
-frontends/rioterm/src/screen/image_paste.rs
 frontends/rioterm/src/screen/keys.rs
 frontends/rioterm/src/screen/mod.rs
 frontends/rioterm/src/screen/render.rs
