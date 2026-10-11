@@ -13,10 +13,9 @@ impl ActiveSftp {
                     self.state.loading = false;
                     self.state.status = "Connected".into();
                     self.state.error = None;
-                    // Start in the login directory, like `sftp` / `ssh` do.
                     self.worker.send(SftpCommand::ListRemote {
                         side,
-                        path: terminus_bridge::REMOTE_HOME.into(),
+                        path: self.remote_start.clone(),
                     });
                 }
                 SftpEvent::ConnectFailed { side, message } => {

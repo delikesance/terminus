@@ -149,8 +149,13 @@ impl Screen<'_> {
             let Some((password, identity)) = auth else {
                 return Err("SFTP credentials are missing".into());
             };
-            let session =
-                crate::sftp_ui::ActiveSftp::start(host, password, identity, wake)?;
+            let session = crate::sftp_ui::ActiveSftp::start(
+                host,
+                password,
+                identity,
+                wake,
+                self.machine_tab_dir(host_id),
+            )?;
             self.sftp = Some(session);
         }
 
@@ -175,6 +180,13 @@ impl Screen<'_> {
         self.show_view(terminus_ui::shell::WorkspaceView::Files);
         self.mark_dirty();
         Ok(())
+    }
+
+    /// Shell-reported directory of the newest tab opened from `host_id`.
+    fn machine_tab_dir(&self, host_id: &str) -> Option<String> {
+        (0..self.context_manager.len())
+            .rfind(|&i| self.context_manager.tab_host_id(i) == Some(host_id))
+            .and_then(|i| self.context_manager.tab_reported_dir(i))
     }
 
     /// Make `host_id` the selected machine by bringing one of its tabs
