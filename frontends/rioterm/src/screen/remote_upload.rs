@@ -126,8 +126,8 @@ fn run_upload(
         .spawn()
         .map_err(|err| format!("{}: {err}", ssh.program))?;
     if let Some(mut stdin) = child.stdin.take() {
-        std::io::copy(&mut input, &mut stdin)
-            .map_err(|err| format!("sending the file: {err}"))?;
+        // A failed copy means ssh already exited: its stderr says why.
+        let _ = std::io::copy(&mut input, &mut stdin);
     }
     let output = child
         .wait_with_output()
@@ -160,14 +160,16 @@ pub(super) fn remote_paste_path(name: &str) -> String {
 
 /// The POSIX upload: stdin is written to `remote_path`, readable by the user only.
 pub(super) fn posix_upload_command(remote_path: &str) -> String {
-    format!("umask 077 && cat > {}", quote_for_shell(remote_path, false))
+    let script = format!("umask 077 && cat > {}", quote_for_shell(remote_path, false));
+    format!("sh -c {}", quote_for_shell(&script, false))
 }
 
 /// The Windows upload: stdin goes to a new file in `%TEMP%`, whose full path
 /// is printed. The name is already sanitised, so it needs no escaping.
 pub(super) fn windows_upload_command(name: &str) -> String {
     format!(
-        "powershell -NoProfile -NonInteractive -Command \"$f = Join-Path $env:TEMP '{name}'; \
+        "powershell -NoProfile -NonInteractive -Command \"[Console]::OutputEncoding = \
+         New-Object Text.UTF8Encoding $false; $f = Join-Path $env:TEMP '{name}'; \
          $out = [IO.File]::Create($f); try {{ [Console]::OpenStandardInput().CopyTo($out) }} \
          finally {{ $out.Close() }}; $f\""
     )
@@ -229,7 +231,7 @@ mod tests {
                 "-p",
                 "2222",
                 "me@box",
-                "umask 077 && cat > /tmp/terminus-paste-1.png",
+                "sh -c 'umask 077 && cat > /tmp/terminus-paste-1.png'",
             ]
         );
     }
@@ -238,7 +240,8 @@ mod tests {
     fn windows_remote_gets_a_powershell_upload_into_temp() {
         assert_eq!(
             windows_upload_command("terminus-drop-1.txt"),
-            "powershell -NoProfile -NonInteractive -Command \"$f = Join-Path $env:TEMP \
+            "powershell -NoProfile -NonInteractive -Command \"[Console]::OutputEncoding = \
+         New-Object Text.UTF8Encoding $false; $f = Join-Path $env:TEMP \
              'terminus-drop-1.txt'; $out = [IO.File]::Create($f); try { \
              [Console]::OpenStandardInput().CopyTo($out) } finally { $out.Close() }; $f\""
         );
