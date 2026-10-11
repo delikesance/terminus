@@ -8,6 +8,7 @@ use super::clipboard::paste_bytes;
 use super::Screen;
 use crate::event::Msg;
 use crate::ssh_secrets::{launch_secrets, SecretFiles};
+use rio_backend::config::uploads::Uploads;
 use std::io::Read;
 use std::process::{Command, Stdio};
 
@@ -33,6 +34,18 @@ pub(super) struct SshUpload {
     pub tab_args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub os: RemoteOs,
+    /// The `[uploads]` directory for this host's OS; `None` is the default.
+    pub dir: Option<String>,
+}
+
+impl RemoteOs {
+    fn configured_dir(self, uploads: &Uploads) -> Option<String> {
+        let dir = match self {
+            Self::Posix => &uploads.dir,
+            Self::Windows => &uploads.windows_dir,
+        };
+        (!dir.is_empty()).then(|| dir.clone())
+    }
 }
 
 impl Screen<'_> {
@@ -45,11 +58,13 @@ impl Screen<'_> {
             .iter()
             .find(|host| host.id == id)
             .and_then(|host| host.os_id.as_deref());
+        let os = RemoteOs::of(os_id);
         Ok(SshUpload {
             program: shell.program.unwrap_or_else(|| "ssh".to_string()),
             tab_args: shell.args,
             env: env.unwrap_or_default(),
-            os: RemoteOs::of(os_id),
+            os,
+            dir: os.configured_dir(&self.context_manager.config.uploads),
         })
     }
 }
@@ -85,12 +100,14 @@ pub(super) fn upload_file(
 ) -> Result<String, String> {
     match ssh.os {
         RemoteOs::Posix => {
-            let path = remote_paste_path(name);
-            run_upload(ssh, &posix_upload_command(&path), input)?;
+            let dir = posix_upload_dir(ssh.dir.as_deref())?;
+            let path = posix_remote_path(&dir, name);
+            run_upload(ssh, &posix_upload_command(&dir, &path), input)?;
             Ok(path)
         }
         RemoteOs::Windows => {
-            let path = run_upload(ssh, &windows_upload_command(name), input)?;
+            let command = windows_upload_command(ssh.dir.as_deref(), name)?;
+            let path = run_upload(ssh, &command, input)?;
             if path.is_empty() {
                 return Err("the host did not report where the file went".into());
             }
@@ -154,25 +171,65 @@ pub(super) fn quote_for_shell(path: &str, windows: bool) -> String {
     }
 }
 
-pub(super) fn remote_paste_path(name: &str) -> String {
-    format!("/tmp/{name}")
+/// The POSIX directory: `/tmp` unless configured. A trailing slash is dropped
+/// so `<dir>/<name>` joins cleanly.
+pub(super) fn posix_upload_dir(configured: Option<&str>) -> Result<String, String> {
+    let dir = configured.unwrap_or("/tmp").trim_end_matches('/');
+    if dir.chars().any(char::is_control) {
+        return Err("the upload directory contains a control character".into());
+    }
+    Ok(dir.to_string())
 }
 
-/// The POSIX upload: stdin is written to `remote_path`, readable by the user only.
-pub(super) fn posix_upload_command(remote_path: &str) -> String {
-    let script = format!("umask 077 && cat > {}", quote_for_shell(remote_path, false));
+pub(super) fn posix_remote_path(dir: &str, name: &str) -> String {
+    format!("{dir}/{name}")
+}
+
+/// A path as the remote shell writes it: `~/` becomes `$HOME`, which only
+/// the inner `sh -c` expands, so the path stays inside its quotes.
+fn posix_shell_word(path: &str) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("\"$HOME\"/{}", quote_for_shell(rest, false)),
+        None => quote_for_shell(path, false),
+    }
+}
+
+/// The POSIX upload: creates `dir`, then writes stdin to `remote_path`,
+/// readable by the user only.
+pub(super) fn posix_upload_command(dir: &str, remote_path: &str) -> String {
+    let script = format!(
+        "mkdir -p {} && umask 077 && cat > {}",
+        posix_shell_word(dir),
+        posix_shell_word(remote_path)
+    );
     format!("sh -c {}", quote_for_shell(&script, false))
 }
 
-/// The Windows upload: stdin goes to a new file in `%TEMP%`, whose full path
-/// is printed. The name is already sanitised, so it needs no escaping.
-pub(super) fn windows_upload_command(name: &str) -> String {
-    format!(
+/// The Windows upload: creates the configured dir (or `%TEMP%`), writes stdin
+/// to a new file there and prints its full path. The name is already
+/// sanitised; a configured dir is refused when it would break the `cmd.exe`
+/// double quotes around the PowerShell command.
+pub(super) fn windows_upload_command(
+    dir: Option<&str>,
+    name: &str,
+) -> Result<String, String> {
+    let dir_expr = match dir {
+        None => "$env:TEMP".to_string(),
+        Some(dir) if dir.chars().any(|c| c == '"' || c.is_control()) => {
+            return Err(
+                "the Windows upload directory contains a quote or a control character"
+                    .into(),
+            );
+        }
+        Some(dir) => format!("'{}'", dir.replace('\'', "''")),
+    };
+    Ok(format!(
         "powershell -NoProfile -NonInteractive -Command \"[Console]::OutputEncoding = \
-         New-Object Text.UTF8Encoding $false; $f = Join-Path $env:TEMP '{name}'; \
+         New-Object Text.UTF8Encoding $false; $d = {dir_expr}; \
+         New-Item -ItemType Directory -Force -Path $d | Out-Null; $f = Join-Path $d '{name}'; \
          $out = [IO.File]::Create($f); try {{ [Console]::OpenStandardInput().CopyTo($out) }} \
          finally {{ $out.Close() }}; $f\""
-    )
+    ))
 }
 
 /// The tab's own `ssh` arguments turned into a one-shot upload: no pty
@@ -188,6 +245,10 @@ pub(super) fn upload_args(tab_args: Vec<String>, remote_command: &str) -> Vec<St
     args.push(remote_command.to_string());
     args
 }
+
+#[cfg(test)]
+#[path = "remote_upload_command_tests.rs"]
+mod command_tests;
 
 #[cfg(all(test, unix))]
 #[path = "remote_upload_sshd_tests.rs"]
@@ -218,36 +279,6 @@ mod tests {
         assert_eq!(
             quote_for_shell(r"C:\Users\Jo Doe\a.png", true),
             r#""C:\Users\Jo Doe\a.png""#
-        );
-    }
-
-    #[test]
-    fn upload_reuses_tab_args_and_writes_stdin_to_tmp() {
-        let tab = vec!["-p".to_string(), "2222".to_string(), "me@box".to_string()];
-        let path = remote_paste_path("terminus-paste-1.png");
-        assert_eq!(path, "/tmp/terminus-paste-1.png");
-        assert_eq!(
-            upload_args(tab, &posix_upload_command(&path)),
-            vec![
-                "-T",
-                "-o",
-                "ConnectTimeout=10",
-                "-p",
-                "2222",
-                "me@box",
-                "sh -c 'umask 077 && cat > /tmp/terminus-paste-1.png'",
-            ]
-        );
-    }
-
-    #[test]
-    fn windows_remote_gets_a_powershell_upload_into_temp() {
-        assert_eq!(
-            windows_upload_command("terminus-drop-1.txt"),
-            "powershell -NoProfile -NonInteractive -Command \"[Console]::OutputEncoding = \
-         New-Object Text.UTF8Encoding $false; $f = Join-Path $env:TEMP \
-             'terminus-drop-1.txt'; $out = [IO.File]::Create($f); try { \
-             [Console]::OpenStandardInput().CopyTo($out) } finally { $out.Close() }; $f\""
         );
     }
 

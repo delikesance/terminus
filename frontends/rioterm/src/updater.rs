@@ -278,8 +278,8 @@ pub struct UpdateSettings {
     pub auto_install: bool,
 }
 
-impl From<rio_backend::config::Updates> for UpdateSettings {
-    fn from(updates: rio_backend::config::Updates) -> Self {
+impl From<rio_backend::config::updates::Updates> for UpdateSettings {
+    fn from(updates: rio_backend::config::updates::Updates) -> Self {
         // TERMINUS_NO_UPDATE_CHECK=1 turns automatic checks off (packagers,
         // CI, air-gapped machines); the palette still works.
         let disabled = std::env::var_os("TERMINUS_NO_UPDATE_CHECK")
