@@ -202,6 +202,11 @@ impl Screen<'_> {
             | SettingsAction::SetCheckUpdates(_)
             | SettingsAction::SetAutoInstall(_)
             | SettingsAction::SetUploadDir { .. } => self.persist_setting(&action),
+            SettingsAction::Batch(actions) => {
+                for action in actions {
+                    self.execute_settings_action(action, clipboard);
+                }
+            }
             SettingsAction::CheckUpdates => self.updater.check_now(),
             SettingsAction::InstallUpdate => self.updater.install(),
         }

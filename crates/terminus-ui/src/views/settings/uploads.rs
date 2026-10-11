@@ -154,11 +154,18 @@ impl UploadsState {
             Some(UploadsTarget::Field(f)) => Some(f),
             _ => None,
         };
-        let pending = (focus != self.focus).then(|| self.blur()).flatten();
+        let reset_field = match target {
+            Some(UploadsTarget::Reset(f)) => Some(f),
+            _ => None,
+        };
+        let blurred = self.focus.filter(|_| focus != self.focus);
+        let pending = blurred
+            .filter(|f| Some(*f) != reset_field)
+            .and_then(|f| self.commit(f));
         self.focus = focus;
-        match target {
-            Some(UploadsTarget::Reset(f)) => self.reset(f).or(pending),
-            _ => pending,
+        match reset_field {
+            Some(f) => merge(pending, self.reset(f)),
+            None => pending,
         }
     }
 
@@ -218,6 +225,16 @@ impl UploadsState {
         }
         entry.saved.clone_from(&value);
         Some(SettingsAction::SetUploadDir { field, value })
+    }
+}
+
+fn merge(
+    first: Option<SettingsAction>,
+    second: Option<SettingsAction>,
+) -> Option<SettingsAction> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(SettingsAction::Batch(vec![a, b])),
+        (a, b) => a.or(b),
     }
 }
 

@@ -128,6 +128,8 @@ pub enum SettingsAction {
         field: UploadsField,
         value: String,
     },
+    /// Several actions from one press, applied in order.
+    Batch(Vec<SettingsAction>),
 }
 
 impl SettingsAction {
