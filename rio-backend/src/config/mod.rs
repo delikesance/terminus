@@ -14,6 +14,8 @@ pub mod platform;
 pub mod renderer;
 pub mod theme;
 pub mod title;
+pub mod updates;
+pub mod uploads;
 pub mod window;
 
 use crate::ansi::CursorShape;
@@ -27,6 +29,8 @@ use crate::config::navigation::Navigation;
 use crate::config::platform::{Platform, PlatformConfig};
 use crate::config::renderer::Renderer;
 use crate::config::title::Title;
+use crate::config::updates::Updates;
+use crate::config::uploads::Uploads;
 use crate::config::window::Window;
 use colors::Colors;
 use serde::{Deserialize, Serialize};
@@ -85,27 +89,6 @@ pub struct Developer {
     pub log_level: String,
     #[serde(rename = "enable-log-file", default)]
     pub enable_log_file: bool,
-}
-
-/// `[updates]`: Terminus self-update.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Updates {
-    /// Look for a new release at startup and once a day.
-    #[serde(default = "default_bool_true")]
-    pub check: bool,
-    /// Install automatically when that needs no prompt (portable installs);
-    /// installer- and package-based installs always ask first.
-    #[serde(default = "default_bool_true", rename = "auto-install")]
-    pub auto_install: bool,
-}
-
-impl Default for Updates {
-    fn default() -> Self {
-        Self {
-            check: true,
-            auto_install: true,
-        }
-    }
 }
 
 impl Default for Developer {
@@ -181,6 +164,8 @@ pub struct Config {
     pub developer: Developer,
     #[serde(default = "Updates::default")]
     pub updates: Updates,
+    #[serde(default = "Uploads::default")]
+    pub uploads: Uploads,
     #[serde(default = "Bindings::default")]
     pub bindings: bindings::Bindings,
     #[serde(
@@ -701,6 +686,7 @@ impl Default for Config {
             title: Title::default(),
             developer: Developer::default(),
             updates: Updates::default(),
+            uploads: Uploads::default(),
             env_vars: vec![],
             #[cfg(feature = "renderer")]
             fonts: SugarloafFonts::default(),
