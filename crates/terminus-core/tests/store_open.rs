@@ -53,6 +53,38 @@ async fn open_creates_the_database_in_a_fresh_directory() {
 }
 
 #[tokio::test]
+async fn snippet_host_scope_roundtrips() {
+    let dir = temp_dir("snippet-scope");
+    let store = Store::open(dir.clone()).await.expect("open");
+    let host_id = Uuid::new_v4();
+    let now = Utc::now();
+    let snippet = |host_id| terminus_core::models::Snippet {
+        id: Uuid::new_v4(),
+        title: "t".into(),
+        content: "c".into(),
+        tags: Vec::new(),
+        shortcut: None,
+        host_id,
+        created_at: now,
+        updated_at: now,
+        deleted_at: None,
+    };
+    store.upsert_snippet(&snippet(Some(host_id))).await.unwrap();
+    store.upsert_snippet(&snippet(None)).await.unwrap();
+    let mut scopes: Vec<_> = store
+        .list_snippets()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.host_id)
+        .collect();
+    scopes.sort();
+    assert_eq!(scopes, [None, Some(host_id)]);
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn hosts_survive_reopening_the_store() {
     let dir = temp_dir("reopen");
 

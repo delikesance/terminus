@@ -10,11 +10,11 @@ impl Store {
     pub async fn upsert_snippet(&self, snippet: &Snippet) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO snippets (id, title, content, tags, shortcut, created_at, updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO snippets (id, title, content, tags, shortcut, host_id, created_at, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, content=excluded.content, tags=excluded.tags,
-                shortcut=excluded.shortcut, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
+                shortcut=excluded.shortcut, host_id=excluded.host_id, updated_at=excluded.updated_at, deleted_at=excluded.deleted_at
             "#,
         )
         .bind(snippet.id.to_string())
@@ -22,6 +22,7 @@ impl Store {
         .bind(&snippet.content)
         .bind(serde_json::to_string(&snippet.tags).unwrap())
         .bind(&snippet.shortcut)
+        .bind(snippet.host_id.map(|h| h.to_string()))
         .bind(snippet.created_at.to_rfc3339())
         .bind(snippet.updated_at.to_rfc3339())
         .bind(snippet.deleted_at.map(|d| d.to_rfc3339()))
@@ -47,6 +48,10 @@ impl Store {
                     tags: serde_json::from_str(&r.try_get::<String, _>("tags").ok()?)
                         .unwrap_or_default(),
                     shortcut: r.try_get("shortcut").ok()?,
+                    host_id: r
+                        .try_get::<Option<String>, _>("host_id")
+                        .ok()?
+                        .and_then(|s| s.parse().ok()),
                     created_at: row_ts(&r, "created_at")?,
                     updated_at: row_ts(&r, "updated_at")?,
                     deleted_at: r

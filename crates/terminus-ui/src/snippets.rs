@@ -17,6 +17,7 @@ pub struct SnippetItem {
     pub name: String,
     pub cmd: String,
     pub desc: String,
+    pub host_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -148,6 +149,7 @@ impl SnippetsPanel {
                     name: "Docker Full Cleanup".into(),
                     cmd: "docker system prune -a --volumes -f".into(),
                     desc: "Remove all unused containers, networks and images.".into(),
+                    host_id: None,
                 },
                 SnippetItem {
                     id: "2".into(),
@@ -156,18 +158,21 @@ impl SnippetsPanel {
                         "sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y"
                             .into(),
                     desc: "Fully update system packages and clean caches.".into(),
+                    host_id: None,
                 },
                 SnippetItem {
                     id: "3".into(),
                     name: "Check Disk I/O & Load".into(),
                     cmd: "htop && iostat -xz 1".into(),
                     desc: "Monitor live resource usage and disk bottlenecks.".into(),
+                    host_id: None,
                 },
                 SnippetItem {
                     id: "4".into(),
                     name: "Nginx Reload Config".into(),
                     cmd: "sudo nginx -t && sudo systemctl reload nginx".into(),
                     desc: "Test configuration syntax and gracefully reload nginx.".into(),
+                    host_id: None,
                 },
             ],
             scroll: 0.0,
@@ -175,5 +180,36 @@ impl SnippetsPanel {
             add_hover: false,
             delete_hover: None,
         }
+    }
+}
+
+/// Snippets shown for a machine: global ones plus those bound to it.
+pub fn visible_for(items: &[SnippetItem], machine_id: &str) -> Vec<SnippetItem> {
+    items
+        .iter()
+        .filter(|s| s.host_id.as_deref().is_none_or(|h| h == machine_id))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    fn item(id: &str, host_id: Option<&str>) -> SnippetItem {
+        SnippetItem {
+            id: id.into(),
+            name: id.into(),
+            cmd: String::new(),
+            desc: String::new(),
+            host_id: host_id.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn shows_global_and_matching_host_only() {
+        let items = [item("g", None), item("a", Some("A")), item("b", Some("B"))];
+        let ids: Vec<_> = visible_for(&items, "A").into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, ["g", "a"]);
     }
 }
