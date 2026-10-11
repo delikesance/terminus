@@ -178,11 +178,11 @@ pub(super) fn posix_upload_dir(configured: Option<&str>) -> Result<String, Strin
     if dir.chars().any(char::is_control) {
         return Err("the upload directory contains a control character".into());
     }
-    Ok(dir.to_string())
+    Ok(if dir.is_empty() { "/" } else { dir }.to_string())
 }
 
 pub(super) fn posix_remote_path(dir: &str, name: &str) -> String {
-    format!("{dir}/{name}")
+    format!("{}/{name}", dir.trim_end_matches('/'))
 }
 
 /// A path as the remote shell writes it: `~/` becomes `$HOME`, which only
@@ -198,7 +198,7 @@ fn posix_shell_word(path: &str) -> String {
 /// readable by the user only.
 pub(super) fn posix_upload_command(dir: &str, remote_path: &str) -> String {
     let script = format!(
-        "mkdir -p {} && umask 077 && cat > {}",
+        "umask 077 && mkdir -p {} && cat > {}",
         posix_shell_word(dir),
         posix_shell_word(remote_path)
     );
@@ -208,16 +208,20 @@ pub(super) fn posix_upload_command(dir: &str, remote_path: &str) -> String {
 /// The Windows upload: creates the configured dir (or `%TEMP%`), writes stdin
 /// to a new file there and prints its full path. The name is already
 /// sanitised; a configured dir is refused when it would break the `cmd.exe`
-/// double quotes around the PowerShell command.
+/// double quotes around the PowerShell command (`%` would be expanded by `cmd`).
 pub(super) fn windows_upload_command(
     dir: Option<&str>,
     name: &str,
 ) -> Result<String, String> {
     let dir_expr = match dir {
         None => "$env:TEMP".to_string(),
-        Some(dir) if dir.chars().any(|c| c == '"' || c.is_control()) => {
+        Some(dir)
+            if dir
+                .chars()
+                .any(|c| matches!(c, '"' | '%') || c.is_control()) =>
+        {
             return Err(
-                "the Windows upload directory contains a quote or a control character"
+                "the Windows upload directory contains a quote, a % or a control character"
                     .into(),
             );
         }
