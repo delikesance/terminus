@@ -102,18 +102,22 @@ pub(super) fn upload_file(
         RemoteOs::Posix => {
             let dir = posix_upload_dir(ssh.dir.as_deref())?;
             let path = posix_remote_path(&dir, name);
-            run_upload(ssh, &posix_upload_command(&dir, &path), input)?;
-            Ok(path)
+            reported_path(run_upload(ssh, &posix_upload_command(&dir, &path), input)?)
         }
         RemoteOs::Windows => {
             let command = windows_upload_command(ssh.dir.as_deref(), name)?;
-            let path = run_upload(ssh, &command, input)?;
-            if path.is_empty() {
-                return Err("the host did not report where the file went".into());
-            }
-            Ok(path)
+            reported_path(run_upload(ssh, &command, input)?)
         }
     }
+}
+
+/// The path the host printed after writing the file; `~` is already expanded
+/// there, so it is safe to paste.
+fn reported_path(path: String) -> Result<String, String> {
+    if path.is_empty() {
+        return Err("the host did not report where the file went".into());
+    }
+    Ok(path)
 }
 
 /// Runs the upload command and returns its trimmed stdout.
@@ -195,12 +199,13 @@ fn posix_shell_word(path: &str) -> String {
 }
 
 /// The POSIX upload: creates `dir`, then writes stdin to `remote_path`,
-/// readable by the user only.
+/// readable by the user only. It prints the written path with `~` expanded,
+/// so the tab can be given an absolute path.
 pub(super) fn posix_upload_command(dir: &str, remote_path: &str) -> String {
+    let written = posix_shell_word(remote_path);
     let script = format!(
-        "umask 077 && mkdir -p {} && cat > {}",
+        "umask 077 && mkdir -p {} && cat > {written} && printf '%s\\n' {written}",
         posix_shell_word(dir),
-        posix_shell_word(remote_path)
     );
     format!("sh -c {}", quote_for_shell(&script, false))
 }
