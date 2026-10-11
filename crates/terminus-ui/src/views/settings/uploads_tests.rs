@@ -79,6 +79,36 @@ fn blur_without_a_change_writes_nothing() {
 }
 
 #[test]
+fn resetting_the_other_field_keeps_the_pending_edit() {
+    let mut s = UploadsState::default();
+    s.load("", "C:\\Drop");
+    let l = s.layout(CONTENT, &mut test_measure);
+    press(&mut s, l.rows[0].field.box_rect);
+    s.insert_text("/srv/up");
+    assert_eq!(
+        press(&mut s, l.rows[1].reset),
+        Some(SettingsAction::Batch(vec![
+            set(UploadsField::Linux, "/srv/up"),
+            set(UploadsField::Windows, ""),
+        ]))
+    );
+    assert_eq!(s.draft(UploadsField::Linux).value, "/srv/up");
+}
+
+#[test]
+fn resetting_the_focused_field_just_clears_it() {
+    let mut s = UploadsState::default();
+    s.load("/old", "");
+    let l = s.layout(CONTENT, &mut test_measure);
+    press(&mut s, l.rows[0].field.box_rect);
+    s.insert_text("/x");
+    assert_eq!(
+        press(&mut s, l.rows[0].reset),
+        Some(set(UploadsField::Linux, ""))
+    );
+}
+
+#[test]
 fn reset_empties_the_field_and_writes_an_empty_string() {
     let mut s = UploadsState::default();
     s.load("/srv/drop", "");
