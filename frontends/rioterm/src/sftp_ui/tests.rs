@@ -1,6 +1,12 @@
 use super::*;
 use std::time::Duration;
 
+#[test]
+fn remote_browser_starts_in_the_tab_directory_or_home() {
+    assert_eq!(remote_start_path(Some("/srv/app".into())), "/srv/app");
+    assert_eq!(remote_start_path(None), terminus_bridge::REMOTE_HOME);
+}
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "terminus-sftp-ui-{}-{}",
