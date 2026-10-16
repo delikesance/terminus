@@ -396,6 +396,9 @@ fn paint_list(
     crate::renderer::chrome::render_empty_hint(
         sugarloaf, chrome, theme, origin_y, height, None,
     );
+    crate::renderer::chrome::render_empty_cta(
+        sugarloaf, chrome, theme, origin_y, height, None,
+    );
     crate::renderer::chrome::render_notice(
         sugarloaf, chrome, theme, origin_y, height, true,
     );

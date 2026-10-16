@@ -60,6 +60,48 @@ pub(crate) fn render_empty_hint(
     }
 }
 
+/// "Add first host" button under the empty-list hint.
+pub(crate) fn render_empty_cta(
+    sugarloaf: &mut Sugarloaf,
+    chrome: &Chrome,
+    theme: &ChromeTheme,
+    origin_y: f32,
+    height: f32,
+    cover: Option<&Rect>,
+) {
+    let Some(rect) = chrome.panel.empty_cta_rect(origin_y, height) else {
+        return;
+    };
+    let body = chrome.panel.body_rect(origin_y, height);
+    if rect.bottom() > body.bottom() || text_blocked_by(cover, &rect) {
+        return;
+    }
+    let fill = if chrome.panel.add_hover {
+        theme.accent_hover
+    } else {
+        theme.accent
+    };
+    paint_surface(
+        sugarloaf,
+        &rect,
+        fill,
+        None,
+        8.0,
+        DEPTH_CONTENT + 0.05,
+        ORDER_CONTENT,
+        false,
+    );
+    draw_text(
+        sugarloaf,
+        rect.x + 12.0,
+        rect.y + (rect.height - ROW_TITLE_SIZE) * 0.5 - 1.0,
+        "Add first host",
+        ROW_TITLE_SIZE,
+        terminus_ui::theme::text_color(theme.on_accent),
+        true,
+    );
+}
+
 pub(crate) fn render_notice(
     sugarloaf: &mut Sugarloaf,
     chrome: &Chrome,
