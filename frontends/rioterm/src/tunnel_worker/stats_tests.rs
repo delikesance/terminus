@@ -110,3 +110,42 @@ fn a_live_accepted_connection_is_sampled_from_proc() {
 fn connections_are_unavailable_off_linux() {
     assert_eq!(sample_connections(1, TunnelKind::Local, 1, 0), None);
 }
+
+const PROC_IO: &str = "\
+rchar: 4000
+wchar: 2000
+syscr: 12
+syscw: 7
+read_bytes: 0
+write_bytes: 0
+cancelled_write_bytes: 0
+";
+
+#[test]
+fn forwarded_bytes_are_half_of_what_the_ssh_process_read_plus_wrote() {
+    // Each forwarded byte is read once and written once by ssh.
+    assert_eq!(parse_proc_io_bytes(PROC_IO), Some(3000));
+    assert_eq!(parse_proc_io_bytes("rchar: 1\nwchar: 0\n"), Some(0));
+    assert_eq!(parse_proc_io_bytes("rchar: 9\n"), None);
+    assert_eq!(parse_proc_io_bytes("rchar: x\nwchar: 2\n"), None);
+    assert_eq!(parse_proc_io_bytes(""), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bytes_of_a_live_process_grow_with_its_io() {
+    let me = std::process::id();
+    let before = sample_bytes(me).expect("/proc/self/io readable");
+    let mut f =
+        std::fs::File::create(std::env::temp_dir().join(format!("tnl-io-{me}"))).unwrap();
+    std::io::Write::write_all(&mut f, &vec![7u8; 200_000]).unwrap();
+    let _ = std::fs::remove_file(std::env::temp_dir().join(format!("tnl-io-{me}")));
+    assert!(sample_bytes(me).unwrap() >= before + 100_000);
+    assert_eq!(sample_bytes(0x7fff_fff0), None);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn bytes_are_unavailable_off_linux() {
+    assert_eq!(sample_bytes(1), None);
+}
