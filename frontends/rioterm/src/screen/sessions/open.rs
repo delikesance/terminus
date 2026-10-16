@@ -193,7 +193,7 @@ impl Screen<'_> {
 
     /// Picking a host while Settings or Home is up goes back to the host's
     /// machine view (a host change already did, through the view memory).
-    fn leave_settings_or_home(&mut self) {
+    pub(super) fn leave_settings_or_home(&mut self) {
         if !self.chrome.shell.view().is_machine_view() {
             let back = self.chrome.shell.workspace.machine_view();
             self.show_view(back);
