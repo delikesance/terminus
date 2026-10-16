@@ -166,6 +166,14 @@ impl HostPanel {
             .position(|row| row.host().is_some_and(|host| host.id == id))
     }
 
+    /// Ids of the host rows in list order: what keyboard host cycling walks.
+    /// Hosts folded into a collapsed group have no row and are absent.
+    pub fn host_ids(&self) -> impl Iterator<Item = &str> {
+        self.rows
+            .iter()
+            .filter_map(|row| row.host().map(|host| host.id.as_str()))
+    }
+
     pub fn selected_id(&self) -> Option<&str> {
         self.selected_item().map(|item| item.id.as_str())
     }

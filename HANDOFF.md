@@ -5,7 +5,7 @@ Mis à jour : 2026-10-16 (branche `development`, HEAD `8f9fcfb0`, non poussée).
 ## Objectif en cours
 R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`, relue 2026-10-16, statut « reviewed »).
 - R1a : **fait** (implémenté, tests verts, non vérifié en GUI).
-- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (`8f9fcfb0`) ; 3 helper cyclage d'hôte, ordre = sidebar (test rouge d'abord) ; 4 câblage `Screen` (`screen/sessions/hosts_nav.rs`) ; 5 défauts dans `bindings/host_nav.rs` (neuf, `mod.rs` à 1870 lignes allowlistées) ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
+- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (`8f9fcfb0`) ; 3 helper cyclage d'hôte ✅ (`ContextManager::neighbour_host_tab`, `HostPanel::host_ids`) ; 4 câblage `Screen` (`screen/sessions/hosts_nav.rs`) ; 5 défauts dans `bindings/host_nav.rs` (neuf, `mod.rs` à 1870 lignes allowlistées) ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
 - R1c : page Settings > Shortcuts, non commencée.
 - R16 (Files suit le dossier OSC 7 du terminal courant) et R17 (fil d'Ariane éditable) : ajoutés à `milestone.md`, non planifiés. R16 touche `ShowView` : à faire après R1b.
 
@@ -31,8 +31,7 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - Suppressions stagées préexistantes dans l'index (`.claude/agents/*`, `.claude/settings.json`, `.codex/*`, `.cursor/*`, `AGENTS.md`) : non liées, ne pas commiter sans demande.
 
 ## Prochaine action
-1. R1b étape 3 : helper pur de cyclage d'hôte dans `context/host_tabs.rs`, ordre de la sidebar (accessor dans `terminus-ui/src/sidebar/state.rs`), hôtes sans onglet sautés, boucle, no-op si < 2 hôtes avec onglet. Test rouge d'abord.
-2. Étape 4 : câblage `Screen` (`screen/keys.rs`) ; étape 5 : défauts `Ctrl+Shift+Up/Down` (SelectPrev/NextHost) et `Ctrl+Alt+1..5` (ShowView), `bindings/host_nav.rs`.
+1. (étape 3 faite) Étape 4 : câblage `Screen` (`screen/keys.rs`) ; étape 5 : défauts `Ctrl+Shift+Up/Down` (SelectPrev/NextHost) et `Ctrl+Alt+1..5` (ShowView), `bindings/host_nav.rs`.
 3. Vérifier R1a à l'écran (voir Blocages).
 
 Décisions : Shift+Tab reste dans l'hôte (aucun changement) ; `Ctrl+Shift+Up/Down` retenu pour le cyclage d'hôte.
