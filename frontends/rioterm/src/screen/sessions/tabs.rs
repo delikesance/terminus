@@ -109,12 +109,26 @@ impl Screen<'_> {
         if index != self.context_manager.current_index() {
             self.context_manager.set_current(index);
         }
+        let closed_host = self
+            .context_manager
+            .current()
+            .host_id
+            .clone()
+            .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
         self.context_manager
             .close_current_context(&mut self.sugarloaf);
         // Closing the last tab of a distro has to move the highlight off it:
         // the row is re-derived from the tab now in front, which is the local
         // one when no host tab is left.
         self.sync_sidebar_selection();
+        // No tab left on that host: its remembered view goes with it.
+        if self
+            .context_manager
+            .host_tab_to_restore(&closed_host)
+            .is_none()
+        {
+            self.chrome.shell.workspace.forget_host(&closed_host);
+        }
         if let Some(ref mut island) = self.renderer.island {
             island.dismiss_color_picker();
             let _ = island.set_tab_hover(None, false);

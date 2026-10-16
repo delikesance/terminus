@@ -34,6 +34,17 @@ impl Chrome {
         changed
     }
 
+    /// The front tab belongs to host `id`: show that host's remembered
+    /// view when the host changed. Closes the legacy settings dialog like
+    /// [`Self::show_view`].
+    pub fn follow_host(&mut self, id: &str) -> bool {
+        let changed = self.shell.workspace.follow_host(id);
+        if changed && self.settings.open {
+            self.settings.close();
+        }
+        changed
+    }
+
     /// Route one input event to the view on screen (not the terminal).
     /// Esc on a machine view that ignores it goes back to the terminal.
     pub fn view_input(

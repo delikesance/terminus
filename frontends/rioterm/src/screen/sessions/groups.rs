@@ -16,6 +16,12 @@ impl Screen<'_> {
             .unwrap_or_else(|| hosts::LOCAL_ID.to_string());
 
         self.chrome.panel.follow_session(tab_index, &id);
+        // Every tab change ends here: a different host brings back the view
+        // it was last on; another tab of the same host keeps the view.
+        if self.chrome.follow_host(&id) {
+            self.clear_selection();
+            self.mark_dirty();
+        }
     }
 
     /// Advance a host drag (edge auto-scroll; legacy snap tween); returns
@@ -86,6 +92,7 @@ impl Screen<'_> {
             tunnels.host_deleted(id);
         }
         self.host_store.delete_host(id);
+        self.chrome.shell.workspace.forget_host(id);
     }
 
     /// Open a session on every host of group `group_id`; reports the first
