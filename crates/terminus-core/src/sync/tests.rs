@@ -87,6 +87,7 @@ async fn open_remote_rejects_postgres_and_opens_sqlite() {
     engine.attach_local(local.pool().clone()).await;
     let report = engine.sync_now().await.expect("sync");
     assert!(report.finished_at.is_some());
+    assert_eq!(engine.last_conflicts().await, report.conflicts);
 }
 
 #[test]

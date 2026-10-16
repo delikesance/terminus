@@ -97,7 +97,7 @@ impl Screen<'_> {
         let can_browse = row.as_ref().is_some_and(|r| r.stored);
         let shell = &mut self.chrome.shell;
         shell.set_pills(pills);
-        shell.sync_ok = self.host_store.sync_connected();
+        shell.sync = self.host_store.sync_badge();
         shell.machine = Some(machine.clone());
         // A selection made elsewhere (palette, tab switch) scrolls the
         // machine's row into view, once.

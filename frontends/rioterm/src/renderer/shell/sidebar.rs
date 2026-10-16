@@ -12,6 +12,7 @@ use terminus_ui::os_icons::{HostStatus, OsGlyph};
 use terminus_ui::shell::sidebar as geo;
 use terminus_ui::shell::ShellHit;
 use terminus_ui::sidebar::{self, Badge, HostDropTarget, Row};
+use terminus_ui::sync_badge::SyncTone;
 use terminus_ui::theme::{text_color, ChromeTheme};
 
 use super::{fill, text_top, u8_to_f32};
@@ -173,15 +174,22 @@ pub(super) fn paint(
         fg,
         UiWeight::Regular,
     );
-    if chrome.shell.sync_ok {
-        let w = measure_ui_text(sugarloaf, "Synced", geo::SYNCED_SIZE, UiWeight::Regular);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    if let Some(label) = chrome.shell.sync.label(now) {
+        let tint = match chrome.shell.sync.tone() {
+            SyncTone::Ok => theme.success,
+            SyncTone::Warn => theme.warning,
+        };
+        let w = measure_ui_text(sugarloaf, &label, geo::SYNCED_SIZE, UiWeight::Regular);
         draw_ui_text(
             sugarloaf,
             set.right() - geo::FOOT_PAD_X - w,
             text_top(cy, geo::SYNCED_SIZE),
-            "Synced",
+            &label,
             geo::SYNCED_SIZE,
-            text_color(theme.success),
+            text_color(tint),
             UiWeight::Regular,
         );
     }

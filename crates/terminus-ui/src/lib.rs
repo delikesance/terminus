@@ -38,6 +38,7 @@ pub mod sftp_pane;
 pub mod shell;
 pub mod sidebar;
 pub mod snippets;
+pub mod sync_badge;
 pub mod theme;
 pub mod tokens;
 pub mod vault_unlock;

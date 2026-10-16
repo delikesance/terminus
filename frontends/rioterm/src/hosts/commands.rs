@@ -106,6 +106,15 @@ pub(super) enum Command {
     },
 }
 
+/// What the last successful sync run left behind, for the sidebar badge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct SyncStamp {
+    /// Finish time, Unix seconds.
+    pub last_sync: Option<i64>,
+    /// `SyncReport::conflicts` of that run.
+    pub conflicts: u64,
+}
+
 /// Answers coming back from the worker.
 #[derive(Debug)]
 pub(super) enum HostEvent {
@@ -125,6 +134,7 @@ pub(super) enum HostEvent {
         vault_unlocked: bool,
         status_line: String,
         is_error: bool,
+        stamp: SyncStamp,
     },
     /// This machine and the Windows-side distros. Sent per refresh, after
     /// `Loaded`, and deliberately not counted as an answer to a command:

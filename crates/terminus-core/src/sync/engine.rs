@@ -27,6 +27,8 @@ pub struct SyncEngine {
     last_error: Arc<Mutex<Option<String>>>,
     /// Last successful run.
     last_sync: Arc<Mutex<Option<DateTime<Utc>>>>,
+    /// Conflicts reported by the last successful run.
+    last_conflicts: Arc<Mutex<u64>>,
     /// Serializes runs: only one `sync_now()` at a time.
     run_lock: Arc<Mutex<()>>,
 }
@@ -54,6 +56,7 @@ impl SyncEngine {
             vault: Arc::new(Mutex::new(None)),
             last_error: Arc::new(Mutex::new(None)),
             last_sync: Arc::new(Mutex::new(None)),
+            last_conflicts: Arc::new(Mutex::new(0)),
             run_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -77,6 +80,11 @@ impl SyncEngine {
     /// Timestamp of the last successful run.
     pub async fn last_sync(&self) -> Option<DateTime<Utc>> {
         *self.last_sync.lock().await
+    }
+
+    /// `SyncReport::conflicts` of the last successful run (0 before any).
+    pub async fn last_conflicts(&self) -> u64 {
+        *self.last_conflicts.lock().await
     }
 
     /// Whether a remote backend pool is attached.
@@ -259,6 +267,7 @@ impl SyncEngine {
                 let finished = report.finish(started.elapsed().as_millis() as u64);
                 let now = finished.finished_at.unwrap_or_else(Utc::now);
                 *self.last_sync.lock().await = Some(now);
+                *self.last_conflicts.lock().await = finished.conflicts;
                 *self.last_error.lock().await = None;
                 self.transition_to(SyncStatus::Idle).await?;
                 info!(
