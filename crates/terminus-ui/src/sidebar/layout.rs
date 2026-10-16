@@ -342,4 +342,19 @@ impl HostPanel {
             EMPTY_HINT_HEIGHT,
         ))
     }
+
+    /// "Add first host" button under the "No saved hosts yet" hint; absent
+    /// once a host exists or while a filter is typed.
+    pub fn empty_cta_rect(&self, origin_y: f32, height: f32) -> Option<Rect> {
+        if !self.filter.value.trim().is_empty() || self.host_count() != 0 {
+            return None;
+        }
+        let hint = self.empty_hint_rect(origin_y, height)?;
+        Some(Rect::new(
+            hint.x,
+            hint.bottom() + EMPTY_CTA_GAP,
+            hint.width,
+            EMPTY_CTA_HEIGHT,
+        ))
+    }
 }

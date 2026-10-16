@@ -102,6 +102,11 @@ pub const EMPTY_HINT_GAP: f32 = 6.0;
 /// Empty-list hint height: a title and up to two wrapped lines.
 pub const EMPTY_HINT_HEIGHT: f32 = 56.0;
 
+/// Gap between the empty-list hint and its "Add first host" button.
+pub const EMPTY_CTA_GAP: f32 = 4.0;
+/// Height of the "Add first host" button.
+pub const EMPTY_CTA_HEIGHT: f32 = 32.0;
+
 /// Guidance shown in place of a list with nothing in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmptyHint {

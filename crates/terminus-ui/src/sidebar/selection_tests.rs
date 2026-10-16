@@ -49,6 +49,25 @@ fn a_filter_with_no_match_says_so_and_how_to_clear_it() {
 }
 
 #[test]
+fn an_empty_list_offers_an_add_first_host_cta() {
+    let (oy, h) = tall();
+    let empty = panel(0);
+    let cta = empty.empty_cta_rect(oy, h).expect("cta");
+    let hint = empty.empty_hint_rect(oy, h).expect("hint");
+    assert!(cta.y >= hint.bottom(), "CTA sits under the hint text");
+    let (x, y) = (cta.x + cta.width * 0.5, cta.y + cta.height * 0.5);
+    assert_eq!(empty.hit_test(oy, h, x, y), Some(PanelHit::AddFirstHost));
+    assert_eq!(empty.hover_at(oy, h, x, y), Some(PanelHit::AddFirstHost));
+    assert!(panel(2).empty_cta_rect(oy, h).is_none());
+    let mut filtered = panel(0);
+    filtered.filter = TextDraft::new("zzz");
+    assert!(
+        filtered.empty_cta_rect(oy, h).is_none(),
+        "no CTA on 'No matches'"
+    );
+}
+
+#[test]
 fn the_hint_sits_below_the_list() {
     let (oy, h) = tall();
     let panel = panel(0);
