@@ -5,7 +5,7 @@ Mis à jour : 2026-10-16 (branche `development`, HEAD `8f9fcfb0`, non poussée).
 ## Objectif en cours
 R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`, relue 2026-10-16, statut « reviewed »).
 - R1a : **fait** (implémenté, tests verts, non vérifié en GUI).
-- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (`8f9fcfb0`) ; 3 helper cyclage d'hôte ✅ (`ContextManager::neighbour_host_tab`, `HostPanel::host_ids`) ; 4 câblage `Screen` ✅ (`screen/sessions/hosts_nav.rs`, arms dans `screen/keys.rs`) ; 5 défauts dans `bindings/host_nav.rs` (neuf, `mod.rs` à 1870 lignes allowlistées) ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
+- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (`8f9fcfb0`) ; 3 helper cyclage d'hôte ✅ (`ContextManager::neighbour_host_tab`, `HostPanel::host_ids`) ; 4 câblage `Screen` ✅ (`screen/sessions/hosts_nav.rs`, arms dans `screen/keys.rs`) ; 5 défauts dans `bindings/host_nav.rs` ✅ ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
 - R1c : page Settings > Shortcuts, non commencée.
 - R16 (Files suit le dossier OSC 7 du terminal courant) et R17 (fil d'Ariane éditable) : ajoutés à `milestone.md`, non planifiés. R16 touche `ShowView` : à faire après R1b.
 
@@ -31,7 +31,7 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - Suppressions stagées préexistantes dans l'index (`.claude/agents/*`, `.claude/settings.json`, `.codex/*`, `.cursor/*`, `AGENTS.md`) : non liées, ne pas commiter sans demande.
 
 ## Prochaine action
-1. (étapes 3-4 faites) Étape 5 : défauts `Ctrl+Shift+Up/Down` (SelectPrev/NextHost) et `Ctrl+Alt+1..5` (ShowView), `bindings/host_nav.rs`.
+1. (étapes 3-5 faites) Étape 6 : entrées de palette hôte suivant/précédent.
 3. Vérifier R1a à l'écran (voir Blocages).
 
 Décisions : Shift+Tab reste dans l'hôte (aucun changement) ; `Ctrl+Shift+Up/Down` retenu pour le cyclage d'hôte.

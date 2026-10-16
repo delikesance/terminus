@@ -647,6 +647,8 @@ macro_rules! trigger {
     }};
 }
 
+mod host_nav;
+
 pub fn default_mouse_bindings() -> Vec<MouseBinding> {
     bindings!(
         MouseBinding;
@@ -775,6 +777,8 @@ pub fn default_key_bindings(config: &rio_backend::config::Config) -> Vec<KeyBind
         config.navigation.use_split,
         config.keyboard.clone(),
     ));
+
+    bindings.extend(host_nav::default_bindings());
 
     // Add hint bindings
     bindings.extend(create_hint_bindings(&config.hints.rules));
