@@ -1,50 +1,41 @@
 # HANDOFF — état courant
 
-Mis à jour : 2026-10-16 (branche `development`, HEAD `8f9fcfb0`, non poussée). Protocole : voir CLAUDE.md § HANDOFF.md.
+Mis à jour : 2026-10-16 (branche `development`, non poussée). Protocole : voir CLAUDE.md § HANDOFF.md.
 
 ## Objectif en cours
-R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`, relue 2026-10-16, statut « reviewed »).
-- R1a : **fait** (implémenté, tests verts, non vérifié en GUI).
-- R1b : **faite côté code, non vérifiée en GUI** (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (`8f9fcfb0`) ; 3 helper cyclage d'hôte ✅ (`ContextManager::neighbour_host_tab`, `HostPanel::host_ids`) ; 4 câblage `Screen` ✅ (`screen/sessions/hosts_nav.rs`, arms dans `screen/keys.rs`) ; 5 défauts dans `bindings/host_nav.rs` ✅ ; 6 palette hôte suivant/précédent ✅ ; 7 milestone + HANDOFF.
-- R1c : page Settings > Shortcuts, non commencée.
-- R16 (Files suit le dossier OSC 7 du terminal courant) et R17 (fil d'Ariane éditable) : ajoutés à `milestone.md`, non planifiés. R16 touche `ShowView` : à faire après R1b.
+Feuille de route `milestone.md` en autopilote. R1 (spec per-host / raccourcis, `docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`) : R1a et R1b faites côté code, non vérifiées en GUI ; R1c (page Settings > Shortcuts) non commencée.
 
-## Fait
-- `80f3a01e` : R16 / R17 ajoutés à `milestone.md` (audit : OSC 7 lu seulement à la création de la session SFTP, sur l'onglet le plus récent de l'hôte ; pas de saisie de chemin).
-- `66fa2c9f` : `Workspace` retient la vue par hôte (`leave_host`/`enter_host`/`follow_host`/`forget_host`) ; `machine_selected` supprimé.
-- `3d2f6982` : cyclage Ctrl+Tab, `SelectTab(n)`, `SelectLastTab` limités à l'hôte (`context/host_tabs.rs`). Test `host_tab_to_restore_is_the_last_focused_one` adapté (le cyclage ne traverse plus les hôtes).
-- `10efc5de` : point de synchro `sync_sidebar_selection` → `follow_host` ; nouvelle session = Terminal ; fermeture du dernier onglet d'un hôte et suppression d'hôte = oubli de la vue.
-- `7cb77c5a` : spec relue et corrigée (doublon Ctrl+Shift+[ / ], raccourcis, liste PTY réservée, découpage R1a/R1b/R1c).
-- `94a0aa8e` : règle 5 de CLAUDE.md (milestone.md).
+## Fait (commits sur `development`, non poussés)
+- R1a : `66fa2c9f`, `3d2f6982`, `10efc5de`. R1b : `a4f5bf7e`, `8f9fcfb0`, `c66d1a0e`, `e78de80c`, `df8ae3fb`, `1af36884`.
+- R9 CTA « Add first host » : `ce875184` (+ docs `e1d7eef1`). Non vérifié en GUI. Pas de scaffold en 3 étapes.
+- R6/D2 stub bridge supprimé : `dcb85303` (+ docs `7710cb7a`, CLAUDE.md corrigé). D2 retirée de milestone.md.
+- R4 compteur d'octets des tunnels, **estimation** `/proc/<pid>/io` (Linux, affiché `~`) : `30bb7db0` (+ docs `0e094e22`). Non vérifié en GUI. Exact = `sock_diag`, ouvert.
+- R8 sidebar redimensionnable, **partiel** : état/géométrie/setting dans `terminus-ui` : `a705e82c` (+ docs `1d32b486`).
+- R5 sync visible, **partiel** : badge « Synced … ago » / conflits sur le bouton Settings : `7b679ded` (+ docs `4e891f16`). Non vérifié en GUI.
 
 ## Décisions
-- Split = session de l'hôte : un split depuis un pane SSH/WSL ouvre la même session (`screen/sessions/split.rs:41`, `SplitTarget::Row` dans `screen/sessions/mod.rs:26`, commit `4f803042`). Seul un pane local ouvre un shell local. Absent de `milestone.md` ; non vérifié en GUI.
-- Chemins SSH : Option A conservée (voir CLAUDE.md, milestone.md §2).
-- Ctrl+Shift+Up/Down et Ctrl+Alt+1..5 pour R1b (Alt+digit = readline/tmux ; Ctrl+Alt+arrows = GNOME workspaces).
-- `SelectTab(n)` devient relatif à l'hôte, y compris macOS (accepté).
-- Un hôte sans onglet est sauté par `SelectNextHost` (volontaire).
-- Pas de test `Screen` : pas de harnais ; le câblage `screen/sessions/*` n'est couvert que par compilation, clippy et revue.
+- Split = session de l'hôte (`screen/sessions/split.rs:41`) ; Option A conservée pour les chemins SSH.
+- Ctrl+Shift+Up/Down (hôte) et Ctrl+Alt+1..5 (vues) ; `SelectTab(n)` relatif à l'hôte ; hôte sans onglet sauté.
+- Pas de test `Screen` (pas de harnais) : le câblage `screen/sessions/*` n'est couvert que par compilation, clippy et revue.
+- Intégration des worktrees : `git cherry-pick -n` + `git commit -C <sha> -- <chemins>` (un `cherry-pick` direct refuse l'index sale des suppressions stagées).
 
-## Blocages
-- Vérification à l'écran de R1a non faite : deux hôtes, Files sur l'un, Terminal sur l'autre, Ctrl+Tab. Via `scripts/screenshot.sh` (Xvfb, lavapipe) ou à la main.
-- Enforcement de la règle milestone.md : en attente de choix (hook pre-commit versionné, job CI, ou les deux).
-- Suppressions stagées préexistantes dans l'index (`.claude/agents/*`, `.claude/settings.json`, `.codex/*`, `.cursor/*`, `AGENTS.md`) : non liées, ne pas commiter sans demande.
+## Blocages / à trancher
+- **Vérification à l'écran non faite** : R1a/R1b (deux hôtes, Files/Terminal, Ctrl+Tab, Ctrl+Shift+Up/Down, Ctrl+Alt+1..5), R9, R4, R5. Via `scripts/screenshot.sh` ou à la main.
+- **R2 (CI build + tests + clippy, D3)** : en attente de choix (hook pre-commit versionné, job CI, ou les deux).
+- **R5** : `SyncReport.conflicts` n'est jamais incrémenté par `terminus-core` (le badge conflits reste à 0) ; pas de badge « pending » ; âge relatif non rafraîchi sur timer ; pas de revue des conflits.
+- **R8** : reste à câbler `SIDEBAR_WIDTH` (`ShellLayout::new`, `shell/sidebar.rs:106`, `sidebar::WIDTH`, `chrome/state.rs:9`, `min_window_size`) et côté `rioterm` : lecture du setting `sidebar_width` au démarrage, souris/curseur, poignée, `reapply_chrome_inset`, `set_setting` au relâchement.
+- Suppressions stagées préexistantes (`.claude/agents/*`, `.claude/settings.json`, `.codex/*`, `.cursor/*`, `AGENTS.md`) : non liées, ne pas commiter.
+- Rien n'est poussé.
 
 ## Prochaine action
-1. R1b faite côté code (étapes 1-6). Reste : vérifier R1a/R1b à l'écran (deux hôtes avec onglets, Ctrl+Shift+Up/Down, Ctrl+Alt+1..5), puis R1c.
-3. Vérifier R1a à l'écran (voir Blocages).
+1. Vérifier à l'écran R1a/R1b/R9/R4/R5 (`scripts/screenshot.sh`).
+2. Câbler R8 (voir ci-dessus), puis R1c.
+3. Trancher R2.
 
-Décisions : Shift+Tab reste dans l'hôte (aucun changement) ; `Ctrl+Shift+Up/Down` retenu pour le cyclage d'hôte.
+## Validations à rejouer
+`cargo fmt --all -- --check` ; `scripts/check-file-size.sh` ; `cargo test -p terminus-ui -p terminus-core -p terminus-bridge -p rioterm` ; `cargo clippy -p rioterm -p terminus-ui --all-targets` (avertissements préexistants : `user_event.rs`, `layout/`, `renderer/mod.rs`, `screen/render.rs`, crates amont).
 
 ## Pièges à retenir (détail dans CLAUDE.md)
-- `git commit` sans chemin embarque les suppressions stagées : toujours `git commit -- <chemins>`.
-- Fichiers non suivis : `git add -- <chemins>` avant `git commit -- <chemins>`.
-- `nix` absent de cette machine : `cargo test -p terminus-ui` / `-p rioterm` fonctionnent directement (fontconfig présent).
-
-## État du working tree
-Non commité : rien (R1b commitée). Suppressions stagées préexistantes : ne pas commiter.
-
-## R1b étape 2 (fait, commit `8f9fcfb0`)
-- `Action::{SelectNextHost, SelectPrevHost, ShowView(WorkspaceView)}` + parser config (`selectnexthost`, `selectprevhost`, `showview(terminal|files|tunnels|snippets|history)`, inconnu → `None`). Pas encore câblé dans `screen/keys.rs` (le `_ => ()` les ignore) ni lié par défaut.
-- Test `host_and_view_actions_parse_from_config_strings` : rouge (variantes absentes), puis vert.
-- Validations : `cargo test -p rioterm` exit 0 (445), `cargo fmt --check` exit 0, `check-file-size.sh` exit 0, clippy sans avertissement sur `bindings/mod.rs`.
+- `git commit` sans chemin embarque les suppressions stagées : toujours `git commit -- <chemins>` ; fichiers non suivis : `git add -- <chemins>` avant.
+- `nix` absent de cette machine : `cargo test -p terminus-ui` / `-p rioterm` fonctionnent directement.
+- Cible cargo partagée entre worktrees concurrents : faux « no method » possible ; `touch` des sources du crate puis relancer.
