@@ -102,8 +102,9 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | Vault Argon2id, déverrouillage en overlay, worker dédié | ✅ | `vault.rs`, `vault_unlock.rs`, `vault_remember.rs` |
 | Fondu du modal vault | ❌ | `anim.rs` existe, non utilisé par les dialogues |
 | Réglages : General, Keys, Sync, Appearance, Updates, Uploads | ✅ | `SettingsPage` (`shell/workspace.rs:13`) |
-| Sync SQL : statut, dernier sync | ⚠️ | `SyncReport.conflicts` calculé (`sync/report.rs`), aucun affichage dans le front |
-| Badge de sync hors Settings, revue des conflits | ❌ | — |
+| Sync SQL : statut, dernier sync | ⚠️ R5 | `SyncReport.conflicts` n'est **jamais incrémenté** par le moteur (`sync/report.rs:14` déclaration, `:46` somme ; `push_all`/`pull_all` ne détectent aucun conflit) : le compteur de conflits reste à 0 tant que le moteur ne les calcule pas |
+| Badge de sync (dernier sync, conflits) | ⚠️ R5 | `terminus-ui/src/sync_badge.rs::SyncBadge::{label,tone}` (masqué si non connecté, « Synced just now / Nm / Nh / Nd ago », « N conflicts » prioritaire en ton Warn ; 6 tests), `SyncEngine::last_conflicts` (`sync/engine.rs`), `HostEvent::SyncStatus(SyncStamp)` (`hosts/sync.rs::sync_stamp`), `Shell.sync`, libellé peint sur le bouton Settings de la sidebar (`renderer/shell/sidebar.rs`) ; **non vérifié en GUI** ; manque : badge « pending », âge relatif recalculé sur timer (seulement au prochain redraw), détection de conflits côté moteur |
+| Revue des conflits | ❌ | aucun écran |
 
 ### 3.6 Palette, snippets, historique
 
@@ -170,7 +171,7 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 | # | Jalon | Critère de fin |
 | :--- | :--- | :--- |
 | R4 | Compteur d'octets des tunnels (estimation `/proc/<pid>/io` livrée, non vérifiée en GUI ; exact = sock_diag, ouvert) | octets affichés sur la carte, test sur l'échantillonneur |
-| R5 | Sync visible : badge, dernier sync, conflits (`SyncReport.conflicts`) | état de sync lisible hors Settings |
+| R5 | Sync visible : badge, dernier sync, conflits (`SyncReport.conflicts`) — **partiel** : badge + dernier sync livrés (`7b679ded`, non vérifié en GUI) ; conflits jamais calculés par le moteur, pas de revue | état de sync lisible hors Settings |
 | R6 | D2 : trancher le bridge — ✅ code supprimé (`dcb85303`) : aucune référence à `TerminusBridge`/`TerminusCoreService`/`terminus_bridge_impl` hors ce fichier ; clippy et tests `terminus-bridge` verts ; `cargo check` du workspace entier non lancé | trait branché ou code supprimé; plus de commentaire mort dans `lib.rs` |
 | R7 | Breadcrumbs : clic sur un segment | navigation vers le segment, test sur `sftp_pane` |
 | R8 | Redimensionnement de la sidebar, largeur persistée — **partiel** : état/géométrie/setting dans `terminus-ui` (`a705e82c`), câblage `rioterm` et constantes `SIDEBAR_WIDTH` restants | largeur utilisateur conservée après redémarrage |
