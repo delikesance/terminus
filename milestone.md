@@ -69,7 +69,7 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | Reprise des onglets au lancement | ✅ MVP | `screen/saved_tabs.rs::restore_saved_tabs_if_due`, **désactivée par défaut** (réglable dans Settings > General) ; ne restaure ni layouts ni panneaux SFTP |
 | Auto-reconnexion WSL | ❌ | la carte Reconnect ne vise que les hôtes SSH stockés |
 | Shell unifié russh (`SshTransport`) | 📎 D1 | voir §2 |
-| Vue active par hôte, Ctrl+Tab limité à l'hôte | ❌ | spec `docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md` en attente de relecture |
+| Vue active par hôte, Ctrl+Tab limité à l'hôte | ⚠️ R1a | `Workspace::{leave,enter,follow,forget}_host` (`terminus-ui/src/shell/workspace.rs`), `context/host_tabs.rs` (cyclage, `SelectTab`/`SelectLastTab` par hôte), point de synchro `sync_sidebar_selection` ; tests unitaires verts ; câblage `Screen` non testé (pas de harnais) et **non vérifié en GUI** ; actions `ShowView`/`SelectNextHost` et raccourcis = R1b/R1c |
 
 ### 3.3 SFTP
 
@@ -160,7 +160,7 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 
 | # | Jalon | Critère de fin |
 | :--- | :--- | :--- |
-| R1 | **Vue et sessions par hôte + raccourcis** (spec 2026-10-13) | spec relue, puis tests `terminus-ui` pour `per_host` et cyclage; Ctrl+Tab ne traverse plus les hôtes (vérifié à l'écran) |
+| R1 | **Vue et sessions par hôte + raccourcis** (spec relue 2026-10-16 ; R1a implémenté, R1b/R1c à faire) | tests `terminus-ui` pour `per_host` et cyclage; Ctrl+Tab ne traverse plus les hôtes (vérifié à l'écran) |
 | R2 | **CI : build + tests + clippy** (D3) | job vert sur PR, ou hook pre-commit versionné, documenté dans CLAUDE.md |
 | R3 | **Vue de file de transferts SFTP** (D4) | plusieurs transferts visibles, annulables, sans bloquer l'UI |
 
