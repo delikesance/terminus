@@ -1,11 +1,11 @@
 # HANDOFF — état courant
 
-Mis à jour : 2026-10-16 (branche `development`, non poussée). Protocole : voir CLAUDE.md § HANDOFF.md.
+Mis à jour : 2026-10-16 (branche `development`, poussée sur `origin/development` en `f867cfc6`). Protocole : voir CLAUDE.md § HANDOFF.md.
 
 ## Objectif en cours
 Feuille de route `milestone.md` en autopilote. R1 (spec per-host / raccourcis, `docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`) : R1a et R1b faites côté code, non vérifiées en GUI ; R1c (page Settings > Shortcuts) non commencée.
 
-## Fait (commits sur `development`, non poussés)
+## Fait (commits sur `development`)
 - R1a : `66fa2c9f`, `3d2f6982`, `10efc5de`. R1b : `a4f5bf7e`, `8f9fcfb0`, `c66d1a0e`, `e78de80c`, `df8ae3fb`, `1af36884`.
 - R9 CTA « Add first host » : `ce875184` (+ docs `e1d7eef1`). Non vérifié en GUI. Pas de scaffold en 3 étapes.
 - R6/D2 stub bridge supprimé : `dcb85303` (+ docs `7710cb7a`, CLAUDE.md corrigé). D2 retirée de milestone.md.
@@ -25,7 +25,7 @@ Feuille de route `milestone.md` en autopilote. R1 (spec per-host / raccourcis, `
 - **R5** : `SyncReport.conflicts` n'est jamais incrémenté par `terminus-core` (le badge conflits reste à 0) ; pas de badge « pending » ; âge relatif non rafraîchi sur timer ; pas de revue des conflits.
 - **R8** : reste à câbler `SIDEBAR_WIDTH` (`ShellLayout::new`, `shell/sidebar.rs:106`, `sidebar::WIDTH`, `chrome/state.rs:9`, `min_window_size`) et côté `rioterm` : lecture du setting `sidebar_width` au démarrage, souris/curseur, poignée, `reapply_chrome_inset`, `set_setting` au relâchement.
 - Suppressions stagées préexistantes (`.claude/agents/*`, `.claude/settings.json`, `.codex/*`, `.cursor/*`, `AGENTS.md`) : non liées, ne pas commiter.
-- Rien n'est poussé.
+- **Capture GUI impossible ici (tentée)** : `scripts/screenshot.sh` exige nix ; contourné via `.dev/screenshot-tools.env` (gitignoré, liens vers les binaires système dans le scratchpad de session, à recréer) ; l'app panique ensuite : `sugarloaf/src/context/vulkan.rs:1394` « no Vulkan device with graphics + present support » (Xvfb sans DRI3, même avec `+extension DRI3`). Sugarloaf n'a que Vulkan (`RIO_VULKAN_DEVICE` seul réglage). Il faut un Xvfb avec DRI3, une session X réelle ou `scripts/dev.sh` à la main.
 
 ## Prochaine action
 1. Vérifier à l'écran R1a/R1b/R9/R4/R5 (`scripts/screenshot.sh`).
