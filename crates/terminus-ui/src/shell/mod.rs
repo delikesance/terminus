@@ -124,8 +124,8 @@ pub struct Shell {
     pub rename: Option<PillRename>,
     /// Running tunnels of the selected machine (Tunnels tab badge).
     pub tunnel_badge: u32,
-    /// Sync is configured and healthy: "Synced" on the Settings button.
-    pub sync_ok: bool,
+    /// Sync state for the Settings button ("Synced 2m ago", "N conflicts").
+    pub sync: crate::sync_badge::SyncBadge,
     /// Paint / hit the min-max-close buttons (Windows and Linux; on Linux
     /// only while the window runs without OS decorations).
     pub window_controls: bool,
@@ -143,7 +143,7 @@ impl Default for Shell {
             pills: Vec::new(),
             rename: None,
             tunnel_badge: 0,
-            sync_ok: false,
+            sync: Default::default(),
             window_controls: cfg!(not(target_os = "macos")),
             hover: None,
             window: (1200.0, 800.0),

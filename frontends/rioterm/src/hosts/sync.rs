@@ -89,6 +89,7 @@ pub(super) fn sync_status_event(
             vault_unlocked,
             status_line,
             is_error,
+            stamp: sync_stamp(engine).await,
         }
     })
 }
@@ -122,6 +123,7 @@ pub(super) async fn run_test_sync(
             vault_unlocked,
             status_line: "Enter a connection URI before testing sync".into(),
             is_error: true,
+            stamp: sync_stamp(engine).await,
         };
     }
 
@@ -143,6 +145,7 @@ pub(super) async fn run_test_sync(
             vault_unlocked,
             status_line: err,
             is_error: true,
+            stamp: SyncStamp::default(),
         };
     }
 
@@ -155,6 +158,7 @@ pub(super) async fn run_test_sync(
             vault_unlocked,
             status_line: err.to_string(),
             is_error: true,
+            stamp: sync_stamp(engine).await,
         };
     }
 
@@ -196,6 +200,15 @@ pub(super) async fn run_test_sync(
         vault_unlocked,
         status_line,
         is_error,
+        stamp: sync_stamp(engine).await,
+    }
+}
+
+/// Snapshot of the last successful run (time + conflicts).
+async fn sync_stamp(engine: &terminus_core::SyncEngine) -> SyncStamp {
+    SyncStamp {
+        last_sync: engine.last_sync().await.map(|t| t.timestamp()),
+        conflicts: engine.last_conflicts().await,
     }
 }
 
