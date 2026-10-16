@@ -1,261 +1,195 @@
 # TERMINUS — Roadmap
 
-> Fork de Rio (`raphamorim/rio`) · Version `0.7.11` · Dernière mise à jour :
-> 2026-10-08, audit du code de la branche `development` (pas d’intention).
+> Fork de Rio (`raphamorim/rio`) · Version `0.7.26` (`Cargo.toml`) · Réécrit le
+> 2026-10-16 à partir d'un audit du code de la branche `development` (HEAD
+> `4ade5ab6`). Les statuts décrivent ce que le **code contient**; rien n'a été
+> lancé ni testé pour cet audit, et les points « non vérifié en GUI » le restent.
+>
+> Règle de tenue : un statut ne passe à ✅ qu'avec une preuve (fichier, test ou
+> capture). Corriger ce fichier dès qu'il diverge du code. L'état de session
+> (tâche en cours, blocages) va dans `HANDOFF.md`, pas ici.
+
+Légende : ✅ fait · ⚠️ partiel · ❌ absent · 📎 dette assumée
 
 ---
 
-## Architecture réelle (aujourd’hui)
+## 1. Produit
 
-### Principe
+Client SSH / SFTP / tunnels avec terminal GPU, sur base Rio. Plateformes
+livrées : Linux (tarball, deb, rpm, Nix) et Windows (NSIS, MSI, zip portable).
+macOS : aucun artefact Terminus.
 
-- **`terminus-core`** — domaine Tokio pur (Store SQLite, Vault, Sync, SSH/SFTP
-  russh, WSL, historique shell, onglets sauvegardés, OS detect).
-- **`terminus-bridge`** — workers / transports partagés (`SshTransport`,
-  `sftp_worker`, `folder_diff`, `walk_remote`). Le trait `TerminusBridge` /
-  `TerminusCoreService` est toujours un stub (`terminus_bridge_impl.rs` = un
-  commentaire) ; le runtime hôtes + sync vit dans rioterm (`hosts.rs`).
-- **`terminus-ui`** — état / géométrie / hit-test chrome (pas de GPU).
-- **`terminus-walk`** — binaire helper de parcours distant (hash de dossiers),
-  embarqué et déposé sur l’hôte pour la synchro différentielle SFTP.
-- **`terminus-update`** — auto-update (endpoint, clé publique, noms d’assets
-  Linux / Windows).
-- **`frontends/rioterm`** — paint Sugarloaf + câblage input / sessions.
+## 2. Architecture réelle
 
-### Chemins SSH — **décision acceptée (Option A)**
-
-> **Décision (2026-09-16) :** le MVP shell interactif reste **OpenSSH CLI dans un
-> PTY local**. On ne branche pas `SshTransport` / `SessionSpec::Ssh` pour GA
-> immédiat. SFTP continue sur russh. Dette tracée en **1.4-debt**.
-
-| Chemin | Techno | Usage |
+| Couche | Chemin | Rôle |
 | :--- | :--- | :--- |
-| Shell onglet | PTY local + binaire `ssh` (`screen/shell.rs` → `ssh_shell`) | Connexion interactive depuis la sidebar |
-| Port-forward | Processus `ssh -N -L/-R/-D` (`tunnel_worker.rs`), mêmes args de base que le shell (`tunnel_command` → `shell_for_row`) | Onglet Tunnels |
-| SFTP | russh + `sftp_worker` | Navigateur fichiers dual-pane |
-| `SshTransport` | russh ↔ pipes, `EventedPty` | **Prêt, non câblé** — dette 1.4-debt |
+| Domaine | `crates/terminus-core` | Store SQLite, vault Argon2id, sync SQL, SSH/SFTP (russh), WSL, historique, onglets sauvegardés, détection d'OS. Sans UI |
+| Jonction | `crates/terminus-bridge` | `sftp_worker`, `SshTransport` (`EventedPty`), `folder_diff`. Le trait `TerminusBridge` / `TerminusCoreService` est **commenté** (`terminus_bridge_impl.rs` = un commentaire, `pub use` commenté dans `lib.rs:32`) |
+| Chrome | `crates/terminus-ui` | État, géométrie, hit-test, thèmes. Sans GPU |
+| Helper distant | `crates/terminus-walk` | Binaire déposé sur l'hôte pour la sync différentielle |
+| Mise à jour | `crates/terminus-update` | Vérification GitHub Releases, SHA-256 |
+| Front | `frontends/rioterm` | Peinture sugarloaf, câblage input/sessions, worker hôtes, tunnels, mises à jour |
 
-Conséquences assumées : deux piles SSH coexistent pour trois chemins (OpenSSH
-CLI pour shell et tunnels, partageant la même construction d’args ; russh pour
-SFTP). Host-key / auth peuvent diverger légèrement entre CLI et russh
-(`StrictHostKeyChecking=accept-new` côté CLI) ; pas de TOFU modal UI côté CLI.
-Les tunnels passent par des processus `ssh` (`ForwardRuntime` supprimé).
+### Chemins SSH — décision acceptée (Option A, 2026-09-16)
 
-### Structure workspace (crates Terminus)
-
-```toml
-"crates/terminus-core",   # Store, SSH lib, Vault, Sync, SFTP, WSL, historique, onglets
-"crates/terminus-bridge", # SshTransport, sftp_worker, folder_diff (facade trait = stub)
-"crates/terminus-ui",     # Chrome paint-free : sidebar, settings, SFTP, vault, tunnels…
-"crates/terminus-walk",   # Helper distant de hash de dossiers
-"crates/terminus-update", # Auto-update
-```
-
-### Intégrations critiques — statut
-
-| Point d’accroche | Statut | Réalité code |
+| Chemin | Techno | Entrée |
 | :--- | :--- | :--- |
-| Chrome inset (ActivityBar + Sidebar) | ✅ | Marge grille + `reapply_chrome_inset` |
-| Hosts / groups / DnD / context menu | ✅ | `terminus-ui` + `hosts.rs` worker |
-| Vault unlock modal | ✅ | UI + Argon2id via worker hôtes (pas de fade) |
-| Settings (clés SSH + SqlSync + Apparence) | ✅ | `views/settings/*` + sync dans `hosts.rs` |
-| SFTP dual-pane | ✅ | `PaneKind::Sftp`, worker, DnD, Host\|Host, dossiers |
-| Shell SSH interactif | ✅ MVP | OpenSSH CLI en PTY local (décision Option A) |
-| Port-forward UI | ⚠️ MVP | Onglet Tunnels (CRUD + start/stop) via `ssh -L/-R/-D` ; pas de stats |
-| `SessionSpec::Ssh` + `SshTransport` | 📎 dette | Crate prêt ; branchement = 1.4-debt |
-| Palette | ⚠️ | Open Host…, Open SFTP, Show Files/Tunnels/Snippets/History ; pas de syntaxe `>` |
-| Reprise d’onglets | ✅ MVP | `saved_tabs` (fichier) |
-| Thèmes `ChromeTheme` | ⚠️ | `violet_ink` (sombre) + `violet_paper` (clair), Réglages > Apparence : Sombre / Clair / Système |
-| `TerminusCoreService` bridge | ❌ | Stub commenté |
+| Onglet shell | PTY local + binaire `ssh` | `screen/shell.rs::ssh_shell` |
+| Tunnels | processus `ssh -N -L/-R/-D` | `tunnel_worker/` |
+| SFTP | russh + worker | `terminus-bridge::sftp_worker` |
+| `SshTransport` | russh ↔ `EventedPty` | **non branché** : `SessionSpec::Ssh` existe mais est `#[allow(dead_code)]` (`context/mod.rs:15-24`) |
+
+Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
+(`StrictHostKeyChecking=accept-new`) et russh. Dette tracée **D1**.
 
 ---
 
-## Tableau de bord
+## 3. État par domaine
 
-Légende : ✅ fait · ⚠️ partiel · ❌ pas commencé · 📎 dette assumée
+### 3.1 Chrome et hôtes
 
-| # | Jalon | Statut | Preuve / note |
-| :--- | :--- | :--- | :--- |
-| **1.1** | `terminus-core` dans le workspace | ✅ | Store SQLite + migrate inline, vault, sync, ssh/sftp, wsl… |
-| **1.2** | Bridge runtime | ⚠️ | `sftp_worker` + `SshTransport` OK ; trait / service stub ; workers hôtes dans rioterm |
-| **1.3** | `SshTransport` EventedPty | ✅ lib | Impl + tests bridge ; non câblé UI (= 1.4-debt) |
-| **1.4** | Sessions SSH dans les onglets | ✅ MVP | OpenSSH CLI via `ssh_shell` ; keepalive + GSSAPI ; TOFU = `accept-new` |
-| **1.4-debt** | Shell russh unifié | 📎 | Brancher `SshTransport` + `SessionSpec::Ssh` (`#[allow(dead_code)]`) + modal TOFU |
-| **1.5** | Sidebar Hosts | ✅ | Groupes, DnD, rename, OS badges, connecting shimmer, context menu ; largeur fixe 260 |
-| **1.6** | Palette Hosts | ✅ | `ListHosts` « Open Host… » + match inline dans Commands |
-| **1.7** | Vault Unlock | ✅ | Overlay + déverrouillage ; **aucune** animation de fade trouvée (ni dans `vault_unlock.rs`, ni dans `renderer/dialogs/`) |
-| **1.8** | Session lifecycle | ✅ MVP | Carte « Connection lost » (SSH exit 255) ou « Session killed » (signal sur le `ssh` local) + Reconnect / Close, hôte stocké, **par panneau** dans un split ; tout autre code de sortie (le statut du shell distant après `exit` / Ctrl-D) ferme comme avant ; `SessionManager` / `SessionState` supprimés de `terminus-core` ; reste : Reconnect en split = nouvel onglet (pas de respawn en place), non vérifié en GUI |
-| **2.1** | Port forwarding live | ⚠️ MVP | Onglet Tunnels : CRUD, start/stop, états Stopped/Starting/Running/Failed, badge, erreurs lisibles, arrêt à la suppression d’hôte ; via `ssh -N -L/-R/-D` ; uptime + connexions (Linux, échantillon `/proc/net/tcp`) sur les cartes ; start/stop par id ou nom (`Screen::start_tunnel` / `stop_tunnel`) ; **pas** de compteur d’octets |
-| **2.2** | SFTP dual-pane | ✅ | Local\|Remote ou Host\|Host, menu contextuel, Edit remote (temp+default app+reupload), DnD, Close |
-| **2.2b** | SFTP polish | ⚠️ | Drop-target vide, « This folder is empty », erreur en pied de pane OK ; breadcrumbs : un clic remonte d’un niveau, pas de saut vers un segment |
-| **2.3** | Transferts async | ⚠️ | Dossiers (`TransferFolder`, récursif, sync différentielle, remote→remote), conflits (`ResolveConflict`), annulation, barre de progression ; worker **série** : pas de queue, pas de retry |
-| **2.4** | Palette Forwards / SFTP | ✅ MVP | « Open SFTP » (+ choix d’hôte), « Show Tunnels » ; syntaxe `>sftp [hôte]`, `>forward [list\|start <nom>\|stop <nom>]`, entrées « Start Tunnel… » / « Stop Tunnel… » ; ne couvre que les tunnels de la machine à l’écran ; rendu non vérifié en GUI |
-| **2.5** | Empty states / onboarding | ⚠️ | Hint sidebar vide + formulaire Add server en 3 étapes ; pas de scaffold d’onboarding ni CTA « Add first host » |
-| **3.1** | Groupe « Open All » | ✅ | Menu groupe = Open all / Close all / Rename / Delete group (`open_group_sessions` / `close_group_sessions`) |
-| **3.2** | Sync-aware UI | ⚠️ | Settings SqlSync (statut, last-synced) + mot « Synced » sur le bouton Settings ; `SyncReport.conflicts` calculé mais non affiché ; pas de badge pending / conflits |
-| **3.3** | Host Inspector | ❌ | — |
-| **3.4** | Session recall | ✅ MVP | `saved_tabs` : réouverture des onglets et de leurs noms au lancement (`restore_saved_tabs_if_due`) |
-| **3.5** | WSL reconnect | ⚠️ | Discover / launch OK ; carte Reconnect réservée aux hôtes SSH stockés ; pas d’auto-reconnect WSL |
-| **4.1** | Thèmes Terminus (×7) | ⚠️ | 2 thèmes chrome (sombre/clair) + mode Système ; 7 presets à faire |
-| **4.2** | WCAG AA / reduced-motion | ❌ | Fonction de ratio de contraste dans `theme.rs`, aucun preset ni option reduced-motion |
-| **4.3** | Keyboard-only audit | ⚠️ | Forms / settings / SFTP navigables ; pas d’audit ni de doc raccourcis |
-| **4.4** | Perf regression | ❌ | `criterion` déclaré en dev-dep, aucun `[[bench]]`, aucun test 100+ hôtes |
-| **4.5** | Release Terminus | ⚠️ | `scripts/release.sh` (manuel) produit tarball Linux, `.deb`/`.rpm` (nfpm), `terminus-setup-x86_64.exe` (NSIS, exe installé `tmnx.exe`), `.msi` (wixl) et zip Windows, tous nommés `terminus-*` ; `terminus-update` ; **rien** pour macOS (le Makefile ne garde que le `.dmg` Rio hérité) ; CI = `ci.yml` (build/test/fmt/clippy) + `flakehub.yml`, **pas** de workflow de release |
-
-**Lecture :** Phase 1 ≈ MVP chrome + vault + sessions CLI + reconnexion SSH. Phase 2 ≈ SFTP mature (dossiers) et tunnels MVP ; reste queue/retry et stats. Phases 3–4 = scale / GA.
-
----
-
-## Ce qui est livré (détail)
-
-### Chrome & hôtes
-
-- Activity bar + panneau hôtes (largeur fixe 260), collapse, inset terminal.
-- CRUD hôtes (formulaire Add server en 3 étapes), groupes (état replié persisté),
-  DnD reorder / into-group, rename inline.
-- Context menu hôte : Open SFTP, Open in other pane, Edit host, Rename, Delete.
-  Context menu groupe : Rename, Delete group.
-- Auth : password / key / managed keys / GSSAPI (selon chemins store + settings).
-- Modal de progression de connexion (séquence multi-étapes) ; shimmer connecting.
-- Badges OS (`os_icons`).
-- Sidebar : retour au dernier onglet utilisé d’un hôte.
-
-### Sessions
-
-- Shell SSH via OpenSSH CLI : keepalive (`ServerAliveInterval=15`), GSSAPI,
-  `TERM=xterm-256color`, clés temporaires supprimées dès l’auth faite.
-- Onglets renommables (double-clic ou menu contextuel) ; onglets et noms rouverts
-  au lancement suivant (`saved_tabs`).
-- Perte de connexion : l’onglet est conservé avec une carte « Connection lost »
-  (Reconnect / Close) — uniquement exit SSH 255 sur hôte stocké mono-panneau.
-
-### Vault & settings
-
-- Unlock / create vault (Argon2id) depuis UI, worker dédié.
-- Settings : Managed SSH Keys (generate / import PEM), Remote SQL Sync (statut,
-  last-synced), Apparence (Sombre / Clair / Système, suit l’OS en direct).
-
-### SFTP
-
-- Pane dédié (`PaneKind::Sftp`) : Left/Right avec backend Local ou Remote.
-- Worker async (`List*` / `Mkdir*` / `Remove*` (dont récursif distant) / `Rename*` /
-  `Transfer` / `TransferFolder` / `EditRemote` / `ResolveConflict` / `CancelTransfer`).
-- Transfert de dossiers : récursif, sync différentielle (cache + hash distant via
-  `terminus-walk`), remote→remote (archive), politique de conflits, annulation.
-- UX : clic droit (Open, **Edit** sur fichier remote, Upload/Download/Copy, Rename,
-  New folder, Delete, Refresh), DnD fichier pane↔pane, Host\|Host via
-  « Open in other pane », barre de progression, breadcrumbs.
-- **Edit remote** : télécharge vers `temp/terminus-sftp-edit/…`, ouvre avec l’app
-  par défaut (`xdg-open` / `open` / `ShellExecute`), poll mtime → réupload.
-- Limites connues : worker série (pas de queue), pas de retry.
-
-### Tunnels
-
-- Onglet Tunnels : liste de cartes, formulaire créer / éditer / supprimer
-  (Local `-L`, Remote `-R`, Dynamic `-D`), validation des ports, sonde de port
-  local libre, toggle start/stop, messages d’erreur lisibles, badge sur l’onglet.
-- Processus `ssh -N` supervisés par `TunnelRegistry` ; tués à la fermeture de
-  l’app ou à la suppression de l’hôte.
-
-### Au-delà de la roadmap initiale
-
-- **Snippets** : vue, formulaire d’ajout, persistance (`CreateSnippet`).
-- **Historique shell** : `history_worker` + `shell_integration` (hooks shell
-  locaux), vue Historique, action « Clear History ».
-- **Palette** : Open Host…, Open SFTP, Filter Servers, Show Files / Tunnels /
-  Snippets / History, Check for Updates / Install Update / Restart to Update.
-- **Auto-update** (`terminus-update`, `updater.rs`).
-- **CI** : build + test + rustfmt + clippy à chaque PR (workspace clippy-clean).
-
-### Infra
-
-- Hot-reload / loops de dev documentés (`DEVELOPMENT.md`).
-- Tests unitaires denses sur `terminus-ui` (géométrie), tunnels, SFTP et core.
-
----
-
-## Phase 1 — Fondations (clôturer le MVP shell)
-
-**Objectif :** sessions et découverte d’hôtes au niveau « produit quotidien ».
-
-| # | Jalon | Reste à faire | Critère de done |
-| :--- | :--- | :--- | :--- |
-| 1.2b | **Bridge unifié** | Extraire / formaliser `TerminusCoreService` depuis `hosts.rs` ; exposer list/connect/vault/sync | Un seul runtime Arc ; rioterm n’embed plus le worker ad hoc |
-| 1.4-debt | **Shell russh (Option B, plus tard)** | Remplacer `ssh_shell` CLI (et les tunnels `ssh -N`) par `SshTransport` + `SessionSpec::Ssh` + modal TOFU | Un seul stack SSH (shell = SFTP = forwards) |
-| 1.5b | **Sidebar resize** | Poignée de resize + persist largeur (aujourd’hui constante `SIDEBAR_WIDTH = 260`) | Largeur utilisateur persistée |
-| 1.5c | **États hôte (suite)** | Un onglet derrière la carte « Connection lost » n’est plus Active, tous les panneaux sont comptés, plusieurs hôtes peuvent se connecter (indicateurs sidebar) ; reste : états `error` distincts | États visibles et justes |
-| 1.7b | **Fade vault** | Animation d’apparition 120 ms (optionnel ; `anim.rs` fournit `Tween` mais rioterm ne l’utilise pas pour les dialogs ; lié à 4.2 reduced-motion) | Fade respectant reduced-motion |
-| 1.8b | **Session lifecycle (suite)** | Reconnect en place dans un split (fait) ; split d’un onglet hôte = même hôte (fait) ; vault verrouillé : le prompt relance la reconnexion (fait) ; vérifier en GUI la fermeture volontaire | Pas d’onglet zombie en multi-panneaux |
-
----
-
-## Phase 2 — Ops (forwards + SFTP mature)
-
-**Objectif :** hub fichiers / tunnels sans quitter la fenêtre.
-
-| # | Jalon | Reste à faire | Critère de done |
-| :--- | :--- | :--- | :--- |
-| 2.1 | **Port forwarding (finition)** | Compteur d’octets (netlink `sock_diag`) ; réveil 1 Hz limité à l’onglet Tunnels ; ligne de détail à clipper sur fenêtre étroite ; stats des tunnels d’une autre machine  | Tunnel observable (octets compris) et pilotable sans souris |
-| 2.2b | **SFTP polish** | Breadcrumbs : clic sur un segment navigue vers ce segment (aujourd’hui = un niveau up) | Parité « explorateur » basique |
-| 2.3 | **Transferts robustes** | Queue (worker série aujourd’hui), retry sur échec, vue de file | Plusieurs gros transferts sans bloquer l’UI ni se perdre sur erreur |
-| 2.4 | **Palette ops (suite)** | `>forward` pour toutes les machines (pas seulement celle à l’écran) ; liste rafraîchie pendant que la palette est ouverte | Actions sans souris sur toute la flotte |
-| 2.5 | **Onboarding** | Empty sidebar 3 étapes avec CTA « Add first host » (aujourd’hui : un hint texte) | Premier host < 60 s |
-
----
-
-## Phase 3 — Scale, sync & bulk
-
-| # | Jalon | Détails | Critère de done |
-| :--- | :--- | :--- | :--- |
-| 3.1 | **Open All / kill group** | Entrées dans le context menu groupe | Flotte ouverte / fermée en un geste |
-| 3.2 | **Sync-aware chrome** | Badge last-synced avec horodatage, pending, review des conflits (`SyncReport.conflicts` existe déjà) | Sync visible hors Settings |
-| 3.3 | **Host Inspector** | Overlay compact OS / tags / actions | Actions rapides sans ouvrir Settings |
-| 3.4b | **Recall Store** | Reprise basée sur le Store / `SessionManager` si besoin au-delà du fichier `saved_tabs` (layouts, panneaux, SFTP) | Restauration fidèle des panneaux |
-| 3.5 | **WSL reconnect** | Auto-relance dist après drop | Distro WSL resilient |
-
----
-
-## Phase 4 — Polish & GA
-
-| # | Jalon | Détails | Critère de done |
-| :--- | :--- | :--- | :--- |
-| 4.1 | **Thèmes Terminus** | 7 presets + tokens chrome (2 aujourd’hui) | Thèmes switchables |
-| 4.2 | **A11y contraste** | High-contrast + reduced-motion ; réutiliser le ratio WCAG de `theme.rs` | Presets WCAG |
-| 4.3 | **Keyboard audit** | Doc raccourcis + focus rings | Parcours sans souris documenté |
-| 4.4 | **Perf** | Benches 100+ hôtes (`criterion` est déjà en dev-dep), mémoire ; virtualiser la liste d’hôtes | Seuils dans CI ou script |
-| 4.5 | **Release Terminus** | Workflow GitHub de release (aujourd’hui `scripts/release.sh` manuel) ; packaging macOS (`.dmg` « Terminus ») ; les artefacts Linux (tarball, deb, rpm) et Windows (NSIS, MSI) existent déjà dans `release.sh` | Artefacts « Terminus » publiés par la CI, macOS inclus |
-
----
-
-## Priorités (recalées)
-
-| Priorité | Focus | Pourquoi |
+| Capacité | Statut | Preuve / limite |
 | :--- | :--- | :--- |
-| **P0** | Session lifecycle (au-delà de exit 255), queue + retry des transferts | Bloque la confiance « daily driver » |
-| **P0** | Tunnels : stats + palette | MVP livré, reste l’observabilité |
-| **P1** | Bridge unifié, sync chrome, onboarding, breadcrumbs | Scale + dette archi |
-| **P1** | 1.4-debt shell russh unifié | Deux piles SSH (CLI pour shell + tunnels, russh pour SFTP) ; à trancher quand l’auth unique devient bloquante |
-| **P2** | Thèmes, a11y, perf, workflow de release | GA |
+| Activity bar + sidebar, marge de grille réservée | ✅ | `terminus-ui/src/shell/layout.rs`, `reapply_chrome_inset` |
+| CRUD hôtes (assistant 3 étapes), groupes, DnD, renommage, menu contextuel | ✅ | `terminus-ui/src/sidebar/`, `add_host/`, `hosts/` |
+| Lignes locale + WSL + hôtes | ✅ | `terminus-core::{machine,wsl}`, ids `local` / `wsl:<nom>` / uuid |
+| Auth mot de passe / clé / clés gérées / GSSAPI | ✅ | `terminus-core/src/{auth_method,managed_key,gssapi}.rs` |
+| Largeur de sidebar redimensionnable | ❌ | constante `SIDEBAR_WIDTH = 260.0` (`shell/layout.rs:18`) |
+| Liste d'hôtes virtualisée | ❌ | aucune logique de fenêtre visible dans `terminus-ui/src/sidebar/` |
+| Host Inspector | ❌ | aucun symbole |
+| Onboarding (CTA « Add first host ») | ❌ | aucun symbole ; seul le formulaire d'ajout existe |
+| Fenêtre Linux sans cadre | ⚠️ | `screen/frameless.rs` présent ; rendu non vérifié sous GNOME / X11 |
 
----
+### 3.2 Sessions et onglets
 
-## Risques (à jour)
-
-| Risque | Impact | État mitigation |
+| Capacité | Statut | Preuve / limite |
 | :--- | :--- | :--- |
-| Deux piles SSH (OpenSSH CLI pour shell + tunnels, russh pour SFTP) | Auth / host-key divergents entre CLI et SFTP | **Accepté (Option A)** ; unification = 1.4-debt |
-| Code mort côté core (`TerminusCoreService`) | Dette, faux sentiment de couverture | 1.2b : brancher ou supprimer (`SessionManager`, `ForwardRuntime` supprimés) |
-| Bridge stub + workers dans rioterm | Dette de structure | 1.2b |
-| Transferts SFTP sans queue ni retry | Ops limitées, perte silencieuse sur erreur | 2.3 |
-| Fenêtre Linux sans cadre : rendu, redimensionnement et fermeture non vérifiés sous GNOME / X11 | Régression visuelle possible | `feat/linux-titlebar` mergé, à valider à l’écran |
-| Liste d’hôtes non virtualisée | Lag 100+ | Toujours à faire (4.4 / sidebar) |
-| Pas de workflow de release CI | Release manuelle (`release.sh`) | 4.5 |
-| Vault Argon2id | Freeze UI si mal placé | Worker dédié ✅ |
+| Shell SSH interactif (OpenSSH en PTY local) | ✅ MVP | keepalive, GSSAPI, `TERM=xterm-256color` |
+| Carte « Connection lost » / « Session killed » + Reconnect / Close | ✅ MVP | `screen/sessions/lost.rs`, par panneau ; Reconnect en split = nouvel onglet ; non vérifié en GUI |
+| Reprise des onglets au lancement | ✅ MVP | `screen/saved_tabs.rs::restore_saved_tabs_if_due`, **désactivée par défaut** (réglable dans Settings > General) ; ne restaure ni layouts ni panneaux SFTP |
+| Auto-reconnexion WSL | ❌ | la carte Reconnect ne vise que les hôtes SSH stockés |
+| Shell unifié russh (`SshTransport`) | 📎 D1 | voir §2 |
+| Vue active par hôte, Ctrl+Tab limité à l'hôte | ❌ | spec `docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md` en attente de relecture |
+
+### 3.3 SFTP
+
+| Capacité | Statut | Preuve / limite |
+| :--- | :--- | :--- |
+| Double panneau Local\|Remote et Host\|Host | ✅ | `sftp_pane/`, `sftp_ui/`, `PaneKind::Sftp` |
+| Opérations (list, mkdir, remove récursif, rename, transfert, édition distante) | ✅ | `sftp_worker/commands.rs`, `edit.rs` |
+| Dossiers : récursif, sync différentielle, remote→remote, conflits, annulation | ✅ | `folder.rs`, `differential_*.rs`, `conflict.rs`, `remote_archive.rs` |
+| File de transferts | ⚠️ | `sftp_worker/queue.rs` : file mpsc, jobs exécutés **un par un** ; pas de vue de file dans l'UI |
+| Retry | ⚠️ | `sftp_worker/retry.rs` : rejoue seulement les opérations idempotentes (`Operation::is_idempotent`) ; appliqué aux transferts, archives, suppressions récursives |
+| Breadcrumbs cliquables par segment | ⚠️ | `paths.rs::crumb_segments_for_cwd` calcule les segments ; comportement du clic non revérifié (l'ancien jalon disait « un niveau up ») |
+| Upload par glisser-déposer vers un onglet SSH, dossier configurable | ✅ | `screen/file_drop.rs`, `remote_upload*.rs`, `[uploads]`, Settings > Uploads ; test sshd réel présent |
+
+### 3.4 Tunnels
+
+| Capacité | Statut | Preuve / limite |
+| :--- | :--- | :--- |
+| CRUD, start/stop, états Stopped / Starting / Running / Failed, badge | ✅ MVP | `tunnel_worker/`, `screen/tunnels.rs` |
+| Persistance et supervision | ✅ | `persistence.rs`, `registry.rs`, `ticker.rs` |
+| Uptime + connexions | ✅ (Linux) | `tunnel_worker/stats.rs`, échantillon `/proc/net/tcp` |
+| Compteur d'octets | ❌ | aucun symbole `sock_diag` / octets dans `tunnel_worker/` |
+| Stats des tunnels d'une autre machine | ❌ | selon l'ancien suivi, non revérifié |
+
+### 3.5 Vault, sync, réglages
+
+| Capacité | Statut | Preuve / limite |
+| :--- | :--- | :--- |
+| Vault Argon2id, déverrouillage en overlay, worker dédié | ✅ | `vault.rs`, `vault_unlock.rs`, `vault_remember.rs` |
+| Fondu du modal vault | ❌ | `anim.rs` existe, non utilisé par les dialogues |
+| Réglages : General, Keys, Sync, Appearance, Updates, Uploads | ✅ | `SettingsPage` (`shell/workspace.rs:13`) |
+| Sync SQL : statut, dernier sync | ⚠️ | `SyncReport.conflicts` calculé (`sync/report.rs`), aucun affichage dans le front |
+| Badge de sync hors Settings, revue des conflits | ❌ | — |
+
+### 3.6 Palette, snippets, historique
+
+| Capacité | Statut | Preuve / limite |
+| :--- | :--- | :--- |
+| Palette : Open Host…, Open SFTP, vues, mises à jour | ✅ | `renderer/command_palette/` |
+| Syntaxe `>sftp [hôte]` et `>forward [list\|start\|stop]` | ✅ MVP | `terminus-ui/src/palette_query.rs` ; limitée à la machine à l'écran ; rendu non vérifié en GUI |
+| Snippets | ✅ | `snippets.rs`, `add_snippet.rs` |
+| Historique shell (hooks locaux, vue, effacement) | ✅ | `history_worker.rs`, `shell_integration.rs` |
+| Raccourcis hôtes / vues, remappage dans Settings | ❌ | même spec que §3.2 ; `SelectTab(n)` n'a de défaut que sur macOS (Cmd) |
+
+### 3.7 Thèmes et accessibilité
+
+| Capacité | Statut | Preuve / limite |
+| :--- | :--- | :--- |
+| Thèmes chrome sombre / clair + mode Système | ✅ | `theme.rs` : `ThemeMode {Dark, Light}`, `violet_ink`, `violet_paper` |
+| Presets supplémentaires | ❌ | 2 thèmes seulement |
+| Fonction de ratio de contraste WCAG | ⚠️ | `theme.rs:439` ; aucun preset haut contraste, aucune option reduced-motion |
+| Audit clavier, focus rings, doc des raccourcis | ❌ | non fait |
+
+### 3.8 Qualité, performance, livraison
+
+| Capacité | Statut | Preuve / limite |
+| :--- | :--- | :--- |
+| Tests unitaires et d'intégration | ✅ | ≈ 1 400 attributs `#[test]` : `terminus-ui` 680, `rioterm` 445, `terminus-core` 145, `terminus-bridge` 98, `terminus-update` 28, `terminus-walk` 3 (comptés par grep, non exécutés) |
+| CI sur PR | ⚠️ | `.github/workflows/ci.yml` : **rustfmt + `check-file-size.sh` seulement**. Build, tests et clippy tournent en local ; aucun hook git installé dans `.git/hooks` |
+| Budget de taille de fichier | ✅ | `scripts/check-file-size.sh` (500 lignes dures, liste d'exceptions décroissante) |
+| Benchmarks / test de charge 100+ hôtes | ❌ | aucun `[[bench]]`, aucun répertoire `benches` dans `crates/` |
+| Release Linux + Windows | ✅ (manuel) | `scripts/release.sh`, `nix run .#release` ; tarball, deb, rpm, NSIS, MSI, zip, `checksums.txt` |
+| Release macOS | ❌ | aucun cas macOS dans `release.sh` |
+| Workflow GitHub de release | ❌ | `.github/workflows/` = `ci.yml` + `flakehub.yml` |
+| Auto-update vérifié (SHA-256) | ✅ | `terminus-update`, `updater.rs` ; releases **non signées** |
 
 ---
 
-## Hors scope actuel (ne pas confondre avec « manquant »)
+## 4. Dette et risques
 
-- Remplacer Rio en tant que terminal générique (héritage upstream OK).
-- WASM / librio comme surface Terminus.
-- Parité feature-complete Termius/SecureCRT avant Phase 4.
+| # | Élément | Impact | Mitigation |
+| :--- | :--- | :--- | :--- |
+| D1 | Deux piles SSH (CLI pour shell + tunnels, russh pour SFTP) | host-key et auth divergents | Option A acceptée ; unifier = brancher `SshTransport` + `SessionSpec::Ssh` + modal TOFU |
+| D2 | `TerminusBridge` / `TerminusCoreService` commentés ; workers dans `rioterm/src/hosts` | structure floue, faux sentiment de couverture | brancher ou supprimer |
+| D3 | CI sans build, tests ni clippy | une régression passe si le contrôle local est sauté | ajouter les jobs, ou installer un hook versionné |
+| D4 | File SFTP sérielle sans vue | gros transferts opaques | vue de file dans l'UI |
+| D5 | Releases non signées | l'intégrité repose sur `checksums.txt` et GitHub | signature à décider |
+| D6 | Liste d'hôtes non virtualisée | lag possible à 100+ hôtes | virtualiser, puis benchmark |
+| D7 | Fenêtre sans cadre non vérifiée sous GNOME / X11 | régression visuelle | validation à l'écran |
+| D8 | Interop WSL cassée dans un sandbox FHS | distros listées mais non ouvrables | documenté dans `DEVELOPMENT.md` |
+
+---
+
+## 5. Feuille de route
+
+Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
+
+### P0 — Confiance « daily driver »
+
+| # | Jalon | Critère de fin |
+| :--- | :--- | :--- |
+| R1 | **Vue et sessions par hôte + raccourcis** (spec 2026-10-13) | spec relue, puis tests `terminus-ui` pour `per_host` et cyclage; Ctrl+Tab ne traverse plus les hôtes (vérifié à l'écran) |
+| R2 | **CI : build + tests + clippy** (D3) | job vert sur PR, ou hook pre-commit versionné, documenté dans CLAUDE.md |
+| R3 | **Vue de file de transferts SFTP** (D4) | plusieurs transferts visibles, annulables, sans bloquer l'UI |
+
+### P1 — Observabilité et dette
+
+| # | Jalon | Critère de fin |
+| :--- | :--- | :--- |
+| R4 | Compteur d'octets des tunnels | octets affichés sur la carte, test sur l'échantillonneur |
+| R5 | Sync visible : badge, dernier sync, conflits (`SyncReport.conflicts`) | état de sync lisible hors Settings |
+| R6 | D2 : trancher le bridge | trait branché ou code supprimé; plus de commentaire mort dans `lib.rs` |
+| R7 | Breadcrumbs : clic sur un segment | navigation vers le segment, test sur `sftp_pane` |
+| R8 | Redimensionnement de la sidebar, largeur persistée | largeur utilisateur conservée après redémarrage |
+| R9 | Onboarding : CTA « Add first host » | premier hôte ajoutable depuis l'état vide |
+
+### P2 — Échelle et GA
+
+| # | Jalon | Critère de fin |
+| :--- | :--- | :--- |
+| R10 | Virtualisation de la liste + benchmarks 100+ hôtes (D6) | seuils mesurés dans un script ou la CI |
+| R11 | Thèmes supplémentaires, haut contraste, reduced-motion | presets conformes WCAG AA via le ratio de `theme.rs` |
+| R12 | Audit clavier + doc des raccourcis | parcours sans souris documenté |
+| R13 | Workflow GitHub de release, macOS inclus | artefacts publiés par la CI |
+| R14 | D1 : shell russh unifié | un seul stack SSH, TOFU en UI |
+| R15 | Host Inspector, auto-reconnexion WSL, reprise fidèle des layouts | à cadrer avant exécution |
+
+---
+
+## 6. Hors périmètre
+
+- Remplacer Rio comme terminal générique (le code amont est hérité tel quel).
+- WASM / `librio` comme surface Terminus.
+- Parité complète avec Termius / SecureCRT avant R13.
