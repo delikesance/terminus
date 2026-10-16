@@ -1,3 +1,5 @@
+use crate::sftp_pane::format_bytes;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelKind {
     Local,
@@ -96,24 +98,29 @@ impl TunnelItem {
 /// What can honestly be observed about an `ssh -N` process.
 ///
 /// `connections` is a sample of the established forwarded connections and is
-/// `None` where the platform (or the forward kind) cannot provide it. Bytes
-/// are not tracked: nothing cheap and truthful exposes them for a plain
-/// `ssh -N`.
+/// `None` where the platform (or the forward kind) cannot provide it.
+/// `bytes` is an *estimate* of the forwarded traffic (both directions, from
+/// the ssh process I/O counters, handshake included); it is shown with a `~`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TunnelStats {
     pub uptime_secs: u64,
     pub connections: Option<u32>,
+    pub bytes: Option<u64>,
 }
 
 impl TunnelStats {
-    /// `up 3m 12s \u{b7} 2 connections`, `up 42s \u{b7} connections n/a`.
+    /// `up 3m 12s \u{b7} 2 connections \u{b7} ~1.5 MB`, `up 42s \u{b7} connections n/a`.
     pub fn summary(&self) -> String {
         let conns = match self.connections {
             Some(1) => "1 connection".to_string(),
             Some(n) => format!("{n} connections"),
             None => "connections n/a".to_string(),
         };
-        format!("up {} \u{b7} {conns}", format_uptime(self.uptime_secs))
+        let up = format_uptime(self.uptime_secs);
+        match self.bytes {
+            Some(b) => format!("up {up} \u{b7} {conns} \u{b7} ~{}", format_bytes(b)),
+            None => format!("up {up} \u{b7} {conns}"),
+        }
     }
 }
 
