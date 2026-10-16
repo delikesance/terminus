@@ -1,11 +1,11 @@
 # HANDOFF — état courant
 
-Mis à jour : 2026-10-16 (branche `development`, HEAD `80f3a01e`, poussée sur `origin/development`). Protocole : voir CLAUDE.md § HANDOFF.md.
+Mis à jour : 2026-10-16 (branche `development`, HEAD `8f9fcfb0`, non poussée). Protocole : voir CLAUDE.md § HANDOFF.md.
 
 ## Objectif en cours
 R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`, relue 2026-10-16, statut « reviewed »).
 - R1a : **fait** (implémenté, tests verts, non vérifié en GUI).
-- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (non commité) ; 3 helper cyclage d'hôte (test rouge d'abord) ; 4 câblage `Screen` (`screen/sessions/hosts_nav.rs`) ; 5 défauts dans `bindings/host_nav.rs` (neuf, `mod.rs` à 1870 lignes allowlistées) ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
+- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (`8f9fcfb0`) ; 3 helper cyclage d'hôte, ordre = sidebar (test rouge d'abord) ; 4 câblage `Screen` (`screen/sessions/hosts_nav.rs`) ; 5 défauts dans `bindings/host_nav.rs` (neuf, `mod.rs` à 1870 lignes allowlistées) ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
 - R1c : page Settings > Shortcuts, non commencée.
 - R16 (Files suit le dossier OSC 7 du terminal courant) et R17 (fil d'Ariane éditable) : ajoutés à `milestone.md`, non planifiés. R16 touche `ShowView` : à faire après R1b.
 
@@ -31,9 +31,11 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - Suppressions stagées préexistantes dans l'index (`.claude/agents/*`, `.claude/settings.json`, `.codex/*`, `.cursor/*`, `AGENTS.md`) : non liées, ne pas commiter sans demande.
 
 ## Prochaine action
-1. Commiter l'étape 2 (`git commit -- frontends/rioterm/src/bindings/mod.rs HANDOFF.md`).
-2. R1b étape 3 : helper de cyclage d'hôte (test rouge d'abord). Question ouverte : ordre des hôtes = accessor dans `terminus-ui/src/sidebar/state.rs`, sinon repli sur l'ordre des onglets (à trancher avec l'utilisateur).
+1. R1b étape 3 : helper pur de cyclage d'hôte dans `context/host_tabs.rs`, ordre de la sidebar (accessor dans `terminus-ui/src/sidebar/state.rs`), hôtes sans onglet sautés, boucle, no-op si < 2 hôtes avec onglet. Test rouge d'abord.
+2. Étape 4 : câblage `Screen` (`screen/keys.rs`) ; étape 5 : défauts `Ctrl+Shift+Up/Down` (SelectPrev/NextHost) et `Ctrl+Alt+1..5` (ShowView), `bindings/host_nav.rs`.
 3. Vérifier R1a à l'écran (voir Blocages).
+
+Décisions : Shift+Tab reste dans l'hôte (aucun changement) ; `Ctrl+Shift+Up/Down` retenu pour le cyclage d'hôte.
 
 ## Pièges à retenir (détail dans CLAUDE.md)
 - `git commit` sans chemin embarque les suppressions stagées : toujours `git commit -- <chemins>`.
@@ -41,9 +43,9 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - `nix` absent de cette machine : `cargo test -p terminus-ui` / `-p rioterm` fonctionnent directement (fontconfig présent).
 
 ## État du working tree
-Non commité : `frontends/rioterm/src/bindings/mod.rs` (R1b étape 2), `HANDOFF.md`. Suppressions stagées préexistantes : ne pas commiter.
+Non commité : rien (R1b étape 2 commitée en `8f9fcfb0`). Suppressions stagées préexistantes : ne pas commiter.
 
-## R1b étape 2 (fait)
+## R1b étape 2 (fait, commit `8f9fcfb0`)
 - `Action::{SelectNextHost, SelectPrevHost, ShowView(WorkspaceView)}` + parser config (`selectnexthost`, `selectprevhost`, `showview(terminal|files|tunnels|snippets|history)`, inconnu → `None`). Pas encore câblé dans `screen/keys.rs` (le `_ => ()` les ignore) ni lié par défaut.
 - Test `host_and_view_actions_parse_from_config_strings` : rouge (variantes absentes), puis vert.
 - Validations : `cargo test -p rioterm` exit 0 (445), `cargo fmt --check` exit 0, `check-file-size.sh` exit 0, clippy sans avertissement sur `bindings/mod.rs`.
