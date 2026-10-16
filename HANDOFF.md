@@ -1,14 +1,16 @@
 # HANDOFF — état courant
 
-Mis à jour : 2026-10-16 (branche `development`, HEAD `docs: mark R1a done`). Protocole : voir CLAUDE.md § HANDOFF.md.
+Mis à jour : 2026-10-16 (branche `development`, HEAD `80f3a01e`, poussée sur `origin/development`). Protocole : voir CLAUDE.md § HANDOFF.md.
 
 ## Objectif en cours
 R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`, relue 2026-10-16, statut « reviewed »).
 - R1a : **fait** (implémenté, tests verts, non vérifié en GUI).
 - R1b : **prochaine étape** (actions `ShowView`, `SelectNextHost`/`SelectPrevHost`, défauts Ctrl+Shift+Up/Down et Ctrl+Alt+1..5, suppression du doublon Ctrl+Shift+[ / ] onglet/split). Pas encore planifiée.
 - R1c : page Settings > Shortcuts, non commencée.
+- R16 (Files suit le dossier OSC 7 du terminal courant) et R17 (fil d'Ariane éditable) : ajoutés à `milestone.md`, non planifiés. R16 touche `ShowView` : à faire après R1b.
 
 ## Fait
+- `80f3a01e` : R16 / R17 ajoutés à `milestone.md` (audit : OSC 7 lu seulement à la création de la session SFTP, sur l'onglet le plus récent de l'hôte ; pas de saisie de chemin).
 - `66fa2c9f` : `Workspace` retient la vue par hôte (`leave_host`/`enter_host`/`follow_host`/`forget_host`) ; `machine_selected` supprimé.
 - `3d2f6982` : cyclage Ctrl+Tab, `SelectTab(n)`, `SelectLastTab` limités à l'hôte (`context/host_tabs.rs`). Test `host_tab_to_restore_is_the_last_focused_one` adapté (le cyclage ne traverse plus les hôtes).
 - `10efc5de` : point de synchro `sync_sidebar_selection` → `follow_host` ; nouvelle session = Terminal ; fermeture du dernier onglet d'un hôte et suppression d'hôte = oubli de la vue.
@@ -38,7 +40,7 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - `nix` absent de cette machine : `cargo test -p terminus-ui` / `-p rioterm` fonctionnent directement (fontconfig présent).
 
 ## État du working tree
-Non commité : `HANDOFF.md`, `milestone.md` (commit « docs: mark R1a done » juste après ce fichier). Suppressions stagées préexistantes : ne pas commiter.
+Working tree propre hors suppressions stagées préexistantes (ne pas commiter). Branche à jour avec `origin/development`.
 
 ## Validations (R1a, cette session)
 - `cargo test -p terminus-ui` : exit 0, 686 tests.
