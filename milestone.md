@@ -81,6 +81,8 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | File de transferts | ⚠️ | `sftp_worker/queue.rs` : file mpsc, jobs exécutés **un par un** ; pas de vue de file dans l'UI |
 | Retry | ⚠️ | `sftp_worker/retry.rs` : rejoue seulement les opérations idempotentes (`Operation::is_idempotent`) ; appliqué aux transferts, archives, suppressions récursives |
 | Breadcrumbs cliquables par segment | ⚠️ | `paths.rs::crumb_segments_for_cwd` calcule les segments ; comportement du clic non revérifié (l'ancien jalon disait « un niveau up ») |
+| Files s'ouvre dans le dossier courant du terminal courant | ⚠️ | le répertoire OSC 7 (`tab_reported_dir`) n'est lu qu'à la **création** de la session SFTP, et pris sur l'onglet **le plus récent** de l'hôte (`screen/sftp.rs::machine_tab_dir`), pas sur l'onglet courant ; un navigateur déjà ouvert garde son dossier ; clic sur l'onglet « Files » du header non audité |
+| Fil d'Ariane éditable au clavier (saisir un chemin) | ❌ | aucun symbole de saisie de chemin ; seuls les segments cliquables existent (`paths.rs::crumb_segments_for_cwd`) |
 | Upload par glisser-déposer vers un onglet SSH, dossier configurable | ✅ | `screen/file_drop.rs`, `remote_upload*.rs`, `[uploads]`, Settings > Uploads ; test sshd réel présent |
 
 ### 3.4 Tunnels
@@ -174,6 +176,8 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 | R7 | Breadcrumbs : clic sur un segment | navigation vers le segment, test sur `sftp_pane` |
 | R8 | Redimensionnement de la sidebar, largeur persistée | largeur utilisateur conservée après redémarrage |
 | R9 | Onboarding : CTA « Add first host » | premier hôte ajoutable depuis l'état vide |
+| R16 | Files suit le dossier du terminal courant | clic sur « Files » (header, palette, `ShowView`) navigue vers le dossier OSC 7 de l'onglet courant ; test sur le choix du dossier ; repli documenté sans OSC 7 |
+| R17 | Fil d'Ariane éditable (saisie de chemin, Entrée valide, Échap annule) | chemin saisi atteint, erreur affichée si invalide ; test sur `sftp_pane` ; lié à R7 |
 
 ### P2 — Échelle et GA
 
