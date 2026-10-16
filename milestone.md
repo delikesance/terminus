@@ -54,7 +54,7 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | CRUD hôtes (assistant 3 étapes), groupes, DnD, renommage, menu contextuel | ✅ | `terminus-ui/src/sidebar/`, `add_host/`, `hosts/` |
 | Lignes locale + WSL + hôtes | ✅ | `terminus-core::{machine,wsl}`, ids `local` / `wsl:<nom>` / uuid |
 | Auth mot de passe / clé / clés gérées / GSSAPI | ✅ | `terminus-core/src/{auth_method,managed_key,gssapi}.rs` |
-| Largeur de sidebar redimensionnable | ❌ | constante `SIDEBAR_WIDTH = 260.0` (`shell/layout.rs:18`) |
+| Largeur de sidebar redimensionnable | ⚠️ R8 (état seul) | livré et testé dans `terminus-ui` : `shell/layout/sidebar_width.rs` (`SidebarWidth` clamp 200..480, `begin_drag`/`drag_to`/`end_drag`, `handle_rect`/`hit_handle`, `parse_setting`/`format_setting`, `SETTING_KEY="sidebar_width"`), `ShellLayout::with_sidebar_width`, `grid_insets_for` ; **non câblé** : `SIDEBAR_WIDTH = 260.0` reste la constante de `ShellLayout::new`, `shell/sidebar.rs`, `sidebar::WIDTH`, `chrome/state.rs` (`reserved_width`), `min_window_size` ; côté `rioterm` rien (lecture du setting au démarrage, souris/curseur, peinture de la poignée, `reapply_chrome_inset`, `set_setting` au relâchement) ; non vérifié en GUI |
 | Liste d'hôtes virtualisée | ❌ | aucune logique de fenêtre visible dans `terminus-ui/src/sidebar/` |
 | Host Inspector | ❌ | aucun symbole |
 | Onboarding (CTA « Add first host ») | ⚠️ R9 | bouton sous le hint « No saved hosts yet » (liste vide, sans filtre) : `sidebar/layout.rs::empty_cta_rect`, `PanelHit::AddFirstHost` (`sidebar/hit.rs`) → `ChromeAction::AddHost` (`chrome/route_press.rs`), peinture `renderer/chrome/notices.rs::render_empty_cta`, test `selection_tests::an_empty_list_offers_an_add_first_host_cta` ; **non vérifié en GUI** ; pas de scaffold en 3 étapes (hors périmètre de R9) ; le survol partage `add_hover` avec le bouton d'en-tête |
@@ -173,7 +173,7 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 | R5 | Sync visible : badge, dernier sync, conflits (`SyncReport.conflicts`) | état de sync lisible hors Settings |
 | R6 | D2 : trancher le bridge — ✅ code supprimé (`dcb85303`) : aucune référence à `TerminusBridge`/`TerminusCoreService`/`terminus_bridge_impl` hors ce fichier ; clippy et tests `terminus-bridge` verts ; `cargo check` du workspace entier non lancé | trait branché ou code supprimé; plus de commentaire mort dans `lib.rs` |
 | R7 | Breadcrumbs : clic sur un segment | navigation vers le segment, test sur `sftp_pane` |
-| R8 | Redimensionnement de la sidebar, largeur persistée | largeur utilisateur conservée après redémarrage |
+| R8 | Redimensionnement de la sidebar, largeur persistée — **partiel** : état/géométrie/setting dans `terminus-ui` (`a705e82c`), câblage `rioterm` et constantes `SIDEBAR_WIDTH` restants | largeur utilisateur conservée après redémarrage |
 | R9 | Onboarding : CTA « Add first host » (fait côté code, non vérifié en GUI) | premier hôte ajoutable depuis l'état vide |
 | R16 | Files suit le dossier du terminal courant | clic sur « Files » (header, palette, `ShowView`) navigue vers le dossier OSC 7 de l'onglet courant ; test sur le choix du dossier ; repli documenté sans OSC 7 |
 | R17 | Fil d'Ariane éditable (saisie de chemin, Entrée valide, Échap annule) | chemin saisi atteint, erreur affichée si invalide ; test sur `sftp_pane` ; lié à R7 |
