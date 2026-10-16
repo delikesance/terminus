@@ -57,7 +57,7 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | Largeur de sidebar redimensionnable | ❌ | constante `SIDEBAR_WIDTH = 260.0` (`shell/layout.rs:18`) |
 | Liste d'hôtes virtualisée | ❌ | aucune logique de fenêtre visible dans `terminus-ui/src/sidebar/` |
 | Host Inspector | ❌ | aucun symbole |
-| Onboarding (CTA « Add first host ») | ❌ | aucun symbole ; seul le formulaire d'ajout existe |
+| Onboarding (CTA « Add first host ») | ⚠️ R9 | bouton sous le hint « No saved hosts yet » (liste vide, sans filtre) : `sidebar/layout.rs::empty_cta_rect`, `PanelHit::AddFirstHost` (`sidebar/hit.rs`) → `ChromeAction::AddHost` (`chrome/route_press.rs`), peinture `renderer/chrome/notices.rs::render_empty_cta`, test `selection_tests::an_empty_list_offers_an_add_first_host_cta` ; **non vérifié en GUI** ; pas de scaffold en 3 étapes (hors périmètre de R9) ; le survol partage `add_hover` avec le bouton d'en-tête |
 | Fenêtre Linux sans cadre | ⚠️ | `screen/frameless.rs` présent ; rendu non vérifié sous GNOME / X11 |
 
 ### 3.2 Sessions et onglets
@@ -175,7 +175,7 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 | R6 | D2 : trancher le bridge | trait branché ou code supprimé; plus de commentaire mort dans `lib.rs` |
 | R7 | Breadcrumbs : clic sur un segment | navigation vers le segment, test sur `sftp_pane` |
 | R8 | Redimensionnement de la sidebar, largeur persistée | largeur utilisateur conservée après redémarrage |
-| R9 | Onboarding : CTA « Add first host » | premier hôte ajoutable depuis l'état vide |
+| R9 | Onboarding : CTA « Add first host » (fait côté code, non vérifié en GUI) | premier hôte ajoutable depuis l'état vide |
 | R16 | Files suit le dossier du terminal courant | clic sur « Files » (header, palette, `ShowView`) navigue vers le dossier OSC 7 de l'onglet courant ; test sur le choix du dossier ; repli documenté sans OSC 7 |
 | R17 | Fil d'Ariane éditable (saisie de chemin, Entrée valide, Échap annule) | chemin saisi atteint, erreur affichée si invalide ; test sur `sftp_pane` ; lié à R7 |
 
