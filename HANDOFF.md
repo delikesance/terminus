@@ -5,7 +5,7 @@ Mis à jour : 2026-10-16 (branche `development`, HEAD `80f3a01e`, poussée sur `
 ## Objectif en cours
 R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-10-13-per-host-scope-and-shortcuts-design.md`, relue 2026-10-16, statut « reviewed »).
 - R1a : **fait** (implémenté, tests verts, non vérifié en GUI).
-- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (non commité) ; 2 variantes `Action` + parser ; 3 helper cyclage d'hôte (test rouge d'abord) ; 4 câblage `Screen` (`screen/sessions/hosts_nav.rs`) ; 5 défauts dans `bindings/host_nav.rs` (neuf, `mod.rs` à 1870 lignes allowlistées) ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
+- R1b : **en cours**, plan validé (7 étapes) : 1 doublon `[`/`]` ✅ (`a4f5bf7e`) ; 2 variantes `Action` + parser ✅ (non commité) ; 3 helper cyclage d'hôte (test rouge d'abord) ; 4 câblage `Screen` (`screen/sessions/hosts_nav.rs`) ; 5 défauts dans `bindings/host_nav.rs` (neuf, `mod.rs` à 1870 lignes allowlistées) ; 6 palette hôte suivant/précédent ; 7 milestone + HANDOFF.
 - R1c : page Settings > Shortcuts, non commencée.
 - R16 (Files suit le dossier OSC 7 du terminal courant) et R17 (fil d'Ariane éditable) : ajoutés à `milestone.md`, non planifiés. R16 touche `ShowView` : à faire après R1b.
 
@@ -18,6 +18,7 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - `94a0aa8e` : règle 5 de CLAUDE.md (milestone.md).
 
 ## Décisions
+- Split = session de l'hôte : un split depuis un pane SSH/WSL ouvre la même session (`screen/sessions/split.rs:41`, `SplitTarget::Row` dans `screen/sessions/mod.rs:26`, commit `4f803042`). Seul un pane local ouvre un shell local. Absent de `milestone.md` ; non vérifié en GUI.
 - Chemins SSH : Option A conservée (voir CLAUDE.md, milestone.md §2).
 - Ctrl+Shift+Up/Down et Ctrl+Alt+1..5 pour R1b (Alt+digit = readline/tmux ; Ctrl+Alt+arrows = GNOME workspaces).
 - `SelectTab(n)` devient relatif à l'hôte, y compris macOS (accepté).
@@ -30,8 +31,8 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - Suppressions stagées préexistantes dans l'index (`.claude/agents/*`, `.claude/settings.json`, `.codex/*`, `.cursor/*`, `AGENTS.md`) : non liées, ne pas commiter sans demande.
 
 ## Prochaine action
-1. Commiter l'étape 1 de R1b (`git commit -- frontends/rioterm/src/bindings/mod.rs HANDOFF.md`).
-2. R1b étape 2. Question ouverte étape 3 : accessor de l'ordre des hôtes de la sidebar (`terminus-ui/src/sidebar/state.rs`) ; sinon repli sur l'ordre des onglets (à trancher avec l'utilisateur).
+1. Commiter l'étape 2 (`git commit -- frontends/rioterm/src/bindings/mod.rs HANDOFF.md`).
+2. R1b étape 3 : helper de cyclage d'hôte (test rouge d'abord). Question ouverte : ordre des hôtes = accessor dans `terminus-ui/src/sidebar/state.rs`, sinon repli sur l'ordre des onglets (à trancher avec l'utilisateur).
 3. Vérifier R1a à l'écran (voir Blocages).
 
 ## Pièges à retenir (détail dans CLAUDE.md)
@@ -40,16 +41,9 @@ R1 (`milestone.md`) = spec per-host / raccourcis (`docs/superpowers/specs/2026-1
 - `nix` absent de cette machine : `cargo test -p terminus-ui` / `-p rioterm` fonctionnent directement (fontconfig présent).
 
 ## État du working tree
-Non commité : `frontends/rioterm/src/bindings/mod.rs` (R1b étape 1), `HANDOFF.md`. Suppressions stagées préexistantes : ne pas commiter.
+Non commité : `frontends/rioterm/src/bindings/mod.rs` (R1b étape 2), `HANDOFF.md`. Suppressions stagées préexistantes : ne pas commiter.
 
-## R1b étape 1 (fait)
-- Stub `#[cfg(test)] platform_key_bindings` (vide) supprimé : les tests voient maintenant la vraie table de la plateforme hôte.
-- Nouveau test `defaults_bind_each_combination_to_one_action` (via `triggers_match`) ; chaînes voulues exemptées nommément (Copy+ClearSelection, ClearLogNotice+^L, ToggleViMode+ScrollToBottom). L'ancien test ne voyait pas le doublon (il exigeait la même action).
-- Retrait de Ctrl+Shift+[ / ] → `SelectPrev/NextTab` (Linux, Windows). Windows/macOS non compilés ici.
-
-## Validations (R1b étape 1, cette session)
-- Repro : nouveau test en échec (doublons `[`/`]`), puis vert après correctif.
-- `cargo test -p rioterm` : exit 0, 444 tests.
-- `cargo fmt --all -- --check` : exit 0 ; `scripts/check-file-size.sh` : exit 0.
-- `cargo clippy -p rioterm --all-targets` : aucun avertissement sur `bindings/mod.rs`.
-- Non fait : vérification GUI de R1a ; CI distante.
+## R1b étape 2 (fait)
+- `Action::{SelectNextHost, SelectPrevHost, ShowView(WorkspaceView)}` + parser config (`selectnexthost`, `selectprevhost`, `showview(terminal|files|tunnels|snippets|history)`, inconnu → `None`). Pas encore câblé dans `screen/keys.rs` (le `_ => ()` les ignore) ni lié par défaut.
+- Test `host_and_view_actions_parse_from_config_strings` : rouge (variantes absentes), puis vert.
+- Validations : `cargo test -p rioterm` exit 0 (445), `cargo fmt --check` exit 0, `check-file-size.sh` exit 0, clippy sans avertissement sur `bindings/mod.rs`.
