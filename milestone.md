@@ -24,7 +24,7 @@ macOS : aucun artefact Terminus.
 | Couche | Chemin | Rôle |
 | :--- | :--- | :--- |
 | Domaine | `crates/terminus-core` | Store SQLite, vault Argon2id, sync SQL, SSH/SFTP (russh), WSL, historique, onglets sauvegardés, détection d'OS. Sans UI |
-| Jonction | `crates/terminus-bridge` | `sftp_worker`, `SshTransport` (`EventedPty`), `folder_diff`. Le trait `TerminusBridge` / `TerminusCoreService` est **commenté** (`terminus_bridge_impl.rs` = un commentaire, `pub use` commenté dans `lib.rs:32`) |
+| Jonction | `crates/terminus-bridge` | `sftp_worker`, `SshTransport` (`EventedPty`), `folder_diff`. Le stub `TerminusBridge` / `TerminusCoreService` a été **supprimé** (R6/D2, commit `dcb85303` : `terminus_bridge_impl.rs` et ses `pub mod`/`pub use` retirés de `lib.rs`) ; le `pub use` commenté de `modal_event_handlers` reste volontairement (voir CLAUDE.md) |
 | Chrome | `crates/terminus-ui` | État, géométrie, hit-test, thèmes. Sans GPU |
 | Helper distant | `crates/terminus-walk` | Binaire déposé sur l'hôte pour la sync différentielle |
 | Mise à jour | `crates/terminus-update` | Vérification GitHub Releases, SHA-256 |
@@ -144,7 +144,6 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | # | Élément | Impact | Mitigation |
 | :--- | :--- | :--- | :--- |
 | D1 | Deux piles SSH (CLI pour shell + tunnels, russh pour SFTP) | host-key et auth divergents | Option A acceptée ; unifier = brancher `SshTransport` + `SessionSpec::Ssh` + modal TOFU |
-| D2 | `TerminusBridge` / `TerminusCoreService` commentés ; workers dans `rioterm/src/hosts` | structure floue, faux sentiment de couverture | brancher ou supprimer |
 | D3 | CI sans build, tests ni clippy | une régression passe si le contrôle local est sauté | ajouter les jobs, ou installer un hook versionné |
 | D4 | File SFTP sérielle sans vue | gros transferts opaques | vue de file dans l'UI |
 | D5 | Releases non signées | l'intégrité repose sur `checksums.txt` et GitHub | signature à décider |
@@ -172,7 +171,7 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 | :--- | :--- | :--- |
 | R4 | Compteur d'octets des tunnels | octets affichés sur la carte, test sur l'échantillonneur |
 | R5 | Sync visible : badge, dernier sync, conflits (`SyncReport.conflicts`) | état de sync lisible hors Settings |
-| R6 | D2 : trancher le bridge | trait branché ou code supprimé; plus de commentaire mort dans `lib.rs` |
+| R6 | D2 : trancher le bridge — ✅ code supprimé (`dcb85303`) : aucune référence à `TerminusBridge`/`TerminusCoreService`/`terminus_bridge_impl` hors ce fichier ; clippy et tests `terminus-bridge` verts ; `cargo check` du workspace entier non lancé | trait branché ou code supprimé; plus de commentaire mort dans `lib.rs` |
 | R7 | Breadcrumbs : clic sur un segment | navigation vers le segment, test sur `sftp_pane` |
 | R8 | Redimensionnement de la sidebar, largeur persistée | largeur utilisateur conservée après redémarrage |
 | R9 | Onboarding : CTA « Add first host » (fait côté code, non vérifié en GUI) | premier hôte ajoutable depuis l'état vide |
