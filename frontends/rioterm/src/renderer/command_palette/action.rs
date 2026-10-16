@@ -6,6 +6,9 @@ pub enum PaletteAction {
     TabCloseUnfocused,
     SelectNextTab,
     SelectPrevTab,
+    /// Bring forward the next / previous host that has an open tab.
+    SelectNextHost,
+    SelectPrevHost,
     SplitRight,
     SplitDown,
     SelectNextSplit,
@@ -71,6 +74,8 @@ impl PaletteAction {
             PaletteAction::TabCloseUnfocused => Action::TabCloseUnfocused,
             PaletteAction::SelectNextTab => Action::SelectNextTab,
             PaletteAction::SelectPrevTab => Action::SelectPrevTab,
+            PaletteAction::SelectNextHost => Action::SelectNextHost,
+            PaletteAction::SelectPrevHost => Action::SelectPrevHost,
             PaletteAction::SplitRight => Action::SplitRight,
             PaletteAction::SplitDown => Action::SplitDown,
             PaletteAction::SelectNextSplit => Action::SelectNextSplit,
@@ -115,6 +120,14 @@ pub(super) const COMMANDS: &[Command] = &[
     Command {
         title: "Previous Tab",
         action: PaletteAction::SelectPrevTab,
+    },
+    Command {
+        title: "Next Host",
+        action: PaletteAction::SelectNextHost,
+    },
+    Command {
+        title: "Previous Host",
+        action: PaletteAction::SelectPrevHost,
     },
     Command {
         title: "Split Right",
