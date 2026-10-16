@@ -27,7 +27,7 @@ Workspace Cargo (`Cargo.toml`, 21 membres). Deux familles :
 | Chemin | Rôle |
 | --- | --- |
 | `crates/terminus-core` | Domaine Tokio pur, sans UI : `store/` (SQLite : hosts, groups, identities, credentials, forwards, snippets, history, settings, migrate), `ssh/` (russh, known_hosts, probe), `sftp/`, `vault` (Argon2id), `sync`, `wsl`, `machine`, `os_detect`, `history`, `saved_tabs`, `managed_key`, `shell_integration`, `gssapi` |
-| `crates/terminus-bridge` | Jonction core ↔ Rio : `sftp_worker/` (transferts, diff, conflits, retry), `ssh_transport` (`EventedPty` russh, **non câblé**), `folder_diff`, `modal_event_handlers`. `terminus_bridge_impl.rs` = stub |
+| `crates/terminus-bridge` | Jonction core ↔ Rio : `sftp_worker/` (transferts, diff, conflits, retry), `ssh_transport` (`EventedPty` russh, **non câblé**), `folder_diff`, `modal_event_handlers`. (le stub `terminus_bridge_impl.rs` a été supprimé) |
 | `crates/terminus-ui` | État, géométrie et hit-test du chrome, **sans GPU ni sugarloaf** : `chrome/`, `sidebar/`, `settings/`, `sftp_pane/`, `shell/` (dont `workspace.rs`), `add_host/`, `components/`, `views/`, `screens/`, `theme.rs`, `tokens.rs`, `icons.rs` |
 | `crates/terminus-walk` | Binaire helper déposé sur l'hôte distant (hash de dossiers, sync SFTP différentielle) |
 | `crates/terminus-update` | Auto-update (endpoint, clé publique, noms d'assets) |
