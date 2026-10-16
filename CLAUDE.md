@@ -8,6 +8,7 @@ Fork de Rio (`raphamorim/rio`) : client SSH/SFTP + terminal GPU. Binaire `termin
 2. **HANDOFF.md** (racine) : état courant de la session, à tenir à jour en continu (voir section dédiée).
 3. CLAUDE.md = faits stables uniquement. L'état mouvant (tâche en cours, blocage, prochaine action) va dans HANDOFF.md, jamais ici.
 4. Vérifier qu'un fait est toujours vrai avant de s'y fier (chemins, noms) ; corriger ce fichier s'il est périmé.
+5. **milestone.md** (feuille de route) : à mettre à jour dans le même commit que tout changement de statut d'un jalon (⚠️ / ✅ / ❌), de dette (D1…Dn) ou de priorité. Un statut passe à ✅ seulement avec une preuve (fichier, symbole, test ou capture) et la mention « non vérifié en GUI » reste tant que l'écran n'a pas été vu. Une tâche terminée sans mise à jour de milestone.md n'est pas terminée. Un statut ne se déduit pas d'une mémoire : auditer le code avant d'écrire.
 
 ## HANDOFF.md — protocole
 
