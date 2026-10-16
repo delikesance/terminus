@@ -20,7 +20,7 @@ use crate::components::navigation::TabSize;
 use crate::geom::Rect;
 use crate::TextDraft;
 pub use header::{HeaderGeom, HeaderTab};
-pub use layout::{grid_insets, min_window_size, Insets, ShellLayout};
+pub use layout::{grid_insets, grid_insets_for, min_window_size, Insets, ShellLayout};
 pub use pills::{PillsGeom, PillsHit, SessionPill};
 pub use workspace::{SettingsPage, Workspace, WorkspaceView};
 
