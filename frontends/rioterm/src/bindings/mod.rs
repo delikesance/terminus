@@ -249,6 +249,8 @@ impl From<String> for Action {
             "selectprevtab" => Some(Action::SelectPrevTab),
             "selectnexttab" => Some(Action::SelectNextTab),
             "selectlasttab" => Some(Action::SelectLastTab),
+            "selectnexthost" => Some(Action::SelectNextHost),
+            "selectprevhost" => Some(Action::SelectPrevHost),
             "receivechar" => Some(Action::ReceiveChar),
             "scrollpageup" => Some(Action::ScrollPageUp),
             "scrollpagedown" => Some(Action::ScrollPageDown),
@@ -285,6 +287,19 @@ impl From<String> for Action {
                 let parsed_matched_string: usize = matched_string.parse().unwrap_or(0);
                 return Action::SelectTab(parsed_matched_string);
             }
+        }
+
+        let re = regex::Regex::new(r"showview\(([^()]+)\)").unwrap();
+        if let Some(matched) = re.captures(&action).and_then(|c| c.get(1)) {
+            use terminus_ui::shell::WorkspaceView as V;
+            return match matched.as_str().trim() {
+                "terminal" => Action::ShowView(V::Terminal),
+                "files" => Action::ShowView(V::Files),
+                "tunnels" => Action::ShowView(V::Tunnels),
+                "snippets" => Action::ShowView(V::Snippets),
+                "history" => Action::ShowView(V::History),
+                _ => Action::None,
+            };
         }
 
         let re = regex::Regex::new(r"run\(([^()]+)\)").unwrap();
@@ -482,6 +497,15 @@ pub enum Action {
     // Tab selections
     SelectTab(usize),
     SelectLastTab,
+
+    /// Bring forward the next host that has an open tab.
+    SelectNextHost,
+
+    /// Bring forward the previous host that has an open tab.
+    SelectPrevHost,
+
+    /// Show a view of the current machine (Terminal, Files, ...).
+    ShowView(terminus_ui::shell::WorkspaceView),
 
     Search(SearchAction),
     /// Start a forward buffer search.
@@ -1885,5 +1909,31 @@ mod tests {
         assert_eq!(new_bindings.len(), 1);
 
         assert_eq!(&new_bindings[0].action, &Action::Scroll(1));
+    }
+
+    #[test]
+    fn host_and_view_actions_parse_from_config_strings() {
+        use terminus_ui::shell::WorkspaceView as V;
+        assert_eq!(
+            Action::from("SelectNextHost".to_string()),
+            Action::SelectNextHost
+        );
+        assert_eq!(
+            Action::from("SelectPrevHost".to_string()),
+            Action::SelectPrevHost
+        );
+        for (name, view) in [
+            ("terminal", V::Terminal),
+            ("files", V::Files),
+            ("tunnels", V::Tunnels),
+            ("snippets", V::Snippets),
+            ("history", V::History),
+        ] {
+            assert_eq!(
+                Action::from(format!("ShowView({name})")),
+                Action::ShowView(view)
+            );
+        }
+        assert_eq!(Action::from("ShowView(nope)".to_string()), Action::None);
     }
 }
