@@ -362,3 +362,18 @@ fn new_group_form_expands_content_and_accepts_hits() {
     assert!(!panel.new_group_drafting);
     assert_eq!(panel.content_height(), before);
 }
+
+#[test]
+fn host_ids_follow_the_list_order_without_sessions_or_labels() {
+    let mut panel = HostPanel::default();
+    panel.set_rows(grouped());
+    let ids: Vec<&str> = panel.host_ids().collect();
+    let expected: Vec<&str> = panel
+        .rows
+        .iter()
+        .filter_map(|row| row.host().map(|h| h.id.as_str()))
+        .collect();
+    assert!(ids.len() >= 2, "fixture has several hosts: {ids:?}");
+    assert_eq!(ids, expected);
+    assert_eq!(ids[0], "local", "the local row leads");
+}

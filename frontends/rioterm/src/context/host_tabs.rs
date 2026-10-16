@@ -38,6 +38,36 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
         tabs[next]
     }
 
+    /// The tab to bring forward to reach the host after (or before) the
+    /// current one, wrapping. `order` is the sidebar's host order; hosts with
+    /// tabs but absent from it (collapsed group) follow, in strip order.
+    /// Hosts without a tab are skipped; `None` when fewer than two hosts
+    /// have tabs. The host's last focused tab wins.
+    pub fn neighbour_host_tab(&self, order: &[&str], forward: bool) -> Option<usize> {
+        let current = self.host_of(self.current_index);
+        let mut hosts: Vec<&str> = Vec::new();
+        for id in order
+            .iter()
+            .copied()
+            .chain((0..self.contexts.len()).map(|i| self.host_of(i)))
+        {
+            let has_tab = (0..self.contexts.len()).any(|i| self.host_of(i) == id);
+            if has_tab && !hosts.contains(&id) {
+                hosts.push(id);
+            }
+        }
+        if hosts.len() < 2 {
+            return None;
+        }
+        let at = hosts.iter().position(|&h| h == current)?;
+        let next = if forward {
+            (at + 1) % hosts.len()
+        } else {
+            (at + hosts.len() - 1) % hosts.len()
+        };
+        self.host_tab_to_restore(hosts[next])
+    }
+
     /// The `n`th tab (0-based) of the current host, as the pills number them.
     pub(super) fn host_tab_at(&self, n: usize) -> Option<usize> {
         self.current_host_tabs().get(n).copied()
@@ -121,5 +151,55 @@ mod tests {
         let mut cm = manager(&["a", "b", "a", "b"]);
         cm.select_last_tab();
         assert_eq!(cm.current_index(), 2, "last tab of host a");
+    }
+
+    #[test]
+    fn next_host_follows_the_given_order_and_wraps() {
+        let mut cm = manager(&["a", "b", "c"]);
+        let order = ["c", "a", "b"];
+        assert_eq!(cm.neighbour_host_tab(&order, true), Some(1), "a -> b");
+        cm.set_current(1);
+        assert_eq!(cm.neighbour_host_tab(&order, true), Some(2), "b wraps to c");
+        assert_eq!(cm.neighbour_host_tab(&order, false), Some(0), "b -> a");
+        cm.set_current(2);
+        assert_eq!(
+            cm.neighbour_host_tab(&order, false),
+            Some(1),
+            "c wraps to b"
+        );
+    }
+
+    #[test]
+    fn hosts_without_a_tab_are_skipped() {
+        let cm = manager(&["a", "c"]);
+        let order = ["a", "b", "c"];
+        assert_eq!(cm.neighbour_host_tab(&order, true), Some(1), "b has no tab");
+    }
+
+    #[test]
+    fn fewer_than_two_hosts_with_tabs_is_a_no_op() {
+        let cm = manager(&["a", "a"]);
+        assert_eq!(cm.neighbour_host_tab(&["a", "b"], true), None);
+        assert_eq!(cm.neighbour_host_tab(&["a", "b"], false), None);
+    }
+
+    #[test]
+    fn a_host_missing_from_the_order_is_still_reachable() {
+        // Hosts folded into a collapsed sidebar group have no row.
+        let mut cm = manager(&["a", "hidden"]);
+        assert_eq!(cm.neighbour_host_tab(&["a"], true), Some(1));
+        cm.set_current(1);
+        assert_eq!(cm.neighbour_host_tab(&["a"], true), Some(0));
+    }
+
+    #[test]
+    fn next_host_restores_its_last_focused_tab() {
+        let mut cm = manager(&["a", "b", "b"]);
+        cm.set_current(2);
+        cm.set_current(0);
+        assert_eq!(cm.neighbour_host_tab(&["a", "b"], true), Some(2));
+        cm.set_current(1);
+        cm.set_current(0);
+        assert_eq!(cm.neighbour_host_tab(&["a", "b"], true), Some(1));
     }
 }
