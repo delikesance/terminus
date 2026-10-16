@@ -1,3 +1,4 @@
+mod host_tabs;
 pub mod renderable;
 pub mod title;
 
@@ -756,7 +757,9 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             return;
         }
 
-        self.set_current(tab_index);
+        if let Some(index) = self.host_tab_at(tab_index) {
+            self.set_current(index);
+        }
     }
 
     #[inline]
@@ -802,7 +805,9 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             return;
         }
 
-        self.set_current(self.contexts.len() - 1);
+        if let Some(index) = self.host_last_tab() {
+            self.set_current(index);
+        }
     }
 
     #[inline]
@@ -1131,11 +1136,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             return;
         }
 
-        if self.contexts.len() - 1 == self.current_index {
-            self.current_index = 0;
-        } else {
-            self.current_index += 1;
-        }
+        self.current_index = self.host_neighbour(true);
 
         self.current_route = self.current().route_id;
         self.mark_current_focused();
@@ -1149,11 +1150,7 @@ impl<T: EventListener + Clone + std::marker::Send + 'static> ContextManager<T> {
             return;
         }
 
-        if self.current_index == 0 {
-            self.current_index = self.contexts.len() - 1;
-        } else {
-            self.current_index -= 1;
-        }
+        self.current_index = self.host_neighbour(false);
 
         self.current_route = self.current().route_id;
         self.mark_current_focused();
@@ -1775,9 +1772,11 @@ pub mod test {
         cm.set_current(3);
         assert_eq!(cm.host_tab_to_restore("a"), Some(1));
 
-        // Cycling through tabs counts too.
-        cm.switch_to_prev(); // 2
-        cm.switch_to_next(); // 3
+        // Cycling through tabs counts too (within the host: b has one tab,
+        // so cycling there never reaches a).
+        cm.set_current(1);
+        cm.switch_to_next(); // 2
+        cm.set_current(3);
         assert_eq!(cm.host_tab_to_restore("a"), Some(2));
 
         // The memory follows the tab when tabs move around.
