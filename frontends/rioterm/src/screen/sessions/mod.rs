@@ -2,6 +2,7 @@
 
 mod connecting;
 mod groups;
+mod hosts_nav;
 mod lost;
 mod open;
 mod probe;

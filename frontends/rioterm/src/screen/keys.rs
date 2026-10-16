@@ -1020,6 +1020,11 @@ impl Screen<'_> {
                         self.switch_visible_context(old_index, new_index);
                         self.mark_dirty();
                     }
+                    Act::SelectNextHost => self.select_adjacent_host(true, clipboard),
+                    Act::SelectPrevHost => self.select_adjacent_host(false, clipboard),
+                    Act::ShowView(view) => {
+                        self.show_view(*view);
+                    }
                     Act::ReceiveChar | Act::None => (),
                     _ => (),
                 }
