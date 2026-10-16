@@ -92,7 +92,7 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | CRUD, start/stop, états Stopped / Starting / Running / Failed, badge | ✅ MVP | `tunnel_worker/`, `screen/tunnels.rs` |
 | Persistance et supervision | ✅ | `persistence.rs`, `registry.rs`, `ticker.rs` |
 | Uptime + connexions | ✅ (Linux) | `tunnel_worker/stats.rs`, échantillon `/proc/net/tcp` |
-| Compteur d'octets | ❌ | aucun symbole `sock_diag` / octets dans `tunnel_worker/` |
+| Compteur d'octets | ⚠️ R4 (estimation) | `tunnel_worker/stats.rs::{parse_proc_io_bytes,sample_bytes}` lit `/proc/<pid>/io` du process `ssh -N` (octets ≈ (rchar+wchar)/2, inclut handshake/keepalives ; faussé par ProxyCommand/ControlMaster), `controller.rs::refresh_stats` → `TunnelStats.bytes`, affiché `~1.5 MB` (`views/tunnels/model.rs::summary`) ; Linux seulement ; tests `stats_tests::*`, `controller_tests::a_running_tunnel_carries_uptime_and_a_connection_sample`, `model_tests::stats_summary_shows_approximate_traffic_when_known` ; **non vérifié en GUI** ; piste pour un compteur exact : `sock_diag`/netlink ; la ligne de détail s'allonge (clip sur fenêtre étroite non traité) |
 | Stats des tunnels d'une autre machine | ❌ | selon l'ancien suivi, non revérifié |
 
 ### 3.5 Vault, sync, réglages
@@ -169,7 +169,7 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 
 | # | Jalon | Critère de fin |
 | :--- | :--- | :--- |
-| R4 | Compteur d'octets des tunnels | octets affichés sur la carte, test sur l'échantillonneur |
+| R4 | Compteur d'octets des tunnels (estimation `/proc/<pid>/io` livrée, non vérifiée en GUI ; exact = sock_diag, ouvert) | octets affichés sur la carte, test sur l'échantillonneur |
 | R5 | Sync visible : badge, dernier sync, conflits (`SyncReport.conflicts`) | état de sync lisible hors Settings |
 | R6 | D2 : trancher le bridge — ✅ code supprimé (`dcb85303`) : aucune référence à `TerminusBridge`/`TerminusCoreService`/`terminus_bridge_impl` hors ce fichier ; clippy et tests `terminus-bridge` verts ; `cargo check` du workspace entier non lancé | trait branché ou code supprimé; plus de commentaire mort dans `lib.rs` |
 | R7 | Breadcrumbs : clic sur un segment | navigation vers le segment, test sur `sftp_pane` |
