@@ -331,7 +331,21 @@ pub fn unit_color(c: [u8; 4]) -> [f32; 4] {
     c.map(|v| v as f32 / 255.0)
 }
 
-fn rgba(rgb: [u8; 3], alpha: f32) -> [f32; 4] {
+/// WCAG relative-luminance contrast ratio.
+pub fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let lin = |v: f32| {
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let lum = |c: [f32; 4]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+    let (x, y) = (lum(a) + 0.05, lum(b) + 0.05);
+    x.max(y) / x.min(y)
+}
+
+pub(crate) fn rgba(rgb: [u8; 3], alpha: f32) -> [f32; 4] {
     [
         rgb[0] as f32 / 255.0,
         rgb[1] as f32 / 255.0,
@@ -434,21 +448,6 @@ mod tests {
         assert!(l(t.surface) < l(t.raised));
         assert!(l(t.raised) < l(t.selected));
         assert!(l(t.selected) < l(t.line));
-    }
-
-    /// WCAG relative-luminance contrast ratio.
-    fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
-        let lin = |v: f32| {
-            if v <= 0.040_45 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        let lum =
-            |c: [f32; 4]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
-        let (x, y) = (lum(a) + 0.05, lum(b) + 0.05);
-        x.max(y) / x.min(y)
     }
 
     #[test]
