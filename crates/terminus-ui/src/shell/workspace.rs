@@ -1,12 +1,16 @@
 //! Which view the main area shows: a machine's Terminal / Files / Tunnels /
 //! Snippets / History, the Settings page, or Home ("Where to?").
 //!
-//! The view is **global to the window**, not stored per machine: the window
-//! shows one workspace at a time, and the design resets to Terminal whenever
-//! a machine is picked in the sidebar (`App.dc.html`: `go({machine, view:
-//! 'terminal'})`). Per-view data that must survive a machine switch (a Files
-//! path, a filter) belongs to that view's own state in
-//! [`crate::screens`], keyed by machine id when it needs to be.
+//! The window shows one workspace at a time, but each machine remembers the
+//! machine view it was last on ([`Workspace::leave_host`] /
+//! [`Workspace::enter_host`]); a machine never visited opens on Terminal.
+//! Settings and Home stay global to the window and return to the current
+//! machine's view. The memory lasts for the process only. Per-view data that
+//! must survive a machine switch (a Files path, a filter) belongs to that
+//! view's own state in [`crate::screens`], keyed by machine id when it needs
+//! to be.
+
+use std::collections::HashMap;
 
 /// A section of the Settings page (header tabs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -127,11 +131,15 @@ impl WorkspaceView {
 }
 
 /// The window's current view plus where Settings / Home return to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Workspace {
     view: WorkspaceView,
     /// The machine view to come back to when Settings or Home is left.
     machine_view: WorkspaceView,
+    /// The machine view each host (sidebar row id) was last left on.
+    per_host: HashMap<String, WorkspaceView>,
+    /// The host the window is on, as last told to [`Workspace::follow_host`].
+    current_host: Option<String>,
 }
 
 impl Workspace {
@@ -151,10 +159,53 @@ impl Workspace {
         true
     }
 
-    /// A machine was picked (sidebar row, pill, palette host): its
-    /// terminal comes to the front, like the design does.
-    pub fn machine_selected(&mut self) -> bool {
-        self.show(WorkspaceView::Terminal)
+    /// The window is leaving host `id`: remember the machine view it was on
+    /// (the last one, when Settings or Home is showing).
+    pub fn leave_host(&mut self, id: &str) {
+        let view = if self.view.is_machine_view() {
+            self.view
+        } else {
+            self.machine_view
+        };
+        self.per_host.insert(id.to_string(), view);
+    }
+
+    /// The window is now on host `id`: show the view it was last on
+    /// (Terminal when never visited). Returns whether the view changed.
+    pub fn enter_host(&mut self, id: &str) -> bool {
+        let view = self
+            .per_host
+            .get(id)
+            .copied()
+            .unwrap_or(WorkspaceView::Terminal);
+        let changed = self.show(view);
+        self.machine_view = view;
+        changed
+    }
+
+    /// The front tab belongs to host `id`. Swaps the remembered views only
+    /// when the host changed (switching between one host's tabs keeps the
+    /// view). Returns whether the view changed.
+    pub fn follow_host(&mut self, id: &str) -> bool {
+        if self.current_host.as_deref() == Some(id) {
+            return false;
+        }
+        if let Some(previous) = self.current_host.take() {
+            self.leave_host(&previous);
+        }
+        self.current_host = Some(id.to_string());
+        self.enter_host(id)
+    }
+
+    /// The machine view Settings / Home return to.
+    pub fn machine_view(&self) -> WorkspaceView {
+        self.machine_view
+    }
+
+    /// Drop what is remembered for host `id` (its last tab closed, or the
+    /// host deleted).
+    pub fn forget_host(&mut self, id: &str) {
+        self.per_host.remove(id);
     }
 
     /// Leave Settings / Home for the machine view shown before them.
@@ -261,10 +312,90 @@ mod tests {
     }
 
     #[test]
-    fn picking_a_machine_brings_its_terminal_forward() {
+    fn each_host_gets_its_own_view_back() {
         let mut ws = Workspace::default();
+        ws.enter_host("a");
+        ws.show(WorkspaceView::Files);
+        ws.leave_host("a");
+        assert!(
+            ws.enter_host("b"),
+            "b was never visited: Terminal from Files"
+        );
+        assert_eq!(ws.view(), WorkspaceView::Terminal);
         ws.show(WorkspaceView::History);
-        assert!(ws.machine_selected());
+        ws.leave_host("b");
+        assert!(ws.enter_host("a"));
+        assert_eq!(ws.view(), WorkspaceView::Files);
+        ws.leave_host("a");
+        assert!(ws.enter_host("b"));
+        assert_eq!(ws.view(), WorkspaceView::History);
+    }
+
+    #[test]
+    fn entering_the_host_already_shown_changes_nothing() {
+        let mut ws = Workspace::default();
+        ws.show(WorkspaceView::Tunnels);
+        ws.leave_host("a");
+        assert!(!ws.enter_host("a"));
+        assert_eq!(ws.view(), WorkspaceView::Tunnels);
+    }
+
+    #[test]
+    fn settings_round_trip_returns_to_the_current_hosts_view() {
+        let mut ws = Workspace::default();
+        ws.enter_host("a");
+        ws.show(WorkspaceView::Files);
+        ws.leave_host("a");
+        ws.enter_host("b");
+        ws.show(WorkspaceView::Settings(SettingsPage::Sync));
+        // Leaving a host from Settings remembers its last machine view.
+        ws.leave_host("b");
+        ws.enter_host("a");
+        assert_eq!(ws.view(), WorkspaceView::Files);
+        ws.show(WorkspaceView::Home);
+        assert!(ws.back_to_machine());
+        assert_eq!(ws.view(), WorkspaceView::Files);
+    }
+
+    #[test]
+    fn following_the_tab_host_swaps_views_only_when_the_host_changes() {
+        let mut ws = Workspace::default();
+        assert!(!ws.follow_host("a"), "first host: already on Terminal");
+        ws.show(WorkspaceView::Files);
+        assert!(!ws.follow_host("a"), "same host: the view stays");
+        assert_eq!(ws.view(), WorkspaceView::Files);
+        assert!(ws.follow_host("b"));
+        assert_eq!(ws.view(), WorkspaceView::Terminal);
+        assert!(ws.follow_host("a"));
+        assert_eq!(ws.view(), WorkspaceView::Files);
+    }
+
+    #[test]
+    fn forgetting_the_followed_host_after_leaving_it_resets_it() {
+        let mut ws = Workspace::default();
+        ws.follow_host("a");
+        ws.show(WorkspaceView::History);
+        ws.follow_host("b");
+        ws.forget_host("a");
+        ws.follow_host("a");
+        assert_eq!(ws.view(), WorkspaceView::Terminal);
+    }
+
+    #[test]
+    fn the_machine_view_is_what_settings_returns_to() {
+        let mut ws = Workspace::default();
+        ws.show(WorkspaceView::Tunnels);
+        ws.show(WorkspaceView::Settings(SettingsPage::Sync));
+        assert_eq!(ws.machine_view(), WorkspaceView::Tunnels);
+    }
+
+    #[test]
+    fn a_forgotten_host_starts_on_the_terminal_again() {
+        let mut ws = Workspace::default();
+        ws.show(WorkspaceView::Snippets);
+        ws.leave_host("a");
+        ws.forget_host("a");
+        ws.enter_host("a");
         assert_eq!(ws.view(), WorkspaceView::Terminal);
     }
 

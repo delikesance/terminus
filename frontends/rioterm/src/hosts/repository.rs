@@ -26,6 +26,7 @@ pub struct HostRepository {
     sync_connected: bool,
     sync_status_line: String,
     sync_status_is_error: bool,
+    sync_stamp: SyncStamp,
     /// One-shot seed: set when `CollapsedGroupsLoaded` first arrives; taken by
     /// `pump_chrome` to initialize `HostPanel::collapsed_groups`.
     collapsed_groups_seed: Option<HashSet<String>>,
@@ -71,6 +72,7 @@ impl HostRepository {
             sync_connected: false,
             sync_status_line: "Not configured".into(),
             sync_status_is_error: false,
+            sync_stamp: SyncStamp::default(),
             collapsed_groups_seed: None,
             collapsed_groups_seeded: false,
             sftp_auth_replies: Vec::new(),
@@ -126,6 +128,15 @@ impl HostRepository {
 
     pub fn sync_connected(&self) -> bool {
         self.sync_connected
+    }
+
+    /// Last successful run: finish time (Unix seconds) and conflict count.
+    pub fn sync_badge(&self) -> terminus_ui::sync_badge::SyncBadge {
+        terminus_ui::sync_badge::SyncBadge::new(
+            self.sync_connected,
+            self.sync_stamp.last_sync,
+            self.sync_stamp.conflicts,
+        )
     }
 
     pub fn sync_status_line(&self) -> &str {

@@ -34,11 +34,30 @@ fn stats_summary_says_n_a_when_connections_are_unknown() {
     let s = |u, c| TunnelStats {
         uptime_secs: u,
         connections: c,
+        bytes: None,
     };
     assert_eq!(s(42, Some(0)).summary(), "up 42s \u{b7} 0 connections");
     assert_eq!(s(192, Some(1)).summary(), "up 3m 12s \u{b7} 1 connection");
     assert_eq!(s(192, Some(2)).summary(), "up 3m 12s \u{b7} 2 connections");
     assert_eq!(s(7, None).summary(), "up 7s \u{b7} connections n/a");
+}
+
+#[test]
+fn stats_summary_shows_approximate_traffic_when_known() {
+    let s = |b| TunnelStats {
+        uptime_secs: 192,
+        connections: Some(2),
+        bytes: b,
+    };
+    assert_eq!(
+        s(Some(0)).summary(),
+        "up 3m 12s \u{b7} 2 connections \u{b7} ~0 B"
+    );
+    assert_eq!(
+        s(Some(1_572_864)).summary(),
+        "up 3m 12s \u{b7} 2 connections \u{b7} ~1.5 MB"
+    );
+    assert_eq!(s(None).summary(), "up 3m 12s \u{b7} 2 connections");
 }
 
 #[test]
@@ -49,6 +68,7 @@ fn the_detail_line_is_the_route_plus_stats_of_an_active_tunnel() {
     t.stats = Some(TunnelStats {
         uptime_secs: 5,
         connections: Some(3),
+        bytes: None,
     });
     assert_eq!(
         t.detail(),

@@ -238,6 +238,8 @@ fn a_running_tunnel_carries_uptime_and_a_connection_sample() {
         None
     };
     assert_eq!(stats.connections, expected);
+    // `/proc/<pid>/io` of a live `sh` is readable on Linux.
+    assert_eq!(stats.bytes.is_some(), cfg!(target_os = "linux"));
     assert!(by(&c, &web).stats.is_none(), "stopped tunnels have none");
     c.stop_tunnel("db").unwrap();
     assert!(by(&c, &db).stats.is_none(), "stats end with the process");

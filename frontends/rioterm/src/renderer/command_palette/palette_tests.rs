@@ -363,3 +363,28 @@ fn set_enabled_resets_hosts_mode_to_commands() {
 // are tested there. The tests below cover the palette's own contract:
 // the scrollbar only surfaces after the user actually scrolls, and
 // resets when the list reshapes.
+
+#[test]
+fn the_palette_offers_next_and_previous_host() {
+    let mut palette = CommandPalette::new();
+    palette.query = terminus_ui::TextDraft::new("host");
+    let found: Vec<PaletteAction> = palette
+        .filtered_rows()
+        .iter()
+        .filter_map(|(_, row)| match row {
+            PaletteRow::Command { action, .. } => Some(*action),
+            _ => None,
+        })
+        .collect();
+    assert!(found.contains(&PaletteAction::SelectNextHost), "{found:?}");
+    assert!(found.contains(&PaletteAction::SelectPrevHost), "{found:?}");
+    // Their shortcut is the live key binding.
+    assert_eq!(
+        PaletteAction::SelectNextHost.binding_action(),
+        Some(crate::bindings::Action::SelectNextHost)
+    );
+    assert_eq!(
+        PaletteAction::SelectPrevHost.binding_action(),
+        Some(crate::bindings::Action::SelectPrevHost)
+    );
+}

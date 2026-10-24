@@ -249,6 +249,8 @@ impl From<String> for Action {
             "selectprevtab" => Some(Action::SelectPrevTab),
             "selectnexttab" => Some(Action::SelectNextTab),
             "selectlasttab" => Some(Action::SelectLastTab),
+            "selectnexthost" => Some(Action::SelectNextHost),
+            "selectprevhost" => Some(Action::SelectPrevHost),
             "receivechar" => Some(Action::ReceiveChar),
             "scrollpageup" => Some(Action::ScrollPageUp),
             "scrollpagedown" => Some(Action::ScrollPageDown),
@@ -285,6 +287,19 @@ impl From<String> for Action {
                 let parsed_matched_string: usize = matched_string.parse().unwrap_or(0);
                 return Action::SelectTab(parsed_matched_string);
             }
+        }
+
+        let re = regex::Regex::new(r"showview\(([^()]+)\)").unwrap();
+        if let Some(matched) = re.captures(&action).and_then(|c| c.get(1)) {
+            use terminus_ui::shell::WorkspaceView as V;
+            return match matched.as_str().trim() {
+                "terminal" => Action::ShowView(V::Terminal),
+                "files" => Action::ShowView(V::Files),
+                "tunnels" => Action::ShowView(V::Tunnels),
+                "snippets" => Action::ShowView(V::Snippets),
+                "history" => Action::ShowView(V::History),
+                _ => Action::None,
+            };
         }
 
         let re = regex::Regex::new(r"run\(([^()]+)\)").unwrap();
@@ -483,6 +498,15 @@ pub enum Action {
     SelectTab(usize),
     SelectLastTab,
 
+    /// Bring forward the next host that has an open tab.
+    SelectNextHost,
+
+    /// Bring forward the previous host that has an open tab.
+    SelectPrevHost,
+
+    /// Show a view of the current machine (Terminal, Files, ...).
+    ShowView(terminus_ui::shell::WorkspaceView),
+
     Search(SearchAction),
     /// Start a forward buffer search.
     SearchForward,
@@ -623,6 +647,8 @@ macro_rules! trigger {
     }};
 }
 
+mod host_nav;
+
 pub fn default_mouse_bindings() -> Vec<MouseBinding> {
     bindings!(
         MouseBinding;
@@ -751,6 +777,8 @@ pub fn default_key_bindings(config: &rio_backend::config::Config) -> Vec<KeyBind
         config.navigation.use_split,
         config.keyboard.clone(),
     ));
+
+    bindings.extend(host_nav::default_bindings());
 
     // Add hint bindings
     bindings.extend(create_hint_bindings(&config.hints.rules));
@@ -1099,7 +1127,7 @@ pub fn create_hint_bindings(
 }
 
 // Macos
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(target_os = "macos")]
 pub fn platform_key_bindings(
     use_navigation_key_bindings: bool,
     use_splits: bool,
@@ -1190,7 +1218,7 @@ pub fn platform_key_bindings(
 }
 
 // Not Windows, Macos
-#[cfg(not(any(target_os = "macos", target_os = "windows", test)))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn platform_key_bindings(
     use_navigation_key_bindings: bool,
     use_splits: bool,
@@ -1229,8 +1257,6 @@ pub fn platform_key_bindings(
             "t", ModifiersState::CONTROL | ModifiersState::SHIFT; Action::TabCreateNew;
             Key::Named(Tab), ModifiersState::CONTROL; Action::SelectNextTab;
             Key::Named(Tab), ModifiersState::CONTROL | ModifiersState::SHIFT; Action::SelectPrevTab;
-            "[", ModifiersState::CONTROL | ModifiersState::SHIFT; Action::SelectPrevTab;
-            "]", ModifiersState::CONTROL | ModifiersState::SHIFT; Action::SelectNextTab;
             "w", ModifiersState::CONTROL | ModifiersState::SHIFT; Action::CloseCurrentSplitOrTab;
         ));
     }
@@ -1253,7 +1279,7 @@ pub fn platform_key_bindings(
 }
 
 // Windows
-#[cfg(all(target_os = "windows", not(test)))]
+#[cfg(target_os = "windows")]
 pub fn platform_key_bindings(
     use_navigation_key_bindings: bool,
     use_splits: bool,
@@ -1298,8 +1324,6 @@ pub fn platform_key_bindings(
             Key::Named(Tab), ModifiersState::CONTROL; Action::SelectNextTab;
             Key::Named(Tab), ModifiersState::CONTROL | ModifiersState::SHIFT; Action::SelectPrevTab;
             "w", ModifiersState::CONTROL | ModifiersState::SHIFT; Action::CloseCurrentSplitOrTab;
-            "[", ModifiersState::CONTROL | ModifiersState::SHIFT; Action::SelectPrevTab;
-            "]", ModifiersState::CONTROL | ModifiersState::SHIFT; Action::SelectNextTab;
         ));
     }
 
@@ -1370,11 +1394,6 @@ pub fn shortcut_label(bindings: &[KeyBinding], action: &Action) -> Option<String
     }
     parts.push(key);
     Some(parts.join("+"))
-}
-
-#[cfg(test)]
-pub fn platform_key_bindings(_: bool, _: bool, _: ConfigKeyboard) -> Vec<KeyBinding> {
-    vec![]
 }
 
 #[cfg(test)]
@@ -1844,6 +1863,34 @@ mod tests {
     }
 
     #[test]
+    fn defaults_bind_each_combination_to_one_action() {
+        let config = rio_backend::config::Config::default();
+        let bindings = default_key_bindings(&config);
+        // Every matching binding runs, so these pairs are deliberate chains.
+        let chains = [
+            (Action::Copy, Action::ClearSelection),
+            (Action::ClearLogNotice, Action::Esc("\x0c".into())),
+            (Action::ToggleViMode, Action::ScrollToBottom),
+        ];
+        let mut clashes = Vec::new();
+        for (i, a) in bindings.iter().enumerate() {
+            for b in bindings.iter().skip(i + 1) {
+                let chained = chains.contains(&(a.action.clone(), b.action.clone()));
+                if a.triggers_match(b) && a.action != b.action && !chained {
+                    clashes.push(format!(
+                        "{:?}+{:?}: {:?} / {:?}",
+                        a.mods, a.trigger, a.action, b.action
+                    ));
+                }
+            }
+        }
+        assert!(
+            clashes.is_empty(),
+            "one combination, two actions:\n{clashes:#?}"
+        );
+    }
+
+    #[test]
     fn bindings_alt_enter_conflict_resolution() {
         // Test Windows Alt+Enter conflict resolution
         let bindings = bindings!(
@@ -1866,5 +1913,31 @@ mod tests {
         assert_eq!(new_bindings.len(), 1);
 
         assert_eq!(&new_bindings[0].action, &Action::Scroll(1));
+    }
+
+    #[test]
+    fn host_and_view_actions_parse_from_config_strings() {
+        use terminus_ui::shell::WorkspaceView as V;
+        assert_eq!(
+            Action::from("SelectNextHost".to_string()),
+            Action::SelectNextHost
+        );
+        assert_eq!(
+            Action::from("SelectPrevHost".to_string()),
+            Action::SelectPrevHost
+        );
+        for (name, view) in [
+            ("terminal", V::Terminal),
+            ("files", V::Files),
+            ("tunnels", V::Tunnels),
+            ("snippets", V::Snippets),
+            ("history", V::History),
+        ] {
+            assert_eq!(
+                Action::from(format!("ShowView({name})")),
+                Action::ShowView(view)
+            );
+        }
+        assert_eq!(Action::from("ShowView(nope)".to_string()), Action::None);
     }
 }

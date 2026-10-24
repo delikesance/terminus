@@ -4,6 +4,8 @@ use super::*;
 pub enum PanelHit {
     /// The add-host control in the Hosts section header.
     AddHost,
+    /// "Add first host" button of the empty list (same action as `AddHost`).
+    AddFirstHost,
     /// The new-group control beside the Hosts section label.
     NewGroup,
     /// Confirm the inline new-group form.
@@ -117,6 +119,11 @@ impl HostPanel {
         if self.add_button_rect(origin_y, height).contains(x, y) {
             return Some(PanelHit::AddHost);
         }
+        if let Some(rect) = self.empty_cta_rect(origin_y, height) {
+            if rect.contains(x, y) {
+                return Some(PanelHit::AddFirstHost);
+            }
+        }
         if self.new_group_button_rect(origin_y, height).contains(x, y) {
             return Some(PanelHit::NewGroup);
         }
@@ -154,7 +161,7 @@ impl HostPanel {
             | Some(PanelHit::HostAddSession(index))
             | Some(PanelHit::Session(index))
             | Some(PanelHit::CloseSession(index)) => (Some(index), false, false),
-            Some(PanelHit::AddHost) => (None, true, false),
+            Some(PanelHit::AddHost) | Some(PanelHit::AddFirstHost) => (None, true, false),
             Some(PanelHit::NewGroup) => (None, false, true),
             _ => (None, false, false),
         };

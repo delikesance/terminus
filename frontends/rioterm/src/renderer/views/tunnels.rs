@@ -511,6 +511,7 @@ fn preview_state(variant: &str) -> TunnelsState {
         s.items[0].stats = Some(TunnelStats {
             uptime_secs: 3 * 3600 + 12 * 60,
             connections: Some(2),
+            bytes: Some(1_572_864),
         });
     }
     match variant {

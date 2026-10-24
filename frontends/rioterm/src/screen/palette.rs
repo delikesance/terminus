@@ -348,6 +348,8 @@ impl Screen<'_> {
                 let new = self.context_manager.current_index();
                 self.switch_visible_context(old, new);
             }
+            PaletteAction::SelectNextHost => self.select_adjacent_host(true, clipboard),
+            PaletteAction::SelectPrevHost => self.select_adjacent_host(false, clipboard),
             PaletteAction::SplitRight => self.split_right(),
             PaletteAction::SplitDown => self.split_down(),
             PaletteAction::SelectNextSplit => {
