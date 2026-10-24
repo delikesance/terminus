@@ -6,8 +6,6 @@
 //!
 //! * [`ssh_transport`] exposes a remote shell as a [`teletypewriter::EventedPty`],
 //!   so the renderer cannot tell an SSH pane from a local one.
-//! * [`terminus_bridge_impl`] owns the core runtime ([`TerminusCoreService`])
-//!   and the [`TerminusBridge`] trait the frontend calls into.
 //! * [`modal_event_handlers`] carries the two flows that need the user
 //!   (host-key approval, vault unlock) between the async core and the UI.
 
@@ -16,7 +14,6 @@ pub mod modal_event_handlers;
 mod progress_throttle;
 pub mod sftp_worker;
 pub mod ssh_transport;
-pub mod terminus_bridge_impl;
 
 // Pending: these land together with their implementations (see `milestone.md`,
 // steps 1.2 and 1.4). Re-exporting them now breaks `cargo check`.
@@ -29,4 +26,3 @@ pub use sftp_worker::{
     REMOTE_HOME,
 };
 pub use ssh_transport::{Command, SshPump, SshTransport, TransportState};
-// pub use terminus_bridge_impl::{SessionHandle, TerminusBridge, TerminusCoreService};

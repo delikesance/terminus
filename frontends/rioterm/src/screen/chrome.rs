@@ -164,7 +164,7 @@ impl Screen<'_> {
                 })
                 .collect();
             self.chrome.settings.set_keys(key_items.clone());
-            self.chrome.shell.sync_ok = self.host_store.sync_connected();
+            self.chrome.shell.sync = self.host_store.sync_badge();
             self.chrome
                 .form
                 .set_identities(key_items.into_iter().map(|k| (k.id, k.name)).collect());

@@ -459,7 +459,9 @@ impl Chrome {
                             None => ChromeAction::Consumed,
                         }
                     }
-                    Some(PanelHit::AddHost) => ChromeAction::AddHost,
+                    Some(PanelHit::AddHost) | Some(PanelHit::AddFirstHost) => {
+                        ChromeAction::AddHost
+                    }
                     Some(PanelHit::NewGroup) => {
                         self.panel.toggle_new_group_form();
                         ChromeAction::NewGroup

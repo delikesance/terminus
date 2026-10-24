@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use super::persistence::{worker, Cmd, Ev};
 use super::registry::{TunnelEvent, TunnelRegistry};
-use super::stats::{local_port_free, sample_connections, SAMPLE_EVERY};
+use super::stats::{local_port_free, sample_bytes, sample_connections, SAMPLE_EVERY};
 use super::ticker::Ticker;
 use super::DEFAULT_SETTLE;
 use terminus_ui::geom::Rect;
@@ -332,17 +332,27 @@ impl TunnelController {
             let Some(up) = self.registry.uptime(&item.id) else {
                 continue;
             };
-            let connections = match self.stats.get(&item.id) {
-                Some(prev) if !due => prev.connections,
-                _ => self.registry.pid(&item.id).and_then(|pid| {
-                    sample_connections(pid, item.kind, item.bind_port, item.dest_port)
-                }),
+            let (connections, bytes) = match self.stats.get(&item.id) {
+                Some(prev) if !due => (prev.connections, prev.bytes),
+                _ => match self.registry.pid(&item.id) {
+                    Some(pid) => (
+                        sample_connections(
+                            pid,
+                            item.kind,
+                            item.bind_port,
+                            item.dest_port,
+                        ),
+                        sample_bytes(pid),
+                    ),
+                    None => (None, None),
+                },
             };
             next.insert(
                 item.id.clone(),
                 TunnelStats {
                     uptime_secs: up.as_secs(),
                     connections,
+                    bytes,
                 },
             );
         }

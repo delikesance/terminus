@@ -113,9 +113,6 @@ impl Screen<'_> {
         id: &str,
         clipboard: &mut Clipboard,
     ) -> Result<(), String> {
-        // Picking a machine brings its terminal forward (design: a sidebar
-        // row always lands on Terminal).
-        self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
         // If this host already has open sessions, go back to the one the
         // user was last on rather than whichever sits last in the strip.
         if let Some(idx) = self.context_manager.host_tab_to_restore(id) {
@@ -129,6 +126,7 @@ impl Screen<'_> {
                 self.mark_dirty();
             }
             self.sync_sidebar_selection();
+            self.leave_settings_or_home();
             // Refresh OS/distro icon even when reusing an open session.
             self.host_store.detect_os(id);
             return Ok(());
@@ -147,6 +145,7 @@ impl Screen<'_> {
                     self.mark_dirty();
                 }
                 self.sync_sidebar_selection();
+                self.leave_settings_or_home();
                 return Ok(());
             }
         }
@@ -176,6 +175,9 @@ impl Screen<'_> {
             Ok(()) => {
                 let tab_index = self.context_manager.current_index();
                 self.dress_host_tab(tab_index, id, label);
+                // The user asked for a shell: a new session lands on Terminal
+                // whatever view the host was remembered on.
+                self.show_view(terminus_ui::shell::WorkspaceView::Terminal);
                 // Background: classify remote OS and update sidebar / tab glyphs.
                 self.host_store.detect_os(id);
                 Ok(())
@@ -186,6 +188,15 @@ impl Screen<'_> {
                 }
                 Err(format!("{label}: {err}"))
             }
+        }
+    }
+
+    /// Picking a host while Settings or Home is up goes back to the host's
+    /// machine view (a host change already did, through the view memory).
+    pub(super) fn leave_settings_or_home(&mut self) {
+        if !self.chrome.shell.view().is_machine_view() {
+            let back = self.chrome.shell.workspace.machine_view();
+            self.show_view(back);
         }
     }
 

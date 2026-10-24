@@ -42,7 +42,9 @@ pub(crate) use super::icons::{draw_icon, draw_os_glyph};
 pub(crate) use fields::paint_rename_text;
 pub(crate) use forms::paint_new_group_form;
 pub(crate) use indicator::draw_orbit_indicator;
-pub(crate) use notices::{paint_search_field, render_empty_hint, render_notice};
+pub(crate) use notices::{
+    paint_search_field, render_empty_cta, render_empty_hint, render_notice,
+};
 pub(crate) use surfaces::{
     paint_caret, paint_flat, paint_line, paint_surface_stroke, paint_title_strip,
 };

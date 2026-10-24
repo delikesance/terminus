@@ -274,7 +274,9 @@ impl HostRepository {
                     vault_unlocked,
                     status_line,
                     is_error,
+                    stamp,
                 }) => {
+                    self.sync_stamp = stamp;
                     self.sync_uri = uri;
                     self.sync_connected = connected;
                     self.vault_unlocked = vault_unlocked;

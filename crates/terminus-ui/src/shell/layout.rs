@@ -11,6 +11,8 @@
 //! └────────┴────────────────────────────────────────────┘
 //! ```
 
+pub mod sidebar_width;
+
 use super::workspace::WorkspaceView;
 use crate::geom::Rect;
 
@@ -50,11 +52,16 @@ pub struct Insets {
 /// and back never resizes the PTY (no SIGWINCH, no reflow) because the
 /// grid keeps its box; other views only cover it.
 pub const fn grid_insets() -> Insets {
+    grid_insets_for(SIDEBAR_WIDTH)
+}
+
+/// [`grid_insets`] for a resized sidebar.
+pub const fn grid_insets_for(sidebar_width: f32) -> Insets {
     Insets {
         top: MAIN_MARGIN + HEADER_HEIGHT + PILLS_HEIGHT + TERMINAL_PAD_Y,
         right: MAIN_MARGIN + TERMINAL_PAD_X,
         bottom: MAIN_MARGIN + TERMINAL_PAD_Y,
-        left: SIDEBAR_WIDTH + TERMINAL_PAD_X,
+        left: sidebar_width + TERMINAL_PAD_X,
     }
 }
 

@@ -100,5 +100,31 @@ pub fn sample_connections(
     }
 }
 
+/// Forwarded traffic estimated from the text of `/proc/<pid>/io`: ssh reads
+/// every forwarded byte once and writes it once (local socket <-> channel),
+/// so `(rchar + wchar) / 2`. An estimate: SSH framing, keepalives and the
+/// handshake are included, and a ProxyCommand/ControlMaster would skew it.
+pub fn parse_proc_io_bytes(text: &str) -> Option<u64> {
+    let field = |name: &str| -> Option<u64> {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name)?.trim().parse().ok())
+    };
+    Some(field("rchar:")?.saturating_add(field("wchar:")?) / 2)
+}
+
+/// Estimated forwarded bytes of the tunnel run by ssh process `pid`. `None`
+/// off Linux, when the process is gone or `/proc/<pid>/io` is unreadable.
+pub fn sample_bytes(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        parse_proc_io_bytes(&std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// Connections are re-sampled at most this often (`/proc` reads).
 pub(super) const SAMPLE_EVERY: Duration = Duration::from_secs(1);
