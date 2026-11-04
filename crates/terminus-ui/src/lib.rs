@@ -53,7 +53,9 @@ pub use add_host::{
 };
 pub use anim::{lerp, lerp_rect, Ease, RectTween, Tween, SNAP_DURATION};
 pub use chrome::{Chrome, ChromeAction, ChromeCursor, ModalPaintLayer};
-pub use components::input::{FieldPaint, TextDraft, TextEdit, TextMoveKind};
+pub use components::input::{
+    normalize_paste, FieldPaint, TextDraft, TextEdit, TextMoveKind,
+};
 pub use connection::{
     ConnectKind, ConnectionHit, ConnectionSequence, NodeVisual, STEP_COUNT,
 };

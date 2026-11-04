@@ -111,6 +111,7 @@ pub(super) async fn transfer_folder_differential_remote_to_remote(
         .map_err(|e| e.to_string())?;
 
     for (i, action) in plan.into_iter().enumerate() {
+        ensure_running(&[Some(from), Some(to)])?;
         emit(
             events,
             wake,

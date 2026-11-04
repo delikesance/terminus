@@ -30,7 +30,10 @@ impl ActiveSftp {
                     let rows = entries.into_iter().map(row_from_list_entry).collect();
                     self.state.set_listed(focus_from_side(side), path, rows);
                     self.state.clear_transfer();
-                    self.state.status = "Ready".into();
+                    // A cancel's confirmation is worth keeping on screen.
+                    if self.state.status != "Transfer cancelled" {
+                        self.state.status = "Ready".into();
+                    }
                 }
                 SftpEvent::TransferProgress { label, done, total } => {
                     self.state.set_transfer(label.clone(), done, total);
@@ -61,6 +64,12 @@ impl ActiveSftp {
                         .unwrap_or_else(|| remote_path.clone());
                     self.state.status = format!("Saved {name}");
                     self.state.error = None;
+                }
+                SftpEvent::Cancelled => {
+                    self.state.conflict = None;
+                    self.state.clear_transfer();
+                    self.state.error = None;
+                    self.state.status = "Transfer cancelled".into();
                 }
                 SftpEvent::Failed(msg) => {
                     self.state.loading = false;

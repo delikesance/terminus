@@ -24,6 +24,8 @@ mod walk_remote;
 mod worker;
 
 #[cfg(test)]
+mod cancel_tests;
+#[cfg(test)]
 mod retry_tests;
 #[cfg(test)]
 mod tests;
@@ -52,7 +54,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use terminus_core::local_fs::{self, LocalEntry};
-use terminus_core::sftp::SftpEntry;
+use terminus_core::sftp::{CancelToken, SftpEntry};
 use terminus_core::ssh::{connect_sftp_for_host, SftpConnection, SshConnectOptions};
 use tracing::{debug, warn};
 
@@ -243,6 +245,8 @@ pub enum SftpEvent {
         remote_path: String,
     },
     Failed(String),
+    /// The user cancelled the transfer in flight (queued ones were dropped).
+    Cancelled,
     Closed,
 }
 
@@ -284,6 +288,8 @@ struct TransferJob {
     name: String,
     left: Option<Arc<SftpConnection>>,
     right: Option<Arc<SftpConnection>>,
+    /// [`CancelToken::job_queued`] stamp: a cancel after it skips the job.
+    epoch: u64,
 }
 
 /// UI-side handle to the SFTP worker thread.
@@ -291,6 +297,7 @@ pub struct SftpWorker {
     commands: Sender<SftpCommand>,
     events: Receiver<SftpEvent>,
     conflicts: Sender<ConflictReply>,
+    cancel: Arc<CancelToken>,
 }
 
 impl SftpWorker {
@@ -300,14 +307,19 @@ impl SftpWorker {
         let (event_tx, event_rx) = channel::<SftpEvent>();
         let (conflict_tx, conflict_rx) = channel::<ConflictReply>();
 
+        let cancel = CancelToken::new();
+        let worker_cancel = cancel.clone();
         let _ = std::thread::Builder::new()
             .name("terminus-sftp".to_string())
-            .spawn(move || worker(command_rx, event_tx, conflict_rx, wake));
+            .spawn(move || {
+                worker(command_rx, event_tx, conflict_rx, wake, worker_cancel)
+            });
 
         Self {
             commands: command_tx,
             events: event_rx,
             conflicts: conflict_tx,
+            cancel,
         }
     }
 
@@ -330,6 +342,12 @@ impl SftpWorker {
                 }
             }
             SftpCommand::CancelTransfer => {
+                // Stops the running transfer between chunks and drops the
+                // queued ones; a prompt waiting for an answer is released too.
+                // Nothing to cancel (no job): nothing is armed or left behind.
+                if !self.cancel.cancel() {
+                    return;
+                }
                 if let Err(err) = self.conflicts.send(ConflictReply::Cancel) {
                     warn!(error = %err, "sftp conflict reply channel closed");
                 }

@@ -24,10 +24,12 @@ pub const BTN_GAP: f32 = 6.0;
 /// Pointer travel before a row press becomes a drag.
 pub const SFTP_DRAG_THRESHOLD: f32 = 5.0;
 
+mod clipboard;
 mod filter;
 mod layout;
 mod pane_state;
 mod paths;
+mod selection;
 mod transfer;
 mod types;
 

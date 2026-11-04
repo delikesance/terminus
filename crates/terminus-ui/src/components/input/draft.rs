@@ -89,6 +89,36 @@ impl TextDraft {
         true
     }
 
+    /// The selected text, when a non-empty selection exists.
+    pub fn selected_text(&self) -> Option<&str> {
+        let (start, end) = self.selection_range()?;
+        let from = char_byte(&self.value, start);
+        let to = char_byte(&self.value, end);
+        Some(&self.value[from..to])
+    }
+
+    /// Remove and return the selection (Ctrl+X).
+    pub fn cut(&mut self) -> Option<String> {
+        let text = self.selected_text()?.to_string();
+        self.delete_selection();
+        Some(text)
+    }
+
+    /// Paste clipboard text at the caret, replacing the selection.
+    ///
+    /// Unlike [`Self::insert`] (typing), a paste never gets rejected whole
+    /// for holding a control character: the text is normalized first.
+    /// Single-line fields drop the line breaks (a trailing newline copied
+    /// with a command must not be pasted) and tabs become spaces; multi-line
+    /// fields keep `\n` and turn `\r\n` / `\r` into `\n`.
+    pub fn paste(&mut self, text: &str, max_bytes: usize, multiline: bool) -> bool {
+        let clean = normalize_paste(text, multiline);
+        if clean.is_empty() {
+            return false;
+        }
+        self.insert(&clean, max_bytes, multiline)
+    }
+
     /// Insert text at the caret. Control chars rejected unless `allow_newlines`
     /// (then only `\n` / `\r` are kept among controls — needed for OpenSSH PEM).
     pub fn insert(&mut self, text: &str, max_bytes: usize, allow_newlines: bool) -> bool {
@@ -277,6 +307,25 @@ impl TextDraft {
     pub fn prefix_display(&self) -> String {
         self.display_line().chars().take(self.caret).collect()
     }
+}
+
+/// Clipboard text as a field accepts it (see [`TextDraft::paste`]).
+pub fn normalize_paste(text: &str, multiline: bool) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    if multiline {
+        return text
+            .chars()
+            .filter(|c| *c == '\n' || !c.is_control())
+            .collect();
+    }
+    text.trim_end_matches('\n')
+        .chars()
+        .filter_map(|c| match c {
+            '\n' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
 }
 
 fn char_byte(value: &str, chars: usize) -> usize {

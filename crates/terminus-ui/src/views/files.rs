@@ -641,6 +641,7 @@ mod tests {
             name: "f1".into(),
             path: "/f1".into(),
             is_dir: false,
+            count: 1,
             pointer_x: 0.0,
             pointer_y: 0.0,
         });

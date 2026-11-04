@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::SftpRow;
 use crate::components::input::{FieldPaint, TextDraft};
 use crate::components::overlay::{DialogFocus, DialogKey, DialogKind};
@@ -35,7 +37,18 @@ pub struct SftpSideState {
     pub listing: Vec<SftpRow>,
     pub filter: TextDraft,
     pub filter_focused: bool,
+    /// The cursor row (index into `entries`).
     pub selected: Option<usize>,
+    /// Paths of the rows selected with Ctrl / Shift, cursor included. Empty
+    /// means "just the cursor row" (see [`Self::selection`]).
+    pub marked: BTreeSet<String>,
+    /// Row a Shift-extension grows from.
+    pub anchor: Option<usize>,
+    /// Name to select once the next listing arrives (a new folder, a rename,
+    /// the folder just left).
+    pub pending_select: Option<String>,
+    /// The cursor moved: scroll it into view when the layout is known.
+    pub reveal_selected: bool,
     pub scroll: f32,
     /// Why this pane's host could not be reached; cleared once it lists.
     pub connect_error: Option<String>,
@@ -51,6 +64,10 @@ impl SftpSideState {
             filter: TextDraft::default(),
             filter_focused: false,
             selected: None,
+            marked: BTreeSet::new(),
+            anchor: None,
+            pending_select: None,
+            reveal_selected: false,
             scroll: 0.0,
             connect_error: None,
         }
@@ -68,6 +85,10 @@ impl SftpSideState {
             filter: TextDraft::default(),
             filter_focused: false,
             selected: None,
+            marked: BTreeSet::new(),
+            anchor: None,
+            pending_select: None,
+            reveal_selected: false,
             scroll: 0.0,
             connect_error: None,
         }
@@ -89,14 +110,52 @@ impl SftpSideState {
         self.selected.and_then(|i| self.entries.get(i))
     }
 
+    /// Show a fresh listing. Listing the same folder again (after a rename,
+    /// a transfer, a refresh) keeps the scroll position and the selection;
+    /// a new folder starts at the top with nothing selected.
     pub fn set_listed(&mut self, path: String, entries: Vec<SftpRow>) {
         self.connect_error = None;
-        if self.cwd != path {
+        let same_dir = self.cwd == path;
+        if !same_dir {
             self.reset_filter();
         }
+        let cursor = self.selected_row().map(|r| r.path.clone());
+        let cursor_index = self.selected;
+        let marked = std::mem::take(&mut self.marked);
+        let scroll = self.scroll;
+        let pending = self.pending_select.take();
         self.cwd = path;
         self.listing = entries;
         self.refilter();
+        if let Some(name) = pending {
+            if let Some(i) = self.entries.iter().position(|r| r.name == name) {
+                self.selected = Some(i);
+                self.anchor = Some(i);
+                self.reveal_selected = true;
+                if same_dir {
+                    self.scroll = scroll;
+                }
+                return;
+            }
+        }
+        if !same_dir {
+            return;
+        }
+        let last = self.entries.len().saturating_sub(1);
+        self.selected = cursor
+            .and_then(|p| self.entries.iter().position(|r| r.path == p))
+            // The selected row is gone (deleted, moved): its neighbour.
+            .or_else(|| {
+                cursor_index
+                    .filter(|_| !self.entries.is_empty())
+                    .map(|i| i.min(last))
+            });
+        self.anchor = self.selected;
+        self.marked = marked
+            .into_iter()
+            .filter(|p| self.entries.iter().any(|r| &r.path == p))
+            .collect();
+        self.scroll = scroll.min(last as f32 * crate::components::list::FILE_ROW_HEIGHT);
     }
 }
 
@@ -108,6 +167,8 @@ pub struct SftpDrag {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    /// Rows travelling together (the whole selection when it was dragged).
+    pub count: usize,
     pub pointer_x: f32,
     pub pointer_y: f32,
 }

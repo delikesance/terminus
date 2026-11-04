@@ -245,6 +245,31 @@ impl Screen<'_> {
             .then(|| self.chrome.shell.content_rect())
     }
 
+    /// Scroll each pane so its cursor row is visible, once the keyboard or a
+    /// fresh listing moved it. Needs the layout, so it runs after the move.
+    pub(super) fn sftp_reveal_selection(&mut self) {
+        let Some(content) = self.sftp_bounds() else {
+            return;
+        };
+        let Some(session) = self.sftp.as_mut() else {
+            return;
+        };
+        let layout =
+            terminus_ui::views::files::FilesLayout::for_state(content, &session.state);
+        for focus in [terminus_ui::SftpFocus::Left, terminus_ui::SftpFocus::Right] {
+            if !session.state.side(focus).reveal_selected {
+                continue;
+            }
+            let visible = layout.visible_rows(focus);
+            let offset = terminus_ui::views::files::row_offset(&session.state, focus);
+            session.state.side_mut(focus).ensure_visible(
+                visible,
+                terminus_ui::views::files::ROW_H,
+                offset,
+            );
+        }
+    }
+
     fn files_redraw(&mut self, action: &FilesAction) -> bool {
         if action.needs_redraw() {
             self.mark_dirty();
@@ -261,8 +286,13 @@ impl Screen<'_> {
         let Some(content) = self.sftp_bounds() else {
             return terminus_ui::SftpClickResult::Miss;
         };
+        let mods = self.modifiers.state();
         let Some(session) = self.sftp.as_mut() else {
             return terminus_ui::SftpClickResult::Miss;
+        };
+        session.select_mods = crate::sftp_ui::SelectMods {
+            toggle: mods.control_key() || mods.super_key(),
+            range: mods.shift_key(),
         };
         let action = files_view::pointer_press(
             &mut self.sugarloaf,

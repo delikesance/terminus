@@ -192,13 +192,25 @@ impl Application<'_> {
                     }
                 }
             }
-        } else if matches!(button, MouseButton::Left | MouseButton::Right)
-            && self.config.copy_on_select
-        {
-            route
-                .window
-                .screen
-                .copy_selection(ClipboardType::Clipboard, &mut self.router.clipboard);
+        } else {
+            // A finished drag becomes the X11/Wayland primary selection right
+            // away (middle-click pastes it); it used to be published only when
+            // the NEXT selection began, so middle-click pasted the previous one.
+            // No-op where there is no primary selection (Windows, macOS).
+            if button == MouseButton::Left {
+                route
+                    .window
+                    .screen
+                    .copy_selection(ClipboardType::Selection, &mut self.router.clipboard);
+            }
+            if matches!(button, MouseButton::Left | MouseButton::Right)
+                && self.config.copy_on_select
+            {
+                route
+                    .window
+                    .screen
+                    .copy_selection(ClipboardType::Clipboard, &mut self.router.clipboard);
+            }
         }
     }
 }

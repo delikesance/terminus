@@ -99,6 +99,13 @@ impl Island {
         }
     }
 
+    /// The rename field's draft while the picker is open (Copy / Cut).
+    pub fn rename_draft_mut(&mut self) -> Option<&mut terminus_ui::TextDraft> {
+        self.color_picker_tab
+            .is_some()
+            .then_some(&mut self.rename_input)
+    }
+
     /// Append committed or typed text to the rename input, applying
     /// the shared overlay input policy (`is_printable_text`) so the
     /// key path and the IME commit path can never drift. Returns

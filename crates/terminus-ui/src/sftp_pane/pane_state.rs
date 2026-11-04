@@ -189,14 +189,7 @@ impl SftpPaneState {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        let len = self.focused_entries().len();
-        if len == 0 {
-            return;
-        }
-        let slot = &mut self.side_mut(self.focus).selected;
-        let cur = slot.unwrap_or(0) as isize;
-        let next = (cur + delta).clamp(0, (len as isize) - 1) as usize;
-        *slot = Some(next);
+        self.move_selection_by(delta, false);
     }
 
     /// Update hover from a pointer position. Returns whether it changed.
@@ -220,6 +213,10 @@ impl SftpPaneState {
     }
 
     pub fn begin_rename(&mut self) -> bool {
+        if self.side(self.focus).selection_count() > 1 {
+            self.error = Some("Select a single item to rename".into());
+            return false;
+        }
         let Some(row) = self.selected(self.focus).cloned() else {
             let side = match self.focus {
                 SftpFocus::Left => "left",

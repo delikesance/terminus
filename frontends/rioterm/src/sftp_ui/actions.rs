@@ -1,12 +1,16 @@
 use super::*;
 
 impl ActiveSftp {
-    /// Abort the transfer in flight (and any conflict waiting on it).
+    /// Abort the transfer in flight, the ones queued behind it and any
+    /// conflict prompt waiting on it. The worker confirms with
+    /// [`SftpEvent::Cancelled`] once the transfer really stopped.
     pub fn cancel_transfer(&mut self) {
+        if !self.busy() {
+            return;
+        }
         self.worker.send(SftpCommand::CancelTransfer);
         self.state.clear_conflict();
-        self.state.clear_transfer();
-        self.state.status = "Transfer cancelled".into();
+        self.state.status = "Cancelling…".into();
     }
 
     /// Resolve the pending conflict: replace (`true`) or keep the existing one.
@@ -34,6 +38,10 @@ impl ActiveSftp {
 
     pub(super) fn cd_parent(&mut self, focus: SftpFocus) {
         let cwd = self.state.side(focus).cwd.clone();
+        // Land on the folder we came from.
+        let left = cwd.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next();
+        self.state.side_mut(focus).pending_select =
+            left.filter(|n| !n.is_empty()).map(str::to_string);
         let parent = if self.state.side(focus).is_local() {
             PathBuf::from(parent_path(&cwd))
                 .to_string_lossy()
@@ -44,29 +52,43 @@ impl ActiveSftp {
         self.cd(focus, parent);
     }
 
+    /// Remove every selected row of the focused pane.
     pub(super) fn remove_selected(&mut self) {
         let focus = self.state.focus;
-        let Some(row) = self.state.selected(focus).cloned() else {
+        let rows: Vec<SftpRow> = self
+            .state
+            .side(focus)
+            .selection()
+            .into_iter()
+            .cloned()
+            .collect();
+        if rows.is_empty() {
             return;
+        }
+        self.state.status = match rows.as_slice() {
+            [row] => format!("Removing {}…", row.name),
+            rows => format!("Removing {} items…", rows.len()),
         };
-        self.state.status = format!("Removing {}…", row.name);
         let side = side_from_focus(focus);
-        if self.state.side(focus).is_local() {
-            self.worker.send(SftpCommand::RemoveLocal {
-                side,
-                path: PathBuf::from(row.path),
-                recursive: row.is_dir,
-            });
-        } else if row.is_dir {
-            self.worker.send(SftpCommand::RemoveRemoteRecursive {
-                side,
-                path: row.path,
-            });
-        } else {
-            self.worker.send(SftpCommand::RemoveRemote {
-                side,
-                path: row.path,
-            });
+        let local = self.state.side(focus).is_local();
+        for row in rows {
+            if local {
+                self.worker.send(SftpCommand::RemoveLocal {
+                    side,
+                    path: PathBuf::from(row.path),
+                    recursive: row.is_dir,
+                });
+            } else if row.is_dir {
+                self.worker.send(SftpCommand::RemoveRemoteRecursive {
+                    side,
+                    path: row.path,
+                });
+            } else {
+                self.worker.send(SftpCommand::RemoveRemote {
+                    side,
+                    path: row.path,
+                });
+            }
         }
     }
 
@@ -86,6 +108,8 @@ impl ActiveSftp {
             return;
         }
         let focus = edit.side;
+        // The new folder / renamed entry is what the user looks for next.
+        self.state.side_mut(focus).pending_select = Some(name.clone());
         let side = side_from_focus(focus);
         let is_local = self.state.side(focus).is_local();
         let cwd = self.state.side(focus).cwd.clone();
@@ -142,19 +166,31 @@ impl ActiveSftp {
         let to_cwd = self.state.side(to).cwd.clone();
         self.state.status = format!("Transferring {}…", row.name);
         self.state.error = None;
+        self.queue_transfer(from, row, to, to_cwd);
+    }
+
+    /// Queue `row` of `from` for the worker, into `to_cwd` on `to`.
+    pub(super) fn queue_transfer(
+        &self,
+        from: SftpFocus,
+        row: &SftpRow,
+        to: SftpFocus,
+        to_cwd: String,
+    ) {
+        let (from_side, to_side) = (side_from_focus(from), side_from_focus(to));
         if row.is_dir {
             self.worker.send(SftpCommand::TransferFolder {
-                from_side: side_from_focus(from),
+                from_side,
                 from_path: row.path.clone(),
-                to_side: side_from_focus(to),
+                to_side,
                 to_cwd,
                 name: row.name.clone(),
             });
         } else {
             self.worker.send(SftpCommand::Transfer {
-                from_side: side_from_focus(from),
+                from_side,
                 from_path: row.path.clone(),
-                to_side: side_from_focus(to),
+                to_side,
                 to_cwd,
                 name: row.name.clone(),
             });
@@ -172,18 +208,40 @@ impl ActiveSftp {
         });
         self.state.status = match action {
             ConflictAction::Overwrite => "Replacing…".into(),
-            ConflictAction::Keep => "Keeping local…".into(),
+            ConflictAction::Keep => "Keeping existing…".into(),
         };
     }
 
-    /// Transfer the focused selection to the other pane.
+    /// Transfer the focused selection (one row or several) to the other pane.
     pub fn transfer_selected(&mut self) {
         let focus = self.state.focus;
-        let Some(row) = self.state.selected(focus).cloned() else {
-            self.state.error = Some("Select a file to transfer".into());
-            return;
-        };
-        self.transfer_row(focus, &row);
+        let rows: Vec<SftpRow> = self
+            .state
+            .side(focus)
+            .selection()
+            .into_iter()
+            .cloned()
+            .collect();
+        match rows.as_slice() {
+            [] => self.state.error = Some("Select a file to transfer".into()),
+            [row] => self.transfer_row(focus, row),
+            rows => {
+                if self.state.conflict.is_some() {
+                    self.state.error = Some("Finish the conflict prompt first".into());
+                    return;
+                }
+                let to = match focus {
+                    SftpFocus::Left => SftpFocus::Right,
+                    SftpFocus::Right => SftpFocus::Left,
+                };
+                let to_cwd = self.state.side(to).cwd.clone();
+                self.state.status = format!("Transferring {} items…", rows.len());
+                self.state.error = None;
+                for row in rows {
+                    self.queue_transfer(focus, row, to, to_cwd.clone());
+                }
+            }
+        }
     }
 
     /// Open the selected file in the OS default app.
@@ -237,12 +295,18 @@ impl ActiveSftp {
         self.remove_selected();
     }
 
-    /// The confirmation to show before removing the selected row.
+    /// The confirmation to show before removing the selection.
     pub fn delete_prompt(&self) -> Option<terminus_ui::confirm::ConfirmPrompt> {
-        let row = self.state.selected(self.state.focus)?;
-        Some(terminus_ui::confirm::ConfirmPrompt::sftp_delete(
-            &row.name, row.is_dir,
-        ))
+        use terminus_ui::confirm::ConfirmPrompt;
+        let rows = self.state.side(self.state.focus).selection();
+        match rows.as_slice() {
+            [] => None,
+            [row] => Some(ConfirmPrompt::sftp_delete(&row.name, row.is_dir)),
+            rows => Some(ConfirmPrompt::sftp_delete_many(
+                rows.len(),
+                rows.iter().filter(|r| r.is_dir).count(),
+            )),
+        }
     }
 
     /// Type into the active name editor. Returns true when consumed.

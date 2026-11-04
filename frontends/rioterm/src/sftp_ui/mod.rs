@@ -35,6 +35,15 @@ pub struct ActiveSftp {
     drag_armed: Option<(SftpHit, f32, f32)>,
     /// Remote directory listed once the connection is ready.
     remote_start: String,
+    /// Modifiers held at the last row click (Ctrl toggles, Shift extends).
+    pub select_mods: SelectMods,
+}
+
+/// Selection modifiers of a click, set by the caller that knows the keyboard.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SelectMods {
+    pub toggle: bool,
+    pub range: bool,
 }
 
 /// Remote directory the browser opens in: the tab's working directory,
@@ -92,6 +101,7 @@ impl ActiveSftp {
             last_click: None,
             drag_armed: None,
             remote_start: remote_start_path(tab_dir),
+            select_mods: SelectMods::default(),
         })
     }
 
@@ -125,6 +135,7 @@ impl ActiveSftp {
             last_click: None,
             drag_armed: None,
             remote_start: terminus_bridge::REMOTE_HOME.into(),
+            select_mods: SelectMods::default(),
         }
     }
 
@@ -167,6 +178,14 @@ pub enum SftpKey {
     Tab,
     Up,
     Down,
+    /// Shift+Up / Shift+Down: grow the selection.
+    ExtendUp,
+    ExtendDown,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    SelectAll,
     Enter,
     Backspace,
     Delete,
@@ -188,5 +207,7 @@ use helpers::{
     row_from_list_entry, side_from_focus,
 };
 
+#[cfg(test)]
+mod multi_tests;
 #[cfg(test)]
 mod tests;

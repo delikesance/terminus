@@ -46,13 +46,24 @@ impl ActiveSftp {
             return false;
         };
         self.state.focus = from;
-        self.state.side_mut(from).selected = Some(row_index);
+        // Dragging a row of a multi-selection takes the whole selection;
+        // any other row is selected alone first.
+        let side = self.state.side_mut(from);
+        if !(side.is_selected(row_index) && side.selection_count() > 1) {
+            side.select_only(row_index);
+        }
+        let count = side.selection_count();
         self.state.drag = Some(SftpDrag {
             from,
             row_index,
-            name: row.name,
+            name: if count > 1 {
+                format!("{count} items")
+            } else {
+                row.name
+            },
             path: row.path,
             is_dir: row.is_dir,
+            count,
             pointer_x: x,
             pointer_y: y,
         });
@@ -71,6 +82,26 @@ impl ActiveSftp {
         let Some(drag) = self.state.drag.take() else {
             return false;
         };
+        if drag.count > 1 {
+            let to = match target {
+                Some(to) if to != drag.from => to,
+                _ => return true,
+            };
+            let to_cwd = self.drop_cwd(to, into);
+            let rows: Vec<SftpRow> = self
+                .state
+                .side(drag.from)
+                .selection()
+                .into_iter()
+                .cloned()
+                .collect();
+            self.state.status = format!("Transferring {} items…", rows.len());
+            self.state.error = None;
+            for row in &rows {
+                self.queue_transfer(drag.from, row, to, to_cwd.clone());
+            }
+            return true;
+        }
         if drag.is_dir {
             let to = match target {
                 Some(to) if to != drag.from => to,

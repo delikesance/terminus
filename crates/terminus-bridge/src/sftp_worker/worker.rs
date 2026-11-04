@@ -34,6 +34,16 @@ pub(super) fn conn_ref<'a>(
     }
 }
 
+/// `Err("transfer cancelled")` once the running transfer was cancelled.
+/// Between the steps a chunk loop cannot see (packing, unpacking, the next
+/// file of a plan). No connection (local to local) means nothing to ask.
+pub(super) fn ensure_running(conns: &[Option<&SftpConnection>]) -> Result<(), String> {
+    for conn in conns.iter().flatten() {
+        conn.check_cancel().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub(super) fn side_is_remote(
     left: &Option<Arc<SftpConnection>>,
     right: &Option<Arc<SftpConnection>>,
@@ -112,6 +122,7 @@ pub(super) fn worker(
     events: Sender<SftpEvent>,
     conflicts: Receiver<ConflictReply>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    cancel: Arc<CancelToken>,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -135,6 +146,7 @@ pub(super) fn worker(
             events.clone(),
             wake.clone(),
             Arc::new(ConflictInbox(Mutex::new(conflicts))),
+            cancel.clone(),
         ));
         let mut left_conn: Option<Arc<SftpConnection>> = None;
         let mut right_conn: Option<Arc<SftpConnection>> = None;
@@ -153,6 +165,7 @@ pub(super) fn worker(
                         &events,
                         &wake,
                         &transfers,
+                        &cancel,
                     )
                     .await;
                     if should_break {

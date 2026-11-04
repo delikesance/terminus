@@ -2,9 +2,12 @@ use super::*;
 
 pub(super) fn queue_transfer(
     transfers: &tokio::sync::mpsc::UnboundedSender<TransferJob>,
-    job: TransferJob,
+    cancel: &CancelToken,
+    mut job: TransferJob,
 ) {
+    job.epoch = cancel.job_queued();
     if transfers.send(job).is_err() {
+        cancel.job_done();
         warn!("sftp transfer task stopped");
     }
 }
@@ -16,9 +19,15 @@ pub(super) async fn run_transfers(
     events: Sender<SftpEvent>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     conflicts: Arc<ConflictInbox>,
+    cancel: Arc<CancelToken>,
 ) {
     while let Some(job) = jobs.recv().await {
-        run_transfer_job(&job, &events, &wake, &conflicts).await;
+        // Cancelled while it waited: it never starts.
+        if cancel.begin(job.epoch) {
+            drain_stale_conflicts(&conflicts);
+            run_transfer_job(&job, &events, &wake, &conflicts).await;
+        }
+        cancel.job_done();
     }
 }
 
@@ -37,6 +46,7 @@ pub(super) async fn run_transfer_job(
         name,
         left,
         right,
+        ..
     } = job;
     let result = if *folder {
         transfer_folder(
@@ -51,10 +61,15 @@ pub(super) async fn run_transfer_job(
         )
         .await
     };
-    if let Err(err) = result {
-        emit(events, wake, SftpEvent::Failed(err));
-        return;
+    match result {
+        Ok(()) => {}
+        Err(err) if err == CANCELLED => emit(events, wake, SftpEvent::Cancelled),
+        Err(err) => {
+            emit(events, wake, SftpEvent::Failed(err));
+            return;
+        }
     }
+    // Success or cancel: what landed before the stop is on the listing.
     if let Some(conn) = conn_ref(left, right, *to_side) {
         emit_listed_remote(events, wake, *to_side, conn, to_cwd).await;
     } else {

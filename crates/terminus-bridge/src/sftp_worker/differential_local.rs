@@ -28,6 +28,7 @@ pub(super) async fn transfer_folder_differential_to_local(
     let total = plan.len() as u64;
 
     for (i, action) in plan.into_iter().enumerate() {
+        ensure_running(&[Some(conn)])?;
         emit(
             events,
             wake,

@@ -385,7 +385,7 @@ fn resolve_conflict_command_does_not_block_command_queue() {
     worker.send(SftpCommand::Close);
     let _ = std::fs::remove_dir_all(&dir);
 }
-fn wait_for_event<T>(
+pub(super) fn wait_for_event<T>(
     worker: &SftpWorker,
     mut pick: impl FnMut(SftpEvent) -> Option<T>,
 ) -> Option<T> {

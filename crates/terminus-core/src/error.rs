@@ -59,6 +59,11 @@ pub enum Error {
     #[error("Kerberos (GSSAPI) is not supported on Windows.")]
     GssapiUnsupported,
 
+    /// The user cancelled a transfer. The text is also what the SFTP worker
+    /// reports, and what its retry loop recognises.
+    #[error("transfer cancelled")]
+    Cancelled,
+
     /// Vault unlock failed (wrong passphrase).
     #[error("vault unlock failed")]
     VaultUnlockFailed,

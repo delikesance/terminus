@@ -10,6 +10,7 @@ pub(super) async fn handle_command(
     events: &Sender<SftpEvent>,
     wake: &Option<Arc<dyn Fn() + Send + Sync>>,
     transfers: &tokio::sync::mpsc::UnboundedSender<TransferJob>,
+    cancel: &Arc<CancelToken>,
 ) -> bool {
     match cmd {
         SftpCommand::ResolveConflict { .. } | SftpCommand::CancelTransfer => {
@@ -20,7 +21,8 @@ pub(super) async fn handle_command(
             drop_edit_sessions_for_side(edit_sessions, side);
             *conn_mut(left_conn, right_conn, side) = None;
             match connect_sftp_for_host(&opts).await {
-                Ok(conn) => {
+                Ok(mut conn) => {
+                    conn.session_mut().set_cancel_token(cancel.clone());
                     *conn_mut(left_conn, right_conn, side) = Some(Arc::new(conn));
                     emit(events, wake, SftpEvent::Ready { side });
                 }
@@ -134,6 +136,7 @@ pub(super) async fn handle_command(
         } => {
             queue_transfer(
                 transfers,
+                cancel,
                 TransferJob {
                     folder: false,
                     from_side,
@@ -143,6 +146,7 @@ pub(super) async fn handle_command(
                     name,
                     left: left_conn.clone(),
                     right: right_conn.clone(),
+                    epoch: 0,
                 },
             );
             false
@@ -179,6 +183,7 @@ pub(super) async fn handle_command(
         } => {
             queue_transfer(
                 transfers,
+                cancel,
                 TransferJob {
                     folder: true,
                     from_side,
@@ -188,6 +193,7 @@ pub(super) async fn handle_command(
                     name,
                     left: left_conn.clone(),
                     right: right_conn.clone(),
+                    epoch: 0,
                 },
             );
             false

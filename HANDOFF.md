@@ -13,6 +13,14 @@ Feuille de route `milestone.md` en autopilote. R1 (spec per-host / raccourcis, `
 - R8 sidebar redimensionnable, **partiel** : état/géométrie/setting dans `terminus-ui` : `a705e82c` (+ docs `1d32b486`).
 - R5 sync visible, **partiel** : badge « Synced … ago » / conflits sur le bouton Settings : `7b679ded` (+ docs `4e891f16`). Non vérifié en GUI.
 
+## Session 2026-11-04 : presse-papiers + SFTP (non commité, non vérifié en GUI)
+Fichiers : voir `git status` (terminus-core `sftp/cancel.rs`, bridge `sftp_worker/*`, terminus-ui `sftp_pane/{selection,clipboard}.rs` + `draft.rs`, rioterm `router/field_clipboard.rs`, `sftp_ui/*`, `screen/{keys,sftp,clipboard}.rs`, `application/mouse_release.rs`).
+- Collage/copie/coupe dans tous les champs hors terminal (une voie), primaire X11 au relâchement, lecture presse-papiers avec repli + erreur visible.
+- SFTP : annulation réelle (jobs en file + en cours), sélection/défilement conservés, défilement clavier, Échap par étapes, double-clic fichier = sélection, multi-sélection (Ctrl/Maj+clic, Maj+flèches, Ctrl+A, F5, glisser, suppression groupée).
+- Validé : `cargo fmt --all -- --check`, `scripts/check-file-size.sh`, `cargo test -p terminus-ui -p terminus-core -p terminus-bridge -p rioterm` verts.
+- À faire à l'écran : coller dans passphrase du vault / corps de snippet / palette / renommage SFTP ; copier depuis un champ ; transfert lourd puis Annuler ; relistage dans un long dossier ; suppression multiple.
+- Limites connues : champs des vues (Settings…) = collage seulement ; lecture X11 `copypasta` peut bloquer jusqu'à 3 s ; annulation locale→locale entre fichiers seulement ; pas de vue de file (R3), pas de fil d'Ariane éditable (R17).
+
 ## Décisions
 - Split = session de l'hôte (`screen/sessions/split.rs:41`) ; Option A conservée pour les chemins SSH.
 - Ctrl+Shift+Up/Down (hôte) et Ctrl+Alt+1..5 (vues) ; `SelectTab(n)` relatif à l'hôte ; hôte sans onglet sauté.

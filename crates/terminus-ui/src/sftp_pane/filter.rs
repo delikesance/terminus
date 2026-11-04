@@ -43,6 +43,8 @@ impl SftpSideState {
             .cloned()
             .collect();
         self.selected = None;
+        self.marked.clear();
+        self.anchor = None;
         self.scroll = 0.0;
     }
 }

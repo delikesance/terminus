@@ -13,22 +13,42 @@ impl ActiveSftp {
         match hit {
             SftpHit::LeftRow(i) => {
                 self.state.focus = SftpFocus::Left;
-                self.state.left.selected = Some(i);
+                // Right-clicking inside a multi-selection keeps it.
+                if !self.state.left.is_selected(i) {
+                    self.state.left.select_only(i);
+                } else {
+                    self.state.left.selected = Some(i);
+                }
+                let many = self.state.left.selection_count() > 1;
                 let row = self.state.left.entries.get(i)?;
                 let transfer = Some(self.transfer_label(SftpFocus::Left));
-                let can_edit = !row.is_dir;
+                let can_edit = !row.is_dir && !many;
                 terminus_ui::ActionMenu::for_sftp_entry(
-                    x, y, row.is_dir, transfer, can_edit,
+                    x,
+                    y,
+                    row.is_dir && !many,
+                    transfer,
+                    can_edit,
                 )
             }
             SftpHit::RightRow(i) => {
                 self.state.focus = SftpFocus::Right;
-                self.state.right.selected = Some(i);
+                // Right-clicking inside a multi-selection keeps it.
+                if !self.state.right.is_selected(i) {
+                    self.state.right.select_only(i);
+                } else {
+                    self.state.right.selected = Some(i);
+                }
+                let many = self.state.right.selection_count() > 1;
                 let row = self.state.right.entries.get(i)?;
                 let transfer = Some(self.transfer_label(SftpFocus::Right));
-                let can_edit = !row.is_dir;
+                let can_edit = !row.is_dir && !many;
                 terminus_ui::ActionMenu::for_sftp_entry(
-                    x, y, row.is_dir, transfer, can_edit,
+                    x,
+                    y,
+                    row.is_dir && !many,
+                    transfer,
+                    can_edit,
                 )
             }
             SftpHit::LeftParent | SftpHit::LeftCrumb => {

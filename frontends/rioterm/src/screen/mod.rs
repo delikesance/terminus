@@ -8,7 +8,7 @@
 
 mod chrome;
 pub(crate) mod chrome_input;
-mod clipboard;
+pub(crate) mod clipboard;
 mod config;
 mod file_drop;
 mod frameless;

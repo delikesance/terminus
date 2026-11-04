@@ -19,12 +19,14 @@ use tokio::time::timeout;
 
 use crate::error::{Error, Result};
 
+mod cancel;
 mod entry;
 mod io;
 mod ops;
 mod path;
 mod transfer;
 
+pub use cancel::CancelToken;
 pub use entry::SftpEntry;
 pub use path::{is_within_root, normalize_remote_path, sandbox_path};
 
@@ -37,6 +39,7 @@ pub struct SftpSession {
     inner: Arc<russh_sftp::client::SftpSession>,
     root: Option<String>,
     timeout: Duration,
+    cancel: Arc<CancelToken>,
 }
 
 impl std::fmt::Debug for SftpSession {
@@ -79,6 +82,21 @@ impl SftpSession {
             inner: Arc::new(inner),
             root: None,
             timeout,
+            cancel: CancelToken::new(),
+        }
+    }
+
+    /// Share `token` so a cancelled transfer stops this session's chunk loops.
+    pub fn set_cancel_token(&mut self, token: Arc<CancelToken>) {
+        self.cancel = token;
+    }
+
+    /// `Err(Cancelled)` once the running transfer was cancelled.
+    pub fn check_cancel(&self) -> Result<()> {
+        if self.cancel.is_cancelled() {
+            Err(Error::Cancelled)
+        } else {
+            Ok(())
         }
     }
 

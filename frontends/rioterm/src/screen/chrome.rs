@@ -36,6 +36,7 @@ impl Screen<'_> {
         }
         if sftp_changed {
             self.settle_failed_files_browser();
+            self.sftp_reveal_selection();
         }
         let store_changed = store_changed || sftp_changed;
 

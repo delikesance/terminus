@@ -55,6 +55,7 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | Lignes locale + WSL + hôtes | ✅ | `terminus-core::{machine,wsl}`, ids `local` / `wsl:<nom>` / uuid |
 | Auth mot de passe / clé / clés gérées / GSSAPI | ✅ | `terminus-core/src/{auth_method,managed_key,gssapi}.rs` |
 | Largeur de sidebar redimensionnable | ⚠️ R8 (état seul) | livré et testé dans `terminus-ui` : `shell/layout/sidebar_width.rs` (`SidebarWidth` clamp 200..480, `begin_drag`/`drag_to`/`end_drag`, `handle_rect`/`hit_handle`, `parse_setting`/`format_setting`, `SETTING_KEY="sidebar_width"`), `ShellLayout::with_sidebar_width`, `grid_insets_for` ; **non câblé** : `SIDEBAR_WIDTH = 260.0` reste la constante de `ShellLayout::new`, `shell/sidebar.rs`, `sidebar::WIDTH`, `chrome/state.rs` (`reserved_width`), `min_window_size` ; côté `rioterm` rien (lecture du setting au démarrage, souris/curseur, peinture de la poignée, `reapply_chrome_inset`, `set_setting` au relâchement) ; non vérifié en GUI |
+| Copier / couper / coller dans tous les champs hors terminal (Ctrl/Cmd+C·X·V et Ctrl+Maj+C·V) | ✅ code, non vérifié en GUI | `router/field_clipboard.rs` (une seule voie, avant le dispatch des modales), `TextDraft::{selected_text,cut,paste}`, `sftp_pane/clipboard.rs`, lecture avec repli `arboard` + erreur visible (`screen/clipboard.rs::read_clipboard_text`) ; les mots de passe / phrases secrètes ne sont jamais copiés ; champs des vues (Settings…) : collage seulement. Le terminal garde Ctrl+Maj+C/V. Sélection primaire X11/Wayland publiée au relâchement (`application/mouse_release.rs`) |
 | Liste d'hôtes virtualisée | ❌ | aucune logique de fenêtre visible dans `terminus-ui/src/sidebar/` |
 | Host Inspector | ❌ | aucun symbole |
 | Onboarding (CTA « Add first host ») | ⚠️ R9 | bouton sous le hint « No saved hosts yet » (liste vide, sans filtre) : `sidebar/layout.rs::empty_cta_rect`, `PanelHit::AddFirstHost` (`sidebar/hit.rs`) → `ChromeAction::AddHost` (`chrome/route_press.rs`), peinture `renderer/chrome/notices.rs::render_empty_cta`, test `selection_tests::an_empty_list_offers_an_add_first_host_cta` ; **non vérifié en GUI** ; pas de scaffold en 3 étapes (hors périmètre de R9) ; le survol partage `add_hover` avec le bouton d'en-tête |
@@ -82,6 +83,9 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | Retry | ⚠️ | `sftp_worker/retry.rs` : rejoue seulement les opérations idempotentes (`Operation::is_idempotent`) ; appliqué aux transferts, archives, suppressions récursives |
 | Breadcrumbs cliquables par segment | ⚠️ | `paths.rs::crumb_segments_for_cwd` calcule les segments ; comportement du clic non revérifié (l'ancien jalon disait « un niveau up ») |
 | Files s'ouvre dans le dossier courant du terminal courant | ⚠️ | le répertoire OSC 7 (`tab_reported_dir`) n'est lu qu'à la **création** de la session SFTP, et pris sur l'onglet **le plus récent** de l'hôte (`screen/sftp.rs::machine_tab_dir`), pas sur l'onglet courant ; un navigateur déjà ouvert garde son dossier ; clic sur l'onglet « Files » du header non audité |
+| Annulation d'un transfert (en cours + file) | ✅ code, non vérifié en GUI | `terminus-core/src/sftp/cancel.rs` (`CancelToken`, vérifié par morceau dans `sftp/io.rs`), `sftp_worker/queue.rs` (jobs annulés non démarrés, `SftpEvent::Cancelled`), `retry.rs` (jamais rejoué) ; tests `cancel_tests.rs`, `tests/sftp_cancel_e2e.rs` (envoi de 2 Gio interrompu, aucun fichier partiel). Limite : copie locale→locale (`tokio::fs::copy`) et tar/zip locaux ne s'interrompent qu'entre deux étapes |
+| Sélection et défilement conservés après relistage ; flèches suivies par le défilement | ✅ code, non vérifié en GUI | `sftp_pane/types.rs::set_listed`, `selection.rs::ensure_visible`, `screen/sftp.rs::sftp_reveal_selection` ; tests `sftp_pane/selection.rs` |
+| Sélection multiple (Ctrl/Maj+clic, Maj+flèches, Ctrl+A), transfert / suppression / glisser par lot | ✅ code, non vérifié en GUI | `sftp_pane/selection.rs`, `sftp_ui/{input,actions,drag}.rs`, `ConfirmPrompt::sftp_delete_many` ; tests `sftp_ui/multi_tests.rs`. Double-clic sur un fichier = sélection seule (plus de transfert), Échap = un cran en arrière et jamais pendant un transfert |
 | Fil d'Ariane éditable au clavier (saisir un chemin) | ❌ | aucun symbole de saisie de chemin ; seuls les segments cliquables existent (`paths.rs::crumb_segments_for_cwd`) |
 | Upload par glisser-déposer vers un onglet SSH, dossier configurable | ✅ | `screen/file_drop.rs`, `remote_upload*.rs`, `[uploads]`, Settings > Uploads ; test sshd réel présent |
 
@@ -146,7 +150,7 @@ Conséquence : deux piles SSH. Host-key et auth peuvent diverger entre CLI
 | :--- | :--- | :--- | :--- |
 | D1 | Deux piles SSH (CLI pour shell + tunnels, russh pour SFTP) | host-key et auth divergents | Option A acceptée ; unifier = brancher `SshTransport` + `SessionSpec::Ssh` + modal TOFU |
 | D3 | CI sans build, tests ni clippy | une régression passe si le contrôle local est sauté | ajouter les jobs, ou installer un hook versionné |
-| D4 | File SFTP sérielle sans vue | gros transferts opaques | vue de file dans l'UI |
+| D4 | File SFTP sérielle sans vue (l'annulation existe désormais, voir 3.3) | gros transferts opaques | vue de file dans l'UI |
 | D5 | Releases non signées | l'intégrité repose sur `checksums.txt` et GitHub | signature à décider |
 | D6 | Liste d'hôtes non virtualisée | lag possible à 100+ hôtes | virtualiser, puis benchmark |
 | D7 | Fenêtre sans cadre non vérifiée sous GNOME / X11 | régression visuelle | validation à l'écran |
@@ -164,7 +168,7 @@ Ordre de priorité. Chaque jalon a un critère de fin vérifiable.
 | :--- | :--- | :--- |
 | R1 | **Vue et sessions par hôte + raccourcis** (spec relue 2026-10-16 ; R1a implémenté ; R1b faite côté code (non vérifiée en GUI) ; R1c à faire) | tests `terminus-ui` pour `per_host` et cyclage; Ctrl+Tab ne traverse plus les hôtes (vérifié à l'écran) |
 | R2 | **CI : build + tests + clippy** (D3) | job vert sur PR, ou hook pre-commit versionné, documenté dans CLAUDE.md |
-| R3 | **Vue de file de transferts SFTP** (D4) | plusieurs transferts visibles, annulables, sans bloquer l'UI |
+| R3 | **Vue de file de transferts SFTP** (D4) — annulation faite (jobs en file et en cours) ; reste la vue de file | plusieurs transferts visibles, annulables, sans bloquer l'UI |
 
 ### P1 — Observabilité et dette
 

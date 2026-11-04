@@ -35,6 +35,7 @@ impl SftpSession {
         let mut buf = vec![0u8; TRANSFER_CHUNK];
         let mut total = 0u64;
         loop {
+            self.check_cancel()?;
             let n = match timeout(self.timeout, file.read(&mut buf)).await {
                 Ok(Ok(0)) => break,
                 Ok(Ok(n)) => n,
@@ -151,6 +152,7 @@ impl SftpSession {
         let mut total = 0u64;
         let written: Result<()> = async {
             loop {
+                self.check_cancel()?;
                 let n = source
                     .read(&mut buf)
                     .await

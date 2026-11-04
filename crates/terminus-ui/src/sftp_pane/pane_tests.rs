@@ -360,6 +360,7 @@ fn drag_struct_carries_dir_flag() {
         name: "docs".into(),
         path: "/home/user/docs".into(),
         is_dir: true,
+        count: 1,
         pointer_x: 10.0,
         pointer_y: 20.0,
     };

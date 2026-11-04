@@ -7,12 +7,13 @@
 //! `/mnt/<drive>` for a WSL distro started from Windows, and `/tmp` on the
 //! remote for an SSH host (uploaded with the tab's own `ssh` command line).
 
+use super::clipboard::read_clipboard_text;
 use super::remote_upload::{paste_upload_result, quote_for_shell, upload_file};
 use super::Screen;
 use crate::crosswords::Mode;
 use crate::hosts;
 use crate::ssh_secrets::{private_temp_dir, write_private_file};
-use rio_backend::clipboard::{Clipboard, ClipboardType};
+use rio_backend::clipboard::Clipboard;
 use rio_window::keyboard::{Key, ModifiersState};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -47,7 +48,7 @@ impl Screen<'_> {
     /// clipboard has no text and holds an image is the image saved and its
     /// path pasted instead.
     pub fn paste_clipboard_or_image(&mut self, clipboard: &mut Clipboard) {
-        let content = clipboard.get(ClipboardType::Clipboard);
+        let content = read_clipboard_text(clipboard).unwrap_or_default();
         if !self.paste_image_unless_text(&content) {
             self.paste_from_clipboard(&content);
         }
@@ -57,7 +58,7 @@ impl Screen<'_> {
     /// paste, but they read the clipboard of the machine they run on, which
     /// over SSH is not ours. Returns whether the key was consumed.
     pub fn paste_clipboard_image(&mut self, clipboard: &mut Clipboard) -> bool {
-        let content = clipboard.get(ClipboardType::Clipboard);
+        let content = read_clipboard_text(clipboard).unwrap_or_default();
         self.paste_image_unless_text(&content)
     }
 
@@ -117,7 +118,7 @@ impl Screen<'_> {
         }
     }
 
-    pub(super) fn report_paste_failure(&mut self, message: &str) {
+    pub(crate) fn report_paste_failure(&mut self, message: &str) {
         tracing::warn!("{message}");
         self.chrome.panel.error = Some(message.to_string());
     }

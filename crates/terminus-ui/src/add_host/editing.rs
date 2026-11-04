@@ -51,6 +51,15 @@ impl AddHostForm {
         true
     }
 
+    /// The focused text field's draft for Copy / Cut. `None` for selects
+    /// and for the password, which never goes to the clipboard.
+    pub fn copyable_draft_mut(&mut self) -> Option<&mut TextDraft> {
+        match self.focused_field() {
+            Field::Password => None,
+            field => self.draft_mut(field),
+        }
+    }
+
     /// Delete the character before the caret. Returns whether anything
     /// changed (a backspace at offset 0 must not be reported as an edit,
     /// or the caller repaints on every stray keypress).

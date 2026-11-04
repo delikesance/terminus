@@ -75,6 +75,26 @@ impl Screen<'_> {
     }
 }
 
+/// The system clipboard's text.
+///
+/// `copypasta` only asks for the UTF-8 target and swallows every failure into
+/// an empty string, so an empty answer is retried through `arboard`, which
+/// negotiates the other text targets. `Err` says why nothing was read, for
+/// the user (an unreadable clipboard must not look like a dead shortcut).
+pub(crate) fn read_clipboard_text(clipboard: &mut Clipboard) -> Result<String, String> {
+    let text = clipboard.get(ClipboardType::Clipboard);
+    if !text.is_empty() {
+        return Ok(text);
+    }
+    match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+        Ok(text) => Ok(text),
+        Err(arboard::Error::ContentNotAvailable) => {
+            Err("Nothing to paste: the clipboard has no text".into())
+        }
+        Err(err) => Err(format!("Clipboard unavailable: {err}")),
+    }
+}
+
 /// The bytes a paste of `text` writes to the pty. `bracketed` is false for
 /// raw key sequences (`Esc` bindings); `bracketed_mode` is whether the
 /// program asked for bracketed paste.

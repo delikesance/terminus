@@ -112,6 +112,13 @@ pub(super) async fn transfer_folder(
         (zip_path, ArchiveKind::Zip)
     };
 
+    if let Err(err) = ensure_running(&[
+        conn_ref(left, right, from_side),
+        conn_ref(left, right, to_side),
+    ]) {
+        let _ = tokio::fs::remove_file(&archive_path).await;
+        return Err(err);
+    }
     let zip_len = tokio::fs::metadata(&archive_path)
         .await
         .map(|m| m.len())

@@ -218,6 +218,26 @@ impl ConfirmPrompt {
         )
     }
 
+    /// Remove several rows of an SFTP pane at once (one confirmation).
+    /// `dirs` of them are folders.
+    pub fn sftp_delete_many(count: usize, dirs: usize) -> Self {
+        let body = if dirs > 0 {
+            "Folders and everything inside them are removed. This cannot be undone."
+        } else {
+            "This cannot be undone."
+        };
+        Self::new(
+            ConfirmSpec::new(
+                DialogKind::Destructive,
+                &format!("Delete {count} items?"),
+                body.to_string(),
+                "Cancel",
+                "Delete",
+            ),
+            ConfirmAction::SftpDelete,
+        )
+    }
+
     /// Delete a host group; its servers move to the top level.
     pub fn delete_group(id: &str, name: &str, hosts: usize) -> Self {
         let body = if hosts == 0 {

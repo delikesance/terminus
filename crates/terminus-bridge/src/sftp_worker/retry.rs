@@ -1,5 +1,8 @@
 use super::*;
 
+/// What a cancelled transfer reports (`terminus_core::Error::Cancelled`).
+pub(super) const CANCELLED: &str = "transfer cancelled";
+
 /// Operations whose outcome is the same when run again; only these are replayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Operation {
@@ -55,7 +58,7 @@ where
     let mut tried = 1;
     loop {
         match attempt().await {
-            Err(err) if tried < max_attempts => {
+            Err(err) if tried < max_attempts && err != CANCELLED => {
                 warn!(?op, tried, error = %err, "sftp operation failed, retrying");
                 tokio::time::sleep(policy.delay * tried as u32).await;
                 tried += 1;

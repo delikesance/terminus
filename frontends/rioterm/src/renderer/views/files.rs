@@ -401,7 +401,7 @@ fn paint_pane(
             FileRowState::Renaming
         } else if drop_here.is_some_and(|(_, into)| into == Some(i)) {
             FileRowState::DropTarget
-        } else if side.selected == Some(i) {
+        } else if side.is_selected(i) {
             FileRowState::Selected
         } else if view.hover == Some(FilesHit::Row(focus, i)) {
             FileRowState::Hover
@@ -808,7 +808,8 @@ pub fn pointer_press(
             sftp.state.focus = f;
             sftp.begin_mkdir_focused();
         }
-        FilesHit::Header(f) | FilesHit::Pane(f) => sftp.state.focus = f,
+        FilesHit::Header(f) => sftp.state.focus = f,
+        FilesHit::Pane(f) => sftp.click_blank(f),
         FilesHit::Row(..) | FilesHit::Up(_) => {
             let h = hit.to_sftp_hit();
             sftp.handle_hit(h.clone(), double);
@@ -1003,6 +1004,7 @@ pub fn preview_state(now: i64) -> (SftpPaneState, FilesView) {
                 name: "build.tar.gz".into(),
                 path: format!("{l}/build.tar.gz"),
                 is_dir: false,
+                count: 1,
                 pointer_x: 1000.0,
                 pointer_y: 275.0,
             });

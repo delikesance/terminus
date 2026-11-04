@@ -1,5 +1,8 @@
 use super::*;
 
+/// Rows a PageUp / PageDown moves the cursor.
+const PAGE_ROWS: isize = 10;
+
 impl ActiveSftp {
     /// Activate an already hit-tested target (shared by the classic pane and
     /// the Files view, which hit-tests with its own geometry).
@@ -19,32 +22,8 @@ impl ActiveSftp {
         self.last_click = Some((hit.clone(), std::time::Instant::now()));
 
         match hit {
-            SftpHit::LeftRow(i) => {
-                self.state.focus = SftpFocus::Left;
-                self.state.left.selected = Some(i);
-                if is_double {
-                    if let Some(row) = self.state.left.entries.get(i).cloned() {
-                        if row.is_dir {
-                            self.cd(SftpFocus::Left, row.path);
-                        } else {
-                            self.transfer_row(SftpFocus::Left, &row);
-                        }
-                    }
-                }
-            }
-            SftpHit::RightRow(i) => {
-                self.state.focus = SftpFocus::Right;
-                self.state.right.selected = Some(i);
-                if is_double {
-                    if let Some(row) = self.state.right.entries.get(i).cloned() {
-                        if row.is_dir {
-                            self.cd(SftpFocus::Right, row.path);
-                        } else {
-                            self.transfer_row(SftpFocus::Right, &row);
-                        }
-                    }
-                }
-            }
+            SftpHit::LeftRow(i) => self.click_row(SftpFocus::Left, i, is_double),
+            SftpHit::RightRow(i) => self.click_row(SftpFocus::Right, i, is_double),
             SftpHit::LeftParent => {
                 self.state.focus = SftpFocus::Left;
                 self.cd_parent(SftpFocus::Left);
@@ -102,8 +81,68 @@ impl ActiveSftp {
         SftpClickResult::Handled
     }
 
+    /// A click on row `i`: Ctrl toggles it, Shift selects up to it, a plain
+    /// click selects it alone and a double click opens a folder. A file is
+    /// only selected: copying it across is an explicit command (Ctrl+U/D,
+    /// F5, the context menu or a drag), never a side effect of a double click.
+    fn click_row(&mut self, focus: SftpFocus, i: usize, is_double: bool) {
+        self.state.focus = focus;
+        let mods = self.select_mods;
+        let side = self.state.side_mut(focus);
+        if mods.toggle {
+            side.toggle_mark(i);
+            return;
+        }
+        if mods.range {
+            side.select_range_to(i);
+            return;
+        }
+        side.select_only(i);
+        if is_double {
+            if let Some(row) = side.entries.get(i).cloned().filter(|r| r.is_dir) {
+                self.cd(focus, row.path);
+            }
+        }
+    }
+
+    /// A click on empty space in `focus`'s list drops its selection.
+    pub fn click_blank(&mut self, focus: SftpFocus) {
+        self.state.focus = focus;
+        if !self.select_mods.toggle && !self.select_mods.range {
+            self.state.side_mut(focus).clear_selection();
+        }
+    }
+
     pub fn handle_key(&mut self, key: SftpKey) -> bool {
         match key {
+            SftpKey::ExtendUp => {
+                self.state.move_selection_by(-1, true);
+                true
+            }
+            SftpKey::ExtendDown => {
+                self.state.move_selection_by(1, true);
+                true
+            }
+            SftpKey::PageUp => {
+                self.state.move_selection_by(-PAGE_ROWS, false);
+                true
+            }
+            SftpKey::PageDown => {
+                self.state.move_selection_by(PAGE_ROWS, false);
+                true
+            }
+            SftpKey::Home => {
+                self.state.move_selection_by(isize::MIN / 2, false);
+                true
+            }
+            SftpKey::End => {
+                self.state.move_selection_by(isize::MAX / 2, false);
+                true
+            }
+            SftpKey::SelectAll => {
+                let focus = self.state.focus;
+                self.state.side_mut(focus).select_all_rows()
+            }
             SftpKey::Tab => {
                 self.state.focus = self.state.other_focus();
                 true

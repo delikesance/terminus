@@ -188,13 +188,51 @@ impl Screen<'_> {
 
             let action = match key.logical_key.as_ref() {
                 WKey::Named(NamedKey::Tab) => Some(SftpKey::Tab),
+                WKey::Named(NamedKey::ArrowUp) if self.modifiers.state().shift_key() => {
+                    Some(SftpKey::ExtendUp)
+                }
+                WKey::Named(NamedKey::ArrowDown)
+                    if self.modifiers.state().shift_key() =>
+                {
+                    Some(SftpKey::ExtendDown)
+                }
                 WKey::Named(NamedKey::ArrowUp) => Some(SftpKey::Up),
                 WKey::Named(NamedKey::ArrowDown) => Some(SftpKey::Down),
+                WKey::Named(NamedKey::PageUp) => Some(SftpKey::PageUp),
+                WKey::Named(NamedKey::PageDown) => Some(SftpKey::PageDown),
+                WKey::Named(NamedKey::Home) => Some(SftpKey::Home),
+                WKey::Named(NamedKey::End) => Some(SftpKey::End),
+                WKey::Named(NamedKey::F5) => Some(SftpKey::Upload),
+                WKey::Character("a") | WKey::Character("A")
+                    if (self.modifiers.state().control_key()
+                        || self.modifiers.state().super_key())
+                        && !self
+                            .sftp
+                            .as_ref()
+                            .is_some_and(|s| s.state.filter_owns_keys()) =>
+                {
+                    Some(SftpKey::SelectAll)
+                }
                 WKey::Named(NamedKey::Enter) => Some(SftpKey::Enter),
                 WKey::Named(NamedKey::Backspace) => Some(SftpKey::Backspace),
                 WKey::Named(NamedKey::Delete) => Some(SftpKey::Delete),
                 WKey::Named(NamedKey::F2) => Some(SftpKey::Rename),
                 WKey::Named(NamedKey::Escape) => {
+                    // One step back at a time: drop the selection first, and
+                    // never walk away from a transfer in flight.
+                    if let Some(s) = self.sftp.as_mut() {
+                        let focus = s.state.focus;
+                        if s.state.side_mut(focus).clear_selection() {
+                            self.mark_dirty();
+                            return;
+                        }
+                        if s.busy() {
+                            s.state.status =
+                                "Transfer in progress: cancel it before closing".into();
+                            self.mark_dirty();
+                            return;
+                        }
+                    }
                     self.close_sftp_pane();
                     return;
                 }
@@ -232,6 +270,7 @@ impl Screen<'_> {
                         self.mark_dirty();
                     }
                 }
+                self.sftp_reveal_selection();
                 return;
             }
         }

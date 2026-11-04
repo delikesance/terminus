@@ -1,3 +1,4 @@
+mod field_clipboard;
 pub mod routes;
 pub(crate) mod window;
 use crate::event::EventProxy;
@@ -466,6 +467,11 @@ impl Route<'_> {
     ) -> bool {
         use rio_window::event::ElementState;
 
+        // Copy / Cut / Paste inside any non-terminal text field.
+        if self.field_clipboard_key(key_event, clipboard) {
+            return true;
+        }
+
         // Drawer text fields (filter / new-group / inline rename) own keys
         // while focused, even though they are not a full modal over the
         // terminal. Rename wins whenever a draft exists (focused is set on
@@ -685,26 +691,6 @@ impl Route<'_> {
 
             Modal::HostEditor => {
                 use terminus_ui::add_host::FormOutcome;
-                if key_event.state == ElementState::Pressed {
-                    let mods = self.window.screen.modifiers.state();
-                    let select_mod = mods.control_key() || mods.super_key();
-                    if let Key::Character(ch) = &key_event.logical_key {
-                        if select_mod && ch.eq_ignore_ascii_case("v") {
-                            // Ctrl/Cmd+V — clipboard into the focused host field
-                            // (password, hostname, …). Strip controls so a
-                            // trailing newline from the clipboard does not
-                            // make AddHostForm::insert reject the whole paste.
-                            let content = clipboard
-                                .get(rio_backend::clipboard::ClipboardType::Clipboard);
-                            let cleaned: String =
-                                content.chars().filter(|c| !c.is_control()).collect();
-                            if self.window.screen.chrome_commit_text(&cleaned) {
-                                self.request_overlay_redraw();
-                            }
-                            return true;
-                        }
-                    }
-                }
                 if let Some(FormOutcome::Submit) =
                     self.window.screen.chrome_key_input(key_event)
                 {
@@ -846,29 +832,6 @@ impl Route<'_> {
                                     {
                                         draft.select_all();
                                     }
-                                } else if select_mod && ch.eq_ignore_ascii_case("v") {
-                                    // Ctrl/Cmd+V — clipboard into the focused field.
-                                    let content = clipboard.get(
-                                        rio_backend::clipboard::ClipboardType::Clipboard,
-                                    );
-                                    // OpenSSH PEM paste (headers or raw body) → PEM field.
-                                    let trimmed = content.trim_start();
-                                    if (content.contains("BEGIN")
-                                        && content.contains("PRIVATE"))
-                                        || trimmed.starts_with("b3BlbnNzaC1rZXk")
-                                    {
-                                        self.window
-                                            .screen
-                                            .chrome
-                                            .settings
-                                            .focus_key_pem();
-                                    }
-                                    let _ = self
-                                        .window
-                                        .screen
-                                        .chrome
-                                        .settings
-                                        .insert_key_draft_text(&content);
                                 } else if !select_mod {
                                     let text =
                                         key_event.text.as_deref().unwrap_or(ch.as_str());
@@ -999,21 +962,6 @@ impl Route<'_> {
                                 {
                                     draft.select_all();
                                 }
-                            } else if select_mod && ch.eq_ignore_ascii_case("v") {
-                                // Ctrl/Cmd+V pastes at the caret. Control
-                                // characters (the clipboard trailing
-                                // newline) are stripped before insertion.
-                                let content = clipboard.get(
-                                    rio_backend::clipboard::ClipboardType::Clipboard,
-                                );
-                                let cleaned: String =
-                                    content.chars().filter(|c| !c.is_control()).collect();
-                                let _ = self
-                                    .window
-                                    .screen
-                                    .chrome
-                                    .settings
-                                    .insert_sql_text(&cleaned);
                             } else if !select_mod {
                                 let text =
                                     key_event.text.as_deref().unwrap_or(ch.as_str());
